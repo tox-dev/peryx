@@ -1,0 +1,16 @@
+---
+source: crates/velox-core/src/pypi/tests/simple_tests.rs
+expression: render_index_html(&sample_list())
+---
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="pypi:repository-version" content="1.1">
+    <title>Simple index</title>
+  </head>
+  <body>
+    <a href="flask/">Flask</a>
+    <a href="zope-interface/">zope.interface</a>
+    <a href="a&<>/">a&amp;&lt;&gt;</a>
+  </body>
+</html>
