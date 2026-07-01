@@ -657,6 +657,9 @@ ammonia     = "4"                                           # sanitize rendered 
 clap   = { version = "4", features = ["derive","env","wrap_help"] }
 config = "0.15"
 tracing = "0.1"; tracing-subscriber = { version = "0.3", features = ["env-filter","json"] }
+tracing-appender = "0.2"                                   # non-blocking rolling log file
+tracing-journald = "0.3"                                   # systemd journal sink
+syslog-tracing   = "0.3"                                   # classic syslog sink
 metrics = "0.24"; metrics-exporter-prometheus = "0.18"
 
 # crypto / concurrency / misc
@@ -678,6 +681,17 @@ HTTP cache index; rkyv for zero-copy hot records is uv's design; moka `get_with`
 pep508_rs are semver-stable over a frozen spec, so reuse is safe. velox vendors wheel/sdist filename parsing from uv (no
 good standalone crate) and patches its imports to the standalone pep440/pep508 crates so types unify. Release builds at
 `opt-level=3` because sha2's soft backend needs it.
+
+### Logging and observability
+
+velox logs through `tracing` with structured, leveled events and per-request spans (a `request_id`, the index, the
+package), so behaviour is debuggable in production. The level comes from `tracing-subscriber`'s `EnvFilter`, set by
+`RUST_LOG`/`VELOX_LOG` or `--log-level {error,warn,info,debug,trace}` and overridable per module (for example
+`velox_upstream=debug`), so an operator raises verbosity for one subsystem without a rebuild or restart-wide noise.
+Output routes to one or more sinks, selected by TOML/CLI/env: stdout (pretty for a TTY, JSON for log aggregation), a
+rolling log file (`tracing-appender`, non-blocking, daily or size rotation), and the system log via `tracing-journald`
+(systemd journal) or `syslog-tracing` (classic syslog). Metrics run alongside on the `metrics` facade with a Prometheus
+exporter at `/metrics`. The CLI carries a `--verbose`/`-v` shortcut that bumps the level for quick local debugging.
 
 ## 12. Distribution: pip-installable and self-contained
 
@@ -824,9 +838,11 @@ Scope: the workspace and its guardrails, no product logic.
   SHA-pinned actions, an `all-pass` gate.
 - `clap` skeleton (`velox serve`, `velox init`, `--help`) and `config` loading (defaults, env, file) with the precedence
   tests.
+- The `tracing` logging setup: `EnvFilter` level control, `--log-level`/`--verbose`, and the stdout/rolling-file/syslog
+  sinks selectable by config, with tests for filter parsing and sink selection.
 
 Validation gate: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and the coverage gate
-all pass in CI; `velox --help` runs.
+all pass in CI; `velox --help` runs and `velox serve --log-level debug` emits structured logs to the chosen sink.
 
 ### Phase 1: read-through cache
 
