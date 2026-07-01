@@ -1,0 +1,6 @@
+/target
+# trunk output for the web UI
+crates/velox-web/dist/
+# coverage artifacts
+/lcov.info
+*.profraw
