@@ -20,15 +20,16 @@ Implemented so far:
   (detail), negotiated between [PEP 691][pep691] JSON and [PEP 503][pep503] HTML, versioned per [PEP 629][pep629] and
   carrying the [PEP 700][pep700] `versions`/`size`/`upload-time` fields and [PEP 592][pep592] yank markers.
 - File download with content-addressed caching and sha256 verification (the `#sha256=` fragment from [PEP 503][pep503]).
+- [PEP 658][pep658]/[PEP 714][pep714] `.metadata` siblings: advertised, and served by fetching the upstream sibling,
+  verifying it against the advertised digest, and caching it, so pip and uv get the metadata fast-path for resolution.
 - Proxying HTML-only upstreams (Artifactory, GitLab, static indexes) by parsing their [PEP 503][pep503] HTML and
   re-serving it as [PEP 691][pep691] JSON.
 - Per-upstream authentication (Basic or Bearer), including the pypi.org `__token__` convention from the
-  [`.pypirc` spec][pypirc].
+  [`.pypirc` spec][pypirc], and a configurable mirror index route and cache freshness window.
 - Structured, leveled logging to stdout, a file, journald, or syslog.
 
-Not yet built: private overlay indexes and upload (the [legacy upload API][upload-api]), the web UI,
-[PEP 658][pep658]/[PEP 714][pep714] `.metadata` serving, and distribution as PyPI wheels or standalone installers.
-[proposal.md](proposal.md) holds the full design and the phased plan.
+Not yet built: private overlay indexes and upload (the [legacy upload API][upload-api]), the web UI, and distribution as
+PyPI wheels or standalone installers. [proposal.md](proposal.md) holds the full design and the phased plan.
 
 ## Install
 
@@ -142,8 +143,7 @@ velox targets the Python packaging interoperability standards a modern index and
 - [PEP 629][pep629], simple API versioning.
 - [PEP 700][pep700], the `versions`, `size`, and `upload-time` fields.
 - [PEP 592][pep592], yanked releases.
-- [PEP 658][pep658] and [PEP 714][pep714], the `.metadata` sibling (parsed from upstreams today, served in a later
-  phase).
+- [PEP 658][pep658] and [PEP 714][pep714], the `.metadata` sibling, fetched from the upstream, verified, and served.
 - [PEP 440][pep440], version identifiers and ordering.
 - [PEP 508][pep508], dependency specifiers.
 - [PEP 427][pep427] and [PEP 625][pep625], wheel and sdist filenames.
