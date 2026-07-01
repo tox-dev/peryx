@@ -44,6 +44,12 @@ so in [§14](#14-what-velox-changes-vs-devpi).
   in devpi \[devpi model.py:1229 `sro()`\].
 - **Standard protocols only.** velox speaks the wire contracts pip/uv/twine already use against pypi.org and
   Artifactory. No velox-specific client, no bespoke upload tool.
+- **Full modern JSON APIs, not HTML-only.** velox serves the complete JSON surface uv and pip prefer, not just a raw PEP
+  503 HTML index: PEP 691 JSON (`application/vnd.pypi.simple.v1+json`) with PEP 700 `versions`/`size`/`upload-time`, PEP
+  658/714 `.metadata`, PEP 592 yank, PEP 740 provenance and the integrity JSON, PEP 792 project status, and the legacy
+  `/pypi/<project>/json` API. HTML is one negotiated format among these, not the only one. When an upstream serves only
+  HTML, velox parses it and synthesizes the JSON downstream ([§6](#6-upstream-mirror-adapter-and-graceful-degradation)),
+  so clients always get the fast JSON path even behind a dumb index.
 - **High speed, small footprint.** Async Rust, precomputed responses, content-addressed blob storage with copy-on-write
   dedup, a pure-Rust embedded metadata store, and an in-memory hot tier. Target: single-digit-millisecond cached
   responses and tens of MB RSS at idle.
@@ -495,9 +501,24 @@ always (never md5-only), auth honored across redirects, and both trailing-slash 
 and PEP 691 JSON for a project get serialized once and served as bytes, never rendered per request \[Warehouse renders
 and stores simple detail as a static file for the CDN; same idea\].
 
-Content negotiation follows Warehouse's offer order `text/html`, `vnd.pypi.simple.v1+html`, `vnd.pypi.simple.v1+json`;
-no `Accept` gives `text/html`; unmatchable gives `text/html` (the simple API does not 406; the integrity API does)
-[warehouse api/simple.py:23-48].
+### Two audiences on one URL
+
+The same index and project URLs serve a person and a tool differently. velox negotiates on both `Accept` and
+`User-Agent`, and sets `Vary: Accept, User-Agent` so caches keep the variants apart (devpi does the same with its
+UA-gated installer routes \[devpi views.py `installer_simple`\]; Warehouse varies on Accept).
+
+- **A tool** (uv, pip, twine, Poetry, pdm, pex, or any client sending
+  `Accept: application/vnd.pypi.simple.v1+json`/`+html`, or a known installer `User-Agent`, or plain `curl`) gets the
+  machine index: PEP 691 JSON when acceptable, otherwise the minimal PEP 503 `v1+html`. Both are precomputed and served
+  as bytes, and both go out gzip/zstd-compressed via the `tower-http` compression layer, which shrinks the highly
+  repetitive anchor/JSON list to a fraction of its size. Compression applies to index pages only, never to wheels.
+- **A browser** (an `Accept` led by `text/html` with a browser `User-Agent`, and no simple media type) gets the readable
+  view: velox returns the Leptos web UI shell for that index or project ([§10](#10-web-ui)), which renders a styled,
+  human page against the JSON API. The raw anchor list never reaches a person unless they ask for it.
+
+For tool requests the offer order follows Warehouse (`vnd.pypi.simple.v1+json`, `vnd.pypi.simple.v1+html`, `text/html`);
+an unmatchable `Accept` falls back to the machine HTML rather than 406 (the simple API does not 406; the integrity API
+does) [warehouse api/simple.py:23-48].
 
 ### Management API (velox-specific)
 
