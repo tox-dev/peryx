@@ -9,8 +9,8 @@ mod version;
 
 pub use name::{PackageName, normalize_name};
 pub use simple::{
-    API_VERSION, CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Yanked, render_detail_html,
-    render_index_html, to_json,
+    API_VERSION, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, Yanked,
+    parse_detail, render_detail_html, render_index_html, to_json,
 };
 pub use version::{Version, parse_version, sorted_desc};
 

@@ -87,3 +87,61 @@ fn test_index_html_snapshot() {
 fn test_index_json_snapshot() {
     insta::assert_snapshot!("index_json", to_json(&sample_list()));
 }
+
+#[test]
+fn test_parse_detail_roundtrips_serialized_model() {
+    let detail = sample_detail();
+    let parsed = crate::pypi::parse_detail(to_json(&detail).as_bytes()).unwrap();
+    assert_eq!(parsed.name, detail.name);
+    assert_eq!(parsed.versions, detail.versions);
+    assert_eq!(parsed.files, detail.files);
+}
+
+#[test]
+fn test_parse_detail_minimal() {
+    let parsed = crate::pypi::parse_detail(b"{\"name\":\"x\"}").unwrap();
+    assert_eq!(parsed.name, "x");
+    assert!(parsed.versions.is_empty());
+    assert!(parsed.files.is_empty());
+}
+
+#[test]
+fn test_parse_detail_accepts_legacy_metadata_key() {
+    let json = r#"{"name":"x","files":[{"filename":"x-1.whl","url":"u","dist-info-metadata":true}]}"#;
+    let parsed = crate::pypi::parse_detail(json.as_bytes()).unwrap();
+    assert_eq!(parsed.files[0].core_metadata, CoreMetadata::Available);
+}
+
+#[test]
+fn test_yanked_deserialize_variants() {
+    assert_eq!(serde_json::from_str::<Yanked>("false").unwrap(), Yanked::No);
+    assert_eq!(serde_json::from_str::<Yanked>("true").unwrap(), Yanked::Yes);
+    assert_eq!(
+        serde_json::from_str::<Yanked>("\"why\"").unwrap(),
+        Yanked::Reason("why".to_owned())
+    );
+}
+
+#[test]
+fn test_yanked_deserialize_rejects_number() {
+    assert!(serde_json::from_str::<Yanked>("123").is_err());
+}
+
+#[test]
+fn test_core_metadata_deserialize_variants() {
+    assert_eq!(
+        serde_json::from_str::<CoreMetadata>("false").unwrap(),
+        CoreMetadata::Absent
+    );
+    assert_eq!(
+        serde_json::from_str::<CoreMetadata>("true").unwrap(),
+        CoreMetadata::Available
+    );
+    let hashes = serde_json::from_str::<CoreMetadata>(r#"{"sha256":"abc"}"#).unwrap();
+    assert_eq!(hashes, CoreMetadata::Hashes(sha256("abc")));
+}
+
+#[test]
+fn test_core_metadata_deserialize_rejects_number() {
+    assert!(serde_json::from_str::<CoreMetadata>("123").is_err());
+}

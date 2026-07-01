@@ -4,9 +4,11 @@
 //! (PEP 691) and HTML (PEP 503) forms are produced here once from the same model.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fmt::Write as _;
 
-use serde::{Serialize, Serializer};
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The Simple API version velox advertises. `1.1` covers PEP 700 (`versions`, `size`,
 /// `upload-time`).
@@ -46,6 +48,25 @@ impl Serialize for Yanked {
     }
 }
 
+impl<'de> Deserialize<'de> for Yanked {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct YankedVisitor;
+        impl Visitor<'_> for YankedVisitor {
+            type Value = Yanked;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a boolean or a reason string")
+            }
+            fn visit_bool<E>(self, value: bool) -> Result<Yanked, E> {
+                Ok(if value { Yanked::Yes } else { Yanked::No })
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Yanked, E> {
+                Ok(Yanked::Reason(value.to_owned()))
+            }
+        }
+        deserializer.deserialize_any(YankedVisitor)
+    }
+}
+
 /// Availability of the PEP 658/714 core-metadata sibling for a file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CoreMetadata {
@@ -65,21 +86,74 @@ impl Serialize for CoreMetadata {
     }
 }
 
+impl<'de> Deserialize<'de> for CoreMetadata {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CoreMetadataVisitor;
+        impl<'de> Visitor<'de> for CoreMetadataVisitor {
+            type Value = CoreMetadata;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a boolean or a hashes object")
+            }
+            fn visit_bool<E>(self, value: bool) -> Result<CoreMetadata, E> {
+                Ok(if value {
+                    CoreMetadata::Available
+                } else {
+                    CoreMetadata::Absent
+                })
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<CoreMetadata, A::Error> {
+                let mut hashes = BTreeMap::new();
+                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                    hashes.insert(key, value);
+                }
+                Ok(CoreMetadata::Hashes(hashes))
+            }
+        }
+        deserializer.deserialize_any(CoreMetadataVisitor)
+    }
+}
+
 /// One downloadable file in a project's detail page.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct File {
     pub filename: String,
     pub url: String,
+    #[serde(default)]
     pub hashes: BTreeMap<String, String>,
-    #[serde(rename = "requires-python", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "requires-python", default, skip_serializing_if = "Option::is_none")]
     pub requires_python: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    #[serde(rename = "upload-time", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "upload-time", default, skip_serializing_if = "Option::is_none")]
     pub upload_time: Option<String>,
+    #[serde(default)]
     pub yanked: Yanked,
-    #[serde(rename = "core-metadata")]
+    #[serde(
+        rename = "core-metadata",
+        alias = "dist-info-metadata",
+        alias = "data-dist-info-metadata",
+        default
+    )]
     pub core_metadata: CoreMetadata,
+}
+
+/// A project detail parsed from an upstream PEP 691 JSON response. The `meta` object is ignored;
+/// only the fields velox re-serves are kept.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ParsedDetail {
+    pub name: String,
+    #[serde(default)]
+    pub versions: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<File>,
+}
+
+/// Parse an upstream PEP 691 JSON project detail.
+///
+/// # Errors
+/// Returns the serde error when `bytes` is not a valid PEP 691 project-detail document.
+pub fn parse_detail(bytes: &[u8]) -> Result<ParsedDetail, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }
 
 /// A project's detail response (`/simple/<project>/`).
