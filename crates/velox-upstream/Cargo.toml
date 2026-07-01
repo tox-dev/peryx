@@ -1,0 +1,22 @@
+[package]
+name = "velox-upstream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Upstream index client for velox: fetch and revalidate simple pages and files."
+
+[dependencies]
+reqwest.workspace = true
+url.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true
