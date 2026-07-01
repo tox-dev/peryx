@@ -21,9 +21,11 @@ Implemented so far:
   carrying the [PEP 700][pep700] `versions`/`size`/`upload-time` fields and [PEP 592][pep592] yank markers.
 - File download with content-addressed caching and sha256 verification (the `#sha256=` fragment from [PEP 503][pep503]).
 - [PEP 658][pep658]/[PEP 714][pep714] `.metadata` siblings: advertised, and served by fetching the upstream sibling,
-  verifying it against the advertised digest, and caching it, so pip and uv get the metadata fast-path for resolution.
-- Proxying HTML-only upstreams (Artifactory, GitLab, static indexes) by parsing their [PEP 503][pep503] HTML and
-  re-serving it as [PEP 691][pep691] JSON.
+  verifying it against the advertised digest, and caching it. The end-to-end tests confirm both pip and uv take this
+  metadata-only fast path for resolution — asserted from velox's own request metrics, not assumed.
+- Content negotiation with the upstream: velox asks for [PEP 691][pep691] JSON and uses it when the mirror offers it;
+  only when a mirror serves [PEP 503][pep503] HTML alone (Artifactory, GitLab, static indexes) does velox parse the HTML
+  and re-serve it as JSON downstream.
 - Per-upstream authentication (Basic or Bearer), including the pypi.org `__token__` convention from the
   [`.pypirc` spec][pypirc], and a configurable mirror index route and cache freshness window.
 - Structured, leveled logging to stdout, a file, journald, or syslog.
@@ -123,13 +125,14 @@ selected with `--log-sink`:
 
 ## Endpoints
 
-| Path                                     | Purpose                                 |
-| ---------------------------------------- | --------------------------------------- |
-| `GET /{index}/simple/`                   | Project list (JSON or HTML by `Accept`) |
-| `GET /{index}/simple/{project}/`         | Project detail                          |
-| `GET /{index}/files/{sha256}/{filename}` | Cached artifact                         |
-| `GET /+status`                           | JSON health and identity                |
-| `GET /metrics`                           | Prometheus metrics                      |
+| Path                                              | Purpose                                 |
+| ------------------------------------------------- | --------------------------------------- |
+| `GET /{index}/simple/`                            | Project list (JSON or HTML by `Accept`) |
+| `GET /{index}/simple/{project}/`                  | Project detail                          |
+| `GET /{index}/files/{sha256}/{filename}`          | Cached artifact                         |
+| `GET /{index}/files/{sha256}/{filename}.metadata` | PEP 658 core metadata                   |
+| `GET /+status`                                    | JSON health and identity                |
+| `GET /metrics`                                    | Prometheus metrics                      |
 
 The built-in mirror index is `root/pypi`.
 
@@ -160,6 +163,25 @@ cargo llvm-cov --workspace --ignore-filename-regex 'main\.rs' --fail-under-lines
 ```
 
 velox holds 100% line and function coverage. The design, conventions, and roadmap live in [proposal.md](proposal.md).
+
+### End-to-end client tests
+
+Beyond the unit suite, an end-to-end suite drives the real pip and uv clients against a spawned velox, guarding
+downstream compatibility against regressions. It has two tiers, both gated behind Cargo features so they stay out of the
+default run:
+
+```shell
+# hermetic: velox proxies a local fixture index (tiny real wheels), no network — fast and deterministic
+cargo test -p velox --features e2e
+
+# live: the same flows against the real pypi.org, to catch upstream drift
+cargo test -p velox --features e2e-live -- e2e_live
+```
+
+Each test owns an isolated velox (and, for the hermetic tier, its own fixture upstream) on an ephemeral port, so the
+suite runs in parallel. Installs are verified by importing the distribution in the target environment, and the PEP 658
+fast path is proven from velox's `velox_metadata_requests_total` metric — observed at the server, not inferred from a
+client exit code. twine upload coverage arrives with the upload API in a later phase.
 
 ## License
 

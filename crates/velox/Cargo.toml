@@ -8,6 +8,14 @@ repository.workspace = true
 description = "PyPI-compatible read-through cache and private-index overlay."
 default-run = "velox"
 
+[features]
+# End-to-end tests that drive real pip/uv/twine against a spawned velox binary. Off by default
+# (they need the clients and are not part of the coverage gate); CI runs them explicitly. `e2e` is
+# the fast, hermetic matrix (velox proxies a local fixture index — no external network, no flake);
+# `e2e-live` adds smoke tests against the real pypi.org.
+e2e = []
+e2e-live = ["e2e"]
+
 [dependencies]
 velox-core.workspace = true
 velox-storage.workspace = true
@@ -34,6 +42,8 @@ tracing-journald = "0.3"
 tempfile = "3"
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
+serde_json.workspace = true
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
