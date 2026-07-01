@@ -38,6 +38,10 @@ use zip::write::SimpleFileOptions;
 
 const SIMPLE_JSON_CT: &str = "application/vnd.pypi.simple.v1+json";
 
+/// The upload token every spawned velox is configured with, so twine and `uv publish` can push to
+/// the private `root/local` index.
+const UPLOAD_TOKEN: &str = "e2e-upload-secret";
+
 /// A minimal but genuinely pip/uv-installable distribution built in memory. `metadata` is both the
 /// wheel's `dist-info/METADATA` and the PEP 658 `.metadata` sibling the fixture advertises.
 struct Dist {
@@ -223,14 +227,19 @@ struct Velox {
 
 impl Velox {
     /// Spawn velox proxying the given upstream (a fixture, or pypi.org) and wait until it answers.
+    /// Configuration is a TOML file (the only config surface besides the operational flags).
     fn start_against(upstream_url: &str) -> Self {
         let port = free_port();
         let data = TempDir::new().expect("temp data dir");
+        let config = data.path().join("velox.toml");
+        std::fs::write(&config, format!("upstream_url = \"{upstream_url}\"\nupload_token = \"{UPLOAD_TOKEN}\"\n"))
+            .expect("write config");
         let child = Command::new(env!("CARGO_BIN_EXE_velox"))
             .args(["--port", &port.to_string()])
             .arg("--data-dir")
             .arg(data.path())
-            .env("VELOX_UPSTREAM_URL", upstream_url)
+            .arg("--config")
+            .arg(&config)
             .arg("serve")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -260,6 +269,16 @@ impl Velox {
     /// The client-facing simple index URL for the built-in `root/pypi` mirror.
     fn index_url(&self) -> String {
         format!("http://127.0.0.1:{}/root/pypi/simple/", self.port)
+    }
+
+    /// The upload endpoint (repository URL) of the private `root/local` index.
+    fn upload_url(&self) -> String {
+        format!("http://127.0.0.1:{}/root/local/", self.port)
+    }
+
+    /// The simple index URL of the private `root/local` index, to install what was uploaded.
+    fn local_index_url(&self) -> String {
+        format!("http://127.0.0.1:{}/root/local/simple/", self.port)
     }
 
     /// Read velox's `velox_metadata_requests_total` counter — the PEP 658 siblings it has served.
@@ -506,10 +525,45 @@ fn e2e_file_download_is_cached_content_addressed() {
     assert_eq!(body, again, "cached artifact differs from first fetch");
 }
 
+/// Write a built distribution's wheel to a temp file, returning the dir (kept alive) and the path.
+fn wheel_on_disk(name: &str) -> (TempDir, PathBuf) {
+    let dist = build_dist(name, "1.0", &[]);
+    let dir = TempDir::new().expect("wheel dir");
+    let path = dir.path().join(dist.wheel_filename());
+    std::fs::write(&path, &dist.wheel).expect("write wheel");
+    (dir, path)
+}
+
 #[test]
-#[ignore = "upload (forklift API) and twine round-trip land in Phase 3"]
-fn e2e_twine_upload_round_trip() {
-    unimplemented!("Phase 3: twine upload against velox's upload endpoint");
+fn e2e_twine_upload_then_install() {
+    let velox = Velox::start_against("http://127.0.0.1:9/simple/");
+    let (_dir, wheel) = wheel_on_disk("veloxtwine");
+    let mut cmd = Command::new("twine");
+    cmd.args(["upload", "--non-interactive", "--disable-progress-bar", "--repository-url"])
+        .arg(velox.upload_url())
+        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
+        .arg(&wheel);
+    run(&mut cmd, "twine upload");
+
+    let venv = uv_venv();
+    uv_install(&venv, &velox.local_index_url(), "veloxtwine");
+    assert_importable(&venv, "veloxtwine");
+}
+
+#[test]
+fn e2e_uv_publish_then_install() {
+    let velox = Velox::start_against("http://127.0.0.1:9/simple/");
+    let (_dir, wheel) = wheel_on_disk("veloxpublish");
+    let mut cmd = Command::new("uv");
+    cmd.args(["publish", "--publish-url"])
+        .arg(velox.upload_url())
+        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
+        .arg(&wheel);
+    run(&mut cmd, "uv publish");
+
+    let venv = uv_venv();
+    uv_install(&venv, &velox.local_index_url(), "veloxpublish");
+    assert_importable(&venv, "veloxpublish");
 }
 
 /// The same client flows, but against the real pypi.org, to catch upstream drift.

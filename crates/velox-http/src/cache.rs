@@ -1,6 +1,8 @@
 //! The read-through cache: serve a project's simple page and file bytes, fetching and caching from
 //! upstream on a miss.
 
+use std::collections::BTreeSet;
+
 use bytes::Bytes;
 use url::Url;
 use velox_core::pypi::{
@@ -12,6 +14,7 @@ use velox_storage::meta::CachedIndex;
 use velox_upstream::SimpleResponse;
 
 use crate::state::AppState;
+use crate::upload::{PreparedUpload, Uploaded};
 
 /// An error while producing a cached response.
 #[derive(Debug, thiserror::Error)]
@@ -106,10 +109,10 @@ fn store_fresh(
 ///
 /// # Errors
 /// Returns [`CacheError`] if the store read fails.
-pub fn project_list(state: &AppState) -> Result<ProjectList, CacheError> {
+pub fn project_list(state: &AppState, index: &str) -> Result<ProjectList, CacheError> {
     let projects = state
         .meta
-        .list_projects(&state.index)?
+        .list_projects(index)?
         .into_iter()
         .map(|name| ProjectListEntry { name })
         .collect();
@@ -117,6 +120,49 @@ pub fn project_list(state: &AppState) -> Result<ProjectList, CacheError> {
         meta: Meta::default(),
         projects,
     })
+}
+
+/// Build the detail page for a project on the private upload index from its stored files. Returns
+/// `None` when nothing has been uploaded under that name.
+///
+/// # Errors
+/// Returns [`CacheError`] if the store read fails or a stored record cannot be decoded.
+pub fn uploaded_detail(state: &AppState, normalized: &str) -> Result<Option<ProjectDetail>, CacheError> {
+    let records = state.meta.list_uploads(&state.upload_index, normalized)?;
+    if records.is_empty() {
+        return Ok(None);
+    }
+    let mut files = Vec::with_capacity(records.len());
+    let mut versions = BTreeSet::new();
+    for bytes in records {
+        let uploaded: Uploaded = serde_json::from_slice(&bytes)?;
+        versions.insert(uploaded.version);
+        files.push(uploaded.file);
+    }
+    Ok(Some(ProjectDetail {
+        meta: Meta::default(),
+        name: normalized.to_owned(),
+        versions: versions.into_iter().collect(),
+        files,
+    }))
+}
+
+/// Persist a prepared upload: write the content-addressed blob, record the file and its project on
+/// the upload index, and bump the serial.
+///
+/// # Errors
+/// Returns [`CacheError`] if a blob write, store write, or encode fails.
+pub fn store_upload(state: &AppState, prepared: &PreparedUpload) -> Result<(), CacheError> {
+    state.blobs.write_verified(&prepared.content, &prepared.digest)?;
+    let record = to_json(&prepared.record).into_bytes();
+    state
+        .meta
+        .put_upload(&state.upload_index, &prepared.normalized, &prepared.filename, &record)?;
+    state
+        .meta
+        .put_project(&state.upload_index, &prepared.normalized, &prepared.display_name)?;
+    state.meta.next_serial()?;
+    Ok(())
 }
 
 /// Parse an upstream simple page as PEP 691 JSON, or fall back to PEP 503 HTML for indexes that do

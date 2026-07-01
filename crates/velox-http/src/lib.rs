@@ -5,9 +5,10 @@ pub mod cache;
 pub mod handlers;
 pub mod router;
 pub mod state;
+pub mod upload;
 
 pub use router::router;
-pub use state::AppState;
+pub use state::{AppState, StateConfig};
 
 #[cfg(test)]
 mod tests;

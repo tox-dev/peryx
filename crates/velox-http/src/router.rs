@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
 
 use crate::handlers;
@@ -13,6 +13,7 @@ use crate::state::AppState;
 /// status) at debug level, which is how the `.metadata` fast path can be observed in the logs.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/{user}/{index}/", post(handlers::upload))
         .route("/{user}/{index}/simple/", get(handlers::simple_index))
         .route("/{user}/{index}/simple/{project}/", get(handlers::simple_detail))
         .route(

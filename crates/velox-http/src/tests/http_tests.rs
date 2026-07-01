@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
 use velox_storage::blob::{BlobStore, Digest};
@@ -12,7 +14,7 @@ use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::router;
-use crate::state::AppState;
+use crate::state::{AppState, StateConfig};
 
 struct Harness {
     _dir: tempfile::TempDir,
@@ -30,11 +32,15 @@ async fn harness(ttl: i64) -> Harness {
     let clock = Arc::new(AtomicI64::new(1000));
     let ticks = clock.clone();
     let state = Arc::new(AppState::with_clock(
-        meta,
-        blobs,
-        upstream,
-        "root/pypi".to_owned(),
-        ttl,
+        StateConfig {
+            meta,
+            blobs,
+            upstream,
+            index: "root/pypi".to_owned(),
+            upload_index: "root/local".to_owned(),
+            upload_token: Some("s3cret".to_owned()),
+            ttl_secs: ttl,
+        },
         Arc::new(move || ticks.load(Ordering::Relaxed)),
     ));
     Harness {
@@ -251,7 +257,15 @@ async fn test_simple_detail_upstream_unreachable_is_bad_gateway() {
     let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
-    let state = Arc::new(AppState::new(meta, blobs, upstream, "root/pypi".to_owned(), 60));
+    let state = Arc::new(AppState::new(StateConfig {
+        meta,
+        blobs,
+        upstream,
+        index: "root/pypi".to_owned(),
+        upload_index: "root/local".to_owned(),
+        upload_token: None,
+        ttl_secs: 60,
+    }));
     let (status, ..) = get(&state, "/root/pypi/simple/flask/", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
@@ -279,11 +293,15 @@ async fn test_simple_detail_stale_on_upstream_error() {
     )
     .unwrap();
     let state = Arc::new(AppState::with_clock(
-        meta,
-        blobs,
-        upstream,
-        "root/pypi".to_owned(),
-        60,
+        StateConfig {
+            meta,
+            blobs,
+            upstream,
+            index: "root/pypi".to_owned(),
+            upload_index: "root/local".to_owned(),
+            upload_token: None,
+            ttl_secs: 60,
+        },
         Arc::new(|| 100_000),
     ));
 
@@ -291,6 +309,253 @@ async fn test_simple_detail_stale_on_upstream_error() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(served.contains("flask"));
+}
+
+fn upload_fields() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (":action", "file_upload"),
+        ("name", "veloxpkg"),
+        ("version", "1.0"),
+        ("requires_python", ">=3.8"),
+    ]
+}
+
+fn multipart_body(fields: &[(&str, &str)], content: Option<(&str, &[u8])>) -> (String, Vec<u8>) {
+    let boundary = "veloxtestboundary";
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
+        );
+    }
+    if let Some((filename, bytes)) = content {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; filename=\"{filename}\"\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn upload_auth() -> String {
+    format!("Basic {}", STANDARD.encode("__token__:s3cret"))
+}
+
+async fn post_upload(
+    state: &Arc<AppState>,
+    uri: &str,
+    auth: Option<&str>,
+    content_type: &str,
+    body: Vec<u8>,
+) -> StatusCode {
+    let mut builder = Request::builder()
+        .uri(uri)
+        .method("POST")
+        .header(header::CONTENT_TYPE, content_type);
+    if let Some(auth) = auth {
+        builder = builder.header(header::AUTHORIZATION, auth);
+    }
+    router(state.clone())
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn test_upload_then_serve_and_download() {
+    let h = harness(60).await;
+    let wheel = b"PKfakewheelbytes";
+    let (ct, body) = multipart_body(&upload_fields(), Some(("veloxpkg-1.0-py3-none-any.whl", wheel)));
+    assert_eq!(
+        post_upload(&h.state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::OK
+    );
+
+    let (ds, _, detail) = get(&h.state, "/root/local/simple/veloxpkg/", Some("application/json")).await;
+    assert_eq!(ds, StatusCode::OK);
+    assert!(detail.contains("veloxpkg-1.0-py3-none-any.whl"));
+    assert!(detail.contains("\"1.0\""));
+    assert!(detail.contains(">=3.8"));
+
+    let digest = Digest::of(wheel);
+    let uri = format!("/root/local/files/{}/veloxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let (fs, _, fbody) = get(&h.state, &uri, None).await;
+    assert_eq!(fs, StatusCode::OK);
+    assert_eq!(fbody.as_bytes(), wheel);
+
+    let (ls, _, list) = get(&h.state, "/root/local/simple/", Some("application/json")).await;
+    assert_eq!(ls, StatusCode::OK);
+    assert!(list.contains("veloxpkg"));
+}
+
+#[tokio::test]
+async fn test_upload_to_mirror_index_is_not_found() {
+    let h = harness(60).await;
+    let (ct, body) = multipart_body(&upload_fields(), Some(("x-1.0.whl", b"x")));
+    assert_eq!(
+        post_upload(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn test_upload_without_auth_is_unauthorized() {
+    let h = harness(60).await;
+    let (ct, body) = multipart_body(&upload_fields(), Some(("x-1.0.whl", b"x")));
+    assert_eq!(
+        post_upload(&h.state, "/root/local/", None, &ct, body).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn test_upload_disabled_without_token_is_forbidden() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    let state = Arc::new(AppState::new(StateConfig {
+        meta,
+        blobs,
+        upstream,
+        index: "root/pypi".to_owned(),
+        upload_index: "root/local".to_owned(),
+        upload_token: None,
+        ttl_secs: 60,
+    }));
+    let (ct, body) = multipart_body(&upload_fields(), Some(("x-1.0.whl", b"x")));
+    assert_eq!(
+        post_upload(&state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn test_upload_wrong_action_is_bad_request() {
+    let h = harness(60).await;
+    let fields = vec![(":action", "submit"), ("name", "x"), ("version", "1.0")];
+    let (ct, body) = multipart_body(&fields, Some(("x-1.0.whl", b"x")));
+    assert_eq!(
+        post_upload(&h.state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn test_upload_missing_field_is_bad_request() {
+    let h = harness(60).await;
+    let fields = vec![(":action", "file_upload"), ("version", "1.0")];
+    let (ct, body) = multipart_body(&fields, Some(("x-1.0.whl", b"x")));
+    assert_eq!(
+        post_upload(&h.state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn test_upload_non_utf8_field_is_bad_request() {
+    let h = harness(60).await;
+    let mut body = Vec::new();
+    body.extend_from_slice(b"--b\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n");
+    body.extend_from_slice(&[0xff, 0xfe]);
+    body.extend_from_slice(b"\r\n--b--\r\n");
+    let status = post_upload(
+        &h.state,
+        "/root/local/",
+        Some(&upload_auth()),
+        "multipart/form-data; boundary=b",
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_uploaded_detail_absent_is_not_found() {
+    let h = harness(60).await;
+    let (status, ..) = get(&h.state, "/root/local/simple/ghost/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_simple_detail_unknown_index_is_not_found() {
+    let h = harness(60).await;
+    let (status, ..) = get(&h.state, "/foo/bar/simple/x/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_file_download_unknown_index_is_not_found() {
+    let h = harness(60).await;
+    let uri = format!("/foo/bar/files/{}/x.whl", "a".repeat(64));
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_upload_with_declared_digest_and_extra_fields() {
+    let h = harness(60).await;
+    let wheel = b"PKwheelpayload";
+    let digest = Digest::of(wheel);
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "veloxpkg"),
+        ("version", "1.0"),
+        ("sha256_digest", digest.as_str()),
+        ("summary", "an ignored metadata field"),
+    ];
+    let (ct, body) = multipart_body(&fields, Some(("veloxpkg-1.0-py3-none-any.whl", wheel)));
+    assert_eq!(
+        post_upload(&h.state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn test_upload_declared_digest_mismatch_is_bad_request() {
+    let h = harness(60).await;
+    let wrong = "00".repeat(32);
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "veloxpkg"),
+        ("version", "1.0"),
+        ("sha256_digest", wrong.as_str()),
+    ];
+    let (ct, body) = multipart_body(&fields, Some(("veloxpkg-1.0-py3-none-any.whl", b"bytes")));
+    assert_eq!(
+        post_upload(&h.state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn test_upload_storage_failure_is_server_error() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the blob directory should be, so the blob write fails.
+    std::fs::write(dir.path().join("blobs"), b"not a directory").unwrap();
+    let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    let state = Arc::new(AppState::new(StateConfig {
+        meta,
+        blobs,
+        upstream,
+        index: "root/pypi".to_owned(),
+        upload_index: "root/local".to_owned(),
+        upload_token: Some("s3cret".to_owned()),
+        ttl_secs: 60,
+    }));
+    let (ct, body) = multipart_body(&upload_fields(), Some(("veloxpkg-1.0-py3-none-any.whl", b"data")));
+    assert_eq!(
+        post_upload(&state, "/root/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
 }
 
 #[tokio::test]

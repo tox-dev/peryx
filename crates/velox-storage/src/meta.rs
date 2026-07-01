@@ -14,6 +14,7 @@ const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("simple_index")
 const FILE: TableDefinition<&str, &str> = TableDefinition::new("file_url");
 const METADATA: TableDefinition<&str, &str> = TableDefinition::new("metadata");
 const PROJECTS: TableDefinition<&str, &str> = TableDefinition::new("projects");
+const UPLOAD: TableDefinition<&str, &[u8]> = TableDefinition::new("uploads");
 const SERIAL_KEY: &str = "serial";
 
 /// A cached upstream simple-index response plus the metadata needed to revalidate it.
@@ -82,6 +83,7 @@ impl MetaStore {
             txn.open_table(FILE)?;
             txn.open_table(METADATA)?;
             txn.open_table(PROJECTS)?;
+            txn.open_table(UPLOAD)?;
         }
         txn.commit()?;
         Ok(Self { db })
@@ -210,6 +212,41 @@ impl MetaStore {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    /// Store an uploaded file's serialized record on a private index, keyed by
+    /// `{index}/{normalized}/{filename}` so each file is an independent entry (no read-modify-write
+    /// race between concurrent uploads).
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    pub fn put_upload(&self, index: &str, normalized: &str, filename: &str, record: &[u8]) -> Result<(), MetaError> {
+        let key = format!("{index}/{normalized}/{filename}");
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(UPLOAD)?;
+            table.insert(key.as_str(), record)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// List the serialized file records uploaded for `normalized` on `index`, sorted by filename.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn list_uploads(&self, index: &str, normalized: &str) -> Result<Vec<Vec<u8>>, MetaError> {
+        let prefix = format!("{index}/{normalized}/");
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(UPLOAD)?;
+        let mut records = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            if key.value().starts_with(&prefix) {
+                records.push(value.value().to_vec());
+            }
+        }
+        Ok(records)
     }
 
     /// List the display names of projects observed on `index`, sorted.

@@ -24,6 +24,8 @@ fn test_apply_upstream_auth_and_index() {
         upstream_password: Some("secret".to_owned()),
         upstream_token: Some("bearer-tok".to_owned()),
         index: Some("team/private".to_owned()),
+        upload_index: Some("team/local".to_owned()),
+        upload_token: Some("upload-tok".to_owned()),
         cache_ttl_secs: Some(60),
         ..PartialConfig::default()
     };
@@ -32,6 +34,8 @@ fn test_apply_upstream_auth_and_index() {
     assert_eq!(merged.upstream_password.as_deref(), Some("secret"));
     assert_eq!(merged.upstream_token.as_deref(), Some("bearer-tok"));
     assert_eq!(merged.index, "team/private");
+    assert_eq!(merged.upload_index, "team/local");
+    assert_eq!(merged.upload_token.as_deref(), Some("upload-tok"));
     assert_eq!(merged.cache_ttl_secs, 60);
 }
 
@@ -78,10 +82,27 @@ fn test_log_config_apply_empty_keeps_defaults() {
 
 #[test]
 fn test_from_toml_ok() {
-    let text = "host = \"1.2.3.4\"\nport = 8080\n[log]\nlevel = \"warn\"\nformat = \"json\"\nsink = \"stdout\"\n";
+    let text = "\
+host = \"1.2.3.4\"\n\
+port = 8080\n\
+upstream_url = \"https://up/simple/\"\n\
+upstream_username = \"__token__\"\n\
+upstream_password = \"secret\"\n\
+index = \"team/pypi\"\n\
+upload_index = \"team/local\"\n\
+upload_token = \"upload-tok\"\n\
+cache_ttl_secs = 300\n\
+[log]\nlevel = \"warn\"\nformat = \"json\"\nsink = \"stdout\"\n";
     let p = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     assert_eq!(p.host.as_deref(), Some("1.2.3.4"));
     assert_eq!(p.port, Some(8080));
+    assert_eq!(p.upstream_url.as_deref(), Some("https://up/simple/"));
+    assert_eq!(p.upstream_username.as_deref(), Some("__token__"));
+    assert_eq!(p.upstream_password.as_deref(), Some("secret"));
+    assert_eq!(p.index.as_deref(), Some("team/pypi"));
+    assert_eq!(p.upload_index.as_deref(), Some("team/local"));
+    assert_eq!(p.upload_token.as_deref(), Some("upload-tok"));
+    assert_eq!(p.cache_ttl_secs, Some(300));
     assert_eq!(p.log.level.as_deref(), Some("warn"));
     assert_eq!(p.log.format, Some(LogFormat::Json));
     assert_eq!(p.log.sink, Some(LogSink::Stdout));
@@ -109,43 +130,11 @@ fn test_from_toml_rejects_invalid_log_sink() {
 }
 
 #[test]
-fn test_from_env_reads_known_keys_and_ignores_others() {
-    let vars = vec![
-        ("VELOX_HOST".to_owned(), "10.0.0.1".to_owned()),
-        ("VELOX_PORT".to_owned(), "7000".to_owned()),
-        ("VELOX_DATA_DIR".to_owned(), "/data".to_owned()),
-        ("VELOX_UPSTREAM_URL".to_owned(), "https://up/simple/".to_owned()),
-        ("VELOX_UPSTREAM_USERNAME".to_owned(), "user".to_owned()),
-        ("VELOX_UPSTREAM_PASSWORD".to_owned(), "pass".to_owned()),
-        ("VELOX_UPSTREAM_TOKEN".to_owned(), "tok".to_owned()),
-        ("VELOX_INDEX".to_owned(), "team/dev".to_owned()),
-        ("VELOX_CACHE_TTL_SECS".to_owned(), "300".to_owned()),
-        ("VELOX_LOG_LEVEL".to_owned(), "trace".to_owned()),
-        ("UNRELATED".to_owned(), "ignored".to_owned()),
-    ];
-    let p = config::from_env(vars).unwrap();
-    assert_eq!(p.host.as_deref(), Some("10.0.0.1"));
-    assert_eq!(p.port, Some(7000));
-    assert_eq!(p.data_dir, Some(PathBuf::from("/data")));
+fn test_from_toml_bearer_token_and_upstream_url() {
+    let text = "upstream_url = \"https://up/simple/\"\nupstream_token = \"bearer-tok\"\n";
+    let p = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    assert_eq!(p.upstream_token.as_deref(), Some("bearer-tok"));
     assert_eq!(p.upstream_url.as_deref(), Some("https://up/simple/"));
-    assert_eq!(p.upstream_username.as_deref(), Some("user"));
-    assert_eq!(p.upstream_password.as_deref(), Some("pass"));
-    assert_eq!(p.upstream_token.as_deref(), Some("tok"));
-    assert_eq!(p.index.as_deref(), Some("team/dev"));
-    assert_eq!(p.cache_ttl_secs, Some(300));
-    assert_eq!(p.log.level.as_deref(), Some("trace"));
-}
-
-#[test]
-fn test_from_env_invalid_port_errors() {
-    let err = config::from_env(vec![("VELOX_PORT".to_owned(), "not-a-number".to_owned())]).unwrap_err();
-    assert!(err.to_string().contains("VELOX_PORT"));
-}
-
-#[test]
-fn test_from_env_invalid_ttl_errors() {
-    let err = config::from_env(vec![("VELOX_CACHE_TTL_SECS".to_owned(), "soon".to_owned())]).unwrap_err();
-    assert!(err.to_string().contains("VELOX_CACHE_TTL_SECS"));
 }
 
 #[test]

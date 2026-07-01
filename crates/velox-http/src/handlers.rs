@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use velox_core::pypi::{ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html, to_json};
@@ -11,6 +11,7 @@ use velox_storage::blob::Digest;
 
 use crate::cache::{self, CacheError};
 use crate::state::AppState;
+use crate::upload::{self, UploadError, UploadForm};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 const MIME_HTML: &str = "text/html; charset=utf-8";
@@ -40,10 +41,10 @@ pub async fn simple_index(
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    if !state.matches_index(&user, &index) {
+    let Some(index_key) = state.resolve_index(&user, &index) else {
         return (StatusCode::NOT_FOUND, "unknown index").into_response();
-    }
-    index_response(cache::project_list(&state), negotiate(&headers))
+    };
+    index_response(cache::project_list(&state, &index_key), negotiate(&headers))
 }
 
 /// Map a project-list result to a negotiated response. Sync so every arm is directly testable.
@@ -65,13 +66,15 @@ pub async fn simple_detail(
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    if !state.matches_index(&user, &index) {
-        return (StatusCode::NOT_FOUND, "unknown index").into_response();
+    let normalized = normalize_name(&project);
+    let format = negotiate(&headers);
+    if state.is_mirror(&user, &index) {
+        detail_response(cache::project_detail(&state, &normalized).await, format)
+    } else if state.is_upload(&user, &index) {
+        detail_response(cache::uploaded_detail(&state, &normalized), format)
+    } else {
+        (StatusCode::NOT_FOUND, "unknown index").into_response()
     }
-    detail_response(
-        cache::project_detail(&state, &normalize_name(&project)).await,
-        negotiate(&headers),
-    )
 }
 
 /// Map a resolved project detail to a negotiated response. Kept sync so every arm is directly
@@ -99,7 +102,7 @@ pub async fn file_download(
     Path((user, index, sha256, filename)): Path<(String, String, String, String)>,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    if !state.matches_index(&user, &index) {
+    if state.resolve_index(&user, &index).is_none() {
         return (StatusCode::NOT_FOUND, "unknown index").into_response();
     }
     let Some(digest) = Digest::from_hex(&sha256) else {
@@ -126,6 +129,87 @@ pub(crate) fn file_response(result: Result<bytes::Bytes, CacheError>) -> Respons
             .into_response(),
         Err(CacheError::FileNotFound) => (StatusCode::NOT_FOUND, "file not found").into_response(),
         Err(_) => (StatusCode::BAD_GATEWAY, "upstream error").into_response(),
+    }
+}
+
+/// `POST /{user}/{index}/` — the legacy multipart upload API, used unchanged by twine and
+/// `uv publish`. Requires the upload index and a valid Basic-auth token.
+pub async fn upload(
+    State(state): State<Arc<AppState>>,
+    Path((user, index)): Path<(String, String)>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Response {
+    state.requests.fetch_add(1, Ordering::Relaxed);
+    if !state.is_upload(&user, &index) {
+        return (StatusCode::NOT_FOUND, "unknown index").into_response();
+    }
+    let Some(token) = state.upload_token.as_deref() else {
+        return (StatusCode::FORBIDDEN, "uploads are disabled").into_response();
+    };
+    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
+    if !upload::authorized(auth, token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"velox\"")],
+            "unauthorized",
+        )
+            .into_response();
+    }
+    let form = match collect_form(multipart).await {
+        Ok(form) => form,
+        Err(response) => return response,
+    };
+    let prepared = match upload::prepare(form, &state.upload_index) {
+        Ok(prepared) => prepared,
+        Err(err) => return upload_error_response(&err),
+    };
+    match cache::store_upload(&state, &prepared) {
+        Ok(()) => (StatusCode::OK, "upload accepted").into_response(),
+        Err(err) => {
+            tracing::error!(error = ?err, "upload store failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+/// Drain a multipart body into an [`UploadForm`], reading the `content` part as bytes and the rest
+/// as UTF-8 text. Unknown fields are ignored, as the upload API carries many metadata fields velox
+/// does not need. Every read or decode error funnels through [`reject`] as a 400.
+async fn collect_form(mut multipart: Multipart) -> Result<UploadForm, Response> {
+    let mut form = UploadForm::default();
+    while let Some(field) = multipart.next_field().await.map_err(reject)? {
+        let name = field.name().unwrap_or_default().to_owned();
+        if name == "content" {
+            form.filename = field.file_name().map(str::to_owned);
+            form.content = Some(field.bytes().await.map_err(reject)?.to_vec());
+        } else {
+            let value = String::from_utf8(field.bytes().await.map_err(reject)?.to_vec()).map_err(reject)?;
+            match name.as_str() {
+                ":action" => form.action = Some(value),
+                "name" => form.name = Some(value),
+                "version" => form.version = Some(value),
+                "requires_python" => form.requires_python = Some(value),
+                "sha256_digest" => form.sha256_digest = Some(value),
+                _ => {}
+            }
+        }
+    }
+    Ok(form)
+}
+
+/// Map any multipart read or decode failure to a 400 response.
+fn reject(err: impl std::fmt::Display) -> Response {
+    (StatusCode::BAD_REQUEST, format!("bad upload: {err}")).into_response()
+}
+
+fn upload_error_response(err: &UploadError) -> Response {
+    match err {
+        UploadError::NotFileUpload => (StatusCode::BAD_REQUEST, "unsupported :action").into_response(),
+        UploadError::Missing(field) => {
+            (StatusCode::BAD_REQUEST, format!("missing required field: {field}")).into_response()
+        }
+        UploadError::DigestMismatch => (StatusCode::BAD_REQUEST, "sha256 digest mismatch").into_response(),
     }
 }
 

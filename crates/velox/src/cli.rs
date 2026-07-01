@@ -77,6 +77,8 @@ impl Cli {
             upstream_password: None,
             upstream_token: None,
             index: None,
+            upload_index: None,
+            upload_token: None,
             cache_ttl_secs: None,
             log: PartialLogConfig {
                 level,

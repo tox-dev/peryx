@@ -21,7 +21,6 @@ fn resolve_config(cli: &Cli) -> anyhow::Result<Config> {
     if let Some(path) = &cli.config {
         cfg = cfg.apply(config::from_file(path.clone())?);
     }
-    cfg = cfg.apply(config::from_env(std::env::vars().collect())?);
     cfg = cfg.apply(cli.overlay());
     Ok(cfg)
 }

@@ -23,6 +23,10 @@ pub struct Config {
     pub upstream_token: Option<String>,
     /// The route prefix of the mirror index, for example `root/pypi`.
     pub index: String,
+    /// The route prefix of the private upload index, for example `root/local`.
+    pub upload_index: String,
+    /// The shared secret an upload must present as its Basic-auth password. `None` disables uploads.
+    pub upload_token: Option<String>,
     /// How long a cached simple page is served before revalidating, in seconds.
     pub cache_ttl_secs: i64,
     pub log: LogConfig,
@@ -39,6 +43,8 @@ impl Default for Config {
             upstream_password: None,
             upstream_token: None,
             index: "root/pypi".to_owned(),
+            upload_index: "root/local".to_owned(),
+            upload_token: None,
             cache_ttl_secs: 1800,
             log: LogConfig::default(),
         }
@@ -72,6 +78,12 @@ impl Config {
         }
         if let Some(index) = partial.index {
             self.index = index;
+        }
+        if let Some(upload_index) = partial.upload_index {
+            self.upload_index = upload_index;
+        }
+        if partial.upload_token.is_some() {
+            self.upload_token = partial.upload_token;
         }
         if let Some(cache_ttl_secs) = partial.cache_ttl_secs {
             self.cache_ttl_secs = cache_ttl_secs;
@@ -154,6 +166,8 @@ pub struct PartialConfig {
     pub upstream_password: Option<String>,
     pub upstream_token: Option<String>,
     pub index: Option<String>,
+    pub upload_index: Option<String>,
+    pub upload_token: Option<String>,
     pub cache_ttl_secs: Option<i64>,
     pub log: PartialLogConfig,
 }
@@ -175,8 +189,6 @@ pub enum ConfigError {
     Read { path: PathBuf, source: std::io::Error },
     #[error("failed to parse config file {path}: {source}")]
     Parse { path: PathBuf, source: toml::de::Error },
-    #[error("environment variable {key} has an invalid value {value:?}: {reason}")]
-    Env { key: String, value: String, reason: String },
 }
 
 /// Parse a TOML document into a [`PartialConfig`].
@@ -186,47 +198,6 @@ pub enum ConfigError {
 /// for the error message.
 pub fn from_toml(path: PathBuf, text: &str) -> Result<PartialConfig, ConfigError> {
     toml::from_str(text).map_err(|source| ConfigError::Parse { path, source })
-}
-
-/// Build a [`PartialConfig`] from environment variables given as `(key, value)` pairs.
-///
-/// Callers inject them in tests; recognized keys are prefixed `VELOX_`. Taking a concrete `Vec`
-/// keeps this a single instantiation, which callers (including `main`) share.
-///
-/// # Errors
-/// Returns [`ConfigError::Env`] when a value fails to parse, for example a non-numeric `VELOX_PORT`.
-pub fn from_env(vars: Vec<(String, String)>) -> Result<PartialConfig, ConfigError> {
-    let mut partial = PartialConfig::default();
-    for (key, value) in vars {
-        match key.as_str() {
-            "VELOX_HOST" => partial.host = Some(value),
-            "VELOX_PORT" => {
-                let port = value.parse().map_err(|err: std::num::ParseIntError| ConfigError::Env {
-                    key,
-                    value,
-                    reason: err.to_string(),
-                })?;
-                partial.port = Some(port);
-            }
-            "VELOX_DATA_DIR" => partial.data_dir = Some(PathBuf::from(value)),
-            "VELOX_UPSTREAM_URL" => partial.upstream_url = Some(value),
-            "VELOX_UPSTREAM_USERNAME" => partial.upstream_username = Some(value),
-            "VELOX_UPSTREAM_PASSWORD" => partial.upstream_password = Some(value),
-            "VELOX_UPSTREAM_TOKEN" => partial.upstream_token = Some(value),
-            "VELOX_INDEX" => partial.index = Some(value),
-            "VELOX_CACHE_TTL_SECS" => {
-                let ttl = value.parse().map_err(|err: std::num::ParseIntError| ConfigError::Env {
-                    key,
-                    value,
-                    reason: err.to_string(),
-                })?;
-                partial.cache_ttl_secs = Some(ttl);
-            }
-            "VELOX_LOG_LEVEL" => partial.log.level = Some(value),
-            _ => {}
-        }
-    }
-    Ok(partial)
 }
 
 /// Read a config file from disk into a [`PartialConfig`].

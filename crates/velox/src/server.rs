@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use axum::Router;
-use velox_http::{AppState, router};
+use velox_http::{AppState, StateConfig, router};
 use velox_storage::blob::BlobStore;
 use velox_storage::meta::MetaStore;
 use velox_upstream::{Auth, UpstreamClient};
@@ -23,13 +23,15 @@ pub fn build_router(config: &Config) -> anyhow::Result<Router> {
     let meta = MetaStore::open(config.data_dir.join("velox.redb"))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let upstream = UpstreamClient::with_auth(&config.upstream_url, upstream_auth(config))?;
-    let state = Arc::new(AppState::new(
+    let state = Arc::new(AppState::new(StateConfig {
         meta,
         blobs,
         upstream,
-        config.index.clone(),
-        config.cache_ttl_secs,
-    ));
+        index: config.index.clone(),
+        upload_index: config.upload_index.clone(),
+        upload_token: config.upload_token.clone(),
+        ttl_secs: config.cache_ttl_secs,
+    }));
     Ok(router(state))
 }
 

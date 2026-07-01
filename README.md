@@ -28,10 +28,13 @@ Implemented so far:
   and re-serve it as JSON downstream.
 - Per-upstream authentication (Basic or Bearer), including the pypi.org `__token__` convention from the
   [`.pypirc` spec][pypirc], and a configurable mirror index route and cache freshness window.
+- A private upload index that accepts the [legacy upload API][upload-api] over token-authenticated Basic auth, stores
+  each distribution content-addressed, and serves it back through the same simple API. The end-to-end tests confirm both
+  twine and `uv publish` can upload and that the result installs and imports.
 - Structured, leveled logging to stdout, a file, journald, or syslog.
 
-Not yet built: private overlay indexes and upload (the [legacy upload API][upload-api]), the web UI, and distribution as
-PyPI wheels or standalone installers. [proposal.md](proposal.md) holds the full design and the phased plan.
+Not yet built: overlaying the private index onto the mirror (so one URL serves both), the web UI, and distribution as
+`PyPI` wheels or standalone installers. [proposal.md](proposal.md) holds the full design and the phased plan.
 
 ## Install
 
@@ -66,28 +69,38 @@ from the cache without touching the upstream.
 
 ## Configuration
 
-Values resolve with the precedence `defaults < TOML file < environment < flags`.
+velox runs with sensible defaults and no config at all — `velox serve` mirrors pypi.org out of the box. Everything else
+lives in one TOML file, passed with `--config`. Only the handful of operational settings you tend to vary per run are
+also exposed as flags, which override the file. Precedence is `defaults < TOML file < flags`.
 
-| Setting                   | Flag              | Environment               | Default                    |
-| ------------------------- | ----------------- | ------------------------- | -------------------------- |
-| Bind host                 | `--host`          | `VELOX_HOST`              | `127.0.0.1`                |
-| Bind port                 | `--port`          | `VELOX_PORT`              | `4433`                     |
-| Data directory            | `--data-dir`      | `VELOX_DATA_DIR`          | `velox-data`               |
-| Upstream index URL        | (env only)        | `VELOX_UPSTREAM_URL`      | `https://pypi.org/simple/` |
-| Upstream username         | (env only)        | `VELOX_UPSTREAM_USERNAME` | (none)                     |
-| Upstream password         | (env only)        | `VELOX_UPSTREAM_PASSWORD` | (none)                     |
-| Upstream bearer token     | (env only)        | `VELOX_UPSTREAM_TOKEN`    | (none)                     |
-| Mirror index route        | (env only)        | `VELOX_INDEX`             | `root/pypi`                |
-| Cache freshness (seconds) | (env only)        | `VELOX_CACHE_TTL_SECS`    | `1800`                     |
-| Config file               | `--config` / `-c` | (n/a)                     | (none)                     |
+| Setting                   | Flag              | TOML key            | Default                    |
+| ------------------------- | ----------------- | ------------------- | -------------------------- |
+| Bind host                 | `--host`          | `host`              | `127.0.0.1`                |
+| Bind port                 | `--port`          | `port`              | `4433`                     |
+| Data directory            | `--data-dir`      | `data_dir`          | `velox-data`               |
+| Config file               | `--config` / `-c` | (n/a)               | (none)                     |
+| Upstream index URL        | (file only)       | `upstream_url`      | `https://pypi.org/simple/` |
+| Upstream username         | (file only)       | `upstream_username` | (none)                     |
+| Upstream password         | (file only)       | `upstream_password` | (none)                     |
+| Upstream bearer token     | (file only)       | `upstream_token`    | (none)                     |
+| Mirror index route        | (file only)       | `index`             | `root/pypi`                |
+| Upload index route        | (file only)       | `upload_index`      | `root/local`               |
+| Upload token              | (file only)       | `upload_token`      | (none, uploads disabled)   |
+| Cache freshness (seconds) | (file only)       | `cache_ttl_secs`    | `1800`                     |
 
-A TOML config file covers the same settings:
+A complete config file, with the log settings under their own table:
 
 ```toml
 host = "0.0.0.0"
 port = 4433
 data_dir = "/var/lib/velox"
-upstream_url = "https://pypi.org/simple/"
+
+# proxy a private mirror instead of pypi.org
+upstream_url = "https://myco.jfrog.io/artifactory/api/pypi/pypi/simple/"
+upstream_token = "<access-token>" # Bearer; takes precedence over username/password
+
+# accept uploads to the root/local index (omit upload_token to disable uploads)
+upload_token = "<shared-upload-secret>"
 
 [log]
 level = "info"
@@ -95,29 +108,15 @@ format = "pretty"
 sink = "stdout"
 ```
 
-## Proxying a private mirror
-
-Point the upstream at any PEP 503 index and supply credentials. A bearer token takes precedence over a username/password
-pair:
-
-```shell
-# Artifactory or GitLab access token (Bearer)
-export VELOX_UPSTREAM_URL="https://myco.jfrog.io/artifactory/api/pypi/pypi/simple/"
-export VELOX_UPSTREAM_TOKEN="<access-token>"
-
-# or Basic auth (for example a pypi.org token)
-export VELOX_UPSTREAM_USERNAME="__token__"
-export VELOX_UPSTREAM_PASSWORD="<token>"
-```
-
-velox handles indexes that serve only HTML: it parses their PEP 503 page and re-serves it to clients as JSON, so uv and
-pip get the modern format even from an old upstream.
+Secrets live in this file, so keep it readable only by the velox user (`chmod 600`). velox handles upstreams that serve
+only HTML: it parses their PEP 503 page and re-serves it to clients as JSON, so uv and pip get the modern format even
+from an old mirror.
 
 ## Logging
 
-The log level comes from `--log-level {error,warn,info,debug,trace}` or `RUST_LOG`/`VELOX_LOG`, and can target a single
-module (for example `velox_upstream=debug`). `-v` raises it to debug and `-vv` to trace. Output goes to one sink,
-selected with `--log-sink`:
+The log level comes from `--log-level {error,warn,info,debug,trace}` or the `level` key under `[log]` in the config
+file, and can target a single module (for example `velox_upstream=debug`). `-v` raises it to debug and `-vv` to trace.
+Output goes to one sink, selected with `--log-sink`:
 
 - `stdout` (default), pretty for a terminal or JSON with `--log-format json`
 - `file`, a daily-rotating file at `--log-file <path>`

@@ -80,6 +80,8 @@ jobs:
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v5
+      - run: uv tool install twine
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: cargo nextest run -p velox --features e2e
 
   # The same client flows against the real pypi.org, to catch upstream drift. Scheduled (and
@@ -99,6 +101,8 @@ jobs:
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v5
+      - run: uv tool install twine
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: cargo nextest run -p velox --features e2e-live -E 'test(e2e_live)'
 
   all-pass:

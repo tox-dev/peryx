@@ -92,6 +92,45 @@ fn test_put_and_list_projects() {
 }
 
 #[test]
+fn test_put_and_list_uploads() {
+    let (_dir, store) = store();
+    assert!(store.list_uploads("root/local", "flask").unwrap().is_empty());
+    store
+        .put_upload("root/local", "flask", "flask-2.0.whl", b"two")
+        .unwrap();
+    store
+        .put_upload("root/local", "flask", "flask-1.0.whl", b"one")
+        .unwrap();
+    store
+        .put_upload("root/local", "django", "django-4.0.whl", b"other")
+        .unwrap();
+    // Sorted by key (filename), and scoped to the one project.
+    assert_eq!(
+        store.list_uploads("root/local", "flask").unwrap(),
+        vec![b"one".to_vec(), b"two".to_vec()]
+    );
+    assert_eq!(
+        store.list_uploads("root/local", "django").unwrap(),
+        vec![b"other".to_vec()]
+    );
+}
+
+#[test]
+fn test_put_upload_overwrites_same_filename() {
+    let (_dir, store) = store();
+    store
+        .put_upload("root/local", "flask", "flask-1.0.whl", b"first")
+        .unwrap();
+    store
+        .put_upload("root/local", "flask", "flask-1.0.whl", b"second")
+        .unwrap();
+    assert_eq!(
+        store.list_uploads("root/local", "flask").unwrap(),
+        vec![b"second".to_vec()]
+    );
+}
+
+#[test]
 fn test_cached_index_encode_decode_roundtrip() {
     assert_eq!(CachedIndex::decode(&record().encode()).unwrap(), record());
 }
