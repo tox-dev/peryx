@@ -424,6 +424,10 @@ async fn test_metadata_sibling_served_verified_and_cached() {
     let (status2, _, body2) = get(&h.state, &uri, None).await;
     assert_eq!(status2, StatusCode::OK);
     assert_eq!(body2, body);
+
+    // Both .metadata requests are counted, giving /metrics server-side proof of the PEP 658 path.
+    let (_, _, metrics) = get(&h.state, "/metrics", None).await;
+    assert!(metrics.contains("velox_metadata_requests_total 2"));
 }
 
 #[tokio::test]
@@ -501,4 +505,5 @@ async fn test_metrics() {
     let (status, _, body) = get(&h.state, "/metrics", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("velox_requests_total"));
+    assert!(body.contains("velox_metadata_requests_total 0"));
 }

@@ -12,6 +12,7 @@ velox-core.workspace = true
 velox-storage.workspace = true
 velox-upstream.workspace = true
 axum.workspace = true
+tower-http.workspace = true
 http.workspace = true
 bytes.workspace = true
 url.workspace = true

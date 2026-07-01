@@ -22,6 +22,10 @@ pub struct AppState {
     pub ttl_secs: i64,
     pub clock: Clock,
     pub requests: AtomicU64,
+    /// PEP 658/714 `.metadata` sibling requests served, exposed via `/metrics`. Downstream clients
+    /// only hit this when they take the metadata-only resolution fast path, so it is the server-side
+    /// proof that pip and uv resolve through velox without downloading whole wheels.
+    pub metadata_requests: AtomicU64,
 }
 
 impl AppState {
@@ -49,6 +53,7 @@ impl AppState {
             ttl_secs,
             clock,
             requests: AtomicU64::new(0),
+            metadata_requests: AtomicU64::new(0),
         }
     }
 

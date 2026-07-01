@@ -106,6 +106,7 @@ pub async fn file_download(
         return (StatusCode::BAD_REQUEST, "invalid digest").into_response();
     };
     if filename.ends_with(".metadata") {
+        state.metadata_requests.fetch_add(1, Ordering::Relaxed);
         file_response(cache::metadata_bytes(&state, &digest).await)
     } else {
         file_response(cache::file_bytes(&state, &digest).await)
@@ -142,8 +143,14 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /metrics` — Prometheus text exposition.
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
     let requests = state.requests.load(Ordering::Relaxed);
+    let metadata = state.metadata_requests.load(Ordering::Relaxed);
     let body = format!(
-        "# HELP velox_requests_total Total HTTP requests served.\n# TYPE velox_requests_total counter\nvelox_requests_total {requests}\n"
+        "# HELP velox_requests_total Total HTTP requests served.\n\
+         # TYPE velox_requests_total counter\n\
+         velox_requests_total {requests}\n\
+         # HELP velox_metadata_requests_total PEP 658 .metadata siblings served.\n\
+         # TYPE velox_metadata_requests_total counter\n\
+         velox_metadata_requests_total {metadata}\n"
     );
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
