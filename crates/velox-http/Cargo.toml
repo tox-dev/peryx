@@ -1,0 +1,30 @@
+[package]
+name = "velox-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HTTP layer for velox: read-through simple-index serving and blob download."
+
+[dependencies]
+velox-core.workspace = true
+velox-storage.workspace = true
+velox-upstream.workspace = true
+axum.workspace = true
+http.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+wiremock.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

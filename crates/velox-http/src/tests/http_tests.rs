@@ -1,0 +1,388 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode, header};
+use http_body_util::BodyExt as _;
+use tower::ServiceExt as _;
+use velox_storage::blob::{BlobStore, Digest};
+use velox_storage::meta::{CachedIndex, MetaStore};
+use velox_upstream::UpstreamClient;
+use wiremock::matchers::{header as match_header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use crate::router;
+use crate::state::AppState;
+
+struct Harness {
+    _dir: tempfile::TempDir,
+    server: MockServer,
+    state: Arc<AppState>,
+    clock: Arc<AtomicI64>,
+}
+
+async fn harness(ttl: i64) -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let clock = Arc::new(AtomicI64::new(1000));
+    let ticks = clock.clone();
+    let state = Arc::new(AppState::with_clock(
+        meta,
+        blobs,
+        upstream,
+        "root/pypi".to_owned(),
+        ttl,
+        Arc::new(move || ticks.load(Ordering::Relaxed)),
+    ));
+    Harness {
+        _dir: dir,
+        server,
+        state,
+        clock,
+    }
+}
+
+async fn get(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (StatusCode, HeaderMap, String) {
+    let mut builder = Request::builder().uri(uri).method("GET");
+    if let Some(accept) = accept {
+        builder = builder.header(header::ACCEPT, accept);
+    }
+    let response = router(state.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn detail_json(digest: &str, file_url: &str) -> String {
+    format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}"
+    )
+}
+
+async fn mount_detail(server: &MockServer, digest: &str, file_url: &str, etag: Option<&str>) {
+    let mut response = ResponseTemplate::new(200).set_body_raw(
+        detail_json(digest, file_url).into_bytes(),
+        "application/vnd.pypi.simple.v1+json",
+    );
+    if let Some(etag) = etag {
+        response = response.insert_header("etag", etag);
+    }
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(response)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_simple_detail_json_rewrites_file_url_and_caches() {
+    let h = harness(60).await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, None).await;
+
+    let (status, headers, body) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get(header::CONTENT_TYPE).unwrap(),
+        "application/vnd.pypi.simple.v1+json"
+    );
+    assert_eq!(headers.get(header::VARY).unwrap(), "Accept");
+    assert!(body.contains(&format!(
+        "/root/pypi/files/{}/flask-1.0-py3-none-any.whl",
+        digest.as_str()
+    )));
+
+    // Second request within the TTL is a cache hit (upstream mock would fail verification if hit twice).
+    let (status2, ..) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert_eq!(status2, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_simple_detail_html() {
+    let h = harness(60).await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask.whl", None).await;
+
+    let (status, headers, body) = get(&h.state, "/root/pypi/simple/flask/", Some("text/html")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
+    assert!(body.contains("<a href="));
+}
+
+#[tokio::test]
+async fn test_simple_detail_unknown_index() {
+    let h = harness(60).await;
+    let (status, ..) = get(&h.state, "/other/index/simple/flask/", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_simple_detail_upstream_404() {
+    let h = harness(60).await;
+    Mock::given(method("GET"))
+        .and(path("/simple/missing/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&h.server)
+        .await;
+    let (status, ..) = get(&h.state, "/root/pypi/simple/missing/", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_simple_detail_revalidate_304_serves_cached() {
+    let h = harness(60).await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask.whl", Some("\"v1\"")).await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .and(match_header("if-none-match", "\"v1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .with_priority(1)
+        .mount(&h.server)
+        .await;
+
+    let (first, ..) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert_eq!(first, StatusCode::OK);
+
+    h.clock.store(5000, Ordering::Relaxed); // now stale, forces revalidation
+    let (second, _, body) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert_eq!(second, StatusCode::OK);
+    assert!(body.contains("flask"));
+}
+
+#[tokio::test]
+async fn test_simple_detail_stale_on_5xx() {
+    let h = harness(60).await;
+    let digest = Digest::of(b"wheel");
+    // Pre-seed a cached copy directly.
+    let body = velox_core::pypi::to_json(&velox_core::pypi::ProjectDetail {
+        meta: velox_core::pypi::Meta::default(),
+        name: "flask".to_owned(),
+        versions: vec!["1.0".to_owned()],
+        files: vec![],
+    });
+    let _ = digest;
+    h.state
+        .meta
+        .put_index(
+            "root/pypi/flask",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 0,
+                body: body.into_bytes(),
+            },
+        )
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&h.server)
+        .await;
+
+    // TTL 60 but fetched_at 0 and clock 1000 => stale => revalidate => 503 => serve stale.
+    let (status, _, served) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(served.contains("flask"));
+}
+
+#[tokio::test]
+async fn test_simple_detail_invalid_upstream_json_is_bad_gateway() {
+    let h = harness(60).await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"not json".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&h.server)
+        .await;
+    let (status, ..) = get(&h.state, "/root/pypi/simple/flask/", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn test_simple_detail_5xx_without_cache_is_bad_gateway() {
+    let h = harness(60).await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&h.server)
+        .await;
+    let (status, ..) = get(&h.state, "/root/pypi/simple/flask/", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn test_simple_detail_upstream_unreachable_is_bad_gateway() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    let state = Arc::new(AppState::new(meta, blobs, upstream, "root/pypi".to_owned(), 60));
+    let (status, ..) = get(&state, "/root/pypi/simple/flask/", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn test_simple_detail_stale_on_upstream_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    let body = velox_core::pypi::to_json(&velox_core::pypi::ProjectDetail {
+        meta: velox_core::pypi::Meta::default(),
+        name: "flask".to_owned(),
+        versions: vec![],
+        files: vec![],
+    });
+    meta.put_index(
+        "root/pypi/flask",
+        &CachedIndex {
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 0,
+            body: body.into_bytes(),
+        },
+    )
+    .unwrap();
+    let state = Arc::new(AppState::with_clock(
+        meta,
+        blobs,
+        upstream,
+        "root/pypi".to_owned(),
+        60,
+        Arc::new(|| 100_000),
+    ));
+
+    let (status, _, served) = get(&state, "/root/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(served.contains("flask"));
+}
+
+#[tokio::test]
+async fn test_file_download_fetches_verifies_and_caches() {
+    let h = harness(60).await;
+    let wheel = b"wheelcontent";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, None).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.to_vec()))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    // Populate the file-url mapping via a simple request.
+    get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+
+    let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, headers, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/octet-stream");
+    assert!(
+        headers
+            .get(header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    assert_eq!(body, "wheelcontent");
+
+    // Second download is served from the blob store (upstream file mock expects exactly one hit).
+    let (status2, _, body2) = get(&h.state, &uri, None).await;
+    assert_eq!(status2, StatusCode::OK);
+    assert_eq!(body2, "wheelcontent");
+}
+
+#[tokio::test]
+async fn test_file_download_invalid_digest() {
+    let h = harness(60).await;
+    let (status, ..) = get(&h.state, "/root/pypi/files/not-hex/x.whl", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_file_download_unknown_index() {
+    let h = harness(60).await;
+    let uri = format!("/a/b/files/{}/x.whl", "0".repeat(64));
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_file_download_unknown_file() {
+    let h = harness(60).await;
+    let uri = format!("/root/pypi/files/{}/x.whl", "a".repeat(64));
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_file_download_upstream_error_is_bad_gateway() {
+    let h = harness(60).await;
+    let digest = Digest::of(b"content");
+    h.state
+        .meta
+        .put_file_url(digest.as_str(), "http://127.0.0.1:0/x.whl")
+        .unwrap();
+    let uri = format!("/root/pypi/files/{}/x.whl", digest.as_str());
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn test_simple_detail_file_without_hash_is_not_rewritten() {
+    let h = harness(60).await;
+    let json = "{\"meta\":{\"api-version\":\"1.1\"},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+                 \"files\":[{\"filename\":\"flask-1.0.tar.gz\",\"url\":\"http://up/flask-1.0.tar.gz\"}]}";
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(json.as_bytes().to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&h.server)
+        .await;
+    let (status, _, body) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("http://up/flask-1.0.tar.gz"));
+}
+
+#[tokio::test]
+async fn test_status() {
+    let h = harness(60).await;
+    let (status, headers, body) = get(&h.state, "/+status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("json")
+    );
+    assert!(body.contains("root/pypi"));
+    assert!(body.contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[tokio::test]
+async fn test_metrics() {
+    let h = harness(60).await;
+    get(&h.state, "/+status", None).await;
+    let (status, _, body) = get(&h.state, "/metrics", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("velox_requests_total"));
+}

@@ -21,6 +21,12 @@ unsafe_code = "forbid"
 velox-core = { path = "crates/velox-core" }
 velox-storage = { path = "crates/velox-storage" }
 velox-upstream = { path = "crates/velox-upstream" }
+velox-http = { path = "crates/velox-http" }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+http = "1"
+http-body-util = "0.1"
 sha2 = "0.11"
 tempfile = "3"
 redb = "4.1"

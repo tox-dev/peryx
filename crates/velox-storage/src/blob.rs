@@ -26,6 +26,16 @@ impl Digest {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Parse a 64-character lowercase-hex sha256 digest, rejecting anything else.
+    #[must_use]
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            Some(Self(hex.to_owned()))
+        } else {
+            None
+        }
+    }
 }
 
 fn to_hex(bytes: &[u8]) -> String {

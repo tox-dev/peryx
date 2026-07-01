@@ -10,6 +10,15 @@ fn test_digest_of_known_vector() {
 }
 
 #[test]
+fn test_from_hex_accepts_valid_and_rejects_invalid() {
+    let valid = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    assert_eq!(Digest::from_hex(valid).unwrap().as_str(), valid);
+    assert!(Digest::from_hex("tooshort").is_none());
+    assert!(Digest::from_hex(&"Z".repeat(64)).is_none());
+    assert!(Digest::from_hex(&"A".repeat(64)).is_none()); // uppercase rejected
+}
+
+#[test]
 fn test_path_for_is_sharded() {
     let store = BlobStore::new("/data");
     let digest = Digest::of(b"hello");
