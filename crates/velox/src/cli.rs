@@ -76,6 +76,8 @@ impl Cli {
             upstream_username: None,
             upstream_password: None,
             upstream_token: None,
+            index: None,
+            cache_ttl_secs: None,
             log: PartialLogConfig {
                 level,
                 format: self.log_format,

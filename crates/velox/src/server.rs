@@ -11,11 +11,6 @@ use velox_upstream::{Auth, UpstreamClient};
 
 use crate::config::Config;
 
-/// The default cached-index freshness window, in seconds.
-const DEFAULT_TTL_SECS: i64 = 1800;
-/// The route prefix of the built-in pypi.org mirror.
-const ROOT_INDEX: &str = "root/pypi";
-
 /// Build the velox router: open the metadata store and blob store under the data directory and wire
 /// up the upstream mirror. Does not bind a socket, so it is testable in isolation.
 ///
@@ -32,8 +27,8 @@ pub fn build_router(config: &Config) -> anyhow::Result<Router> {
         meta,
         blobs,
         upstream,
-        ROOT_INDEX.to_owned(),
-        DEFAULT_TTL_SECS,
+        config.index.clone(),
+        config.cache_ttl_secs,
     ));
     Ok(router(state))
 }

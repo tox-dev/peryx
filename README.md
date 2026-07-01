@@ -65,16 +65,18 @@ from the cache without touching the upstream.
 
 Values resolve with the precedence `defaults < TOML file < environment < flags`.
 
-| Setting               | Flag              | Environment               | Default                    |
-| --------------------- | ----------------- | ------------------------- | -------------------------- |
-| Bind host             | `--host`          | `VELOX_HOST`              | `127.0.0.1`                |
-| Bind port             | `--port`          | `VELOX_PORT`              | `4433`                     |
-| Data directory        | `--data-dir`      | `VELOX_DATA_DIR`          | `velox-data`               |
-| Upstream index URL    | (env only)        | `VELOX_UPSTREAM_URL`      | `https://pypi.org/simple/` |
-| Upstream username     | (env only)        | `VELOX_UPSTREAM_USERNAME` | (none)                     |
-| Upstream password     | (env only)        | `VELOX_UPSTREAM_PASSWORD` | (none)                     |
-| Upstream bearer token | (env only)        | `VELOX_UPSTREAM_TOKEN`    | (none)                     |
-| Config file           | `--config` / `-c` | (n/a)                     | (none)                     |
+| Setting                   | Flag              | Environment               | Default                    |
+| ------------------------- | ----------------- | ------------------------- | -------------------------- |
+| Bind host                 | `--host`          | `VELOX_HOST`              | `127.0.0.1`                |
+| Bind port                 | `--port`          | `VELOX_PORT`              | `4433`                     |
+| Data directory            | `--data-dir`      | `VELOX_DATA_DIR`          | `velox-data`               |
+| Upstream index URL        | (env only)        | `VELOX_UPSTREAM_URL`      | `https://pypi.org/simple/` |
+| Upstream username         | (env only)        | `VELOX_UPSTREAM_USERNAME` | (none)                     |
+| Upstream password         | (env only)        | `VELOX_UPSTREAM_PASSWORD` | (none)                     |
+| Upstream bearer token     | (env only)        | `VELOX_UPSTREAM_TOKEN`    | (none)                     |
+| Mirror index route        | (env only)        | `VELOX_INDEX`             | `root/pypi`                |
+| Cache freshness (seconds) | (env only)        | `VELOX_CACHE_TTL_SECS`    | `1800`                     |
+| Config file               | `--config` / `-c` | (n/a)                     | (none)                     |
 
 A TOML config file covers the same settings:
 

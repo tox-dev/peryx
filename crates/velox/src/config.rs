@@ -21,6 +21,10 @@ pub struct Config {
     /// Bearer token for the upstream mirror (Artifactory/GitLab access tokens); takes precedence
     /// over username/password.
     pub upstream_token: Option<String>,
+    /// The route prefix of the mirror index, for example `root/pypi`.
+    pub index: String,
+    /// How long a cached simple page is served before revalidating, in seconds.
+    pub cache_ttl_secs: i64,
     pub log: LogConfig,
 }
 
@@ -34,6 +38,8 @@ impl Default for Config {
             upstream_username: None,
             upstream_password: None,
             upstream_token: None,
+            index: "root/pypi".to_owned(),
+            cache_ttl_secs: 1800,
             log: LogConfig::default(),
         }
     }
@@ -63,6 +69,12 @@ impl Config {
         }
         if partial.upstream_token.is_some() {
             self.upstream_token = partial.upstream_token;
+        }
+        if let Some(index) = partial.index {
+            self.index = index;
+        }
+        if let Some(cache_ttl_secs) = partial.cache_ttl_secs {
+            self.cache_ttl_secs = cache_ttl_secs;
         }
         self.log = self.log.apply(partial.log);
         self
@@ -141,6 +153,8 @@ pub struct PartialConfig {
     pub upstream_username: Option<String>,
     pub upstream_password: Option<String>,
     pub upstream_token: Option<String>,
+    pub index: Option<String>,
+    pub cache_ttl_secs: Option<i64>,
     pub log: PartialLogConfig,
 }
 
@@ -199,6 +213,15 @@ pub fn from_env(vars: Vec<(String, String)>) -> Result<PartialConfig, ConfigErro
             "VELOX_UPSTREAM_USERNAME" => partial.upstream_username = Some(value),
             "VELOX_UPSTREAM_PASSWORD" => partial.upstream_password = Some(value),
             "VELOX_UPSTREAM_TOKEN" => partial.upstream_token = Some(value),
+            "VELOX_INDEX" => partial.index = Some(value),
+            "VELOX_CACHE_TTL_SECS" => {
+                let ttl = value.parse().map_err(|err: std::num::ParseIntError| ConfigError::Env {
+                    key,
+                    value,
+                    reason: err.to_string(),
+                })?;
+                partial.cache_ttl_secs = Some(ttl);
+            }
             "VELOX_LOG_LEVEL" => partial.log.level = Some(value),
             _ => {}
         }

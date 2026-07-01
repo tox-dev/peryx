@@ -12,21 +12,27 @@ fn test_default_config() {
     assert_eq!(c.upstream_username, None);
     assert_eq!(c.upstream_password, None);
     assert_eq!(c.upstream_token, None);
+    assert_eq!(c.index, "root/pypi");
+    assert_eq!(c.cache_ttl_secs, 1800);
     assert_eq!(c.log, LogConfig::default());
 }
 
 #[test]
-fn test_apply_upstream_auth() {
+fn test_apply_upstream_auth_and_index() {
     let partial = PartialConfig {
         upstream_username: Some("__token__".to_owned()),
         upstream_password: Some("secret".to_owned()),
         upstream_token: Some("bearer-tok".to_owned()),
+        index: Some("team/private".to_owned()),
+        cache_ttl_secs: Some(60),
         ..PartialConfig::default()
     };
     let merged = Config::default().apply(partial);
     assert_eq!(merged.upstream_username.as_deref(), Some("__token__"));
     assert_eq!(merged.upstream_password.as_deref(), Some("secret"));
     assert_eq!(merged.upstream_token.as_deref(), Some("bearer-tok"));
+    assert_eq!(merged.index, "team/private");
+    assert_eq!(merged.cache_ttl_secs, 60);
 }
 
 #[test]
@@ -112,6 +118,8 @@ fn test_from_env_reads_known_keys_and_ignores_others() {
         ("VELOX_UPSTREAM_USERNAME".to_owned(), "user".to_owned()),
         ("VELOX_UPSTREAM_PASSWORD".to_owned(), "pass".to_owned()),
         ("VELOX_UPSTREAM_TOKEN".to_owned(), "tok".to_owned()),
+        ("VELOX_INDEX".to_owned(), "team/dev".to_owned()),
+        ("VELOX_CACHE_TTL_SECS".to_owned(), "300".to_owned()),
         ("VELOX_LOG_LEVEL".to_owned(), "trace".to_owned()),
         ("UNRELATED".to_owned(), "ignored".to_owned()),
     ];
@@ -123,6 +131,8 @@ fn test_from_env_reads_known_keys_and_ignores_others() {
     assert_eq!(p.upstream_username.as_deref(), Some("user"));
     assert_eq!(p.upstream_password.as_deref(), Some("pass"));
     assert_eq!(p.upstream_token.as_deref(), Some("tok"));
+    assert_eq!(p.index.as_deref(), Some("team/dev"));
+    assert_eq!(p.cache_ttl_secs, Some(300));
     assert_eq!(p.log.level.as_deref(), Some("trace"));
 }
 
@@ -130,6 +140,12 @@ fn test_from_env_reads_known_keys_and_ignores_others() {
 fn test_from_env_invalid_port_errors() {
     let err = config::from_env(vec![("VELOX_PORT".to_owned(), "not-a-number".to_owned())]).unwrap_err();
     assert!(err.to_string().contains("VELOX_PORT"));
+}
+
+#[test]
+fn test_from_env_invalid_ttl_errors() {
+    let err = config::from_env(vec![("VELOX_CACHE_TTL_SECS".to_owned(), "soon".to_owned())]).unwrap_err();
+    assert!(err.to_string().contains("VELOX_CACHE_TTL_SECS"));
 }
 
 #[test]
