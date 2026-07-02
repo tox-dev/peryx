@@ -185,8 +185,9 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
                 filename: filename.to_owned(),
                 bytes,
             });
-            // The default 4 KiB buffer costs thousands of read syscalls on a wheel-sized blob.
-            let stream = tokio_util::io::ReaderStream::with_capacity(file, 128 * 1024);
+            // The default 4 KiB buffer costs thousands of read syscalls on a wheel-sized blob; a
+            // megabyte is the measured knee for both single and eight-way parallel hot reads.
+            let stream = tokio_util::io::ReaderStream::with_capacity(file, 1024 * 1024);
             (blob_headers, axum::body::Body::from_stream(stream)).into_response()
         }
         // A live stream records its download event at EOF, when the byte count exists.
