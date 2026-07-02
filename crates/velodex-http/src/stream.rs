@@ -35,6 +35,14 @@ pub struct Registration {
     pub metadata: Option<(String, String)>,
 }
 
+/// Everything the transformer learned about the page, enough to persist it without a re-parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageSummary {
+    pub registrations: Vec<Registration>,
+    /// The page's top-level display name, when it carried one.
+    pub name: Option<String>,
+}
+
 /// The transformer's lexer state, kept across chunk boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -61,6 +69,14 @@ pub struct PageTransformer {
     /// The most recent complete top-level string, a candidate object key.
     key: Vec<u8>,
     capturing_key: bool,
+    /// Set between a top-level `"name"` key's colon and its value, so the value is captured.
+    expect_name_value: bool,
+    capturing_name: bool,
+    /// The page's top-level `name`, captured in flight so persistence needs no re-parse.
+    name: Vec<u8>,
+    /// The document root has closed; anything but whitespace afterwards is malformed.
+    closed: bool,
+    trailing: bool,
     /// Element bytes being captured (a `files` object or the whole `versions` array).
     capture: Vec<u8>,
     /// Depth at which the active array closes.
@@ -76,6 +92,8 @@ pub enum TransformError {
     Parse(#[from] serde_json::Error),
     #[error("upstream page ended mid-token")]
     Truncated,
+    #[error("upstream page carries data after the document root")]
+    Trailing,
 }
 
 impl PageTransformer {
@@ -89,6 +107,11 @@ impl PageTransformer {
             escaped: false,
             key: Vec::new(),
             capturing_key: false,
+            expect_name_value: false,
+            capturing_name: false,
+            name: Vec::new(),
+            closed: false,
+            trailing: false,
             capture: Vec::new(),
             array_depth: 0,
             emitted_in_array: false,
@@ -111,12 +134,19 @@ impl PageTransformer {
     /// Finish the stream, validating that the document closed cleanly.
     ///
     /// # Errors
-    /// Returns [`TransformError::Truncated`] when the document ended inside a token.
-    pub fn finish(self) -> Result<Vec<Registration>, TransformError> {
+    /// Returns [`TransformError::Truncated`] when the document ended inside a token, or
+    /// [`TransformError::Trailing`] when bytes followed the document root.
+    pub fn finish(self) -> Result<PageSummary, TransformError> {
         if self.depth != 0 || self.in_string || self.mode != Mode::Passthrough {
             return Err(TransformError::Truncated);
         }
-        Ok(self.registrations)
+        if self.trailing {
+            return Err(TransformError::Trailing);
+        }
+        Ok(PageSummary {
+            registrations: self.registrations,
+            name: String::from_utf8(self.name).ok().filter(|name| !name.is_empty()),
+        })
     }
 
     fn step(&mut self, byte: u8, out: &mut Vec<u8>) -> Result<(), TransformError> {
@@ -136,6 +166,9 @@ impl PageTransformer {
             if self.capturing_key {
                 self.key.push(byte);
             }
+            if self.capturing_name {
+                self.name.push(byte);
+            }
             if self.escaped {
                 self.escaped = false;
             } else if byte == b'\\' {
@@ -145,18 +178,28 @@ impl PageTransformer {
                 if self.capturing_key {
                     self.key.pop();
                 }
+                if self.capturing_name {
+                    self.name.pop();
+                }
                 self.capturing_key = false;
+                self.capturing_name = false;
             }
             return;
         }
         match byte {
             b'"' => {
                 self.in_string = true;
-                // A string opening at depth 1 may be an object key; remember it.
+                // A string opening at depth 1 is an object key, or the value of the key just seen.
                 if self.depth == 1 {
-                    self.key.clear();
-                    self.capturing_key = true;
+                    if self.expect_name_value {
+                        self.capturing_name = true;
+                        self.name.clear();
+                    } else {
+                        self.key.clear();
+                        self.capturing_key = true;
+                    }
                 }
+                self.expect_name_value = false;
                 out.push(byte);
             }
             b'{' | b'[' => {
@@ -184,9 +227,21 @@ impl PageTransformer {
             }
             b'}' | b']' => {
                 self.depth = self.depth.saturating_sub(1);
+                if self.depth == 0 {
+                    self.closed = true;
+                }
                 out.push(byte);
             }
-            _ => out.push(byte),
+            b':' if self.depth == 1 => {
+                self.expect_name_value = self.key == b"name";
+                out.push(byte);
+            }
+            _ => {
+                if self.closed && !byte.is_ascii_whitespace() {
+                    self.trailing = true;
+                }
+                out.push(byte);
+            }
         }
     }
 

@@ -18,13 +18,19 @@ fn upstream_page() -> String {
 
 /// Feed the page through the transformer in chunks of the given size.
 fn transform(page: &str, context: PageContext, chunk: usize) -> (String, Vec<Registration>) {
+    let (out, summary) = transform_summary(page, context, chunk);
+    (out, summary.registrations)
+}
+
+/// Like [`transform`], returning everything the transformer learned.
+fn transform_summary(page: &str, context: PageContext, chunk: usize) -> (String, crate::stream::PageSummary) {
     let mut transformer = PageTransformer::new(context);
     let mut out = Vec::new();
     for piece in page.as_bytes().chunks(chunk) {
         out.extend(transformer.push(piece).unwrap());
     }
-    let registrations = transformer.finish().unwrap();
-    (String::from_utf8(out).unwrap(), registrations)
+    let summary = transformer.finish().unwrap();
+    (String::from_utf8(out).unwrap(), summary)
 }
 
 fn plain_context() -> PageContext {
@@ -252,4 +258,25 @@ fn test_legacy_record_after_a_rewritten_file_keeps_separators() {
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!(detail.files.len(), 2);
     assert_eq!(registrations.len(), 1);
+}
+
+#[test]
+fn test_page_name_is_captured_without_a_parse() {
+    for chunk in [1, 7, 4096] {
+        let (_, summary) = transform_summary(&upstream_page(), plain_context(), chunk);
+        assert_eq!(summary.name.as_deref(), Some("demo"), "chunk size {chunk}");
+    }
+}
+
+#[test]
+fn test_missing_page_name_is_none() {
+    let (_, summary) = transform_summary(r#"{"files":[]}"#, plain_context(), 3);
+    assert_eq!(summary.name, None);
+}
+
+#[test]
+fn test_trailing_bytes_after_the_root_are_an_error() {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.push(br#"{"name":"demo","files":[]}garbage"#).unwrap();
+    assert!(transformer.finish().is_err());
 }

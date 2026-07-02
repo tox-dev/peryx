@@ -364,12 +364,13 @@ async fn test_live_stream_surfaces_truncated_pages() {
 }
 
 #[tokio::test]
-async fn test_live_stream_with_trailing_garbage_streams_but_never_persists() {
+async fn test_live_stream_with_trailing_garbage_errors_and_never_persists() {
     let h = harness().await;
     mount_json_page(&h.server, r#"{"name":"flask","versions":["1.0"],"files":[]}trailing"#).await;
     let items = stream_outcome(&h.state).await;
-    assert!(items.iter().all(Result::is_ok));
-    // The whole body reached the client, but the persist parse refused the record.
+    // The transformer flags data after the document root, so the stream ends in an error…
+    assert!(items.last().is_some_and(Result::is_err));
+    // …and the malformed page is never admitted into the cache.
     assert!(h.state.meta.get_index("pypi/flask").unwrap().is_none());
 }
 
@@ -517,4 +518,31 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
     });
     let items = stream_outcome(&state).await;
     assert!(items.last().is_some_and(Result::is_err));
+}
+
+#[tokio::test]
+async fn test_buffered_fetch_registers_metadata_siblings() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let meta_digest = Digest::of(b"meta");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    let page = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}",
+        digest = digest.as_str(),
+        meta = meta_digest.as_str(),
+    );
+    mount_json_page(&h.server, &page).await;
+    // An HTML request takes the buffered path, whose persistence parses the raw page.
+    let (status, ..) = get(&h.state, "/pypi/simple/flask/", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (url, meta_sha, _source) = h
+        .state
+        .meta
+        .get_metadata(digest.as_str())
+        .unwrap()
+        .expect("metadata sibling registered");
+    assert_eq!(url, format!("{file_url}.metadata"));
+    assert_eq!(meta_sha, meta_digest.as_str());
 }

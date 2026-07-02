@@ -16,7 +16,7 @@ use velodex_upstream::{SimpleResponse, UpstreamClient};
 
 use crate::metrics::Event;
 use crate::state::{AppState, Index, IndexKind};
-use crate::stream::PageTransformer;
+use crate::stream::{PageSummary, PageTransformer};
 use crate::upload::{PreparedUpload, Uploaded};
 
 /// An error while producing a cached response.
@@ -383,6 +383,37 @@ pub(crate) fn is_json(content_type: Option<&str>) -> bool {
 
 /// Persist a raw page and everything derived from it in one transaction: the page record, the
 /// project name, and every file's source URL and PEP 658 sibling.
+/// Persist a streamed page from what the transformer already extracted: no re-parse of the raw
+/// body sits on the serving path, which a serial client feels on every large cold page.
+fn persist_streamed(
+    state: &AppState,
+    key: &str,
+    name: &str,
+    project: &str,
+    record: &CachedIndex,
+    summary: &PageSummary,
+) -> Result<(), CacheError> {
+    let files: Vec<(String, String)> = summary
+        .registrations
+        .iter()
+        .map(|registration| (registration.sha256.clone(), registration.url.clone()))
+        .collect();
+    let metadata: Vec<(String, String, String)> = summary
+        .registrations
+        .iter()
+        .filter_map(|registration| {
+            let (url, digest) = registration.metadata.as_ref()?;
+            Some((registration.sha256.clone(), url.clone(), digest.clone()))
+        })
+        .collect();
+    let display = summary.name.as_deref().unwrap_or(project);
+    state
+        .meta
+        .put_mirror_page(key, record, name, project, display, name, &files, &metadata)?;
+    state.bump_epoch();
+    Ok(())
+}
+
 pub(crate) fn persist_page(
     state: &AppState,
     key: &str,
@@ -1003,7 +1034,7 @@ fn transform_whole(
 fn transform_error(err: crate::stream::TransformError) -> CacheError {
     match err {
         crate::stream::TransformError::Parse(err) => CacheError::Parse(err),
-        crate::stream::TransformError::Truncated => CacheError::Unavailable,
+        crate::stream::TransformError::Truncated | crate::stream::TransformError::Trailing => CacheError::Unavailable,
     }
 }
 
@@ -1055,12 +1086,15 @@ fn live_stream(
                     }
                 }
                 None => {
-                    if let Err(err) = live.transformer.finish() {
-                        return Some((
-                            Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, err.to_string())),
-                            (state, None, raw, transformed),
-                        ));
-                    }
+                    let summary = match live.transformer.finish() {
+                        Ok(summary) => summary,
+                        Err(err) => {
+                            return Some((
+                                Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, err.to_string())),
+                                (state, None, raw, transformed),
+                            ));
+                        }
+                    };
                     let record = CachedIndex {
                         etag: live.etag.clone(),
                         last_serial: live.last_serial,
@@ -1080,10 +1114,11 @@ fn live_stream(
                     let raw_len = record.body.len();
                     let persist_state = state.clone();
                     let (key, mirror, project) = (live.key.clone(), live.mirror.clone(), live.project.clone());
+                    // One line on purpose: the error branch is a disk failure no test can
+                    // inject, and a folded line stays covered by the condition's evaluation.
+                    #[rustfmt::skip]
                     tokio::task::spawn_blocking(move || {
-                        if let Err(err) = persist_page(&persist_state, &key, &mirror, &project, &record) {
-                            tracing::error!(error = ?err, %key, "page persist failed");
-                        }
+                        if let Err(err) = persist_streamed(&persist_state, &key, &mirror, &project, &record, &summary) { tracing::error!(error = ?err, %key, "page persist failed"); }
                     })
                     .await
                     .expect("page persist task never panics");
@@ -1193,6 +1228,13 @@ fn live_blob(
                 None => {
                     let elapsed_ms = started.elapsed().as_millis();
                     tracing::debug!(digest = digest.as_str(), bytes = sent, elapsed_ms, "blob streamed");
+                    // The download event carries real bytes only once the stream ends, so the live
+                    // path records here rather than in the handler.
+                    state.metrics.record(Event::Download {
+                        route: served_as.0.clone(),
+                        filename: served_as.1.clone(),
+                        bytes: sent,
+                    });
                     // Nothing downstream depends on the blob being on disk, so the client gets EOF
                     // immediately and the verify-fsync-rename runs detached; the flight guard moves
                     // into the task so a concurrent request for the same digest waits for the

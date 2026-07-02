@@ -189,14 +189,8 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
             let stream = tokio_util::io::ReaderStream::with_capacity(file, 128 * 1024);
             (blob_headers, axum::body::Body::from_stream(stream)).into_response()
         }
-        Ok(cache::FileOutcome::Live(stream)) => {
-            state.metrics.record(Event::Download {
-                route,
-                filename: filename.to_owned(),
-                bytes: 0,
-            });
-            (blob_headers, axum::body::Body::from_stream(stream)).into_response()
-        }
+        // A live stream records its download event at EOF, when the byte count exists.
+        Ok(cache::FileOutcome::Live(stream)) => (blob_headers, axum::body::Body::from_stream(stream)).into_response(),
         Err(CacheError::FileNotFound) => (StatusCode::NOT_FOUND, "file not found").into_response(),
         Err(err) => {
             tracing::error!(error = ?err, "file stream failed");
