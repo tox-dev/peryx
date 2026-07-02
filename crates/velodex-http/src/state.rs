@@ -157,9 +157,9 @@ impl AppState {
         self.indexes
             .iter()
             .map(|index| {
-                let (kind, layers, uploads) = match &index.kind {
-                    IndexKind::Mirror(_) => ("mirror", Vec::new(), false),
-                    IndexKind::Local { upload_token, .. } => ("local", Vec::new(), upload_token.is_some()),
+                let (kind, layers, uploads, upload_to) = match &index.kind {
+                    IndexKind::Mirror(_) => ("mirror", Vec::new(), false, None),
+                    IndexKind::Local { upload_token, .. } => ("local", Vec::new(), upload_token.is_some(), None),
                     IndexKind::Overlay { layers, upload } => {
                         let names = layers.iter().map(|&pos| self.index_at(pos).name.clone()).collect();
                         let uploads = upload.is_some_and(|pos| {
@@ -171,7 +171,8 @@ impl AppState {
                                 }
                             )
                         });
-                        ("overlay", names, uploads)
+                        let upload_to = upload.map(|pos| self.index_at(pos).name.clone());
+                        ("overlay", names, uploads, upload_to)
                     }
                 };
                 IndexDescription {
@@ -180,6 +181,7 @@ impl AppState {
                     kind,
                     layers,
                     uploads,
+                    upload_to,
                 }
             })
             .collect()
@@ -194,6 +196,8 @@ pub struct IndexDescription {
     pub kind: &'static str,
     pub layers: Vec<String>,
     pub uploads: bool,
+    /// For an overlay: the layer uploads land in, whether or not a token currently enables them.
+    pub upload_to: Option<String>,
 }
 
 /// The part of `path` after `route`, requiring a segment boundary so `team/dev` does not match

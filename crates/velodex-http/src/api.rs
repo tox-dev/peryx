@@ -551,10 +551,12 @@ fn status() -> OperationBuilder {
                         "requests": 128,
                         "metadata_requests": 37,
                         "indexes": [
-                            {"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [], "uploads": false},
-                            {"name": "local", "route": "local", "kind": "local", "layers": [], "uploads": true},
+                            {"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [],
+                             "uploads": false, "upload_to": null},
+                            {"name": "local", "route": "local", "kind": "local", "layers": [],
+                             "uploads": true, "upload_to": null},
                             {"name": "root/pypi", "route": "root/pypi", "kind": "overlay",
-                             "layers": ["local", "pypi"], "uploads": true}
+                             "layers": ["local", "pypi"], "uploads": true, "upload_to": "local"}
                         ]
                     })))
                     .build(),

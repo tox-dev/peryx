@@ -100,6 +100,10 @@ async fn test_ui_dashboard_renders_indexes_and_counters() {
     assert!(body.contains("root/pypi"));
     assert!(body.contains("badge kind-overlay"));
     assert!(body.contains("badge uploads"));
+    // The overlay renders its layers as an ordered stack with the upload target marked.
+    assert!(body.contains("layer-stack"));
+    assert!(body.contains("uploads land here"));
+    assert!(body.contains("resolves top to bottom"));
     assert!(body.contains("/pkg/velodex_web.js"));
 }
 

@@ -26,6 +26,8 @@ pub struct UiIndex {
     pub layers: Vec<String>,
     /// Whether uploads are enabled (a local layer with a token).
     pub uploads: bool,
+    /// For an overlay: the layer uploads land in.
+    pub upload_to: Option<String>,
 }
 
 impl UiSnapshot {
@@ -47,6 +49,7 @@ impl UiSnapshot {
                     .filter_map(|layer| layer.as_str().map(str::to_owned))
                     .collect(),
                 uploads: index["uploads"].as_bool().unwrap_or(false),
+                upload_to: index["upload_to"].as_str().map(str::to_owned),
             })
             .collect();
         Self {

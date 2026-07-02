@@ -53,6 +53,49 @@ fn start_refresh(snapshot: Resource<UiSnapshot>) {
 
 #[component]
 fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
+    let layered: std::collections::HashSet<String> = data
+        .indexes
+        .iter()
+        .flat_map(|index| index.layers.iter().cloned())
+        .collect();
+    let counters_for = move |route: &str| {
+        usage
+            .rows
+            .iter()
+            .find(|(candidate, _)| candidate == route)
+            .map(|(_, counters)| *counters)
+    };
+    let all = data.indexes.clone();
+    let overlay_cards = data
+        .indexes
+        .iter()
+        .filter(|index| !index.layers.is_empty())
+        .cloned()
+        .map(|index| {
+            let counters = counters_for(&index.route);
+            view! { <OverlayCard index all=all.clone() counters /> }
+        })
+        .collect_view();
+    let standalone: Vec<UiIndex> = data
+        .indexes
+        .iter()
+        .filter(|index| index.layers.is_empty() && !layered.contains(&index.name))
+        .cloned()
+        .collect();
+    let standalone_cards = (!standalone.is_empty()).then(|| {
+        view! {
+            <h2>"Standalone indexes"</h2>
+            <div class="index-grid">
+                {standalone
+                    .into_iter()
+                    .map(|index| {
+                        let counters = counters_for(&index.route);
+                        view! { <IndexCard index counters /> }
+                    })
+                    .collect_view()}
+            </div>
+        }
+    });
     view! {
         <div class="stat-row">
             <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
@@ -61,19 +104,63 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
             <div class="stat"><strong>{data.metadata_requests}</strong><span>"PEP 658 metadata hits"</span></div>
         </div>
         <h2>"Indexes"</h2>
-        <div class="index-grid">
-            {data
-                .indexes
-                .into_iter()
-                .map(|index| {
-                    let counters = usage
-                        .rows
-                        .iter()
-                        .find(|(route, _)| *route == index.route)
-                        .map(|(_, counters)| *counters);
-                    view! { <IndexCard index counters /> }
-                })
-                .collect_view()}
+        <div class="index-grid">{overlay_cards}</div>
+        {standalone_cards}
+    }
+}
+
+/// An overlay drawn as what it is: an ordered stack of layers under one route, resolved top to
+/// bottom with the first file match winning.
+#[component]
+fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) -> impl IntoView {
+    let browse = format!("/browse?index={}", url_encode(&index.route));
+    let stats_href = format!("/stats?index={}", url_encode(&index.route));
+    let simple = format!("/{}/simple/", index.route);
+    let upload_to = index.upload_to.clone();
+    let layers = index
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(position, name)| {
+            let member = all.iter().find(|candidate| candidate.name == *name).cloned();
+            let kind = member
+                .as_ref()
+                .map_or_else(|| "?".to_owned(), |member| member.kind.clone());
+            let route = member.as_ref().map(|member| format!("/{}/simple/", member.route));
+            let is_upload_target = upload_to.as_deref() == Some(name.as_str());
+            view! {
+                <li class="layer">
+                    <span class="layer-order">{position + 1}</span>
+                    <span class="layer-name">{name.clone()}</span>
+                    <span class=format!("badge kind-{kind}")>{kind.clone()}</span>
+                    {is_upload_target
+                        .then(|| view! { <span class="badge uploads">"uploads land here"</span> })}
+                    {route.map(|route| view! { <code class="layer-route">{route}</code> })}
+                </li>
+            }
+        })
+        .collect_view();
+    let usage = counters.map(|c| {
+        view! {
+            <p class="card-usage">
+                <span>{c.pages}" pages"</span>
+                <span>{c.downloads}" downloads"</span>
+                <span>{human_size(c.bytes)}" served"</span>
+                <a href=stats_href.clone()>"usage"</a>
+            </p>
+        }
+    });
+    view! {
+        <div class="card overlay-card">
+            <div class="card-head">
+                <a href=browse class="card-title">{index.name.clone()}</a>
+                <span class="badge kind-overlay">"overlay"</span>
+                {index.uploads.then(|| view! { <span class="badge uploads">"uploads"</span> })}
+            </div>
+            <p class="dim"><code>{simple}</code></p>
+            <ol class="layer-stack">{layers}</ol>
+            <p class="layer-hint">"resolves top to bottom; first file match wins"</p>
+            {usage}
         </div>
     }
 }

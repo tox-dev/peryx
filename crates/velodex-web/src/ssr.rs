@@ -83,6 +83,7 @@ pub fn snapshot() -> UiSnapshot {
             kind: index.kind.to_owned(),
             layers: index.layers,
             uploads: index.uploads,
+            upload_to: index.upload_to,
         })
         .collect();
     UiSnapshot {

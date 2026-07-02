@@ -86,6 +86,7 @@
                       "layers": [],
                       "name": "pypi",
                       "route": "pypi",
+                      "upload_to": null,
                       "uploads": false
                     },
                     {
@@ -93,6 +94,7 @@
                       "layers": [],
                       "name": "local",
                       "route": "local",
+                      "upload_to": null,
                       "uploads": true
                     },
                     {
@@ -103,6 +105,7 @@
                       ],
                       "name": "root/pypi",
                       "route": "root/pypi",
+                      "upload_to": "local",
                       "uploads": true
                     }
                   ],

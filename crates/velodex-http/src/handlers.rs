@@ -471,6 +471,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Response {
                 "kind": index.kind,
                 "layers": index.layers,
                 "uploads": index.uploads,
+                "upload_to": index.upload_to,
             })
         })
         .collect();

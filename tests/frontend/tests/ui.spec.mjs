@@ -11,14 +11,17 @@ async function goto(page, url) {
   await page.waitForSelector("body[data-hydrated]");
 }
 
-test("dashboard shows identity, counters, and index cards", async ({ page }) => {
+test("dashboard shows identity, counters, and the topology", async ({ page }) => {
   await goto(page, "/");
   await expect(page.locator(".stat-row .stat")).toHaveCount(4);
-  await expect(page.locator(".index-grid .card")).toHaveCount(3);
+  // The overlay folds its member indexes into one card with an ordered layer stack.
+  await expect(page.locator(".index-grid .card")).toHaveCount(1);
   const overlay = page.locator(".card", { hasText: "root/pypi" });
   await expect(overlay.locator(".badge.kind-overlay")).toBeVisible();
-  await expect(overlay.locator(".badge.uploads")).toBeVisible();
-  await expect(overlay.locator(".layers")).toContainText("local");
+  await expect(overlay.locator(".layer")).toHaveCount(2);
+  await expect(overlay.locator(".layer").first()).toContainText("local");
+  await expect(overlay.locator(".layer").first()).toContainText("uploads land here");
+  await expect(overlay.locator(".layer-hint")).toContainText("first file match wins");
 });
 
 test("theme toggle switches and survives a reload", async ({ page }) => {
