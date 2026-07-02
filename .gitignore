@@ -12,3 +12,4 @@ tests/frontend/node_modules/
 tests/frontend/test-results/
 tests/frontend/playwright-report/
 /velodex-data/
+__pycache__/
