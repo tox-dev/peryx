@@ -22,12 +22,12 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync>;
 
-fn resolve_config(cli: &Cli) -> anyhow::Result<Config> {
+fn resolve_config(args: &velodex::cli::RuntimeArgs) -> anyhow::Result<Config> {
     let mut cfg = Config::default();
-    if let Some(path) = &cli.config {
+    if let Some(path) = &args.config {
         cfg = cfg.apply(config::from_file(path.clone())?)?;
     }
-    cfg = cfg.apply(cli.overlay())?;
+    cfg = cfg.apply(args.overlay())?;
     Ok(cfg)
 }
 
@@ -134,13 +134,19 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let config = resolve_config(&cli)?;
-    logging::validate(&config.log)?;
-    let _guard = install_logging(&config.log)?;
-    match cli.command {
-        velodex::cli::Command::Serve => run_server(&config),
-        velodex::cli::Command::Init => app::init(&config),
+    match Cli::parse().command {
+        velodex::cli::Command::Serve(args) => {
+            let config = resolve_config(&args)?;
+            logging::validate(&config.log)?;
+            let _guard = install_logging(&config.log)?;
+            run_server(&config)
+        }
+        velodex::cli::Command::Init(args) => {
+            let config = resolve_config(&args)?;
+            logging::validate(&config.log)?;
+            let _guard = install_logging(&config.log)?;
+            app::init(&config)
+        }
         velodex::cli::Command::Openapi => {
             print!("{}", velodex_http::api::openapi_json());
             Ok(())

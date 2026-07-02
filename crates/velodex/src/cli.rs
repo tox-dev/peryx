@@ -2,61 +2,42 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::builder::styling::{AnsiColor, Effects, Styles};
+use clap::{Args, Parser, Subcommand};
 
 use crate::config::{LogFormat, LogSink, PartialConfig, PartialLogConfig};
 
+/// uv-style help colors: bold green section headers, cyan literals and placeholders.
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::Cyan.on_default());
+
 /// velodex: a PyPI-compatible read-through cache and private-index overlay.
 #[derive(Debug, Parser)]
-#[command(name = "velodex", version, about)]
+#[command(
+    name = "velodex",
+    version,
+    about,
+    styles = STYLES,
+    after_help = "Examples:\n  velodex serve\n  velodex serve --port 8080 --data-dir /var/lib/velodex\n  velodex serve --config velodex.toml -v\n\nDocumentation: https://velodex.readthedocs.io/"
+)]
 pub struct Cli {
-    /// Path to a TOML config file.
-    #[arg(long, short = 'c', global = true)]
-    pub config: Option<PathBuf>,
-
-    /// Log level filter, e.g. `info` or `velodex_upstream=debug`.
-    #[arg(long, global = true)]
-    pub log_level: Option<String>,
-
-    /// Increase log verbosity: `-v` for debug, `-vv` for trace.
-    #[arg(long, short = 'v', global = true, action = clap::ArgAction::Count)]
-    pub verbose: u8,
-
-    /// Bind host.
-    #[arg(long, global = true)]
-    pub host: Option<String>,
-
-    /// Bind port.
-    #[arg(long, global = true)]
-    pub port: Option<u16>,
-
-    /// Data directory.
-    #[arg(long, global = true)]
-    pub data_dir: Option<PathBuf>,
-
-    /// Log output format.
-    #[arg(long, global = true, value_enum)]
-    pub log_format: Option<LogFormat>,
-
-    /// Log sink.
-    #[arg(long, global = true, value_enum)]
-    pub log_sink: Option<LogSink>,
-
-    /// Log file path, used when `--log-sink file`.
-    #[arg(long, global = true)]
-    pub log_file: Option<PathBuf>,
-
     #[command(subcommand)]
     pub command: Command,
 }
 
 /// A velodex subcommand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
     /// Run the server.
-    Serve,
+    #[command(
+        after_help = "Examples:\n  velodex serve\n  velodex serve --host 0.0.0.0 --port 4433\n  velodex serve --config velodex.toml --log-format json --log-sink file --log-file velodex.log"
+    )]
+    Serve(RuntimeArgs),
     /// Initialize a data directory.
-    Init,
+    Init(RuntimeArgs),
     /// Print the `OpenAPI` description of the HTTP API as JSON.
     Openapi,
     /// Manage this velodex installation.
@@ -73,8 +54,48 @@ pub enum SelfCommand {
     Update,
 }
 
-impl Cli {
-    /// Project the CLI flags into a [`PartialConfig`] overlay, the highest-precedence source.
+/// Configuration flags shared by the commands that read the runtime configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct RuntimeArgs {
+    /// Path to a TOML config file.
+    #[arg(long, short = 'c')]
+    pub config: Option<PathBuf>,
+
+    /// Bind host.
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Bind port.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Data directory.
+    #[arg(long)]
+    pub data_dir: Option<PathBuf>,
+
+    /// Log level filter, e.g. `info` or `velodex_upstream=debug`.
+    #[arg(long, help_heading = "Logging")]
+    pub log_level: Option<String>,
+
+    /// Increase log verbosity: `-v` for debug, `-vv` for trace.
+    #[arg(long, short = 'v', action = clap::ArgAction::Count, help_heading = "Logging")]
+    pub verbose: u8,
+
+    /// Log output format.
+    #[arg(long, value_enum, help_heading = "Logging")]
+    pub log_format: Option<LogFormat>,
+
+    /// Log sink.
+    #[arg(long, value_enum, help_heading = "Logging")]
+    pub log_sink: Option<LogSink>,
+
+    /// Log file path, used when `--log-sink file`.
+    #[arg(long, help_heading = "Logging")]
+    pub log_file: Option<PathBuf>,
+}
+
+impl RuntimeArgs {
+    /// Project the flags into a [`PartialConfig`] overlay, the highest-precedence source.
     #[must_use]
     pub fn overlay(&self) -> PartialConfig {
         let level = self.log_level.clone().or_else(|| match self.verbose {

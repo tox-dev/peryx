@@ -33,7 +33,7 @@ upload = "local"
 `,
 );
 
-const velodex = spawn(binary, ["--port", "4455", "--data-dir", data, "--config", config, "serve"], {
+const velodex = spawn(binary, ["serve", "--port", "4455", "--data-dir", data, "--config", config], {
   cwd: repo, // the /pkg asset route serves ui/pkg relative to the working directory
   stdio: "inherit",
 });

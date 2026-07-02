@@ -252,12 +252,12 @@ impl Velodex {
             // what velodex saw rather than only what the client printed.
             let log = std::fs::File::create(data.path().join("velodex.log")).expect("create server log");
             let mut child = Command::new(env!("CARGO_BIN_EXE_velodex"))
+                .arg("serve")
                 .args(["--port", &port.to_string()])
                 .arg("--data-dir")
                 .arg(data.path())
                 .arg("--config")
                 .arg(&config)
-                .arg("serve")
                 .args(["--log-level", "debug"])
                 .stdout(log.try_clone().expect("clone log handle"))
                 .stderr(log)
