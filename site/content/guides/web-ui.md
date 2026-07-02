@@ -10,8 +10,9 @@ visual style as this site.
 ## Dashboard
 
 `http://<host>:<port>/` shows the version, the change serial, live request counters (including PEP 658 metadata hits),
-and a card per configured index with its kind, route, layers, and whether it accepts uploads. The counters refresh every
-few seconds.
+and a card per configured index with its kind, route, layers, whether it accepts uploads, and its usage: pages served,
+downloads, and bytes. The counters refresh every few seconds. Each card's `usage` link opens the drill-down described
+in [monitoring](@/guides/monitor.md): index totals, a per-project table, and per-file download counts.
 
 ## Browsing packages
 

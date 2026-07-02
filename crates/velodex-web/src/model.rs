@@ -149,3 +149,95 @@ fn string_at(value: &serde_json::Value, key: &str) -> String {
 fn u64_at(value: &serde_json::Value, key: &str) -> u64 {
     value[key].as_u64().unwrap_or_default()
 }
+
+/// Usage counters at one aggregation level of `/+stats`. File-level entries fill only the fields
+/// the server tracks per file (downloads, metadata, bytes); the rest stay zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiCounters {
+    pub pages: u64,
+    pub downloads: u64,
+    pub metadata: u64,
+    pub uploads: u64,
+    pub bytes: u64,
+    pub refreshes: u64,
+    pub changed: u64,
+    pub stale_served: u64,
+    pub upstream_errors: u64,
+    pub rejected: u64,
+}
+
+impl UiCounters {
+    /// Read the counters present in one stats JSON object; absent fields stay zero.
+    #[must_use]
+    pub fn from_value(value: &serde_json::Value) -> Self {
+        Self {
+            pages: u64_at(value, "pages"),
+            downloads: u64_at(value, "downloads"),
+            metadata: u64_at(value, "metadata"),
+            uploads: u64_at(value, "uploads"),
+            bytes: u64_at(value, "bytes"),
+            refreshes: u64_at(value, "refreshes"),
+            changed: u64_at(value, "changed"),
+            stale_served: u64_at(value, "stale_served"),
+            upstream_errors: u64_at(value, "upstream_errors"),
+            rejected: u64_at(value, "rejected"),
+        }
+    }
+}
+
+/// One drill depth of `/+stats`: the aggregate at this level plus the named rows underneath
+/// (indexes, then projects, then files), busiest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiStats {
+    pub totals: UiCounters,
+    pub rows: Vec<(String, UiCounters)>,
+}
+
+fn sorted_rows(value: &serde_json::Value) -> Vec<(String, UiCounters)> {
+    let mut rows: Vec<(String, UiCounters)> = value
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, counters)| (name.clone(), UiCounters::from_value(counters)))
+        .collect();
+    rows.sort_by(|(a_name, a), (b_name, b)| (b.downloads + b.pages, a_name).cmp(&(a.downloads + a.pages, b_name)));
+    rows
+}
+
+/// Parse the top-level `/+stats` document: one row per index route, totals summed across them.
+#[must_use]
+pub fn stats_routes(value: &serde_json::Value) -> UiStats {
+    let rows = sorted_rows(value);
+    let mut totals = UiCounters::default();
+    for (_, counters) in &rows {
+        totals.pages += counters.pages;
+        totals.downloads += counters.downloads;
+        totals.metadata += counters.metadata;
+        totals.uploads += counters.uploads;
+        totals.bytes += counters.bytes;
+        totals.refreshes += counters.refreshes;
+        totals.changed += counters.changed;
+        totals.stale_served += counters.stale_served;
+        totals.upstream_errors += counters.upstream_errors;
+        totals.rejected += counters.rejected;
+    }
+    UiStats { totals, rows }
+}
+
+/// Parse one index's drill document: its totals plus one row per project.
+#[must_use]
+pub fn stats_index(value: &serde_json::Value) -> UiStats {
+    UiStats {
+        totals: UiCounters::from_value(&value["totals"]),
+        rows: sorted_rows(&value["projects"]),
+    }
+}
+
+/// Parse one project's drill document: its (flattened) totals plus one row per file.
+#[must_use]
+pub fn stats_project(value: &serde_json::Value) -> UiStats {
+    UiStats {
+        totals: UiCounters::from_value(value),
+        rows: sorted_rows(&value["files"]),
+    }
+}

@@ -29,7 +29,7 @@ pub mod pages;
 pub mod ssr;
 pub mod style;
 
-use pages::{Browse, Dashboard};
+use pages::{Browse, Dashboard, Stats};
 
 /// The HTML document shell used by server rendering: head, hydration scripts, and the app.
 #[must_use]
@@ -68,6 +68,7 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=|| view! { <p class="dim">"not found"</p> }>
                     <Route path=path!("/") view=Dashboard />
                     <Route path=path!("/browse") view=Browse />
+                    <Route path=path!("/stats") view=Stats />
                 </Routes>
             </main>
         </Router>

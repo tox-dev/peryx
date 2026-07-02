@@ -91,3 +91,24 @@ test("wrong token surfaces the auth failure", async ({ page }) => {
   await page.locator(".admin-table button", { hasText: /^yank$/ }).click();
   await expect(page.locator(".outcome")).toContainText("401");
 });
+
+test("usage stats drill from index to project to file", async ({ page }) => {
+  // Generate traffic the counters can show: a page view and a file download.
+  const detail = await page.request.get("/root/pypi/simple/veloxdemo/", {
+    headers: { accept: "application/vnd.pypi.simple.v1+json" },
+  });
+  const files = (await detail.json()).files;
+  await page.request.get(files[0].url);
+
+  await goto(page, "/");
+  const overlay = page.locator(".card", { hasText: "root/pypi" });
+  await expect(overlay.locator(".card-usage")).toContainText("downloads");
+  await overlay.locator(".card-usage a", { hasText: "usage" }).click();
+
+  await expect(page.locator(".breadcrumb")).toContainText("root/pypi");
+  await expect.poll(async () => page.locator(".stats-table tbody tr").count()).toBeGreaterThan(0);
+  await page.locator(".stats-table a", { hasText: "veloxdemo" }).click();
+
+  await expect(page.locator(".breadcrumb")).toContainText("veloxdemo");
+  await expect(page.locator(".stats-table tbody tr", { hasText: "veloxdemo-1.0.0" }).first()).toBeVisible();
+});

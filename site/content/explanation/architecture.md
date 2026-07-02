@@ -18,9 +18,16 @@ Project pages, file-to-URL mappings, uploads, and the change serial live in [red
 embedded, crash-safe, copy-on-write B-tree in pure Rust. redb gives one writer and many concurrent readers with
 snapshot isolation, which fits an index server's read-heavy traffic without an external database.
 
-Cached upstream pages carry their `ETag` and fetch time. Within `cache_ttl_secs` velodex serves the cached page as is;
-after that it revalidates with `If-None-Match`, and a `304` refreshes the clock without a body transfer. A `5xx` or
-an unreachable upstream falls back to the cached copy, so a pypi.org outage degrades to stale-but-working.
+Cached upstream pages carry their `ETag`, fetch time, and the freshness lifetime the upstream granted via
+`Cache-Control` (`s-maxage` over `max-age`; `cache_ttl_secs` fills in when the server granted none). Within that
+window velodex serves the cached page as is; after it, the next request revalidates with `If-None-Match`, and a `304`
+refreshes the clock without a body transfer. A `5xx` or an unreachable upstream falls back to the cached copy, so a
+pypi.org outage degrades to stale-but-working.
+
+A background sweep revalidates every stale cached page once a minute, so an upstream change lands within about one
+freshness window even when nobody requests the page. Each detected change is logged and counted (`changed` in
+[`/+stats`](@/reference/endpoints.md)); ETag hits keep the sweep cheap, since an unchanged page answers `304` with
+no body.
 
 ## The blob store
 
@@ -31,6 +38,27 @@ indexes, or cached from two mirrors, occupies disk once.
 
 Downloads verify: velodex hashes fetched bytes against the digest the index advertised before storing or serving
 them, and uploads verify the digest the client declared.
+
+## The serving pipeline
+
+A cold page or file streams: bytes flow from the upstream to the client as they arrive, while a tee writes them
+aside for the cache. For pages, a chunk-at-a-time transformer rewrites each `files[]` element mid-flight (URL
+rewriting, local-file injection, yank and hide overrides), so the client starts parsing before the upstream download
+finishes. For files, the tee hashes into a temp file that is verified and renamed into the blob store after the
+client already has its bytes; a hash mismatch forwards (pip and uv verify digests themselves) but is never cached,
+and is counted as `rejected`.
+
+Concurrent misses for the same page or file share one upstream fetch (a per-key single-flight lock), warm pages
+transform in memory from the raw cached body, and hot pages come from an in-memory cache keyed by a mutation epoch,
+so uploads and overrides invalidate instantly. File downloads use HTTP/1.1 upstream: HTTP/2 would multiplex
+every artifact over one TCP connection and its single congestion window.
+
+## Usage metrics
+
+Handlers record events (page served, file downloaded, upload accepted, refresh outcome) with one non-blocking
+channel send; a dedicated thread aggregates them into an index → project → file tree. The request path never takes
+the aggregation lock; recording costs one channel send. The tree serves
+[`/+stats`](@/reference/endpoints.md), the dashboard's usage drill-down, and the per-index Prometheus counters.
 
 ## Why PEP 658 matters here
 

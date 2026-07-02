@@ -81,6 +81,9 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .badge.yanked-badge { color: #e5484d; border-color: #e5484d; }
 .badge.meta-badge { color: #34c496; border-color: #34c496; }
 .layers code { margin-right: 0.3rem; }
+.card-usage { display: flex; gap: 0.8rem; font-size: 0.85rem; color: var(--text-soft); margin-top: 0.5rem; }
+.card-usage a { margin-left: auto; }
+.stats-table td { font-variant-numeric: tabular-nums; }
 .search, .token {
   width: 100%; max-width: 28rem; padding: 0.55rem 0.9rem; margin: 0.75rem 0 1rem;
   border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text);

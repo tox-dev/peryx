@@ -187,3 +187,32 @@ async fn test_ui_unknown_route_falls_back() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("not found"));
 }
+
+#[tokio::test]
+async fn test_ui_stats_drills_from_index_to_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    upload_fixture(&router).await;
+    // The aggregator applies the upload event on its own thread; poll the rendered page.
+    let mut body = String::new();
+    for _ in 0..500 {
+        let (status, page) = get(&router, "/stats?index=root%2Fpypi").await;
+        assert_eq!(status, StatusCode::OK);
+        if page.contains("veloxdemo") {
+            body = page;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(body.contains("uploads"));
+    // Leptos escapes attribute ampersands in server output.
+    assert!(body.contains("/stats?index=root%2Fpypi&amp;project=veloxdemo"));
+
+    let (status, top) = get(&router, "/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(top.contains("/stats?index=root%2Fpypi"));
+
+    let (status, files) = get(&router, "/stats?index=root%2Fpypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(files.contains("rejected downloads"));
+}

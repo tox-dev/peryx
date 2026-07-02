@@ -173,3 +173,46 @@ pub async fn load_member(route: String, sha256: String, filename: String, member
         String::new()
     }
 }
+
+/// The stats drill at the requested depth: all indexes, one index's projects, or one project's
+/// files.
+pub async fn load_stats(index: Option<String>, project: Option<String>) -> crate::model::UiStats {
+    #[cfg(feature = "ssr")]
+    {
+        parse_stats(
+            &crate::ssr::stats(index.as_deref(), project.as_deref()),
+            index.as_deref(),
+            project.as_deref(),
+        )
+    }
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+    {
+        send_wrapper::SendWrapper::new(async move {
+            let mut url = "/+stats".to_owned();
+            if let Some(route) = &index {
+                url.push_str(&format!("?index={route}"));
+                if let Some(name) = &project {
+                    url.push_str(&format!("&project={name}"));
+                }
+            }
+            fetch_json(&url).await.map_or_else(Default::default, |value| {
+                parse_stats(&value, index.as_deref(), project.as_deref())
+            })
+        })
+        .await
+    }
+    #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
+    {
+        let _ = (index, project);
+        crate::model::UiStats::default()
+    }
+}
+
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+fn parse_stats(value: &serde_json::Value, index: Option<&str>, project: Option<&str>) -> crate::model::UiStats {
+    match (index, project) {
+        (Some(_), Some(_)) => crate::model::stats_project(value),
+        (Some(_), None) => crate::model::stats_index(value),
+        (None, _) => crate::model::stats_routes(value),
+    }
+}

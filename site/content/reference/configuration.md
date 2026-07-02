@@ -15,8 +15,13 @@ the file. Precedence is `defaults < TOML file < flags`.
 | Bind port                 | `--port`          | `port`           | `4433`       |
 | Data directory            | `--data-dir`      | `data_dir`       | `velodex-data` |
 | Config file               | `--config` / `-c` | (n/a)            | (none)       |
-| Cache freshness (seconds) | (file only)       | `cache_ttl_secs` | `1800`       |
+| Cache freshness (seconds) | (file only)       | `cache_ttl_secs` | `300`        |
 | Indexes                   | (file only)       | `[[index]]`      | (see below)  |
+
+`cache_ttl_secs` is a fallback: when an upstream response carries a usable `Cache-Control` lifetime
+(`s-maxage` or `max-age`), that lifetime governs the page instead. The fallback applies when the header is absent,
+`no-cache`/`no-store`, or zero. Artifacts never expire; they are content-addressed by sha256, so a changed upstream
+file is a new entry on the page rather than a mutation.
 
 ## `[[index]]`
 

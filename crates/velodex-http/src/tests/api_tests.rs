@@ -17,12 +17,13 @@ fn test_openapi_document_covers_every_endpoint() {
         "/{route}/{project}/{version}/",
         "/{route}/{project}/",
         "/+status",
+        "/+stats",
         "/metrics",
         "/api-docs/openapi.json",
     ] {
         assert!(paths.contains_key(path), "missing path {path}");
     }
-    assert_eq!(paths.len(), 14);
+    assert_eq!(paths.len(), 15);
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
 }
 

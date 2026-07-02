@@ -165,3 +165,10 @@ pub async fn member(sha256: &str, filename: &str, member: &str) -> String {
         Err(err) => format!("({err})"),
     }
 }
+
+/// The stats tree at the requested depth, read from the metrics aggregator.
+#[must_use]
+pub fn stats(route: Option<&str>, project: Option<&str>) -> serde_json::Value {
+    let app = expect_context::<Arc<AppState>>();
+    app.metrics.drill(route, project)
+}

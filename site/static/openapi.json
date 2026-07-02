@@ -19,6 +19,54 @@
     }
   ],
   "paths": {
+    "/+stats": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Usage statistics",
+        "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. Counters cover pages, downloads (with bytes), metadata, uploads, refreshes, upstream changes, stale fallbacks, upstream errors, and rejected downloads.",
+        "parameters": [
+          {
+            "name": "index",
+            "in": "query",
+            "description": "Drill into one index's projects",
+            "required": false,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "With `index`, drill into one project's files",
+            "required": false,
+            "example": "pandas"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The counters at the requested depth",
+            "content": {
+              "application/json": {
+                "example": {
+                  "root/pypi": {
+                    "bytes": 64733247,
+                    "changed": 1,
+                    "downloads": 6,
+                    "metadata": 6,
+                    "pages": 12,
+                    "refreshes": 2,
+                    "rejected": 0,
+                    "stale_served": 0,
+                    "uploads": 0,
+                    "upstream_errors": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/+status": {
       "get": {
         "tags": [

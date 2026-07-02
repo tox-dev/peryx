@@ -234,7 +234,13 @@ pub async fn dispatch_post(
         Err(err) => return upload_error_response(&err),
     };
     match cache::store_upload(&state, &local.name, &prepared) {
-        Ok(()) => (StatusCode::OK, "upload accepted").into_response(),
+        Ok(()) => {
+            state.metrics.record(Event::Upload {
+                route: index.route.clone(),
+                project: prepared.normalized.clone(),
+            });
+            (StatusCode::OK, "upload accepted").into_response()
+        }
         Err(err) => {
             tracing::error!(error = ?err, "upload store failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()

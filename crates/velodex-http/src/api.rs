@@ -144,6 +144,10 @@ fn paths() -> PathsBuilder {
             PathItemBuilder::new().operation(HttpMethod::Get, status()).build(),
         )
         .path(
+            "/+stats",
+            PathItemBuilder::new().operation(HttpMethod::Get, stats()).build(),
+        )
+        .path(
             "/metrics",
             PathItemBuilder::new().operation(HttpMethod::Get, metrics()).build(),
         )
@@ -555,6 +559,49 @@ fn status() -> OperationBuilder {
                     })))
                     .build(),
             ),
+        )
+}
+
+fn stats() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Usage statistics"))
+        .description(Some(
+            "Counters aggregated off the request path, drillable: no parameters for per-index totals, \
+             `?index={route}` for one index's projects, `&project={name}` for one project's files. \
+             Counters cover pages, downloads (with bytes), metadata, uploads, refreshes, upstream \
+             changes, stale fallbacks, upstream errors, and rejected downloads.",
+        ))
+        .parameter(
+            ParameterBuilder::new()
+                .name("index")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("Drill into one index's projects"))
+                .example(Some(json!("root/pypi"))),
+        )
+        .parameter(
+            ParameterBuilder::new()
+                .name("project")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("With `index`, drill into one project's files"))
+                .example(Some(json!("pandas"))),
+        )
+        .response(
+            "200",
+            ResponseBuilder::new()
+                .description("The counters at the requested depth")
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .example(Some(json!({
+                            "root/pypi": {
+                                "pages": 12, "downloads": 6, "metadata": 6, "uploads": 0,
+                                "bytes": 64_733_247, "refreshes": 2, "changed": 1,
+                                "stale_served": 0, "upstream_errors": 0, "rejected": 0
+                            }
+                        })))
+                        .build(),
+                ),
         )
 }
 

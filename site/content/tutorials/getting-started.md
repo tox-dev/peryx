@@ -108,6 +108,12 @@ The same actions live in the web UI: open the project page, expand "Manage uploa
 
 After the delete, the upstream version of `mypkg` (if one exists on pypi.org) is visible again.
 
+## See what it served
+
+The dashboard's index cards count pages, downloads, and bytes as you use them; the `usage` link drills down to
+per-project and per-file numbers. The same counters are JSON at `/+stats` and Prometheus at `/metrics`; see
+[monitoring](@/guides/monitor.md).
+
 ## Where next
 
 - [How-to guides](@/guides/_index.md) for specific tasks like proxying an Artifactory mirror or composing overlays.
