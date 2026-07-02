@@ -1,0 +1,61 @@
+{
+  "label": "uv: install the top 51 PyPI packages",
+  "parties": [
+    "velodex",
+    "direct",
+    "devpi",
+    "proxpi"
+  ],
+  "rows": [
+    {
+      "name": "cold cache",
+      "cells": [
+        {
+          "text": "3.5 s",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "3.5 s",
+          "ratio": "1.01x",
+          "tint": "faster"
+        },
+        {
+          "text": "12.4 s",
+          "ratio": "3.56x",
+          "tint": "slow"
+        },
+        {
+          "text": "5.0 s",
+          "ratio": "1.44x",
+          "tint": "par"
+        }
+      ]
+    },
+    {
+      "name": "warm cache",
+      "cells": [
+        {
+          "text": "2.8 s",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "3.6 s",
+          "ratio": "1.30x",
+          "tint": "faster"
+        },
+        {
+          "text": "6.0 s",
+          "ratio": "2.18x",
+          "tint": "mild"
+        },
+        {
+          "text": "3.5 s",
+          "ratio": "1.26x",
+          "tint": "faster"
+        }
+      ]
+    }
+  ]
+}

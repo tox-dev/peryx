@@ -1,0 +1,111 @@
+{
+  "label": "simple-page requests against a warm cache",
+  "parties": [
+    "velodex",
+    "direct",
+    "devpi",
+    "proxpi"
+  ],
+  "rows": [
+    {
+      "name": "1 user: requests/s",
+      "cells": [
+        {
+          "text": "4,650 req/s",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "241 req/s",
+          "ratio": "0.05x",
+          "tint": "veryslow"
+        },
+        {
+          "text": "109 req/s",
+          "ratio": "0.02x",
+          "tint": "worst"
+        },
+        {
+          "text": "156 req/s",
+          "ratio": "0.03x",
+          "tint": "worst"
+        }
+      ]
+    },
+    {
+      "name": "1 user: p95 latency",
+      "cells": [
+        {
+          "text": "1 ms",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "10 ms",
+          "ratio": "10.00x",
+          "tint": "slow"
+        },
+        {
+          "text": "35 ms",
+          "ratio": "35.00x",
+          "tint": "worst"
+        },
+        {
+          "text": "24 ms",
+          "ratio": "24.00x",
+          "tint": "worst"
+        }
+      ]
+    },
+    {
+      "name": "32 users: requests/s",
+      "cells": [
+        {
+          "text": "5,317 req/s",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "767 req/s",
+          "ratio": "0.14x",
+          "tint": "mild"
+        },
+        {
+          "text": "109 req/s",
+          "ratio": "0.02x",
+          "tint": "worst"
+        },
+        {
+          "text": "620 req/s",
+          "ratio": "0.12x",
+          "tint": "slow"
+        }
+      ]
+    },
+    {
+      "name": "32 users: p95 latency",
+      "cells": [
+        {
+          "text": "6 ms",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "140 ms",
+          "ratio": "23.33x",
+          "tint": "veryslow"
+        },
+        {
+          "text": "370 ms",
+          "ratio": "61.67x",
+          "tint": "worst"
+        },
+        {
+          "text": "70 ms",
+          "ratio": "11.67x",
+          "tint": "slow"
+        }
+      ]
+    }
+  ]
+}

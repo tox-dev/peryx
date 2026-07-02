@@ -650,3 +650,32 @@ pre:hover .copy-snippet,
 .tab-pane.active {
   display: block;
 }
+
+/* bench-table tints: best-in-row green ramping to worst-in-row red. The number carries the value,
+   the tint is redundant, and the ramp darkens monotonically so it reads under red/green
+   color-vision deficiency too. */
+.bench-table {
+  caption {
+    caption-side: top;
+    text-align: left;
+    color: var(--text-soft);
+    font-size: 0.85rem;
+    padding-bottom: 0.4rem;
+  }
+  td { font-variant-numeric: tabular-nums; }
+  .bench-ratio { color: var(--text-soft); font-size: 0.8rem; }
+  td.bench-faster { background: rgba(12, 163, 12, 0.28); }
+  td.bench-par { background: rgba(12, 163, 12, 0.14); }
+  td.bench-mild { background: rgba(250, 178, 25, 0.16); }
+  td.bench-slow { background: rgba(236, 131, 90, 0.2); }
+  td.bench-veryslow { background: rgba(208, 59, 59, 0.22); }
+  td.bench-worst { background: rgba(208, 59, 59, 0.38); }
+}
+[data-theme="dark"] .bench-table {
+  td.bench-faster { background: rgba(12, 163, 12, 0.34); }
+  td.bench-par { background: rgba(12, 163, 12, 0.18); }
+  td.bench-mild { background: rgba(250, 178, 25, 0.2); }
+  td.bench-slow { background: rgba(236, 131, 90, 0.24); }
+  td.bench-veryslow { background: rgba(208, 59, 59, 0.28); }
+  td.bench-worst { background: rgba(208, 59, 59, 0.44); }
+}

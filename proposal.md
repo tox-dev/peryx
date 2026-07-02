@@ -409,22 +409,22 @@ then corrected by real responses:
 ```rust
 struct UpstreamDescriptor {
     base_url: Url,
-    url_layout: UrlLayout,           // PyPISimple | Artifactory{repo} | Nexus{repo}
-                                     // | GitLab{project|group} | CodeArtifact{..} | Azure{..}
-                                     // | GoogleAR{..} | Devpi{user,index} | StaticBase
-    name_normalization: Normalization,        // Strict | Off | Aggressive
+    url_layout: UrlLayout, // PyPISimple | Artifactory{repo} | Nexus{repo}
+    // | GitLab{project|group} | CodeArtifact{..} | Azure{..}
+    // | GoogleAR{..} | Devpi{user,index} | StaticBase
+    name_normalization: Normalization, // Strict | Off | Aggressive
     auth: AuthKind,
-    has_json_api: Option<bool>,      // PEP 691 honored, exact media type
+    has_json_api: Option<bool>, // PEP 691 honored, exact media type
     has_pep658: Option<bool>,
-    hash_algos: HashSupport,         // Sha256Always | Sha256Sometimes | Md5Only | None
+    hash_algos: HashSupport, // Sha256Always | Sha256Sometimes | Md5Only | None
     has_pep700: Option<bool>,
     has_yanked: Option<bool>,
-    has_serial: Option<bool>,        // X-PyPI-Last-Serial
+    has_serial: Option<bool>, // X-PyPI-Last-Serial
     supports_conditional_get: Option<bool>,
     supports_project_list: Option<bool>,
     requires_trailing_slash: bool,
-    returns_200_html_on_missing: bool,        // the pip#11490 hazard
-    redirects_to_foreign_host: bool,          // re-attach auth on download redirect
+    returns_200_html_on_missing: bool, // the pip#11490 hazard
+    redirects_to_foreign_host: bool,   // re-attach auth on download redirect
 }
 ```
 
@@ -1010,7 +1010,7 @@ authenticates; a configured webhook fires on upload.
 - Azure Artifacts: https://learn.microsoft.com/azure/devops/artifacts/python/ (PAT as Basic password; no PEP 700
   upload-time)
 - Google Artifact Registry: https://docs.cloud.google.com/artifact-registry/docs/python (keyring / oauth2accesstoken,
-  ~1h)
+  \~1h)
 
 ### Client behavior issues (conformance/regression guards)
 

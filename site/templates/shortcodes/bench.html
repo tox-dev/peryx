@@ -1,0 +1,24 @@
+{%- set feed = load_data(path="data/bench/" ~ file ~ ".json") -%}
+<div class="bench">
+  <table class="bench-table">
+    <caption>{{ feed.label }}</caption>
+    <thead>
+      <tr>
+        <th></th>
+        {%- for party in feed.parties %}
+        <th>{{ party }}</th>
+        {%- endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {%- for row in feed.rows %}
+      <tr>
+        <th>{{ row.name }}</th>
+        {%- for cell in row.cells %}
+        <td class="bench-{{ cell.tint }}">{{ cell.text }} <span class="bench-ratio">({{ cell.ratio }})</span></td>
+        {%- endfor %}
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</div>

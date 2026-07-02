@@ -22,22 +22,20 @@ repos:
     rev: 0.7.22
     hooks:
       - id: mdformat
-        additional_dependencies: ["mdformat-gfm"]
+        additional_dependencies:
+          - mdformat-gfm
+          - mdformat-gfm-alerts
+          - mdformat-footnote
+          - mdformat-frontmatter
+          - mdformat-deflist
+          - mdformat-simple-breaks
+          - mdformat-toc
+          - mdformat-config
+          - mdformat-web
+          - mdformat-rustfmt
         args: ["--wrap", "120"]
         # Zola content carries +++ TOML front matter, which mdformat mangles.
         exclude: "^site/content/"
-  - repo: https://github.com/rbubley/mirrors-prettier
-    rev: "v3.8.3"
-    hooks:
-      - id: prettier
-        name: Prettier non-workflow files
-        args: ["--print-width=120", "--prose-wrap=always"]
-        # Tera templates and the generated OpenAPI document must not be reflowed.
-        exclude: "(^.github/workflows/|\\.md$|^site/templates/|^site/static/openapi\\.json$)"
-      - id: prettier
-        name: Prettier workflow files
-        args: ["--print-width=240", "--prose-wrap=always"]
-        exclude: "^(?!.github/workflows/)"
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: 0.37.2
     hooks:
