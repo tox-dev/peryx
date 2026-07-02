@@ -199,4 +199,19 @@ impl PendingBlob {
         self.hasher.update(chunk);
         Ok(())
     }
+
+    /// Push buffered bytes to the file so readers tailing the temp path see them.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] if the flush fails.
+    pub fn flush(&mut self) -> Result<(), BlobError> {
+        self.file.flush()?;
+        Ok(())
+    }
+
+    /// Where the in-progress bytes live until [`BlobStore::commit`] moves them into place.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }

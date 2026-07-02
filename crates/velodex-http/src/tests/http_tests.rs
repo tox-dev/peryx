@@ -919,7 +919,7 @@ async fn test_file_source_not_a_mirror_is_not_found() {
 }
 
 #[tokio::test]
-async fn test_file_digest_mismatch_streams_but_never_persists() {
+async fn test_file_digest_mismatch_fails_the_body_and_never_persists() {
     let h = harness().await;
     let digest = Digest::of(b"expected");
     let file_url = format!("{}/files/flask.whl", h.server.uri());
@@ -931,11 +931,14 @@ async fn test_file_digest_mismatch_streams_but_never_persists() {
         .await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
-    // Streaming forwards the bytes (pip and uv verify hashes themselves)…
-    let (status, _, body) = get(&h.state, &uri, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "wrong bytes");
-    // …but the corrupt blob is never admitted into the store, and the rejection is counted.
+    // The transfer fails verification, so the body errors instead of completing…
+    let response = router(h.state.clone())
+        .oneshot(Request::builder().uri(&*uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.into_body().collect().await.is_err());
+    // …the corrupt blob is never admitted into the store, and the rejection is counted.
     for _ in 0..500 {
         let totals = h.state.metrics.index_totals();
         if totals.get("pypi").is_some_and(|t| t.rejected == 1) {

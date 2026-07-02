@@ -1104,10 +1104,6 @@ fn live_stream(
                         body: std::mem::take(&mut raw),
                     };
                     let expires_at = record.fetched_at_unix + record.fresh_secs.unwrap_or(state.ttl_secs);
-                    state.hot.insert(
-                        live.hot_key.clone(),
-                        (expires_at, Bytes::from(std::mem::take(&mut transformed))),
-                    );
                     // One batched transaction, awaited before the body closes: every byte has been
                     // sent already, and a client cannot act on the page before EOF, so downloads
                     // always find their file registrations.
@@ -1122,6 +1118,13 @@ fn live_stream(
                     })
                     .await
                     .expect("page persist task never panics");
+                    // The hot page goes live only after the persist lands: a concurrent client that
+                    // serves this page from the hot cache and immediately requests a file must find
+                    // that file's registration.
+                    state.hot.insert(
+                        live.hot_key.clone(),
+                        (expires_at, Bytes::from(std::mem::take(&mut transformed))),
+                    );
                     state.inflight.lock().expect("inflight lock").remove(&live.key);
                     drop(live.guard);
                     let elapsed_ms = started.elapsed().as_millis();
@@ -1146,12 +1149,50 @@ pub enum FileOutcome {
     Live(futures_util::stream::BoxStream<'static, Result<Bytes, std::io::Error>>),
 }
 
-/// Serve a file with maximum overlap: a cached blob streams from disk, a miss streams from the
-/// source mirror to the client while hashing into a temp file that persists on verification.
+/// Where one in-flight blob download stands; every client tailing it watches this value.
+#[derive(Clone, Debug, Default)]
+pub struct DownloadProgress {
+    /// Bytes readable from the temp file so far.
+    pub flushed: u64,
+    /// Set once: `Ok` after the blob committed, `Err` when the transfer or verification failed.
+    pub done: Option<Result<(), String>>,
+}
+
+/// A live download other requests for the same digest can attach to.
+#[derive(Clone, Debug)]
+pub struct DownloadHandle {
+    /// The temp file the transfer lands in until commit renames it.
+    path: std::path::PathBuf,
+    progress: tokio::sync::watch::Receiver<DownloadProgress>,
+}
+
+#[cfg(test)]
+impl DownloadHandle {
+    pub(crate) const fn new(
+        path: std::path::PathBuf,
+        progress: tokio::sync::watch::Receiver<DownloadProgress>,
+    ) -> Self {
+        Self { path, progress }
+    }
+}
+
+/// Serve a file with maximum overlap: a cached blob streams from disk, a miss tails one shared
+/// upstream transfer as its bytes land.
+///
+/// A miss starts a detached transfer that hashes into a temp file; every concurrent request for
+/// the digest streams from that file in parallel, and the transfer outlives its clients, so an
+/// abandoned download still populates the cache.
 ///
 /// # Errors
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, or another error on a
 /// store or upstream failure.
+///
+/// # Panics
+/// Never in practice: only if the downloads registry lock was poisoned by an earlier panic.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the connect gate stays held across start_download so racing clients attach instead of double-fetching"
+)]
 pub async fn stream_file(
     state: Arc<AppState>,
     digest: Digest,
@@ -1161,26 +1202,67 @@ pub async fn stream_file(
     if state.blobs.exists(&digest) {
         return Ok(FileOutcome::Cached(state.blobs.path_for(&digest)));
     }
+    // The gate serializes only the connect phase, so an upstream refusal stays a clean HTTP error
+    // for every racing client instead of a mid-body abort on a started stream.
     let gate = flight_gate(&state, digest.as_str());
     let guard = gate.lock_owned().await;
     if state.blobs.exists(&digest) {
+        release_flight(&state, digest.as_str(), guard);
         return Ok(FileOutcome::Cached(state.blobs.path_for(&digest)));
     }
+    let handle = if let Some(running) = existing_download(&state, &digest) {
+        running
+    } else {
+        let started = start_download(&state, &digest, route.clone(), filename.clone()).await?;
+        state
+            .downloads
+            .lock()
+            .expect("downloads lock")
+            .insert(digest.as_str().to_owned(), started.clone());
+        started
+    };
+    release_flight(&state, digest.as_str(), guard);
+    Ok(FileOutcome::Live(tail_download(state, digest, handle, route, filename)))
+}
+
+/// Connect upstream and spawn the detached pump feeding a new blob transfer.
+async fn start_download(
+    state: &Arc<AppState>,
+    digest: &Digest,
+    route: String,
+    filename: String,
+) -> Result<DownloadHandle, CacheError> {
     let (url, source) = state
         .meta
         .get_file_url(digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
-    let client = source_client(&state, &source)?;
+    let client = source_client(state, &source)?;
     let body = client.stream_bytes(&url).await?;
     let pending = state.blobs.begin()?;
-    Ok(FileOutcome::Live(live_blob(
-        state,
-        digest,
+    let (sender, receiver) = tokio::sync::watch::channel(DownloadProgress::default());
+    let handle = DownloadHandle {
+        path: pending.path().to_owned(),
+        progress: receiver,
+    };
+    tokio::spawn(pump_download(
+        state.clone(),
+        digest.clone(),
         body,
         pending,
-        guard,
+        sender,
         (route, filename),
-    )))
+    ));
+    Ok(handle)
+}
+
+/// The in-flight download for `digest`, if one is pumping right now.
+fn existing_download(state: &AppState, digest: &Digest) -> Option<DownloadHandle> {
+    state
+        .downloads
+        .lock()
+        .expect("downloads lock")
+        .get(digest.as_str())
+        .cloned()
 }
 
 fn source_client(state: &AppState, source: &str) -> Result<UpstreamClient, CacheError> {
@@ -1195,70 +1277,181 @@ fn source_client(state: &AppState, source: &str) -> Result<UpstreamClient, Cache
         .ok_or(CacheError::FileNotFound)
 }
 
-/// Forward upstream chunks to the client while teeing them into a pending blob; on completion the
-/// blob persists only when the digest verifies (the client checks its own hashes regardless).
-fn live_blob(
+/// Chunks smaller than this batch up before a flush makes them visible to tailing readers.
+const FLUSH_EVERY: u64 = 256 * 1024;
+
+/// Pull the upstream body into the pending blob, publishing flushed progress as it lands; on EOF
+/// the blob persists only when the digest verifies (clients check their own hashes regardless).
+/// Runs detached from any client, so the cache fills even when every requester disconnects.
+async fn pump_download(
     state: Arc<AppState>,
     digest: Digest,
     body: impl futures_util::Stream<Item = Result<Bytes, velodex_upstream::UpstreamError>> + Send + 'static,
-    pending: velodex_storage::blob::PendingBlob,
-    guard: tokio::sync::OwnedMutexGuard<()>,
+    mut pending: velodex_storage::blob::PendingBlob,
+    sender: tokio::sync::watch::Sender<DownloadProgress>,
     served_as: (String, String),
+) {
+    let started = std::time::Instant::now();
+    let outcome = match drain_to_blob(body, &mut pending, &sender).await {
+        Ok(()) => {
+            let commit_state = state.clone();
+            let commit_digest = digest.clone();
+            // The rename waits on an fsync, so it runs off the async workers.
+            tokio::task::spawn_blocking(move || commit_state.blobs.commit(pending, &commit_digest))
+                .await
+                .expect("blob commit task never panics")
+                .map_err(|err| err.to_string())
+        }
+        Err(err) => Err(err),
+    };
+    let bytes = sender.borrow().flushed;
+    let elapsed_ms = started.elapsed().as_millis();
+    #[rustfmt::skip]
+    tracing::debug!(digest = digest.as_str(), bytes, elapsed_ms, "blob transfer ended");
+    if outcome.is_err() {
+        tracing::warn!(digest = digest.as_str(), "blob persist rejected");
+        let (route, filename) = served_as;
+        state.metrics.record(Event::BlobRejected { route, filename });
+    }
+    // Commit lands before the entry disappears and the entry disappears before done broadcasts,
+    // so a request arriving at any point sees the blob, the live download, or nothing stale.
+    state.downloads.lock().expect("downloads lock").remove(digest.as_str());
+    sender.send_modify(|progress| progress.done = Some(outcome));
+}
+
+/// Tee the upstream body into the pending blob, publishing progress at every flush. Errors map to
+/// strings so the watch channel can carry the verdict to every tailing client.
+async fn drain_to_blob(
+    body: impl futures_util::Stream<Item = Result<Bytes, velodex_upstream::UpstreamError>> + Send + 'static,
+    pending: &mut velodex_storage::blob::PendingBlob,
+    sender: &tokio::sync::watch::Sender<DownloadProgress>,
+) -> Result<(), String> {
+    use futures_util::StreamExt as _;
+    let mut body = std::pin::pin!(body);
+    let mut written = 0u64;
+    let mut flushed = 0u64;
+    while let Some(item) = body.next().await {
+        let chunk = item.map_err(|err| err.to_string())?;
+        // A failed tee write leaves the hash short of these bytes, so commit refuses the blob at
+        // the end; progress only advances on flushed bytes, so tails never read past the file.
+        let _ = pending.write(&chunk);
+        written += chunk.len() as u64;
+        if written - flushed >= FLUSH_EVERY && pending.flush().is_ok() {
+            flushed = written;
+            sender.send_modify(|progress| progress.flushed = flushed);
+        }
+    }
+    // A failed final flush reads as truncation to any tail and as a digest shortfall at commit.
+    let _ = pending.flush();
+    sender.send_modify(|progress| progress.flushed = written);
+    Ok(())
+}
+
+/// One client's view of a live download while it tails the pump's temp file.
+struct Tail {
+    state: Arc<AppState>,
+    digest: Digest,
+    handle: DownloadHandle,
+    file: Option<tokio::fs::File>,
+    sent: u64,
+    route: String,
+    filename: String,
+    alive: bool,
+}
+
+/// Stream a live download to one client by tailing the temp file as the pump flushes it.
+pub(crate) fn tail_download(
+    state: Arc<AppState>,
+    digest: Digest,
+    handle: DownloadHandle,
+    route: String,
+    filename: String,
 ) -> futures_util::stream::BoxStream<'static, Result<Bytes, std::io::Error>> {
     use futures_util::StreamExt as _;
-    let body = body.boxed();
-    let started = std::time::Instant::now();
-    futures_util::stream::unfold(
-        (state, digest, body, Some(pending), Some(guard), 0u64, served_as),
-        move |(state, digest, mut body, mut pending, guard, sent, served_as)| async move {
-            match body.next().await {
-                Some(Ok(chunk)) => {
-                    // A failed tee write leaves the hash short of these bytes, so commit refuses
-                    // the blob; the client stream is unaffected either way.
-                    if let Some(open) = pending.as_mut() {
-                        let _ = open.write(&chunk);
+    use tokio::io::AsyncReadExt as _;
+    let tail = Tail {
+        state,
+        digest,
+        handle,
+        file: None,
+        sent: 0,
+        route,
+        filename,
+        alive: true,
+    };
+    futures_util::stream::unfold(tail, |mut tail| async move {
+        if !tail.alive {
+            return None;
+        }
+        loop {
+            let progress = tail.handle.progress.borrow_and_update().clone();
+            if tail.sent < progress.flushed {
+                if tail.file.is_none() {
+                    match tail_file(&tail.state, &tail.handle, &tail.digest).await {
+                        Ok(file) => tail.file = Some(file),
+                        Err(err) => {
+                            tail.alive = false;
+                            return Some((Err(err), tail));
+                        }
                     }
-                    let sent = sent + chunk.len() as u64;
-                    Some((Ok(chunk), (state, digest, body, pending, guard, sent, served_as)))
                 }
-                Some(Err(err)) => Some((
-                    Err(std::io::Error::other(err.to_string())),
-                    (state, digest, body, None, guard, sent, served_as),
-                )),
-                None => {
-                    let elapsed_ms = started.elapsed().as_millis();
-                    tracing::debug!(digest = digest.as_str(), bytes = sent, elapsed_ms, "blob streamed");
-                    // The download event carries real bytes only once the stream ends, so the live
-                    // path records here rather than in the handler.
-                    state.metrics.record(Event::Download {
-                        route: served_as.0.clone(),
-                        filename: served_as.1.clone(),
-                        bytes: sent,
-                    });
-                    // Nothing downstream depends on the blob being on disk, so the client gets EOF
-                    // immediately and the verify-fsync-rename runs detached; the flight guard moves
-                    // into the task so a concurrent request for the same digest waits for the
-                    // commit instead of racing it.
-                    if let Some(pending) = pending.take() {
-                        tokio::task::spawn_blocking(move || {
-                            // Any commit failure (digest mismatch, disk trouble) means the download
-                            // could not be verified and persisted; the client already has its bytes.
-                            if let Err(err) = state.blobs.commit(pending, &digest) {
-                                tracing::warn!(error = ?err, "blob persist rejected");
-                                let (route, filename) = served_as;
-                                state.metrics.record(Event::BlobRejected { route, filename });
-                            }
-                            state.inflight.lock().expect("inflight lock").remove(digest.as_str());
-                            drop(guard);
-                        });
-                    } else {
-                        state.inflight.lock().expect("inflight lock").remove(digest.as_str());
-                        drop(guard);
+                let reader = tail.file.as_mut().expect("opened above");
+                let budget = usize::try_from((progress.flushed - tail.sent).min(FLUSH_EVERY)).expect("bounded chunk");
+                let mut buffer = vec![0u8; budget];
+                match reader.read(&mut buffer).await {
+                    Ok(0) | Err(_) => {
+                        tail.alive = false;
+                        return Some((Err(std::io::Error::other("blob temp file truncated mid-tail")), tail));
                     }
-                    None
+                    Ok(count) => {
+                        buffer.truncate(count);
+                        tail.sent += count as u64;
+                        return Some((Ok(Bytes::from(buffer)), tail));
+                    }
                 }
             }
-        },
-    )
+            match progress.done {
+                Some(Ok(())) => {
+                    tail.state.metrics.record(Event::Download {
+                        route: tail.route.clone(),
+                        filename: tail.filename.clone(),
+                        bytes: tail.sent,
+                    });
+                    return None;
+                }
+                Some(Err(message)) => {
+                    tail.alive = false;
+                    return Some((Err(std::io::Error::other(message)), tail));
+                }
+                None => {
+                    if tail.handle.progress.changed().await.is_err() {
+                        tail.alive = false;
+                        return Some((Err(std::io::Error::other("blob transfer abandoned")), tail));
+                    }
+                }
+            }
+        }
+    })
     .boxed()
+}
+
+/// Open the file a tail reads from. The first read always happens at offset zero, so no seek is
+/// needed: either the temp file still exists, or the transfer already committed and the blob
+/// serves from its final path.
+async fn tail_file(
+    state: &AppState,
+    handle: &DownloadHandle,
+    digest: &Digest,
+) -> Result<tokio::fs::File, std::io::Error> {
+    match tokio::fs::File::open(&handle.path).await {
+        Ok(file) => Ok(file),
+        Err(err) => {
+            // Check the live progress, not the caller's snapshot: the rename that removed the
+            // temp file may have landed after that snapshot was taken.
+            if matches!(handle.progress.borrow().done, Some(Ok(()))) {
+                return tokio::fs::File::open(state.blobs.path_for(digest)).await;
+            }
+            Err(err)
+        }
+    }
 }

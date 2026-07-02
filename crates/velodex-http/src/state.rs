@@ -56,6 +56,9 @@ pub struct AppState {
     /// One async lock per project being fetched from upstream, so concurrent cache misses for the
     /// same page share a single upstream fetch instead of each downloading and storing it.
     pub inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One live download per blob digest: concurrent cold requests for the same file all tail the
+    /// one upstream transfer as it lands instead of waiting for it to finish.
+    pub downloads: Mutex<HashMap<String, crate::cache::DownloadHandle>>,
     /// Transformed page bytes ready to serve, paired with their unix expiry: warm requests are a
     /// lookup, an expiry check, and a memcpy. Entries carry the mutation epoch in their key, so
     /// uploads and overrides invalidate by key miss; the expiry honors each page's upstream
@@ -87,6 +90,7 @@ impl AppState {
             metadata_requests: AtomicU64::new(0),
             indexes,
             inflight: Mutex::new(HashMap::new()),
+            downloads: Mutex::new(HashMap::new()),
             hot: moka::sync::Cache::builder()
                 .max_capacity(256 * 1024 * 1024)
                 .weigher(|key: &String, (_, value): &(i64, Bytes)| {
