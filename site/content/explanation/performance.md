@@ -23,11 +23,11 @@ env VIRTUAL_ENV=$PWD/fresh-venv UV_CACHE_DIR=$PWD/fresh-cache \
 Setup: velodex release build and the client on the same Apple Silicon laptop, roughly 700 Mbit/s to PyPI's CDN.
 Five runs per scenario; "cold" deletes velodex's data directory first, "warm" keeps it and only resets the client.
 
-| Scenario                     | Wall time    | What dominates                                    |
+| Scenario | Wall time | What dominates |
 | ---------------------------- | ------------ | ------------------------------------------------- |
-| uv direct to pypi.org        | 0.94–1.03 s  | the network, end to end                           |
-| through velodex, cold cache  | 1.13–1.38 s  | the network; velodex adds ~0.1–0.3 s              |
-| through velodex, warm cache  | 0.66–0.71 s  | uv itself (0.76 s of CPU unzipping and installing) |
+| uv direct to pypi.org | 0.94–1.03 s | the network, end to end |
+| through velodex, cold cache | 1.13–1.38 s | the network; velodex adds ~0.1–0.3 s |
+| through velodex, warm cache | 0.66–0.71 s | uv itself (0.76 s of CPU unzipping and installing) |
 
 Per-request server timings from the warm runs: simple pages and cached wheels serve in 0 ms; the largest page in
 the set (numpy's, 2.6 MB of JSON) transforms in under 30 ms on its first warm hit and is a memory copy afterwards.
@@ -86,13 +86,31 @@ rescue a slow client; through uv, the index is what you feel.
 
 {{ bench(file="install-pip") }}
 
+The throughput workload moves one large wheel (torch, ~88 MB). The cold row is the moment a CI fleet fears: four
+clients ask for the same wheel the instant a release lands, and the server either fans one upstream transfer out
+to every waiter or serializes them. velodex runs the transfer as a detached task every client tails, so all four
+see their first byte in milliseconds and finish together in the time one download takes; pypicloud answers the
+same burst with HTTP 500. The hot rows measure how fast a cached wheel leaves the server, alone and under eight
+parallel readers. Every number past ~3 GB/s outruns a 25 GbE link, so those cells compare server efficiency, not
+anything a client on a network would feel.
+
+{{ bench(file="throughput") }}
+
+The parallel-install workload is that fleet end to end: ten virtualenvs install polars at once, each with its own
+empty client cache, exactly like ten CI jobs landing on the same runner pool. The server sees ten simultaneous
+copies of every page and wheel request. This is where correctness under concurrency shows up next to speed:
+devpi fails eight of the ten cold installs, because concurrent requests for a project it is fetching for the
+first time see an empty page and uv concludes the package does not exist.
+
+{{ bench(file="parallel-install") }}
+
 The request workload drives locust against each warm server: one user, then a swarm of 32, fetching project pages
 the way a resolver does.
 
 {{ bench(file="load") }}
 
 Every server is measured the same way, on the same machine, in the same run, and one command reproduces all
-three tables:
+five tables:
 
 ```shell
 uv run tests/perf/run.py

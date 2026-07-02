@@ -1,0 +1,137 @@
+{
+  "label": "moving one large wheel (torch): cold under contention, hot at speed",
+  "baseline": "direct",
+  "parties": [
+    {
+      "name": "velodex",
+      "url": "https://velodex.readthedocs.io/"
+    },
+    {
+      "name": "direct",
+      "url": "https://pypi.org/"
+    },
+    {
+      "name": "devpi",
+      "url": "https://devpi.net/docs/"
+    },
+    {
+      "name": "proxpi",
+      "url": "https://github.com/EpicWink/proxpi"
+    },
+    {
+      "name": "pypiserver",
+      "url": "https://github.com/pypiserver/pypiserver"
+    },
+    {
+      "name": "pypicloud",
+      "url": "https://pypicloud.readthedocs.io/"
+    }
+  ],
+  "rows": [
+    {
+      "name": "cold cache: 4 clients, one wheel",
+      "cells": [
+        {
+          "text": "819 ms",
+          "ratio": "0.27x",
+          "tint": "faster"
+        },
+        {
+          "text": "3.1 s",
+          "ratio": "1.00x",
+          "tint": "slow"
+        },
+        {
+          "text": "3.1 s",
+          "ratio": "1.00x",
+          "tint": "slow"
+        },
+        {
+          "text": "6.2 s",
+          "ratio": "1.99x",
+          "tint": "worst"
+        },
+        {
+          "text": "3.1 s",
+          "ratio": "0.99x",
+          "tint": "slow"
+        },
+        {
+          "text": "error",
+          "ratio": "n/a",
+          "tint": "worst"
+        }
+      ]
+    },
+    {
+      "name": "hot cache: single download",
+      "cells": [
+        {
+          "text": "5,346 MB/s",
+          "ratio": "48.18x",
+          "tint": "faster"
+        },
+        {
+          "text": "111 MB/s",
+          "ratio": "1.00x",
+          "tint": "worst"
+        },
+        {
+          "text": "2,683 MB/s",
+          "ratio": "24.18x",
+          "tint": "par"
+        },
+        {
+          "text": "6,834 MB/s",
+          "ratio": "61.59x",
+          "tint": "faster"
+        },
+        {
+          "text": "112 MB/s",
+          "ratio": "1.01x",
+          "tint": "worst"
+        },
+        {
+          "text": "error",
+          "ratio": "n/a",
+          "tint": "worst"
+        }
+      ]
+    },
+    {
+      "name": "hot cache: 8 parallel downloads",
+      "cells": [
+        {
+          "text": "7,739 MB/s",
+          "ratio": "66.95x",
+          "tint": "faster"
+        },
+        {
+          "text": "116 MB/s",
+          "ratio": "1.00x",
+          "tint": "worst"
+        },
+        {
+          "text": "3,115 MB/s",
+          "ratio": "26.95x",
+          "tint": "par"
+        },
+        {
+          "text": "9,182 MB/s",
+          "ratio": "79.43x",
+          "tint": "faster"
+        },
+        {
+          "text": "115 MB/s",
+          "ratio": "1.00x",
+          "tint": "worst"
+        },
+        {
+          "text": "error",
+          "ratio": "n/a",
+          "tint": "worst"
+        }
+      ]
+    }
+  ]
+}

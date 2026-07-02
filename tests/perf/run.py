@@ -4,11 +4,15 @@
 # ///
 """Benchmark velodex against direct PyPI and competing index servers.
 
-Two workloads:
+Four workloads:
 
 - **install**: time ``uv pip install`` and ``pip install`` of the top PyPI packages through each
   server, cold (fresh server state) and warm (the server keeps its cache, the client starts
   over). This is the number a user feels.
+- **throughput**: move one large wheel; four clients racing for it cold, then single and
+  eight-way parallel downloads of it hot.
+- **parallel installs**: ten venvs install polars at once with separate client caches, like ten
+  CI jobs hitting the same server, cold and warm.
 - **load**: request-level throughput with locust, one user and a concurrent swarm, against each
   warm server.
 
@@ -25,16 +29,19 @@ the release binary is missing)::
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import math
 import os
+import re
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -58,6 +65,10 @@ LADDER: Final = ("faster", "par", "mild", "slow", "veryslow", "worst")
 # The row's best figure takes the green end and the rest log-interpolate toward red; the scale
 # never compresses below an 8x span, so a near-parity row reads green throughout.
 MIN_SPAN: Final = math.log(8.0)
+# The stress wheel is torch, the largest of the top packages; the fleet package is polars, a
+# heavy single-wheel install a CI fleet grabs over and over.
+STRESS_PROJECT: Final = "torch"
+FLEET_PACKAGE: Final = "polars"
 
 
 @dataclass(frozen=True)
@@ -201,6 +212,8 @@ def main() -> None:
     parser.add_argument("--skip-pip", action="store_true", help="skip the pip client (uv only)")
     parser.add_argument("--skip-load", action="store_true", help="skip the locust request workload")
     parser.add_argument("--skip-install", action="store_true", help="skip the install workload")
+    parser.add_argument("--skip-throughput", action="store_true", help="skip the file throughput workload")
+    parser.add_argument("--skip-parallel", action="store_true", help="skip the parallel-CI install workload")
     parser.add_argument(
         "--only",
         default="",
@@ -212,6 +225,10 @@ def main() -> None:
     servers = [server for server in SERVERS if not arguments.only or server.name in arguments.only.split(",")]
     if not arguments.skip_install:
         bench_installs(servers, ["uv", *([] if arguments.skip_pip else ["pip"])], arguments.runs)
+    if not arguments.skip_throughput:
+        bench_throughput(servers)
+    if not arguments.skip_parallel:
+        bench_parallel_installs(servers)
     if not arguments.skip_load:
         bench_load(servers, users=(1, 32))
 
@@ -377,6 +394,216 @@ def install_once(client: str, index_url: str, scratch: Path) -> float:
     return elapsed
 
 
+def bench_throughput(servers: list[Server]) -> None:
+    """The file-transfer workload: one large wheel, cold under contention and hot at full speed.
+
+    The cold row sends four clients after the same uncached wheel at once, which is what a CI fleet
+    does to a cache the moment a new release lands: it measures whether the server fans one
+    upstream transfer out to every waiter or serializes them. The hot rows measure how fast a
+    cached wheel leaves the server, alone and under eight parallel readers.
+    """
+    filename = stress_wheel_filename()
+    _LOG.info("[throughput] measuring with %s", filename)
+    results: dict[str, dict[str, float] | None] = {}
+    for server in servers:
+        with tempfile.TemporaryDirectory(prefix=f"tput-{server.name}-") as scratch:
+            state = Path(scratch) / "state"
+            state.mkdir()
+            with running(server, state) as index_url:
+                # A server erroring under contention is itself a result worth a table cell.
+                try:
+                    url = wheel_url(index_url, STRESS_PROJECT, filename)
+                    cold_wall = parallel_downloads(url, clients=4)
+                    # Hot transfers are sub-second syscall benchmarks; the best of three smooths
+                    # scheduler noise. The cold transfer cannot repeat without resetting state.
+                    single_seconds, size = min(timed_download(url) for _ in range(3))
+                    hot_wall = min(parallel_downloads(url, clients=8) for _ in range(3))
+                except urllib.error.URLError as error:
+                    _LOG.info("[throughput] %s: failed under contention (%s)", server.name, error)
+                    results[server.name] = None
+                    continue
+                results[server.name] = {
+                    "cold4": cold_wall,
+                    "hot1": size / single_seconds / 1e6,
+                    "hot8": 8 * size / hot_wall / 1e6,
+                }
+                _LOG.info(
+                    "[throughput] %s: cold-4 %.1fs, hot %.0f MB/s, hot-8 %.0f MB/s",
+                    server.name,
+                    cold_wall,
+                    results[server.name]["hot1"],
+                    results[server.name]["hot8"],
+                )
+    names = [server.name for server in servers]
+    baseline = names.index("direct") if "direct" in names else 0
+
+    def column(key: str) -> list[float | None]:
+        return [(cells := results[name]) and cells[key] for name in names]
+
+    rows = [
+        {
+            "name": "cold cache: 4 clients, one wheel",
+            "cells": tinted_cells(column("cold4"), baseline=baseline),
+        },
+        {
+            "name": "hot cache: single download",
+            "cells": tinted_cells(column("hot1"), baseline=baseline, higher_is_better=True, unit="MB/s"),
+        },
+        {
+            "name": "hot cache: 8 parallel downloads",
+            "cells": tinted_cells(column("hot8"), baseline=baseline, higher_is_better=True, unit="MB/s"),
+        },
+    ]
+    write_feed(
+        "throughput",
+        {
+            "label": f"moving one large wheel ({STRESS_PROJECT}): cold under contention, hot at speed",
+            "baseline": names[baseline],
+            "parties": [{"name": server.name, "url": server.homepage} for server in servers],
+            "rows": rows,
+        },
+    )
+
+
+def stress_wheel_filename() -> str:
+    """The concrete wheel every server moves, resolved once from PyPI so all parties match.
+
+    Returns:
+        The newest stress-project wheel filename for this host's platform.
+    """
+    request = urllib.request.Request(
+        f"https://pypi.org/simple/{STRESS_PROJECT}/",
+        headers={"Accept": "application/vnd.pypi.simple.v1+json"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        files = json.load(response)["files"]
+    tags = ("macosx", "arm64") if sys.platform == "darwin" else ("manylinux", "x86_64")
+    matches = [file["filename"] for file in files if all(tag in file["filename"] for tag in tags)]
+    return matches[-1]
+
+
+def wheel_url(index_url: str, project: str, filename: str) -> str:
+    """Resolve `filename`'s download URL through a server's simple page, JSON or HTML alike.
+
+    Returns:
+        The absolute download URL the server serves that wheel under.
+    """
+    page_url = f"{index_url}{project}/"
+    request = urllib.request.Request(
+        page_url, headers={"Accept": "application/vnd.pypi.simple.v1+json, text/html;q=0.5"}
+    )
+    with urllib.request.urlopen(request, timeout=300) as response:
+        content_type = response.headers.get_content_type()
+        body = response.read().decode(errors="replace")
+        page_url = response.geturl()
+    if content_type == "application/vnd.pypi.simple.v1+json":
+        href = next(file["url"] for file in json.loads(body)["files"] if file["filename"] == filename)
+    else:
+        href = next(match for match in re.findall(r'href="([^"]+)"', body) if filename in match)
+    return urllib.parse.urljoin(page_url, href.partition("#")[0])
+
+
+def timed_download(url: str) -> tuple[float, int]:
+    """One full download.
+
+    Returns:
+        Wall seconds and byte count.
+    """
+    start = time.monotonic()
+    total = 0
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": "*/*"}), timeout=600) as response:
+        while chunk := response.read(1 << 20):
+            total += len(chunk)
+    return time.monotonic() - start, total
+
+
+def parallel_downloads(url: str, *, clients: int) -> float:
+    """`clients` simultaneous downloads of the same URL.
+
+    Returns:
+        Wall seconds until every download finishes.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=clients) as pool:
+        start = time.monotonic()
+        futures = [pool.submit(timed_download, url) for _ in range(clients)]
+        for future in futures:
+            future.result()
+    return time.monotonic() - start
+
+
+def bench_parallel_installs(servers: list[Server]) -> None:
+    """The CI-fleet workload: ten venvs install polars at once, cold then warm.
+
+    Each worker gets its own empty uv cache, exactly like ten CI jobs landing on the same runner
+    pool: the server sees ten simultaneous copies of every page and wheel request.
+    """
+    results: dict[str, dict[str, float] | None] = {}
+    for server in servers:
+        with tempfile.TemporaryDirectory(prefix=f"fleet-{server.name}-") as scratch:
+            state = Path(scratch) / "state"
+            state.mkdir()
+            with running(server, state) as index_url:
+                # A server erroring under the fleet is itself a result worth a table cell.
+                try:
+                    cold = fleet_install(index_url, Path(scratch), workers=10)
+                    warm = fleet_install(index_url, Path(scratch), workers=10)
+                except RuntimeError as error:
+                    _LOG.info("[fleet] %s: failed under the fleet (%s)", server.name, error)
+                    results[server.name] = None
+                    continue
+                results[server.name] = {"cold": cold, "warm": warm}
+                _LOG.info("[fleet] %s: cold %.1fs warm %.1fs", server.name, cold, warm)
+    names = [server.name for server in servers]
+    baseline = names.index("direct") if "direct" in names else 0
+    rows = [
+        {
+            "name": f"{phase} cache: 10 parallel installs",
+            "cells": tinted_cells([(cells := results[name]) and cells[phase] for name in names], baseline=baseline),
+        }
+        for phase in ("cold", "warm")
+    ]
+    write_feed(
+        "parallel-install",
+        {
+            "label": f"uv: ten venvs install {FLEET_PACKAGE} at once",
+            "baseline": names[baseline],
+            "parties": [{"name": server.name, "url": server.homepage} for server in servers],
+            "rows": rows,
+        },
+    )
+
+
+def fleet_install(index_url: str, scratch: Path, *, workers: int) -> float:
+    """Install the fleet package into `workers` fresh venvs at once.
+
+    Returns:
+        Wall seconds until every install finishes.
+    """
+    with tempfile.TemporaryDirectory(prefix="fleet-run-", dir=scratch) as rundir:
+        venvs = [Path(rundir) / f"venv-{index}" for index in range(workers)]
+        for venv in venvs:
+            subprocess.run(["uv", "venv", str(venv)], check=True, capture_output=True)
+
+        def one(venv: Path) -> None:
+            env = {**os.environ, "VIRTUAL_ENV": str(venv), "UV_CACHE_DIR": f"{venv}-cache"}
+            result = subprocess.run(
+                ["uv", "pip", "install", "--index-url", index_url, FLEET_PACKAGE],
+                env=env,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                msg = f"fleet install via {index_url} failed:\n{result.stderr.decode()[-2000:]}"
+                raise RuntimeError(msg)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            start = time.monotonic()
+            futures = [pool.submit(one, venv) for venv in venvs]
+            for future in futures:
+                future.result()
+        return time.monotonic() - start
+
+
 def bench_load(servers: list[Server], users: tuple[int, ...]) -> None:
     """The request workload: locust against each warm server, per swarm size."""
     metrics: dict[str, dict[int, dict[str, float]]] = {}
@@ -451,22 +678,28 @@ def locust_run(index_url: str, users: int, scratch: Path) -> dict[str, float]:
 
 
 def tinted_cells(
-    values: list[float], *, baseline: int = 0, higher_is_better: bool = False, unit: str = "s"
+    values: list[float | None], *, baseline: int = 0, higher_is_better: bool = False, unit: str = "s"
 ) -> list[dict[str, str]]:
     """Format one row: readable value, ratio against the baseline party, and a best-to-worst tint.
 
     The baseline is the no-proxy `direct` measurement where present, so every other cell reads as
-    the overhead (or win) a server adds on top of talking to the upstream itself.
+    the overhead (or win) a server adds on top of talking to the upstream itself. A `None` marks a
+    party that errored on the workload; it renders as a red `error` cell.
 
     Returns:
         One cell dict (`text`, `ratio`, `tint`) per value, in input order.
     """
     reference = values[baseline]
-    costs = [1.0 / value if higher_is_better else value for value in values]
-    best = min(costs)
-    span = max(math.log(max(costs) / best), MIN_SPAN)
+    assert reference is not None, "the baseline party never errors"
+    costs = [None if value is None else (1.0 / value if higher_is_better else value) for value in values]
+    finite = [cost for cost in costs if cost is not None]
+    best = min(finite)
+    span = max(math.log(max(finite) / best), MIN_SPAN)
     cells = []
     for value, cost in zip(values, costs, strict=True):
+        if value is None or cost is None:
+            cells.append({"text": "error", "ratio": "n/a", "tint": "worst"})
+            continue
         position = math.log(cost / best) / span
         cells.append({
             "text": _format_seconds(value) if unit == "s" else f"{value:,.0f} {unit}",
