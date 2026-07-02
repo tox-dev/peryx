@@ -87,7 +87,7 @@ fn test_mirror_auth_none() {
 #[test]
 fn test_build_router_data_dir_error() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("afile");
+    let file = dir.path().join("blocker");
     std::fs::write(&file, "x").unwrap();
     let config = Config {
         data_dir: file.join("sub"),

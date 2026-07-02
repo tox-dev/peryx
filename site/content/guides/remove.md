@@ -4,9 +4,9 @@ description = "Yank an uploaded release per PEP 592, or delete it outright."
 weight = 4
 +++
 
-Both operations act on uploaded files in an index's local layer and take the same Basic-auth token as uploads. Files
-served from a mirror are read-only; removing an uploaded file that shadowed an upstream one makes the upstream
-version visible again.
+Both operations take the same Basic-auth token as uploads, and both work on upstream files too: a mirror is
+read-only, so velox records the change as a reversible override on the overlay's local layer instead of touching the
+mirror. Removing an uploaded file that shadowed an upstream one makes the upstream version visible again.
 
 ## Yank (reversible)
 
@@ -24,10 +24,11 @@ curl -X PUT -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/yank
 curl -X DELETE -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/1.2.0/yank
 ```
 
-## Delete (permanent)
+## Delete
 
-Deletion removes the file records from the index. It requires the local layer to be `volatile` (the default);
-set `volatile = false` on release indexes you want immutable, and velox answers `403` instead.
+Deleting uploaded files removes their records outright and requires the local layer to be `volatile` (the default);
+set `volatile = false` on release indexes you want immutable, and velox answers `403` instead. Deleting files that
+come from a mirror hides them from the overlay reversibly; `restore` undoes it.
 
 ```shell
 # delete one version
@@ -37,5 +38,13 @@ curl -X DELETE -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/1.2.0
 curl -X DELETE -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/
 ```
 
+## Restore hidden upstream files
+
+```shell
+curl -X PUT -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/1.2.0/restore  # one version
+curl -X PUT -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/restore        # whole project
+```
+
 The content-addressed blob stays on disk after a delete; another index or a re-upload with the same digest reuses
-it. Responses are `200` with the number of files affected, or `404` when nothing matched.
+it. Responses are `200` with the number of files affected, or `404` when nothing matched. The project page's
+"Manage uploads" panel in the [web UI](@/guides/web-ui.md) drives these same endpoints.

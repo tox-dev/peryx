@@ -22,6 +22,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

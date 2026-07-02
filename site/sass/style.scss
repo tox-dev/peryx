@@ -352,7 +352,9 @@ a {
       background: var(--bg);
       font-size: 0.97rem;
       color: var(--text-soft);
-      transition: border-color 120ms ease, transform 120ms ease;
+      transition:
+        border-color 120ms ease,
+        transform 120ms ease;
 
       strong {
         display: block;
@@ -390,7 +392,9 @@ a {
     padding: 1.2rem 1.4rem;
     color: var(--text);
     background: var(--bg);
-    transition: border-color 120ms ease, transform 120ms ease;
+    transition:
+      border-color 120ms ease,
+      transform 120ms ease;
 
     h3 {
       margin: 0 0 0.4rem;
@@ -509,7 +513,6 @@ table {
   }
 }
 
-
 // ReDoc manages its own inner layout; give it the full viewport width and let the intro above it
 // keep the normal column.
 .api-intro article {
@@ -538,13 +541,25 @@ table {
 }
 
 // The button shows the theme a click switches to.
-.theme-toggle .sun { display: none; }
-.theme-toggle .moon { display: inline; }
-:root[data-theme="dark"] .theme-toggle .sun { display: inline; }
-:root[data-theme="dark"] .theme-toggle .moon { display: none; }
+.theme-toggle .sun {
+  display: none;
+}
+.theme-toggle .moon {
+  display: inline;
+}
+:root[data-theme="dark"] .theme-toggle .sun {
+  display: inline;
+}
+:root[data-theme="dark"] .theme-toggle .moon {
+  display: none;
+}
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .theme-toggle .sun { display: inline; }
-  :root:not([data-theme="light"]) .theme-toggle .moon { display: none; }
+  :root:not([data-theme="light"]) .theme-toggle .sun {
+    display: inline;
+  }
+  :root:not([data-theme="light"]) .theme-toggle .moon {
+    display: none;
+  }
 }
 
 .site-footer {

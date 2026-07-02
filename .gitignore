@@ -5,3 +5,10 @@ crates/velox-web/dist/
 /lcov.info
 *.profraw
 site/public/
+# cargo-leptos output (the web UI bundle)
+/ui/
+# frontend test artifacts
+tests/frontend/node_modules/
+tests/frontend/test-results/
+tests/frontend/playwright-report/
+/velox-data/

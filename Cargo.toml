@@ -22,6 +22,7 @@ velox-core = { path = "crates/velox-core" }
 velox-storage = { path = "crates/velox-storage" }
 velox-upstream = { path = "crates/velox-upstream" }
 velox-http = { path = "crates/velox-http" }
+velox-web = { path = "crates/velox-web" }
 axum = { version = "0.8", features = ["multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
@@ -47,9 +48,35 @@ thiserror = "2.0"
 anyhow = "1.0"
 tracing = "0.1"
 utoipa = "5.5"
+leptos = "0.8"
+leptos_axum = "0.8"
+leptos_meta = "0.8"
+leptos_router = "0.8"
+wasm-bindgen = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+gloo-net = "0.6"
+console_error_panic_hook = "0.1"
+send_wrapper = "0.6"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "DomStringMap", "Navigator", "Clipboard", "MediaQueryList", "Storage"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 tracing-appender = "0.2"
 
 [profile.release]
 strip = true
 lto = "fat"
+
+# cargo-leptos builds the web UI's browser bundle: `cargo leptos build --release` compiles
+# velox-web to wasm and writes ui/pkg/, which the server serves at /pkg. The server itself renders
+# pages without the bundle, so this step is only needed for the interactive UI.
+[[workspace.metadata.leptos]]
+name = "velox"
+bin-package = "velox"
+lib-package = "velox-web"
+lib-features = ["hydrate"]
+lib-default-features = false
+output-name = "velox_web"
+site-root = "ui"
+site-pkg-dir = "pkg"

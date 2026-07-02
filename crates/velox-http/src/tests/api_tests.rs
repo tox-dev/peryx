@@ -10,7 +10,10 @@ fn test_openapi_document_covers_every_endpoint() {
         "/{route}/files/{sha256}/{filename}",
         "/{route}/files/{sha256}/{filename}.metadata",
         "/{route}/",
+        "/{route}/inspect/{sha256}/{filename}",
+        "/{route}/inspect/{sha256}/{filename}/{member}",
         "/{route}/{project}/{version}/yank",
+        "/{route}/{project}/{version}/restore",
         "/{route}/{project}/{version}/",
         "/{route}/{project}/",
         "/+status",
@@ -19,7 +22,7 @@ fn test_openapi_document_covers_every_endpoint() {
     ] {
         assert!(paths.contains_key(path), "missing path {path}");
     }
-    assert_eq!(paths.len(), 11);
+    assert_eq!(paths.len(), 14);
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
 }
 
@@ -27,6 +30,7 @@ fn test_openapi_document_covers_every_endpoint() {
 // `cargo run -p velox -- openapi > site/static/openapi.json` whenever this test fails.
 #[test]
 fn test_site_openapi_copy_is_current() {
-    let site_copy = include_str!("../../../../site/static/openapi.json");
+    // Normalized, so a checkout with CRLF line endings still compares content, not encoding.
+    let site_copy = include_str!("../../../../site/static/openapi.json").replace("\r\n", "\n");
     assert_eq!(site_copy, openapi_json(), "site/static/openapi.json is stale");
 }

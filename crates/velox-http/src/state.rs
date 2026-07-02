@@ -92,6 +92,51 @@ impl AppState {
     pub fn index_at(&self, pos: usize) -> &Index {
         &self.indexes[pos]
     }
+
+    /// Describe every configured index for presentation: kind name, overlay layer names, and
+    /// whether uploads are enabled. Shared by `/+status` and the web UI.
+    #[must_use]
+    pub fn describe_indexes(&self) -> Vec<IndexDescription> {
+        self.indexes
+            .iter()
+            .map(|index| {
+                let (kind, layers, uploads) = match &index.kind {
+                    IndexKind::Mirror(_) => ("mirror", Vec::new(), false),
+                    IndexKind::Local { upload_token, .. } => ("local", Vec::new(), upload_token.is_some()),
+                    IndexKind::Overlay { layers, upload } => {
+                        let names = layers.iter().map(|&pos| self.index_at(pos).name.clone()).collect();
+                        let uploads = upload.is_some_and(|pos| {
+                            matches!(
+                                &self.index_at(pos).kind,
+                                IndexKind::Local {
+                                    upload_token: Some(_),
+                                    ..
+                                }
+                            )
+                        });
+                        ("overlay", names, uploads)
+                    }
+                };
+                IndexDescription {
+                    name: index.name.clone(),
+                    route: index.route.clone(),
+                    kind,
+                    layers,
+                    uploads,
+                }
+            })
+            .collect()
+    }
+}
+
+/// A configured index as presented to humans: on the dashboard and in `/+status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexDescription {
+    pub name: String,
+    pub route: String,
+    pub kind: &'static str,
+    pub layers: Vec<String>,
+    pub uploads: bool,
 }
 
 /// The part of `path` after `route`, requiring a segment boundary so `team/dev` does not match

@@ -8,5 +8,7 @@ build:
   tools:
     python: "3.12"
   commands:
-    - curl -sL "https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz" | tar xz
-    - ./zola --root site build --base-url "${READTHEDOCS_CANONICAL_URL}" --output-dir "${READTHEDOCS_OUTPUT}/html" --force
+    - curl -sL "https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz"
+      | tar xz
+    - ./zola --root site build --base-url "${READTHEDOCS_CANONICAL_URL}" --output-dir "${READTHEDOCS_OUTPUT}/html"
+      --force

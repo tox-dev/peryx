@@ -310,13 +310,31 @@ fn wait_ready(child: &mut Child, port: u16) -> bool {
         if child.try_wait().expect("child status").is_some() {
             return false;
         }
-        if let Some((status, _)) = http_get(port, "/+status") {
-            assert_eq!(status, 200, "unexpected /+status");
+        if probe_status(port) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
     panic!("velox did not become ready on port {port}");
+}
+
+/// One tolerant readiness probe: any I/O failure (including a reset from a transient foreign
+/// listener during the port-race window) reads as not-ready, and the body must identify velox.
+fn probe_status(port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    if stream
+        .write_all(b"GET /+status HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut raw = String::new();
+    if stream.read_to_string(&mut raw).is_err() {
+        return false;
+    }
+    raw.contains(" 200 ") && raw.contains("\"version\"")
 }
 
 /// Stand up a hermetic fixture upstream and a velox proxying it. Both live until the tuple drops.
@@ -713,4 +731,80 @@ fn e2e_live_uv_installs_from_pypi_via_pep658() {
         velox.metadata_requests() >= 1,
         "uv did not use PEP 658 against live pypi"
     );
+}
+
+#[test]
+fn e2e_web_ui_dashboard_and_project_page() {
+    let (_upstream, velox) = hermetic();
+    let (status, dashboard) = http_get(velox.port, "/").expect("dashboard");
+    assert_eq!(status, 200);
+    assert!(dashboard.contains("change serial"), "dashboard stats missing");
+    assert!(dashboard.contains("root/pypi"), "index card missing");
+    assert!(dashboard.contains("/pkg/velox_web.js"), "hydration script missing");
+
+    let (status, page) = http_get(velox.port, "/browse?index=root%2Fpypi&project=veloxa").expect("project page");
+    assert_eq!(status, 200);
+    assert!(page.contains("veloxa"), "project heading missing");
+    assert!(page.contains("Manage uploads"), "admin panel missing");
+}
+
+#[test]
+fn e2e_upstream_yank_hide_restore_round_trip() {
+    let (_upstream, velox) = hermetic();
+    // Warm the overlay so the mirror file is known.
+    let (_, detail) = http_get(velox.port, "/root/pypi/simple/veloxa/").expect("detail");
+    assert!(detail.contains("veloxa-1.0-py3-none-any.whl"));
+
+    // Yank the upstream release through the overlay, then clear it.
+    assert_eq!(http_verb(velox.port, "PUT", "/root/pypi/veloxa/1.0/yank"), 200);
+    let (_, yanked) = http_get(velox.port, "/root/pypi/simple/veloxa/").expect("detail");
+    assert!(
+        yanked.contains("\"yanked\":true"),
+        "upstream file not yanked via overlay"
+    );
+    assert_eq!(http_verb(velox.port, "DELETE", "/root/pypi/veloxa/1.0/yank"), 200);
+
+    // Hide it outright, confirm it vanished, then restore it.
+    assert_eq!(http_verb(velox.port, "DELETE", "/root/pypi/veloxa/"), 200);
+    let (_, hidden) = http_get(velox.port, "/root/pypi/simple/veloxa/").expect("detail");
+    assert!(
+        !hidden.contains("veloxa-1.0-py3-none-any.whl"),
+        "file still served after delete"
+    );
+    assert_eq!(http_verb(velox.port, "PUT", "/root/pypi/veloxa/restore"), 200);
+    let (_, restored) = http_get(velox.port, "/root/pypi/simple/veloxa/").expect("detail");
+    assert!(restored.contains("veloxa-1.0-py3-none-any.whl"), "file not restored");
+}
+
+#[test]
+fn e2e_inspect_uploaded_wheel() {
+    let velox = Velox::start_against("http://127.0.0.1:9/simple/");
+    let (_dir, wheel) = wheel_on_disk("veloxinspect");
+    let mut cmd = Command::new("uv");
+    cmd.args(["publish", "--publish-url"])
+        .arg(velox.upload_url())
+        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
+        .arg(&wheel);
+    run(&mut cmd, "uv publish");
+
+    let (_, detail) = http_get(velox.port, "/root/pypi/simple/veloxinspect/").expect("detail");
+    let sha = detail
+        .split("files/")
+        .nth(1)
+        .expect("file url")
+        .split('/')
+        .next()
+        .expect("sha")
+        .to_owned();
+    let listing_url = format!("/root/pypi/inspect/{sha}/veloxinspect-1.0-py3-none-any.whl");
+    let (status, listing) = http_get(velox.port, &listing_url).expect("listing");
+    assert_eq!(status, 200);
+    assert!(listing.contains("dist-info/METADATA"));
+    let (status, member) = http_get(
+        velox.port,
+        &format!("{listing_url}/veloxinspect-1.0.dist-info/METADATA"),
+    )
+    .expect("member");
+    assert_eq!(status, 200);
+    assert!(member.contains("Metadata-Version: 2.1"));
 }

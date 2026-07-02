@@ -15,6 +15,7 @@ const FILE: TableDefinition<&str, &str> = TableDefinition::new("file_url");
 const METADATA: TableDefinition<&str, &str> = TableDefinition::new("metadata");
 const PROJECTS: TableDefinition<&str, &str> = TableDefinition::new("projects");
 const UPLOAD: TableDefinition<&str, &[u8]> = TableDefinition::new("uploads");
+const OVERRIDE: TableDefinition<&str, &str> = TableDefinition::new("overrides");
 const SERIAL_KEY: &str = "serial";
 
 /// A cached upstream simple-index response plus the metadata needed to revalidate it.
@@ -84,6 +85,7 @@ impl MetaStore {
             txn.open_table(METADATA)?;
             txn.open_table(PROJECTS)?;
             txn.open_table(UPLOAD)?;
+            txn.open_table(OVERRIDE)?;
         }
         txn.commit()?;
         Ok(Self { db })
@@ -272,6 +274,55 @@ impl MetaStore {
         };
         txn.commit()?;
         Ok(existed)
+    }
+
+    /// Record an override for a file served from a read-only layer: `kind` is `yanked` or
+    /// `hidden`. Keyed like uploads, by `{index}/{normalized}/{filename}`.
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    pub fn put_override(&self, index: &str, normalized: &str, filename: &str, kind: &str) -> Result<(), MetaError> {
+        let key = format!("{index}/{normalized}/{filename}");
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(OVERRIDE)?;
+            table.insert(key.as_str(), kind)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Remove a file's override, returning whether one existed.
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    pub fn delete_override(&self, index: &str, normalized: &str, filename: &str) -> Result<bool, MetaError> {
+        let key = format!("{index}/{normalized}/{filename}");
+        let txn = self.db.begin_write()?;
+        let existed = {
+            let mut table = txn.open_table(OVERRIDE)?;
+            table.remove(key.as_str())?.is_some()
+        };
+        txn.commit()?;
+        Ok(existed)
+    }
+
+    /// List the `(filename, kind)` overrides recorded for `normalized` on `index`.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn list_overrides(&self, index: &str, normalized: &str) -> Result<Vec<(String, String)>, MetaError> {
+        let prefix = format!("{index}/{normalized}/");
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(OVERRIDE)?;
+        let mut entries = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            if let Some(filename) = key.value().strip_prefix(&prefix) {
+                entries.push((filename.to_owned(), value.value().to_owned()));
+            }
+        }
+        Ok(entries)
     }
 
     /// List the display names of projects observed on `index`, sorted.

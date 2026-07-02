@@ -39,3 +39,19 @@ uv fetch a few kilobytes of core metadata instead of a multi-megabyte wheel per 
 sibling, fetches it from the upstream on first use, verifies it against the digest from the index page, and caches
 it like any blob. The `velox_metadata_requests_total` metric counts these; the end-to-end tests assert on it to
 prove real clients take this path.
+
+## The web UI
+
+The UI is a [Leptos](https://leptos.dev/) application compiled twice from one codebase: natively into the server,
+which renders every page to HTML, and to WebAssembly (by [cargo-leptos](https://github.com/leptos-rs/cargo-leptos)),
+which hydrates the page in the browser for reactivity: live counters, filter-as-you-type, and the upload-management
+buttons. Pages work without the bundle, so the server never depends on a wasm toolchain.
+
+This split also decides how the UI is tested. The server half is ordinary Rust: velox's test suite renders each page
+through the real router and asserts on the HTML. The browser half cannot feed the coverage gate, because
+`wasm32-unknown-unknown` has no coverage instrumentation and event handlers only execute in a browser; a Playwright
+suite drives the hydrated UI instead (search, package pages, the archive browser, and token-authenticated yank and
+delete), which is the stronger check for interactive behavior anyway.
+
+The UI reads velox's own public API: `/+status` for the dashboard, the PEP 691 simple endpoints for package data, and
+the `inspect` endpoints for archive contents. Anything the UI shows, a script can fetch the same way.

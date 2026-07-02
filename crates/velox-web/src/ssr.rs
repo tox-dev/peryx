@@ -1,0 +1,167 @@
+//! The server half: an axum router that renders the app with data read straight from `AppState`,
+//! plus the data builders the resource fetchers use during server rendering.
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::FromRef;
+use leptos::prelude::*;
+use leptos_axum::{LeptosRoutes as _, generate_route_list};
+use velox_core::pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
+use velox_http::{AppState, cache};
+use velox_storage::blob::Digest;
+
+use crate::model::{UiIndex, UiMember, UiProject, UiSnapshot};
+use crate::{App, shell};
+
+/// The router state: leptos options plus the velox application state.
+#[derive(Clone)]
+pub struct UiState {
+    pub options: LeptosOptions,
+    pub app: Arc<AppState>,
+}
+
+impl FromRef<UiState> for LeptosOptions {
+    fn from_ref(state: &UiState) -> Self {
+        state.options.clone()
+    }
+}
+
+/// Build the UI router.
+///
+/// The leptos routes (server-rendered, hydration-ready) plus the `/pkg` asset directory holding
+/// the wasm bundle. Without the bundle on disk the pages still render; they are just not
+/// interactive.
+pub fn ui_router(app: Arc<AppState>) -> Router {
+    let options = leptos_options();
+    let site_root = options.site_root.to_string();
+    let state = UiState { options, app };
+    let routes = generate_route_list(App);
+    Router::new()
+        .leptos_routes_with_context(
+            &state,
+            routes,
+            {
+                let app = state.app.clone();
+                move || provide_context(app.clone())
+            },
+            {
+                let options = state.options.clone();
+                move || shell(options.clone())
+            },
+        )
+        // leptos appends `_bg` to the wasm name when the server was not compiled by cargo-leptos
+        // (a compile-time env probe), while cargo-leptos writes the file without it; alias the two.
+        .route_service(
+            "/pkg/velox_web_bg.wasm",
+            tower_http::services::ServeFile::new(format!("{site_root}/pkg/velox_web.wasm")),
+        )
+        .nest_service("/pkg", tower_http::services::ServeDir::new(format!("{site_root}/pkg")))
+        .with_state(state)
+}
+
+/// The leptos configuration: asset names must match what cargo-leptos produces (`Cargo.toml`
+/// workspace metadata), and the site root is where its output lands at runtime.
+fn leptos_options() -> LeptosOptions {
+    LeptosOptions::builder()
+        .output_name("velox_web")
+        .site_root("ui")
+        .site_pkg_dir("pkg")
+        .build()
+}
+
+/// The dashboard snapshot, read from `AppState`.
+#[must_use]
+pub fn snapshot() -> UiSnapshot {
+    let app = expect_context::<Arc<AppState>>();
+    let indexes = app
+        .describe_indexes()
+        .into_iter()
+        .map(|index| UiIndex {
+            name: index.name,
+            route: index.route,
+            kind: index.kind.to_owned(),
+            layers: index.layers,
+            uploads: index.uploads,
+        })
+        .collect();
+    UiSnapshot {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        serial: app.meta.current_serial().unwrap_or(0),
+        requests: app.requests.load(std::sync::atomic::Ordering::Relaxed),
+        metadata_requests: app.metadata_requests.load(std::sync::atomic::Ordering::Relaxed),
+        indexes,
+    }
+}
+
+/// The project names of the index at `route`.
+#[must_use]
+pub fn projects(route: &str) -> Vec<String> {
+    let app = expect_context::<Arc<AppState>>();
+    find_index(&app, route)
+        .and_then(|index| cache::resolve_list(&app, index).ok())
+        .map(|list| list.projects.into_iter().map(|entry| entry.name).collect())
+        .unwrap_or_default()
+}
+
+/// One project's page data: files plus the parsed core metadata of its newest wheel with a PEP 658
+/// sibling.
+pub async fn project(route: &str, project: &str) -> Option<(UiProject, Option<CoreMetadataDoc>)> {
+    let app = expect_context::<Arc<AppState>>();
+    let index = find_index(&app, route)?;
+    let normalized = normalize_name(project);
+    let detail = cache::resolve_detail(&app, index, &normalized, route).await.ok()??;
+    let value = serde_json::from_str(&to_json(&detail)).ok()?;
+    let ui = UiProject::from_detail(&value);
+    let mut doc = None;
+    if let Some(file) = ui.files.iter().rev().find(|file| file.has_metadata) {
+        let digest = file.url.split('/').nth_back(1).and_then(Digest::from_hex);
+        if let Some(digest) = digest
+            && let Ok(bytes) = cache::metadata_bytes(&app, &digest).await
+        {
+            doc = Some(parse_metadata(&String::from_utf8_lossy(&bytes)));
+        }
+    }
+    Some((ui, doc))
+}
+
+fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a velox_http::Index> {
+    app.indexes.iter().find(|index| index.route == route)
+}
+
+/// The member listing of a cached archive, for server rendering.
+pub async fn members(sha256: &str, filename: &str) -> Vec<UiMember> {
+    let app = expect_context::<Arc<AppState>>();
+    let Some(digest) = Digest::from_hex(sha256) else {
+        return Vec::new();
+    };
+    let Ok(bytes) = cache::file_bytes(&app, &digest).await else {
+        return Vec::new();
+    };
+    velox_http::archive::list_members(filename, &bytes)
+        .map(|members| {
+            members
+                .into_iter()
+                .map(|member| UiMember {
+                    path: member.path,
+                    size: member.size,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One archive member's text content, for server rendering.
+pub async fn member(sha256: &str, filename: &str, member: &str) -> String {
+    let app = expect_context::<Arc<AppState>>();
+    let Some(digest) = Digest::from_hex(sha256) else {
+        return String::new();
+    };
+    let Ok(bytes) = cache::file_bytes(&app, &digest).await else {
+        return String::new();
+    };
+    match velox_http::archive::read_member(filename, &bytes, member) {
+        Ok(content) => String::from_utf8(content).unwrap_or_else(|_| "(binary content)".to_owned()),
+        Err(err) => format!("({err})"),
+    }
+}

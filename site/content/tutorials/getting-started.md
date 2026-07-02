@@ -54,6 +54,13 @@ Both clients use the [PEP 658](https://peps.python.org/pep-0658/) metadata fast 
 curl -s http://127.0.0.1:4433/metrics | grep metadata
 ```
 
+## Browse the web UI
+
+velox serves its own web interface on the same port. Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for a live
+dashboard of the configured indexes and request counters, click an index to get a searchable project list, and click a
+project for a pypi.org-style page: description, dependencies, classifiers, files with hashes, and a browser for the
+contents of each archive.
+
 ## Publish a private package
 
 Uploads are disabled until you set a token. Stop velox, write a minimal config that adds one, and restart:
@@ -96,6 +103,8 @@ work, then delete it outright:
 curl -X PUT    -u __token__:demo-secret http://127.0.0.1:4433/root/pypi/mypkg/1.0.0/yank
 curl -X DELETE -u __token__:demo-secret http://127.0.0.1:4433/root/pypi/mypkg/
 ```
+
+The same actions live in the web UI: open the project page, expand "Manage uploads", and enter the token.
 
 After the delete, the upstream version of `mypkg` (if one exists on pypi.org) is visible again.
 

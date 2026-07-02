@@ -105,11 +105,27 @@ fn paths() -> PathsBuilder {
             PathItemBuilder::new().operation(HttpMethod::Post, upload()).build(),
         )
         .path(
+            "/{route}/inspect/{sha256}/{filename}",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, inspect_listing())
+                .build(),
+        )
+        .path(
+            "/{route}/inspect/{sha256}/{filename}/{member}",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, inspect_member())
+                .build(),
+        )
+        .path(
             "/{route}/{project}/{version}/yank",
             PathItemBuilder::new()
                 .operation(HttpMethod::Put, yank())
                 .operation(HttpMethod::Delete, unyank())
                 .build(),
+        )
+        .path(
+            "/{route}/{project}/{version}/restore",
+            PathItemBuilder::new().operation(HttpMethod::Put, restore()).build(),
         )
         .path(
             "/{route}/{project}/{version}/",
@@ -370,10 +386,91 @@ fn upload() -> OperationBuilder {
 fn yank() -> OperationBuilder {
     removal_operation(
         "Yank files",
-        "Marks the version's uploaded files yanked (PEP 592): resolvers skip them, exact-pin installs \
-         still succeed. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
-        "removed 1 file(s)",
+        "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still \
+         succeed. Uploaded files get their record updated; files served from a read-only mirror get \
+         a reversible override on the overlay's local layer, so upstream releases can be yanked too. \
+         Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
+        "affected 1 file(s)",
     )
+}
+
+fn restore() -> OperationBuilder {
+    removal_operation(
+        "Restore hidden files",
+        "Clears the hidden marker a DELETE leaves on files served from a read-only mirror, making \
+         them visible on the overlay again. Omit `{version}/` to restore the whole project.",
+        "affected 1 file(s)",
+    )
+}
+
+fn inspect_listing() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("files")
+        .summary(Some("List archive members"))
+        .description(Some(
+            "The file members of a cached wheel, zip, or gzipped tarball, for browsing a \
+             distribution's contents without downloading it.",
+        ))
+        .parameter(route_param())
+        .parameter(sha256_param())
+        .parameter(filename_param("veloxpkg-1.0-py3-none-any.whl"))
+        .response(
+            "200",
+            ResponseBuilder::new().description("The archive listing").content(
+                "application/json",
+                ContentBuilder::new()
+                    .example(Some(json!({
+                        "filename": "veloxpkg-1.0-py3-none-any.whl",
+                        "members": [
+                            {"path": "veloxpkg/__init__.py", "size": 20},
+                            {"path": "veloxpkg-1.0.dist-info/METADATA", "size": 653}
+                        ]
+                    })))
+                    .build(),
+            ),
+        )
+        .response(
+            "404",
+            ResponseBuilder::new().description("No file with this digest is known"),
+        )
+        .response(
+            "415",
+            ResponseBuilder::new().description("Not a supported archive type"),
+        )
+        .response("422", ResponseBuilder::new().description("The archive cannot be read"))
+}
+
+fn inspect_member() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("files")
+        .summary(Some("Read an archive member"))
+        .description(Some(
+            "One member's content: UTF-8 members come back as text, others as bytes. Members over \
+             1 MiB are refused inline; download the artifact instead.",
+        ))
+        .parameter(route_param())
+        .parameter(sha256_param())
+        .parameter(filename_param("veloxpkg-1.0-py3-none-any.whl"))
+        .parameter(
+            ParameterBuilder::new()
+                .name("member")
+                .parameter_in(ParameterIn::Path)
+                .required(Required::True)
+                .example(Some(json!("veloxpkg-1.0.dist-info/METADATA"))),
+        )
+        .response(
+            "200",
+            text_response(
+                "The member content",
+                "text/plain; charset=utf-8",
+                "Metadata-Version: 2.1\nName: veloxpkg\nVersion: 1.0\n",
+            ),
+        )
+        .response("404", ResponseBuilder::new().description("Unknown digest or member"))
+        .response(
+            "413",
+            ResponseBuilder::new().description("Member exceeds the inline limit"),
+        )
 }
 
 fn unyank() -> OperationBuilder {
@@ -436,20 +533,28 @@ fn status() -> OperationBuilder {
     OperationBuilder::new()
         .tag("operations")
         .summary(Some("Health and identity"))
+        .description(Some(
+            "Version, counters, and the configured indexes; the web UI's live dashboard refreshes from this.",
+        ))
         .response(
             "200",
-            ResponseBuilder::new()
-                .description("Version, configured index routes, and the change serial")
-                .content(
-                    "application/json",
-                    ContentBuilder::new()
-                        .example(Some(json!({
-                            "version": env!("CARGO_PKG_VERSION"),
-                            "indexes": ["pypi", "local", "root/pypi"],
-                            "serial": 42
-                        })))
-                        .build(),
-                ),
+            ResponseBuilder::new().description("The status document").content(
+                "application/json",
+                ContentBuilder::new()
+                    .example(Some(json!({
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "serial": 42,
+                        "requests": 128,
+                        "metadata_requests": 37,
+                        "indexes": [
+                            {"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [], "uploads": false},
+                            {"name": "local", "route": "local", "kind": "local", "layers": [], "uploads": true},
+                            {"name": "root/pypi", "route": "root/pypi", "kind": "overlay",
+                             "layers": ["local", "pypi"], "uploads": true}
+                        ]
+                    })))
+                    .build(),
+            ),
         )
 }
 

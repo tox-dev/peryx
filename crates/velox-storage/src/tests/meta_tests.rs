@@ -159,3 +159,32 @@ fn test_cached_index_encode_decode_roundtrip() {
 fn test_cached_index_decode_rejects_garbage() {
     assert!(CachedIndex::decode(b"not json").is_err());
 }
+
+#[test]
+fn test_put_list_and_delete_overrides() {
+    let (_dir, store) = store();
+    assert!(store.list_overrides("local", "flask").unwrap().is_empty());
+    store.put_override("local", "flask", "flask-1.0.whl", "yanked").unwrap();
+    store.put_override("local", "flask", "flask-2.0.whl", "hidden").unwrap();
+    store.put_override("local", "other", "x.whl", "hidden").unwrap();
+    assert_eq!(
+        store.list_overrides("local", "flask").unwrap(),
+        vec![
+            ("flask-1.0.whl".to_owned(), "yanked".to_owned()),
+            ("flask-2.0.whl".to_owned(), "hidden".to_owned())
+        ]
+    );
+    assert!(store.delete_override("local", "flask", "flask-1.0.whl").unwrap());
+    assert!(!store.delete_override("local", "flask", "flask-1.0.whl").unwrap());
+}
+
+#[test]
+fn test_put_override_replaces_kind() {
+    let (_dir, store) = store();
+    store.put_override("local", "flask", "flask-1.0.whl", "yanked").unwrap();
+    store.put_override("local", "flask", "flask-1.0.whl", "hidden").unwrap();
+    assert_eq!(
+        store.list_overrides("local", "flask").unwrap(),
+        vec![("flask-1.0.whl".to_owned(), "hidden".to_owned())]
+    );
+}

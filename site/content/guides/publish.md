@@ -34,7 +34,8 @@ uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secre
 
 velox verifies the declared sha256 digest against the received bytes, stores the file content-addressed, and serves
 it from `/root/pypi/simple/<project>/` alongside the mirror's packages. Your file shadows an upstream file of the
-same name.
+same name. For wheels, velox extracts the `METADATA` document and serves it as the PEP 658 sibling, exactly as
+pypi.org does, so resolvers get the fast path for your uploads too and the web UI can show the full package page.
 
 ## In `.pypirc`
 

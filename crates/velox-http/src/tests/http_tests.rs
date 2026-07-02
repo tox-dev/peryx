@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -995,4 +996,414 @@ async fn test_openapi_endpoint_serves_the_document() {
     assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/json");
     let spec: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(spec["openapi"], "3.1.0");
+}
+
+#[tokio::test]
+async fn test_yank_upstream_file_via_overlay() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+
+    let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The overlay page carries the marker; the mirror's own route stays untouched.
+    let (_, _, merged) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(merged.contains("\"yanked\":true"));
+    let (_, _, mirror) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    assert!(!mirror.contains("\"yanked\":true"));
+
+    // Un-yank clears the override.
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, cleared) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(!cleared.contains("\"yanked\":true"));
+}
+
+#[tokio::test]
+async fn test_delete_and_restore_upstream_file_via_overlay() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Hidden from the overlay page, but still present on the mirror's own route.
+    let (_, _, merged) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(!merged.contains("flask-1.0-py3-none-any.whl"));
+    let (_, _, mirror) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    assert!(mirror.contains("flask-1.0-py3-none-any.whl"));
+
+    // Restore brings the file back.
+    let status = request(&h.state, "PUT", "/root/pypi/flask/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, restored) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(restored.contains("flask-1.0-py3-none-any.whl"));
+}
+
+#[tokio::test]
+async fn test_delete_one_upstream_version_leaves_other() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let json = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\",\"2.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"http://x/a.whl\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}},\
+         {{\"filename\":\"flask-2.0-py3-none-any.whl\",\"url\":\"http://x/b.whl\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
+        digest = digest.as_str()
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(json.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&h.server)
+        .await;
+
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/1.0/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, merged) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(!merged.contains("flask-1.0-py3-none-any.whl"));
+    assert!(merged.contains("flask-2.0-py3-none-any.whl"));
+}
+
+#[tokio::test]
+async fn test_restore_with_nothing_hidden_is_not_found() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+    let status = request(&h.state, "PUT", "/root/pypi/flask/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_put_unknown_suffix_is_not_found() {
+    let h = harness().await;
+    let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/promote", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_upstream_on_non_volatile_still_hides() {
+    let h = harness_with(true, false).await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+    // Hiding an upstream file is reversible, so it works even when uploads are immutable.
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+fn fixture_wheel() -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("veloxpkg/__init__.py", options).unwrap();
+        zip.write_all(b"VALUE = 1\n").unwrap();
+        zip.start_file("veloxpkg-1.0.dist-info/METADATA", options).unwrap();
+        zip.write_all(b"Metadata-Version: 2.1\nName: veloxpkg\nVersion: 1.0\n")
+            .unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+async fn upload_wheel(state: &Arc<AppState>, filename: &str, bytes: &[u8]) -> Digest {
+    let fields = vec![(":action", "file_upload"), ("name", "veloxpkg"), ("version", "1.0")];
+    let (ct, body) = multipart_body(&fields, Some((filename, bytes)));
+    assert_eq!(
+        post_upload(state, "/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::OK
+    );
+    Digest::of(bytes)
+}
+
+#[tokio::test]
+async fn test_inspect_lists_wheel_members() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!("/local/inspect/{}/veloxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let listing: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let paths: Vec<&str> = listing["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["veloxpkg-1.0.dist-info/METADATA", "veloxpkg/__init__.py"]);
+}
+
+#[tokio::test]
+async fn test_inspect_reads_member_content() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!(
+        "/local/inspect/{}/veloxpkg-1.0-py3-none-any.whl/veloxpkg-1.0.dist-info/METADATA",
+        digest.as_str()
+    );
+    let (status, headers, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+    assert!(body.starts_with("Metadata-Version: 2.1"));
+}
+
+#[tokio::test]
+async fn test_inspect_missing_member_is_not_found() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!(
+        "/local/inspect/{}/veloxpkg-1.0-py3-none-any.whl/nope.py",
+        digest.as_str()
+    );
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_inspect_unsupported_type() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0.txt", b"not an archive").await;
+    let uri = format!("/local/inspect/{}/veloxpkg-1.0.txt", digest.as_str());
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn test_inspect_corrupt_archive_is_unprocessable() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", b"PK corrupt bytes").await;
+    let uri = format!("/local/inspect/{}/veloxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_inspect_tarball_and_size_limit() {
+    let h = harness().await;
+    // A gzipped tarball with one small file and one over the inline limit.
+    let mut tarball = Vec::new();
+    {
+        let encoder = flate2::write::GzEncoder::new(&mut tarball, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let small = b"print()\n";
+        let mut head = tar::Header::new_gnu();
+        head.set_size(small.len() as u64);
+        head.set_cksum();
+        builder
+            .append_data(&mut head, "veloxpkg-1.0/setup.py", &small[..])
+            .unwrap();
+        let big = vec![0_u8; usize::try_from(crate::archive::MEMBER_LIMIT + 1).unwrap()];
+        let mut head = tar::Header::new_gnu();
+        head.set_size(big.len() as u64);
+        head.set_cksum();
+        builder
+            .append_data(&mut head, "veloxpkg-1.0/big.bin", big.as_slice())
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0.tar.gz", &tarball).await;
+
+    let uri = format!("/local/inspect/{}/veloxpkg-1.0.tar.gz", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("setup.py"));
+
+    let (status, _, content) = get(&h.state, &format!("{uri}/veloxpkg-1.0/setup.py"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content, "print()\n");
+
+    let (status, ..) = get(&h.state, &format!("{uri}/veloxpkg-1.0/big.bin"), None).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn test_inspect_binary_member_served_as_bytes() {
+    let h = harness().await;
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("data.bin", options).unwrap();
+        zip.write_all(&[0xff, 0xfe, 0x00]).unwrap();
+        zip.finish().unwrap();
+    }
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &buf).await;
+    let uri = format!(
+        "/local/inspect/{}/veloxpkg-1.0-py3-none-any.whl/data.bin",
+        digest.as_str()
+    );
+    let (status, headers, _) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/octet-stream");
+}
+
+#[tokio::test]
+async fn test_inspect_bad_digest_and_missing_paths() {
+    let h = harness().await;
+    let (status, ..) = get(&h.state, "/local/inspect/nothex/x.whl", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, ..) = get(&h.state, "/local/inspect/onlyonesegment", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let uri = format!("/local/inspect/{}/ghost.whl", "a".repeat(64));
+    let (status, ..) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_upload_wheel_gains_metadata_sibling() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    // The simple page advertises the extracted PEP 658 sibling, and it is servable.
+    let (_, _, detail) = get(&h.state, "/local/simple/veloxpkg/", Some("application/json")).await;
+    assert!(detail.contains("\"core-metadata\":{\"sha256\""));
+    let uri = format!(
+        "/local/files/{}/veloxpkg-1.0-py3-none-any.whl.metadata",
+        digest.as_str()
+    );
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("Metadata-Version: 2.1"));
+}
+
+#[tokio::test]
+async fn test_overlay_upload_only_project_unknown_elsewhere() {
+    let h = harness().await;
+    // Upstream 404s for the project: only the local layer answers, exercising the not-found layer path.
+    Mock::given(method("GET"))
+        .and(path("/simple/veloxpkg/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&h.server)
+        .await;
+    upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let (status, _, detail) = get(&h.state, "/root/pypi/simple/veloxpkg/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(detail.contains("veloxpkg-1.0-py3-none-any.whl"));
+}
+
+#[tokio::test]
+async fn test_yank_overlay_with_uploaded_file_skips_override() {
+    let h = harness().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/veloxpkg/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&h.server)
+        .await;
+    upload_wheel(&h.state, "veloxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    // Yank through the overlay: the uploaded file is rewritten, no override is created.
+    assert_eq!(
+        request(&h.state, "PUT", "/root/pypi/veloxpkg/1.0/yank", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+    let (_, _, detail) = get(&h.state, "/root/pypi/simple/veloxpkg/", Some("application/json")).await;
+    assert!(detail.contains("\"yanked\":true"));
+    // A second identical yank changes nothing: uploaded state already matches, override skip too.
+    let status = request(&h.state, "PUT", "/root/pypi/veloxpkg/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Un-yank with no upstream override to clear only rewrites the record.
+    assert_eq!(
+        request(&h.state, "DELETE", "/root/pypi/veloxpkg/1.0/yank", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn test_versioned_delete_matches_upload_record_when_filename_lacks_version() {
+    let h = harness().await;
+    // The filename carries no parsable version, so the served-page filter misses it and the
+    // record-based fallback deletes by the version stored at upload time.
+    let fields = vec![(":action", "file_upload"), ("name", "veloxpkg"), ("version", "9.9")];
+    let (ct, body) = multipart_body(&fields, Some(("veloxpkg.whl", b"payload")));
+    assert_eq!(
+        post_upload(&h.state, "/local/", Some(&upload_auth()), &ct, body).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/veloxpkg/9.9/", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+    let (status, ..) = get(&h.state, "/local/simple/veloxpkg/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_versioned_delete_fallback_skips_other_versions() {
+    let h = harness().await;
+    // Neither filename carries a parsable version, so both deletes go through the record fallback.
+    for (version, filename) in [("1.5", "veloxpkg-one.whl"), ("2.5", "veloxpkg-two.whl")] {
+        let fields = vec![(":action", "file_upload"), ("name", "veloxpkg"), ("version", version)];
+        let (ct, body) = multipart_body(&fields, Some((filename, format!("payload {version}").as_bytes())));
+        assert_eq!(
+            post_upload(&h.state, "/local/", Some(&upload_auth()), &ct, body).await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/veloxpkg/1.5/", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+    let (_, _, detail) = get(&h.state, "/local/simple/veloxpkg/", Some("application/json")).await;
+    assert!(detail.contains("veloxpkg-two.whl"));
+    assert!(!detail.contains("veloxpkg-one.whl"));
+}
+
+#[tokio::test]
+async fn test_restore_skips_yanked_overrides_and_other_versions() {
+    let h = harness().await;
+    h.state
+        .meta
+        .put_override("local", "flask", "flask-1.0-py3-none-any.whl", "yanked")
+        .unwrap();
+    h.state
+        .meta
+        .put_override("local", "flask", "flask-2.0-py3-none-any.whl", "hidden")
+        .unwrap();
+    // Restoring 1.0 touches nothing: its override is a yank, and the hidden file is another version.
+    let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The hidden 2.0 override is still there to restore.
+    let status = request(&h.state, "PUT", "/root/pypi/flask/2.0/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_yank_with_corrupt_record_is_server_error() {
+    let h = harness().await;
+    h.state
+        .meta
+        .put_upload("local", "veloxpkg", "veloxpkg-1.0.whl", b"{ not json")
+        .unwrap();
+    let status = request(&h.state, "PUT", "/local/veloxpkg/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_overlay_without_upload_layer_serves_merged_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let meta = MetaStore::open(dir.path().join("velox.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let digest = Digest::of(b"wheel");
+    mount_detail(&server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+    let indexes = vec![
+        Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            kind: IndexKind::Mirror(upstream),
+        },
+        Index {
+            name: "ov".to_owned(),
+            route: "ov".to_owned(),
+            kind: IndexKind::Overlay {
+                layers: vec![0],
+                upload: None,
+            },
+        },
+    ];
+    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let (status, _, body) = get(&state, "/ov/simple/flask/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("flask-1.0-py3-none-any.whl"));
 }

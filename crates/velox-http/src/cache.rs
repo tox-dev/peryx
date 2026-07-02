@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use bytes::Bytes;
 use url::Url;
+use velox_core::pypi::file_matches_version;
 use velox_core::pypi::{
     CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, Yanked, parse_detail,
     parse_detail_html, to_json,
@@ -29,6 +30,8 @@ pub enum CacheError {
     Parse(#[from] serde_json::Error),
     #[error("upstream unreachable and nothing cached")]
     Unavailable,
+    #[error("index is not volatile; delete is disabled")]
+    NotVolatile,
     #[error("no known source for this file")]
     FileNotFound,
 }
@@ -61,14 +64,18 @@ pub async fn resolve_detail(
             rewrite_urls(&mut detail, serve_route);
             Ok(Some(detail))
         }
-        IndexKind::Overlay { layers, .. } => overlay_detail(state, layers, project, serve_route).await,
+        IndexKind::Overlay { layers, upload } => overlay_detail(state, layers, *upload, project, serve_route).await,
     }
 }
 
-/// Merge the layers of an overlay: first match per filename wins, versions are unioned.
+/// Merge the layers of an overlay: first match per filename wins, versions are unioned. Overrides
+/// recorded on the overlay's upload layer then apply: `hidden` files drop out of the page and
+/// `yanked` files carry the PEP 592 marker, which is how read-only upstream files are yanked or
+/// removed without touching the mirror.
 async fn overlay_detail(
     state: &AppState,
     layers: &[usize],
+    upload: Option<usize>,
     project: &str,
     serve_route: &str,
 ) -> Result<Option<ProjectDetail>, CacheError> {
@@ -96,16 +103,34 @@ async fn overlay_detail(
             }
         }
     }
-    if found {
-        Ok(Some(ProjectDetail {
-            meta: Meta::default(),
-            name: project.to_owned(),
-            versions: versions.into_iter().collect(),
-            files,
-        }))
-    } else {
-        Ok(None)
+    if !found {
+        return Ok(None);
     }
+    if let Some(pos) = upload {
+        apply_overrides(state, &state.index_at(pos).name, project, &mut files)?;
+    }
+    Ok(Some(ProjectDetail {
+        meta: Meta::default(),
+        name: project.to_owned(),
+        versions: versions.into_iter().collect(),
+        files,
+    }))
+}
+
+/// Apply the `hidden`/`yanked` overrides stored on `local` to a merged file list.
+fn apply_overrides(state: &AppState, local: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
+    let overrides: std::collections::HashMap<String, String> =
+        state.meta.list_overrides(local, project)?.into_iter().collect();
+    if overrides.is_empty() {
+        return Ok(());
+    }
+    files.retain(|file| overrides.get(&file.filename).map(String::as_str) != Some("hidden"));
+    for file in files {
+        if overrides.get(&file.filename).map(String::as_str) == Some("yanked") {
+            file.yanked = Yanked::Yes;
+        }
+    }
+    Ok(())
 }
 
 /// Fetch a mirror's project detail, serving from cache when fresh and revalidating or fetching
@@ -345,7 +370,20 @@ pub async fn metadata_bytes(state: &AppState, wheel_digest: &Digest) -> Result<B
 /// Returns [`CacheError`] if a blob write, store write, or encode fails.
 pub fn store_upload(state: &AppState, name: &str, prepared: &PreparedUpload) -> Result<(), CacheError> {
     state.blobs.write_verified(&prepared.content, &prepared.digest)?;
-    let record = to_json(&prepared.record).into_bytes();
+    let mut record = prepared.record.clone();
+    // A wheel's own METADATA becomes its PEP 658 sibling, as pypi.org serves for uploads. The
+    // sibling blob is stored outright, so `metadata_bytes` never needs an upstream URL for it.
+    if let Some(metadata) = crate::archive::wheel_metadata(&prepared.filename, &prepared.content) {
+        let digest = state.blobs.write(&metadata)?;
+        state
+            .meta
+            .put_metadata(prepared.digest.as_str(), "uploaded", digest.as_str(), name)?;
+        record.file.core_metadata = CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+            "sha256".to_owned(),
+            digest.as_str().to_owned(),
+        )]));
+    }
+    let record = to_json(&record).into_bytes();
     state
         .meta
         .put_upload(name, &prepared.normalized, &prepared.filename, &record)?;
@@ -356,38 +394,164 @@ pub fn store_upload(state: &AppState, name: &str, prepared: &PreparedUpload) -> 
     Ok(())
 }
 
-/// Delete uploaded files for a project on the local store `name`, optionally limited to one version.
-/// Returns how many files were removed.
+/// The two reversible override kinds for files served from read-only layers.
+const YANKED: &str = "yanked";
+const HIDDEN: &str = "hidden";
+
+/// Set or clear the yank state of a project's files as served by `index`.
+///
+/// Uploaded files get their stored record rewritten; read-only upstream files get a `yanked`
+/// override on `local`. Returns how many files changed.
 ///
 /// # Errors
-/// Returns [`CacheError`] on a store or decode failure.
-pub fn delete_uploads(
+/// Returns [`CacheError`] on a store, decode, or resolution failure.
+pub async fn set_yanked(
     state: &AppState,
-    name: &str,
+    index: &Index,
+    local: &str,
+    normalized: &str,
+    version: Option<&str>,
+    yanked: bool,
+) -> Result<usize, CacheError> {
+    let uploaded = upload_filenames(state, local, normalized)?;
+    let mut changed = yank_uploads(
+        state,
+        local,
+        normalized,
+        version,
+        &if yanked { Yanked::Yes } else { Yanked::No },
+    )?;
+    for filename in served_filenames(state, index, normalized, version).await? {
+        if uploaded.contains(&filename) {
+            continue;
+        }
+        if yanked {
+            state.meta.put_override(local, normalized, &filename, YANKED)?;
+            changed += 1;
+        } else if state.meta.delete_override(local, normalized, &filename)? {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// Remove a project's files as served by `index`.
+///
+/// Uploaded files are deleted outright (requires `volatile`); read-only upstream files get a
+/// reversible `hidden` override on `local`. Returns how many files were affected.
+///
+/// # Errors
+/// Returns [`CacheError::NotVolatile`] when uploaded files match but the local store is not
+/// volatile, or another [`CacheError`] on a store or resolution failure.
+pub async fn remove_files(
+    state: &AppState,
+    index: &Index,
+    local: &str,
+    volatile: bool,
     normalized: &str,
     version: Option<&str>,
 ) -> Result<usize, CacheError> {
+    let uploaded = upload_filenames(state, local, normalized)?;
+    let mut affected = 0;
+    let mut matched_upload = false;
+    for filename in served_filenames(state, index, normalized, version).await? {
+        if uploaded.contains(&filename) {
+            matched_upload = true;
+            if !volatile {
+                return Err(CacheError::NotVolatile);
+            }
+            if state.meta.delete_upload(local, normalized, &filename)? {
+                affected += 1;
+            }
+        } else {
+            state.meta.put_override(local, normalized, &filename, HIDDEN)?;
+            affected += 1;
+        }
+    }
+    // A versioned delete whose filenames carry no parsable version misses the served-page filter;
+    // fall back to matching the version stored in the upload records. A project-level delete never
+    // needs this: every upload is on the served page.
+    if !matched_upload && let Some(version) = version {
+        affected += delete_uploads_of_version(state, local, normalized, version)?;
+    }
+    Ok(affected)
+}
+
+/// Clear `hidden` overrides for a project (optionally one version), restoring upstream files that a
+/// delete removed from the merged page. Returns how many files reappeared.
+///
+/// # Errors
+/// Returns [`CacheError`] on a store failure.
+pub fn restore_files(
+    state: &AppState,
+    local: &str,
+    normalized: &str,
+    version: Option<&str>,
+) -> Result<usize, CacheError> {
+    let mut restored = 0;
+    for (filename, kind) in state.meta.list_overrides(local, normalized)? {
+        if kind != HIDDEN {
+            continue;
+        }
+        if version.is_some_and(|version| !file_matches_version(&filename, version)) {
+            continue;
+        }
+        if state.meta.delete_override(local, normalized, &filename)? {
+            restored += 1;
+        }
+    }
+    Ok(restored)
+}
+
+/// The filenames the serving index currently shows for a project, filtered to one version when
+/// given. Hidden files are resolved too (the page-level filter does not apply here), so a delete
+/// followed by a delete stays idempotent rather than erroring.
+async fn served_filenames(
+    state: &AppState,
+    index: &Index,
+    normalized: &str,
+    version: Option<&str>,
+) -> Result<Vec<String>, CacheError> {
+    let Some(detail) = Box::pin(resolve_detail(state, index, normalized, &index.route)).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(detail
+        .files
+        .into_iter()
+        .map(|file| file.filename)
+        .filter(|filename| version.is_none_or(|version| file_matches_version(filename, version)))
+        .collect())
+}
+
+fn upload_filenames(state: &AppState, local: &str, normalized: &str) -> Result<HashSet<String>, CacheError> {
+    Ok(state
+        .meta
+        .list_upload_entries(local, normalized)?
+        .into_iter()
+        .map(|(filename, _)| filename)
+        .collect())
+}
+
+/// Delete the uploaded file records whose stored version matches. Returns how many were removed.
+fn delete_uploads_of_version(
+    state: &AppState,
+    name: &str,
+    normalized: &str,
+    version: &str,
+) -> Result<usize, CacheError> {
     let mut removed = 0;
     for (filename, bytes) in state.meta.list_upload_entries(name, normalized)? {
-        if let Some(version) = version {
-            let uploaded: Uploaded = serde_json::from_slice(&bytes)?;
-            if uploaded.version != version {
-                continue;
-            }
-        }
-        if state.meta.delete_upload(name, normalized, &filename)? {
+        let uploaded: Uploaded = serde_json::from_slice(&bytes)?;
+        if uploaded.version == version && state.meta.delete_upload(name, normalized, &filename)? {
             removed += 1;
         }
     }
     Ok(removed)
 }
 
-/// Set the yank state of uploaded files for a project on `name`, optionally limited to one version.
-/// Returns how many files changed.
-///
-/// # Errors
-/// Returns [`CacheError`] on a store or decode failure.
-pub fn yank_uploads(
+/// Set the yank state of uploaded files, optionally limited to one version. Returns how many
+/// changed.
+fn yank_uploads(
     state: &AppState,
     name: &str,
     normalized: &str,
@@ -398,6 +562,9 @@ pub fn yank_uploads(
     for (filename, bytes) in state.meta.list_upload_entries(name, normalized)? {
         let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
         if version.is_some_and(|version| uploaded.version != version) {
+            continue;
+        }
+        if uploaded.file.yanked == *yanked {
             continue;
         }
         uploaded.file.yanked = yanked.clone();

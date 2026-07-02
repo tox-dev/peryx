@@ -28,7 +28,9 @@ pub fn build_router(config: &Config) -> anyhow::Result<Router> {
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let indexes = build_indexes(&config.indexes)?;
     let state = Arc::new(AppState::new(meta, blobs, config.cache_ttl_secs, indexes));
-    Ok(router(state))
+    // The web UI mounts first: its routes (`/`, `/browse`, `/pkg`) are all outside the index
+    // namespace, and everything else falls through to the API's catch-all.
+    Ok(velox_web::ssr::ui_router(state.clone()).merge(router(state)))
 }
 
 /// Resolve configured indexes into their runtime form, mapping overlay layer names to positions and

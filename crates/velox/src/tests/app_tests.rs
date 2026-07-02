@@ -13,7 +13,7 @@ fn test_init_data_dir_creates_then_idempotent() {
 #[test]
 fn test_init_data_dir_errors_when_parent_is_file() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("afile");
+    let file = dir.path().join("blocker");
     std::fs::write(&file, "x").unwrap();
     assert!(init_data_dir(&file.join("sub")).is_err());
 }
@@ -32,7 +32,7 @@ fn test_init_creates_dir() {
 #[test]
 fn test_init_error() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("afile");
+    let file = dir.path().join("blocker");
     std::fs::write(&file, "x").unwrap();
     let config = Config {
         data_dir: file.join("sub"),

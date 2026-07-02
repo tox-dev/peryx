@@ -13,9 +13,7 @@ use std::sync::atomic::Ordering;
 use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use velox_core::pypi::{
-    ProjectDetail, ProjectList, Yanked, normalize_name, render_detail_html, render_index_html, to_json,
-};
+use velox_core::pypi::{ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html, to_json};
 use velox_storage::blob::Digest;
 
 use crate::cache::{self, CacheError};
@@ -64,7 +62,63 @@ pub async fn dispatch_get(
     if let Some(file) = rest.strip_prefix("files/") {
         return file_route(&state, file).await;
     }
+    if let Some(target) = rest.strip_prefix("inspect/") {
+        return inspect_route(&state, target).await;
+    }
     not_found()
+}
+
+/// `GET /{route}/inspect/{sha256}/{filename}[/{member}]` — list a cached archive's members, or read
+/// one member inline (pypi-browser-style introspection over the blob store).
+async fn inspect_route(state: &AppState, target: &str) -> Response {
+    let Some((sha256, rest)) = target.split_once('/') else {
+        return not_found();
+    };
+    let Some(digest) = Digest::from_hex(sha256) else {
+        return (StatusCode::BAD_REQUEST, "invalid digest").into_response();
+    };
+    let (filename, member) = match rest.split_once('/') {
+        Some((filename, member)) => (filename, Some(member)),
+        None => (rest, None),
+    };
+    let bytes = match cache::file_bytes(state, &digest).await {
+        Ok(bytes) => bytes,
+        Err(err) => return file_response(Err(err)),
+    };
+    member.map_or_else(
+        || archive_listing(filename, &bytes),
+        |member| archive_member(filename, &bytes, member),
+    )
+}
+
+/// Render an archive's member list as JSON.
+fn archive_listing(filename: &str, bytes: &[u8]) -> Response {
+    match crate::archive::list_members(filename, bytes) {
+        Ok(members) => axum::Json(serde_json::json!({ "filename": filename, "members": members })).into_response(),
+        Err(err) => archive_error(&err),
+    }
+}
+
+/// Serve one archive member: UTF-8 content as text, anything else as bytes.
+fn archive_member(filename: &str, bytes: &[u8], member: &str) -> Response {
+    match crate::archive::read_member(filename, bytes, member) {
+        Ok(content) => match String::from_utf8(content) {
+            Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response(),
+            Err(raw) => ([(header::CONTENT_TYPE, "application/octet-stream")], raw.into_bytes()).into_response(),
+        },
+        Err(err) => archive_error(&err),
+    }
+}
+
+fn archive_error(err: &crate::archive::ArchiveError) -> Response {
+    use crate::archive::ArchiveError;
+    let status = match err {
+        ArchiveError::Unsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ArchiveError::MemberNotFound => StatusCode::NOT_FOUND,
+        ArchiveError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    (status, err.to_string()).into_response()
 }
 
 async fn file_route(state: &AppState, file: &str) -> Response {
@@ -119,70 +173,64 @@ pub async fn dispatch_post(
     }
 }
 
-/// `PUT /{route}/{project}/[{version}/]yank` — mark uploaded files yanked (PEP 592, reversible).
+/// `PUT /{route}/{project}/[{version}/]yank` marks files yanked (PEP 592, reversible);
+/// `PUT .../restore` clears the hidden marker a DELETE left on read-only upstream files.
 pub async fn dispatch_put(
     State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let (local, spec) = match removal_target(&state, &path, &headers) {
+    let (index, local, spec) = match removal_target(&state, &path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
     };
-    let Some(spec) = spec.strip_suffix("yank") else {
-        return not_found();
-    };
-    let (project, version) = parse_project_version(spec);
-    count_response(cache::yank_uploads(
-        &state,
-        &local.name,
-        &project,
-        version.as_deref(),
-        &Yanked::Yes,
-    ))
+    if let Some(spec) = spec.strip_suffix("yank") {
+        let (project, version) = parse_project_version(spec);
+        return count_response(cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), true).await);
+    }
+    if let Some(spec) = spec.strip_suffix("restore") {
+        let (project, version) = parse_project_version(spec);
+        return count_response(cache::restore_files(&state, &local.name, &project, version.as_deref()));
+    }
+    not_found()
 }
 
-/// `DELETE /{route}/{project}/[{version}/]` removes uploaded files; a `.../yank` suffix un-yanks.
+/// `DELETE /{route}/{project}/[{version}/]` removes files: uploads are deleted outright (volatile
+/// indexes only), read-only upstream files are hidden reversibly. A `.../yank` suffix un-yanks.
 pub async fn dispatch_delete(
     State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let (local, spec) = match removal_target(&state, &path, &headers) {
+    let (index, local, spec) = match removal_target(&state, &path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
     };
     if let Some(spec) = spec.strip_suffix("yank") {
         let (project, version) = parse_project_version(spec);
-        return count_response(cache::yank_uploads(
-            &state,
-            &local.name,
-            &project,
-            version.as_deref(),
-            &Yanked::No,
-        ));
-    }
-    if !is_volatile(local) {
-        return (StatusCode::FORBIDDEN, "index is not volatile; delete is disabled").into_response();
+        return count_response(
+            cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), false).await,
+        );
     }
     let (project, version) = parse_project_version(spec);
-    count_response(cache::delete_uploads(&state, &local.name, &project, version.as_deref()))
+    let volatile = is_volatile(local);
+    count_response(cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await)
 }
 
-/// Resolve the writable local index for a mutation request and authorize it, returning that index
-/// and the path remainder (the `{project}/...` part).
+/// Resolve the writable local index for a mutation request and authorize it, returning the serving
+/// index, its local layer, and the path remainder (the `{project}/...` part).
 fn removal_target<'a>(
     state: &'a AppState,
     path: &'a str,
     headers: &HeaderMap,
-) -> Result<(&'a Index, &'a str), Response> {
+) -> Result<(&'a Index, &'a Index, &'a str), Response> {
     let (index, rest) = state.resolve(path).ok_or_else(not_found)?;
     let local = upload_target(state, index)
         .ok_or_else(|| (StatusCode::METHOD_NOT_ALLOWED, "index is read-only").into_response())?;
     authorize(local, headers)?;
-    Ok((local, rest))
+    Ok((index, local, rest))
 }
 
 /// The writable local index behind `index`: itself if local, its upload layer if an overlay.
@@ -279,7 +327,10 @@ pub(crate) fn file_response(result: Result<bytes::Bytes, CacheError>) -> Respons
 fn count_response(result: Result<usize, CacheError>) -> Response {
     match result {
         Ok(0) => (StatusCode::NOT_FOUND, "nothing to remove").into_response(),
-        Ok(count) => (StatusCode::OK, format!("removed {count} file(s)")).into_response(),
+        Ok(count) => (StatusCode::OK, format!("affected {count} file(s)")).into_response(),
+        Err(CacheError::NotVolatile) => {
+            (StatusCode::FORBIDDEN, "index is not volatile; delete is disabled").into_response()
+        }
         Err(err) => {
             tracing::error!(error = ?err, "removal failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
@@ -337,14 +388,29 @@ pub async fn openapi_spec() -> Response {
     ([(header::CONTENT_TYPE, "application/json")], SPEC.as_str()).into_response()
 }
 
-/// `GET /+status` — health and identity.
+/// `GET /+status` — health, identity, counters, and the configured indexes. The web UI's live
+/// dashboard refreshes from this document.
 pub async fn status(State(state): State<Arc<AppState>>) -> Response {
     let serial = state.meta.current_serial().unwrap_or(0);
-    let routes: Vec<&str> = state.indexes.iter().map(|index| index.route.as_str()).collect();
+    let indexes: Vec<serde_json::Value> = state
+        .describe_indexes()
+        .into_iter()
+        .map(|index| {
+            serde_json::json!({
+                "name": index.name,
+                "route": index.route,
+                "kind": index.kind,
+                "layers": index.layers,
+                "uploads": index.uploads,
+            })
+        })
+        .collect();
     axum::Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "indexes": routes,
         "serial": serial,
+        "requests": state.requests.load(Ordering::Relaxed),
+        "metadata_requests": state.metadata_requests.load(Ordering::Relaxed),
+        "indexes": indexes,
     }))
     .into_response()
 }

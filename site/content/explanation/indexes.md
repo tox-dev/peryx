@@ -35,8 +35,12 @@ PyPI distinguishes hiding a release from destroying it, and velox keeps both:
 
 - **Yank** ([PEP 592](https://peps.python.org/pep-0592/)) marks a file so resolvers skip it while exact-pin installs
   still succeed. It is reversible and is the right tool for a bad release that someone may already depend on.
-- **Delete** removes the records outright and is only allowed on `volatile` locals. For an overlay this un-shadows
-  the upstream file. The content-addressed blob stays, since another index may reference the same digest.
+- **Delete** removes uploaded records outright and is only allowed on `volatile` locals. For an overlay this
+  un-shadows the upstream file. The content-addressed blob stays, since another index may reference the same digest.
+- **Upstream files** cannot be modified on their mirror, so yanking or deleting one through an overlay records an
+  override (`yanked` or `hidden`) on the overlay's local layer. The mirror's own route is untouched, the override
+  applies wherever that local layer serves, and `restore` clears a hidden marker. This is how a broken upstream
+  release is pulled from your resolvers within seconds, reversibly, without forking the mirror.
 
 ## The default topology
 

@@ -21,6 +21,7 @@ velox-core.workspace = true
 velox-storage.workspace = true
 velox-upstream.workspace = true
 velox-http.workspace = true
+velox-web.workspace = true
 axum.workspace = true
 tokio.workspace = true
 clap.workspace = true
@@ -43,7 +44,8 @@ tempfile = "3"
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 serde_json.workspace = true
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip.workspace = true
+base64.workspace = true
 
 [lints]
 workspace = true

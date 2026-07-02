@@ -25,17 +25,41 @@
           "operations"
         ],
         "summary": "Health and identity",
+        "description": "Version, counters, and the configured indexes; the web UI's live dashboard refreshes from this.",
         "responses": {
           "200": {
-            "description": "Version, configured index routes, and the change serial",
+            "description": "The status document",
             "content": {
               "application/json": {
                 "example": {
                   "indexes": [
-                    "pypi",
-                    "local",
-                    "root/pypi"
+                    {
+                      "kind": "mirror",
+                      "layers": [],
+                      "name": "pypi",
+                      "route": "pypi",
+                      "uploads": false
+                    },
+                    {
+                      "kind": "local",
+                      "layers": [],
+                      "name": "local",
+                      "route": "local",
+                      "uploads": true
+                    },
+                    {
+                      "kind": "overlay",
+                      "layers": [
+                        "local",
+                        "pypi"
+                      ],
+                      "name": "root/pypi",
+                      "route": "root/pypi",
+                      "uploads": true
+                    }
                   ],
+                  "metadata_requests": 37,
+                  "requests": 128,
                   "serial": 42,
                   "version": "0.0.1"
                 }
@@ -232,6 +256,121 @@
           },
           "404": {
             "description": "The wheel has no known metadata sibling"
+          }
+        }
+      }
+    },
+    "/{route}/inspect/{sha256}/{filename}": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "List archive members",
+        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The artifact's sha256, lowercase hex",
+            "required": true,
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "example": "veloxpkg-1.0-py3-none-any.whl"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The archive listing",
+            "content": {
+              "application/json": {
+                "example": {
+                  "filename": "veloxpkg-1.0-py3-none-any.whl",
+                  "members": [
+                    {
+                      "path": "veloxpkg/__init__.py",
+                      "size": 20
+                    },
+                    {
+                      "path": "veloxpkg-1.0.dist-info/METADATA",
+                      "size": 653
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No file with this digest is known"
+          },
+          "415": {
+            "description": "Not a supported archive type"
+          },
+          "422": {
+            "description": "The archive cannot be read"
+          }
+        }
+      }
+    },
+    "/{route}/inspect/{sha256}/{filename}/{member}": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Read an archive member",
+        "description": "One member's content: UTF-8 members come back as text, others as bytes. Members over 1 MiB are refused inline; download the artifact instead.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The artifact's sha256, lowercase hex",
+            "required": true,
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "example": "veloxpkg-1.0-py3-none-any.whl"
+          },
+          {
+            "name": "member",
+            "in": "path",
+            "required": true,
+            "example": "veloxpkg-1.0.dist-info/METADATA"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The member content",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "example": "Metadata-Version: 2.1\nName: veloxpkg\nVersion: 1.0\n"
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown digest or member"
+          },
+          "413": {
+            "description": "Member exceeds the inline limit"
           }
         }
       }
@@ -475,13 +614,13 @@
         ]
       }
     },
-    "/{route}/{project}/{version}/yank": {
+    "/{route}/{project}/{version}/restore": {
       "put": {
         "tags": [
           "publish"
         ],
-        "summary": "Yank files",
-        "description": "Marks the version's uploaded files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
+        "summary": "Restore hidden files",
+        "description": "Clears the hidden marker a DELETE leaves on files served from a read-only mirror, making them visible on the overlay again. Omit `{version}/` to restore the whole project.",
         "parameters": [
           {
             "name": "route",
@@ -510,7 +649,63 @@
             "description": "Done; the body counts affected files",
             "content": {
               "text/plain": {
-                "example": "removed 1 file(s)"
+                "example": "affected 1 file(s)"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/{route}/{project}/{version}/yank": {
+      "put": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Yank files",
+        "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only mirror get a reversible override on the overlay's local layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts affected files",
+            "content": {
+              "text/plain": {
+                "example": "affected 1 file(s)"
               }
             }
           },

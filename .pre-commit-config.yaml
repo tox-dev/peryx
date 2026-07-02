@@ -24,13 +24,16 @@ repos:
       - id: mdformat
         additional_dependencies: ["mdformat-gfm"]
         args: ["--wrap", "120"]
+        # Zola content carries +++ TOML front matter, which mdformat mangles.
+        exclude: "^site/content/"
   - repo: https://github.com/rbubley/mirrors-prettier
     rev: "v3.8.3"
     hooks:
       - id: prettier
         name: Prettier non-workflow files
         args: ["--print-width=120", "--prose-wrap=always"]
-        exclude: "(^.github/workflows/|\\.md$)"
+        # Tera templates and the generated OpenAPI document must not be reflowed.
+        exclude: "(^.github/workflows/|\\.md$|^site/templates/|^site/static/openapi\\.json$)"
       - id: prettier
         name: Prettier workflow files
         args: ["--print-width=240", "--prose-wrap=always"]

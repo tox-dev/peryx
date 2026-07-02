@@ -1,0 +1,583 @@
+//! The UI pages: a live dashboard and a pypi.org-style package browser.
+#![allow(
+    clippy::must_use_candidate,
+    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
+)]
+#![allow(
+    clippy::missing_const_for_fn,
+    reason = "cfg-split helpers are const only without the hydrate feature; constness cannot vary by cfg"
+)]
+
+use leptos::prelude::*;
+use leptos_router::hooks::use_query_map;
+use velox_core::pypi::CoreMetadataDoc;
+
+use crate::data::{load_member, load_members, load_project, load_projects, load_snapshot};
+use crate::markdown::render_description;
+use crate::model::{UiFile, UiIndex, UiProject, UiSnapshot};
+
+/// The landing dashboard: identity, live counters, and the configured indexes.
+#[component]
+pub fn Dashboard() -> impl IntoView {
+    let snapshot = Resource::new(|| (), |()| load_snapshot());
+    start_refresh(snapshot);
+    view! {
+        <section class="page">
+            <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
+                {move || Suspend::new(async move {
+                    let data = snapshot.await;
+                    view! { <DashboardBody data /> }
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+/// Refresh the dashboard counters every few seconds once hydrated. Effects never run during server
+/// rendering, so this is inert in SSR output.
+fn start_refresh(snapshot: Resource<UiSnapshot>) {
+    #[cfg(feature = "hydrate")]
+    {
+        use std::time::Duration;
+        Effect::new(move |_| {
+            set_interval(move || snapshot.refetch(), Duration::from_secs(5));
+        });
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = snapshot;
+    }
+}
+
+#[component]
+fn DashboardBody(data: UiSnapshot) -> impl IntoView {
+    view! {
+        <div class="stat-row">
+            <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
+            <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
+            <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
+            <div class="stat"><strong>{data.metadata_requests}</strong><span>"PEP 658 metadata hits"</span></div>
+        </div>
+        <h2>"Indexes"</h2>
+        <div class="index-grid">
+            {data.indexes.into_iter().map(|index| view! { <IndexCard index /> }).collect_view()}
+        </div>
+    }
+}
+
+#[component]
+fn IndexCard(index: UiIndex) -> impl IntoView {
+    let browse = format!("/browse?index={}", url_encode(&index.route));
+    let simple = format!("/{}/simple/", index.route);
+    let layers = (!index.layers.is_empty()).then(|| {
+        view! {
+            <p class="layers">
+                "layers: "
+                {index.layers.iter().map(|layer| view! { <code>{layer.clone()}</code> }).collect_view()}
+            </p>
+        }
+    });
+    view! {
+        <div class="card">
+            <div class="card-head">
+                <a href=browse class="card-title">{index.name.clone()}</a>
+                <span class=format!("badge kind-{}", index.kind)>{index.kind.clone()}</span>
+                {index.uploads.then(|| view! { <span class="badge uploads">"uploads"</span> })}
+            </div>
+            <p class="dim"><code>{simple}</code></p>
+            {layers}
+        </div>
+    }
+}
+
+/// The browse page: a searchable project list, one project's detail, or an archive's contents,
+/// selected by query parameters.
+#[component]
+pub fn Browse() -> impl IntoView {
+    let query = use_query_map();
+    let route = Memo::new(move |_| query.read().get("index").unwrap_or_default());
+    let project = Memo::new(move |_| query.read().get("project").filter(|name| !name.is_empty()));
+    let file = Memo::new(move |_| query.read().get("file").filter(|name| !name.is_empty()));
+    let member = Memo::new(move |_| query.read().get("member").filter(|name| !name.is_empty()));
+    view! {
+        <section class="page">
+            {move || match (project.get(), file.get()) {
+                (Some(name), Some(file)) => {
+                    view! { <ArchiveView route=route.get() project=name file member=member.get() /> }.into_any()
+                }
+                (Some(name), None) => view! { <ProjectView route=route.get() project=name /> }.into_any(),
+                (None, _) => view! { <IndexView route=route.get() /> }.into_any(),
+            }}
+        </section>
+    }
+}
+
+#[component]
+fn IndexView(route: String) -> impl IntoView {
+    let projects = Resource::new(
+        {
+            let route = route.clone();
+            move || route.clone()
+        },
+        load_projects,
+    );
+    let (filter, set_filter) = signal(String::new());
+    let heading = route.clone();
+    view! {
+        <h1><code>{heading}</code></h1>
+        <input
+            class="search"
+            type="search"
+            placeholder="Filter projects…"
+            on:input:target=move |event| set_filter.set(event.target().value())
+        />
+        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
+            {move || {
+                let route = route.clone();
+                Suspend::new(async move {
+                    let names = projects.await;
+                    view! { <ProjectList route names filter /> }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+#[component]
+fn ProjectList(route: String, names: Vec<String>, filter: ReadSignal<String>) -> impl IntoView {
+    let empty = names.is_empty();
+    view! {
+        <ul class="project-list">
+            {move || {
+                let needle = filter.get().to_lowercase();
+                names
+                    .iter()
+                    .filter(|name| name.to_lowercase().contains(&needle))
+                    .map(|name| {
+                        let href =
+                            format!("/browse?index={}&project={}", url_encode(&route), url_encode(name));
+                        view! { <li><a href=href>{name.clone()}</a></li> }
+                    })
+                    .collect_view()
+            }}
+        </ul>
+        {empty.then(|| view! { <p class="dim">"No projects observed on this index yet."</p> })}
+    }
+}
+
+#[component]
+fn ProjectView(route: String, project: String) -> impl IntoView {
+    let page = Resource::new(
+        {
+            let key = (route.clone(), project.clone());
+            move || key.clone()
+        },
+        |(route, project)| load_project(route, project),
+    );
+    // Admin state lives here, outside the Suspend scope: signals created inside async-hydrated
+    // suspense content are disposed once hydration completes, which would make them inert.
+    let (token, set_token) = signal(String::new());
+    let (outcome, set_outcome) = signal(String::new());
+    view! {
+        <p class="breadcrumb">
+            <a href=format!("/browse?index={}", url_encode(&route))>{route.clone()}</a>
+            " / "
+            <span>{project}</span>
+        </p>
+        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
+            {move || {
+                let route = route.clone();
+                Suspend::new(async move {
+                    match page.await {
+                        Some((ui, doc)) => {
+                            view! { <ProjectBody route ui doc refresh=page token set_token set_outcome /> }
+                                .into_any()
+                        }
+                        None => view! { <p class="dim">"Project not found on this index."</p> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+        {move || {
+            let text = outcome.get();
+            (!text.is_empty()).then(|| view! { <p class="outcome">{text}</p> })
+        }}
+    }
+}
+
+#[component]
+fn ProjectBody(
+    route: String,
+    ui: UiProject,
+    doc: Option<CoreMetadataDoc>,
+    refresh: Resource<Option<(UiProject, Option<CoreMetadataDoc>)>>,
+    token: ReadSignal<String>,
+    set_token: WriteSignal<String>,
+    set_outcome: WriteSignal<String>,
+) -> impl IntoView {
+    let doc = doc.unwrap_or_default();
+    let latest = ui.versions.last().cloned().unwrap_or_else(|| doc.version.clone());
+    let install = format!("uv pip install --index-url /{route}/simple/ {}", ui.name);
+    let description = render_description(&doc);
+    view! {
+        <header class="project-head">
+            <h1>{ui.name.clone()} <span class="version">{latest}</span></h1>
+            {doc.summary.clone().map(|summary| view! { <p class="summary">{summary}</p> })}
+            <InstallSnippet install />
+        </header>
+        <div class="project-grid">
+            <div class="project-main">
+                <h2>"Description"</h2>
+                <div class="description" inner_html=description></div>
+                <h2>"Files"</h2>
+                <FileTable route=route.clone() project=ui.name.clone() files=ui.files.clone() />
+                <AdminPanel route=route project=ui.name.clone() versions=ui.versions.clone() refresh token set_token set_outcome />
+            </div>
+            <aside class="project-side">
+                <MetaPanel doc versions=ui.versions />
+            </aside>
+        </div>
+    }
+}
+
+#[component]
+fn InstallSnippet(install: String) -> impl IntoView {
+    let shown = install.clone();
+    view! {
+        <div class="install">
+            <code>{shown}</code>
+            <button class="copy" title="Copy" on:click=move |_| copy_to_clipboard(&install)>"copy"</button>
+        </div>
+    }
+}
+
+fn copy_to_clipboard(text: &str) {
+    #[cfg(feature = "hydrate")]
+    {
+        if let Some(window) = web_sys::window() {
+            let _ = window.navigator().clipboard().write_text(text);
+        }
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = text;
+    }
+}
+
+#[component]
+fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoView {
+    view! {
+        <table class="files">
+            <thead><tr><th>"File"</th><th>"Size"</th><th>"Uploaded"</th><th>"sha256"</th><th>"Flags"</th></tr></thead>
+            <tbody>
+                {files
+                    .into_iter()
+                    .map(|file| {
+                        let class = if file.yanked { "yanked" } else { "" };
+                        let inspect = format!(
+                            "/browse?index={}&project={}&file={}%2F{}",
+                            url_encode(&route),
+                            url_encode(&project),
+                            file.sha256,
+                            url_encode(&file.filename)
+                        );
+                        let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
+                        view! {
+                            <tr class=class>
+                                <td>
+                                    <a href=file.url.clone()>{file.filename.clone()}</a>
+                                    " · "
+                                    <a class="inspect" href=inspect>"contents"</a>
+                                </td>
+                                <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
+                                <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |t| t.chars().take(10).collect())}</td>
+                                <td><code title=file.sha256.clone()>{short_hash}</code></td>
+                                <td>
+                                    {file.yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
+                                    {file
+                                        .has_metadata
+                                        .then(|| view! { <span class="badge meta-badge">"metadata"</span> })}
+                                </td>
+                            </tr>
+                        }
+                    })
+                    .collect_view()}
+            </tbody>
+        </table>
+    }
+}
+
+/// The archive browser: member listing of one distribution, or one member's content, the way
+/// pypi-browser presents package contents.
+#[component]
+fn ArchiveView(route: String, project: String, file: String, member: Option<String>) -> impl IntoView {
+    let (sha256, filename) = file
+        .split_once('/')
+        .map(|(sha, name)| (sha.to_owned(), name.to_owned()))
+        .unwrap_or_default();
+    let back = format!("/browse?index={}&project={}", url_encode(&route), url_encode(&project));
+    view! {
+        <p class="breadcrumb">
+            <a href=format!("/browse?index={}", url_encode(&route))>{route.clone()}</a>
+            " / "
+            <a href=back>{project.clone()}</a>
+            " / "
+            <span>{filename.clone()}</span>
+        </p>
+        {match member {
+            Some(path) => {
+                view! { <MemberView route project file sha256 filename member=path /> }.into_any()
+            }
+            None => view! { <MemberList route project file sha256 filename /> }.into_any(),
+        }}
+    }
+}
+
+#[component]
+fn MemberList(route: String, project: String, file: String, sha256: String, filename: String) -> impl IntoView {
+    let members = Resource::new(
+        {
+            let key = (route.clone(), sha256, filename.clone());
+            move || key.clone()
+        },
+        |(route, sha256, filename)| load_members(route, sha256, filename),
+    );
+    view! {
+        <h1><code>{filename}</code></h1>
+        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
+            {move || {
+                let route = route.clone();
+                let project = project.clone();
+                let file = file.clone();
+                Suspend::new(async move {
+                    let entries = members.await;
+                    view! {
+                        <table class="files">
+                            <thead><tr><th>"Member"</th><th>"Size"</th></tr></thead>
+                            <tbody>
+                                {entries
+                                    .into_iter()
+                                    .map(|entry| {
+                                        let href = format!(
+                                            "/browse?index={}&project={}&file={}&member={}",
+                                            url_encode(&route),
+                                            url_encode(&project),
+                                            url_encode(&file),
+                                            url_encode(&entry.path)
+                                        );
+                                        view! {
+                                            <tr>
+                                                <td><a href=href>{entry.path.clone()}</a></td>
+                                                <td>{human_size(entry.size)}</td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </tbody>
+                        </table>
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+#[component]
+fn MemberView(
+    route: String,
+    project: String,
+    file: String,
+    sha256: String,
+    filename: String,
+    member: String,
+) -> impl IntoView {
+    let content = Resource::new(
+        {
+            let key = (route.clone(), sha256, filename, member.clone());
+            move || key.clone()
+        },
+        |(route, sha256, filename, member)| load_member(route, sha256, filename, member),
+    );
+    let back = format!(
+        "/browse?index={}&project={}&file={}",
+        url_encode(&route),
+        url_encode(&project),
+        url_encode(&file)
+    );
+    view! {
+        <h1><code>{member}</code></h1>
+        <p><a href=back>"back to the archive listing"</a></p>
+        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
+            {move || Suspend::new(async move {
+                let text = content.await;
+                view! { <pre class="member-content"><code>{text}</code></pre> }
+            })}
+        </Suspense>
+    }
+}
+
+#[component]
+fn MetaPanel(doc: CoreMetadataDoc, versions: Vec<String>) -> impl IntoView {
+    view! {
+        <h3>"Versions"</h3>
+        <p class="chips">{versions.into_iter().map(|version| view! { <code>{version}</code> }).collect_view()}</p>
+        {doc.requires_python.map(|value| view! { <h3>"Requires Python"</h3><p><code>{value}</code></p> })}
+        {doc.license.map(|value| view! { <h3>"License"</h3><p>{value}</p> })}
+        {doc.author.map(|value| view! { <h3>"Author"</h3><p>{value}</p> })}
+        {doc.maintainer.map(|value| view! { <h3>"Maintainer"</h3><p>{value}</p> })}
+        {(!doc.keywords.is_empty()).then(|| view! {
+            <h3>"Keywords"</h3>
+            <p class="chips">{doc.keywords.into_iter().map(|word| view! { <code>{word}</code> }).collect_view()}</p>
+        })}
+        {(!doc.requires_dist.is_empty()).then(|| view! {
+            <h3>"Dependencies"</h3>
+            <p class="chips">
+                {doc.requires_dist.into_iter().map(|dep| view! { <code>{dep}</code> }).collect_view()}
+            </p>
+        })}
+        {(!doc.project_urls.is_empty()).then(|| view! {
+            <h3>"Links"</h3>
+            <ul class="links-list">
+                {doc.project_urls
+                    .into_iter()
+                    .map(|(label, url)| view! { <li><a href=url rel="external">{label}</a></li> })
+                    .collect_view()}
+            </ul>
+        })}
+        <ClassifierGroups classifiers=doc.classifiers />
+    }
+}
+
+/// Classifiers grouped by their top-level category, the way pypi.org presents them.
+#[component]
+fn ClassifierGroups(classifiers: Vec<String>) -> impl IntoView {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for classifier in classifiers {
+        let (group, rest) = classifier.split_once(" :: ").map_or_else(
+            || (classifier.clone(), classifier.clone()),
+            |(g, r)| (g.to_owned(), r.to_owned()),
+        );
+        match groups.iter_mut().find(|(name, _)| *name == group) {
+            Some((_, values)) => values.push(rest),
+            None => groups.push((group, vec![rest])),
+        }
+    }
+    (!groups.is_empty()).then(|| {
+        view! {
+            <h3>"Classifiers"</h3>
+            {groups
+                .into_iter()
+                .map(|(group, values)| {
+                    view! {
+                        <p class="classifier-group">{group}</p>
+                        <ul class="classifiers">
+                            {values.into_iter().map(|value| view! { <li>{value}</li> }).collect_view()}
+                        </ul>
+                    }
+                })
+                .collect_view()}
+        }
+    })
+}
+
+/// Yank, un-yank, and delete for the index's local layer, driven from the browser with the upload
+/// token. The buttons only act once hydrated; the server renders them inert.
+#[component]
+fn AdminPanel(
+    route: String,
+    project: String,
+    versions: Vec<String>,
+    refresh: Resource<Option<(UiProject, Option<CoreMetadataDoc>)>>,
+    token: ReadSignal<String>,
+    set_token: WriteSignal<String>,
+    set_outcome: WriteSignal<String>,
+) -> impl IntoView {
+    let act = move |method: &'static str, url: String| {
+        run_admin(method, url, token.get_untracked(), set_outcome, refresh);
+    };
+    let rows = versions
+        .into_iter()
+        .map(|version| {
+            let yank_url = format!("/{route}/{project}/{version}/yank");
+            let delete_url = format!("/{route}/{project}/{version}/");
+            let unyank_url = yank_url.clone();
+            view! {
+                <tr>
+                    <td><code>{version}</code></td>
+                    <td>
+                        <button on:click=move |_| act("PUT", yank_url.clone())>"yank"</button>
+                        <button on:click=move |_| act("DELETE", unyank_url.clone())>"un-yank"</button>
+                        <button class="danger" on:click=move |_| act("DELETE", delete_url.clone())>"delete"</button>
+                    </td>
+                </tr>
+            }
+        })
+        .collect_view();
+    let delete_all = format!("/{route}/{project}/");
+    view! {
+        <details class="admin">
+            <summary>"Manage uploads"</summary>
+            <p class="dim">"Actions apply to files uploaded to this index's local layer and need its upload token."</p>
+            <input
+                class="token"
+                type="password"
+                placeholder="upload token"
+                on:input:target=move |event| set_token.set(event.target().value())
+            />
+            <table class="admin-table"><tbody>{rows}</tbody></table>
+            <button class="danger" on:click=move |_| act("DELETE", delete_all.clone())>"delete whole project"</button>
+        </details>
+    }
+}
+
+fn run_admin(
+    method: &'static str,
+    url: String,
+    token: String,
+    outcome: WriteSignal<String>,
+    refresh: Resource<Option<(UiProject, Option<CoreMetadataDoc>)>>,
+) {
+    #[cfg(feature = "hydrate")]
+    {
+        leptos::task::spawn_local(async move {
+            let result = crate::data::admin_request(method, &url, &token).await;
+            outcome.set(result);
+            refresh.refetch();
+        });
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = (method, url, token, outcome, refresh);
+    }
+}
+
+/// Render a byte count like pypi.org: one decimal in the largest fitting unit.
+fn human_size(bytes: u64) -> String {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display only; artifacts are far below 2^52 bytes"
+    )]
+    let mut value = bytes as f64;
+    for unit in ["B", "kB", "MB", "GB"] {
+        if value < 1024.0 {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{value:.1} TB")
+}
+
+/// Percent-encode a URL query component (RFC 3986 unreserved characters stay literal).
+fn url_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(byte as char),
+            other => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "%{other:02X}");
+            }
+        }
+    }
+    out
+}

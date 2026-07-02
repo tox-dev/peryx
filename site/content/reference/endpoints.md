@@ -15,11 +15,17 @@ Every configured index route serves the same surface; `{route}` below is the ind
 | `GET /{route}/files/{sha256}/{filename}`            | Artifact download, cached content-addressed          |
 | `GET /{route}/files/{sha256}/{filename}.metadata`   | [PEP 658](https://peps.python.org/pep-0658/) core-metadata sibling                        |
 | `POST /{route}/`                                    | Upload ([legacy API](https://docs.pypi.org/api/upload/), used by twine and `uv publish`)  |
-| `PUT /{route}/{project}/[{version}/]yank`           | Yank uploaded files ([PEP 592](https://peps.python.org/pep-0592/))                        |
+| `GET /{route}/inspect/{sha256}/{filename}`          | Archive member listing (JSON)                        |
+| `GET /{route}/inspect/{sha256}/{filename}/{member}` | One archive member's content                         |
+| `PUT /{route}/{project}/[{version}/]yank`           | Yank files ([PEP 592](https://peps.python.org/pep-0592/)); mirror files get an override |
 | `DELETE /{route}/{project}/[{version}/]yank`        | Un-yank                                              |
-| `DELETE /{route}/{project}/[{version}/]`            | Delete uploaded files (volatile local layers only)   |
-| `GET /+status`                                      | JSON health: version, index routes, serial           |
+| `DELETE /{route}/{project}/[{version}/]`            | Delete uploads (volatile only); hide mirror files    |
+| `PUT /{route}/{project}/[{version}/]restore`        | Restore hidden mirror files                          |
+| `GET /+status`                                      | JSON health: version, counters, index descriptions   |
 | `GET /metrics`                                      | [Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/) text exposition                           |
+
+The web UI lives outside the index namespace: `GET /` (dashboard), `GET /browse` (package browser), and `GET /pkg/*`
+(the wasm bundle that hydrates the pages).
 
 ## Content negotiation
 

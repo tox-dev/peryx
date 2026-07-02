@@ -2,6 +2,7 @@
 //! fetching and caching from an upstream index on a miss.
 
 pub mod api;
+pub mod archive;
 pub mod cache;
 pub mod handlers;
 pub mod router;
@@ -9,7 +10,7 @@ pub mod state;
 pub mod upload;
 
 pub use router::router;
-pub use state::{AppState, Index, IndexKind};
+pub use state::{AppState, Index, IndexDescription, IndexKind};
 
 #[cfg(test)]
 mod tests;
