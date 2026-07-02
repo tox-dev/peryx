@@ -106,6 +106,7 @@ fn test_streamed_blob_with_wrong_digest_is_refused() {
     assert!(!store.exists(&digest));
 }
 
+#[cfg(unix)]
 #[test]
 fn test_commit_into_an_unwritable_store_is_an_io_error() {
     use std::os::unix::fs::PermissionsExt as _;

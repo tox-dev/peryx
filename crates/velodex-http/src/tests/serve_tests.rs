@@ -394,6 +394,7 @@ async fn test_stats_endpoint_drills_by_index_and_project() {
     assert!(body.contains("files"));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn test_unreadable_cached_blob_is_not_found() {
     use std::os::unix::fs::PermissionsExt as _;
