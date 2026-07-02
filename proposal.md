@@ -962,6 +962,12 @@ Scope: the remaining capabilities, all delivered in the same PR.
 - Tantivy full-text search behind the indexer trait seam; the search UI page.
 - External auth (LDAP/OIDC) as `Authenticator` trait impls; an upload/change webhook seam that absorbs the CI-trigger
   and chat-notification plugin use cases.
+- Upstream credential gaps found by the July 2026 registry survey: a per-mirror `credential_command` that re-runs on 401
+  or expiry (covers CodeArtifact's ≤12-hour tokens and Google Artifact Registry's 60-minute OAuth tokens; today only
+  static Basic/Bearer work), `~/.netrc` reading for parity with pip and uv, and per-mirror `ca_bundle`/client
+  certificates for private-PKI Artifactory and Nexus. Serving side, the parity steps are multiple named upload tokens
+  with optional expiry (devpi-tokens, Artifactory scoped tokens, Nexus user tokens, GitLab deploy tokens all offer this)
+  and optional Basic read auth on the simple API.
 
 Validation gate: a `twine upload` carrying a valid attestation is accepted and its provenance serves at the advertised
 URL; a quarantined project returns 404 from the simple API; a second velodex process configured as a replica catches up
