@@ -2,6 +2,9 @@
 title = "From bandersnatch"
 description = "A mirror of everything versus a cache of what you use: when the full copy stops paying for its terabytes."
 weight = 8
+
+[extra]
+logos = ["logos/pypa.png"]
 +++
 
 [bandersnatch](https://github.com/pypa/bandersnatch) is PyPI's official full-mirror client: a serial-based delta

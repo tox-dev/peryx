@@ -9,7 +9,7 @@ file. `-v` raises the level to debug and `-vv` to trace. A directive can target 
 the output quiet:
 
 ```shell
-velodex --log-level "info,velodex_upstream=debug" serve
+velodex serve --log-level "info,velodex_upstream=debug"
 ```
 
 velodex logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch

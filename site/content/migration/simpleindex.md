@@ -2,11 +2,14 @@
 title = "From simpleindex"
 description = "Route-per-project becomes overlay layers, and the redirects become a cache."
 weight = 5
+
+[extra]
+logos = ["logos/python.svg"]
 +++
 
 [simpleindex](https://github.com/uranusjr/simpleindex) routes simple-API requests by project-name pattern: a
-TOML file maps each pattern to a local directory of files or an HTTP 302 redirect toward another index. It
-deliberately does nothing else: no caching, no uploads, no storage.
+TOML file maps each pattern to a local directory of files or an HTTP 302 redirect toward another index. Doing
+nothing else is its design: no caching, no uploads, no storage.
 
 ## Why velodex
 
@@ -20,7 +23,7 @@ write, where an overlay's local-first shadowing is the default for every name yo
 
 | simpleindex | velodex |
 | ----------- | ------- |
-| `simpleindex ./configuration.toml` | `velodex --config velodex.toml serve` |
+| `simpleindex ./configuration.toml` | `velodex serve --config velodex.toml` |
 | route `source = "http"` (302 to an index) | a mirror layer (fetched, verified, cached) |
 | route `source = "path"` (local directory) | a local index, populated by `twine upload` |
 | per-project route patterns | overlay resolution: local layers first, mirror last |

@@ -8,7 +8,7 @@ velodex targets the interoperability standards a modern index and its clients re
 [Simple Repository API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) is the living
 consolidation of most of them; velodex serves `meta.api-version` 1.1.
 
-## What a pip install actually asks for
+## What a pip install asks for
 
 Knowing the request sequence makes the table below concrete. For `pip install requests` against any
 standards-compliant index:
@@ -28,7 +28,7 @@ sequenceDiagram
 
 Every hop names a standard: the page format is PEP 503/691, its fields are PEP 700, the yank markers are PEP 592,
 the metadata shortcut is PEP 658/714, and the filename pip parsed to pick a wheel is PEP 427. velodex sits on both
-sides of this conversation — a server to your clients, a client to its upstreams — which is why the table below
+sides of this conversation, a server to your clients and a client to its upstreams, which is why the table below
 mixes "served" and "parsed".
 
 | Standard | Role in velodex |

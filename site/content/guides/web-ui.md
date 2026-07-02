@@ -11,14 +11,20 @@ visual style as this site.
 
 `http://<host>:<port>/` shows the version, the change serial, live request counters (including PEP 658 metadata hits),
 and a card per configured index with its kind, route, layers, whether it accepts uploads, and its usage: pages served,
-downloads, and bytes. The counters refresh every few seconds. Each card's `usage` link opens the drill-down described
-in [monitoring](@/guides/monitor.md): index totals, a per-project table, and per-file download counts.
+downloads, and bytes. The counters refresh every few seconds.
+
+{{ screen(name="dashboard", alt="The dashboard: counters on top, one card per index with its layer stack and usage") }}
+
+Each card's `usage` link opens the drill-down described in [monitoring](@/guides/monitor.md): index totals, a
+per-project table, and per-file download counts.
 
 ## Browsing packages
 
 An index card links to its project list, filterable as you type. A project page shows what pypi.org would: the rendered
 long description, summary, install command with a copy button, versions, dependencies, keywords, license, author,
 project links, grouped classifiers, and a file table with sizes, upload dates, sha256 digests, and yank/metadata badges.
+
+{{ screen(name="project", alt="A project page: description and files on the left, metadata panel on the right") }}
 
 Each file's `contents` link opens the archive browser: the members of the wheel or sdist with their sizes, and each
 text member readable in place, the way [pypi-browser](https://github.com/chriskuehl/pypi-browser) presents packages.

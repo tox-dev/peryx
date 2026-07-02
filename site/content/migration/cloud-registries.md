@@ -2,6 +2,9 @@
 title = "From cloud registries"
 description = "CodeArtifact, GitLab, Azure Artifacts, and Google Artifact Registry: what their Python support misses, and how velodex fronts or replaces them."
 weight = 7
+
+[extra]
+logos = ["logos/gitlab.svg", "logos/googlecloud.svg"]
 +++
 
 The hosted registries integrate with their platform's identity and billing. That is the draw and the tax: metered

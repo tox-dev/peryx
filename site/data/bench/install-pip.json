@@ -1,33 +1,64 @@
 {
   "label": "pip: install the top 51 PyPI packages",
+  "baseline": "direct",
   "parties": [
-    "velodex",
-    "direct",
-    "devpi",
-    "proxpi"
+    {
+      "name": "velodex",
+      "url": "https://velodex.readthedocs.io/"
+    },
+    {
+      "name": "direct",
+      "url": "https://pypi.org/"
+    },
+    {
+      "name": "devpi",
+      "url": "https://devpi.net/docs/"
+    },
+    {
+      "name": "proxpi",
+      "url": "https://github.com/EpicWink/proxpi"
+    },
+    {
+      "name": "pypiserver",
+      "url": "https://github.com/pypiserver/pypiserver"
+    },
+    {
+      "name": "pypicloud",
+      "url": "https://pypicloud.readthedocs.io/"
+    }
   ],
   "rows": [
     {
       "name": "cold cache",
       "cells": [
         {
-          "text": "20.5 s",
+          "text": "21.1 s",
+          "ratio": "1.06x",
+          "tint": "faster"
+        },
+        {
+          "text": "19.8 s",
           "ratio": "1.00x",
           "tint": "faster"
         },
         {
-          "text": "20.3 s",
-          "ratio": "0.99x",
+          "text": "27.0 s",
+          "ratio": "1.36x",
           "tint": "faster"
         },
         {
-          "text": "27.7 s",
-          "ratio": "1.35x",
+          "text": "22.2 s",
+          "ratio": "1.12x",
           "tint": "faster"
         },
         {
-          "text": "25.7 s",
-          "ratio": "1.25x",
+          "text": "19.8 s",
+          "ratio": "1.00x",
+          "tint": "faster"
+        },
+        {
+          "text": "24.7 s",
+          "ratio": "1.24x",
           "tint": "faster"
         }
       ]
@@ -36,23 +67,33 @@
       "name": "warm cache",
       "cells": [
         {
-          "text": "19.7 s",
+          "text": "19.2 s",
+          "ratio": "0.96x",
+          "tint": "faster"
+        },
+        {
+          "text": "19.9 s",
           "ratio": "1.00x",
           "tint": "faster"
         },
         {
-          "text": "20.6 s",
-          "ratio": "1.05x",
-          "tint": "faster"
-        },
-        {
-          "text": "18.1 s",
+          "text": "18.4 s",
           "ratio": "0.92x",
           "tint": "faster"
         },
         {
-          "text": "21.3 s",
-          "ratio": "1.08x",
+          "text": "21.7 s",
+          "ratio": "1.09x",
+          "tint": "faster"
+        },
+        {
+          "text": "19.7 s",
+          "ratio": "0.99x",
+          "tint": "faster"
+        },
+        {
+          "text": "16.2 s",
+          "ratio": "0.82x",
           "tint": "faster"
         }
       ]

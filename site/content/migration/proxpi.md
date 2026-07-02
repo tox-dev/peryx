@@ -2,9 +2,12 @@
 title = "From proxpi"
 description = "The same one-line client change, plus persistence, uploads, and shadowing that proxpi leaves out."
 weight = 2
+
+[extra]
+logos = ["logos/python.svg"]
 +++
 
-[proxpi](https://github.com/EpicWink/proxpi) is a Flask caching proxy for the simple API: one job, done simply.
+[proxpi](https://github.com/EpicWink/proxpi) is a Flask caching proxy for the simple API: one job, kept small.
 It caches index pages and files, speaks JSON and HTML, and runs anywhere Python does. It has no uploads, no
 private indexes, and its index cache lives in process memory.
 

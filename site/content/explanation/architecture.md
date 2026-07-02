@@ -6,8 +6,8 @@ weight = 1
 
 Start with the concrete case: a CI job runs `uv pip install pandas` against a velodex that has never seen pandas.
 uv asks for the pandas index page, then for a handful of `.metadata` files, then for the wheels it chose. velodex
-has none of it. The naive proxy would download each thing, store it, and then serve it — adding a full download of
-buffering delay on top of every upstream fetch. Most of this page explains how velodex avoids that: the client
+has none of it. The naive proxy would download each thing, store it, and then serve it, adding a full download of
+buffering delay on top of each upstream fetch. Most of this page explains how velodex avoids that: the client
 receives bytes at upstream wire speed on a cold cache, and from local disk and memory afterwards.
 
 velodex is a single async Rust process built on [axum](https://github.com/tokio-rs/axum) and
@@ -64,7 +64,7 @@ per route.
 
 ## How bytes reach the client before they reach the disk
 
-The cold path is where proxies usually lose. velodex never buffers a whole response to work on it; both pages and
+The cold path is where proxies lose their users. velodex never buffers a whole response to work on it; both pages and
 artifacts stream, with the caching work riding along:
 
 {% mermaid() %}
@@ -121,7 +121,7 @@ stateDiagram-v2
 A stale page is not dropped: the next request revalidates it with `If-None-Match`, and the common answer is a
 `304` with no body, which just resets the clock. A background sweep revalidates every stale page once a minute, so
 an upstream change lands within about one freshness window even when nobody requests the page; each detected
-change is logged and counted. When the upstream errors or is unreachable, the stale copy serves — a pypi.org
+change is logged and counted. When the upstream errors or is unreachable, the stale copy serves, and a pypi.org
 outage degrades to stale-but-working rather than red builds.
 
 ## The metadata store
@@ -129,8 +129,8 @@ outage degrades to stale-but-working rather than red builds.
 Project pages, file-to-URL mappings, uploads, and the change serial live in [redb](https://www.redb.org/), an
 embedded, crash-safe, copy-on-write B-tree in pure Rust. redb gives one writer and many concurrent readers with
 snapshot isolation, which fits an index server's read-heavy traffic without an external database. Page records use
-a framed encoding — a small JSON header line, then the raw body bytes — so a multi-megabyte page is not re-encoded
-as JSON numbers and header-only scans (the freshness sweep) never touch the body.
+a framed encoding (a small JSON header line, then the raw body bytes), so a multi-megabyte page is not re-encoded
+as JSON numbers and header-only scans (the freshness sweep) skip the body.
 
 ## The artifact store
 
@@ -188,11 +188,11 @@ fetch the same way.
 - **One process, local state.** No replication, no failover. A cache instance per site or cluster is the intended
   shape; each warms independently.
 - **The first request for anything pays upstream latency.** Streaming removes the buffering penalty, not the
-  network. A cold cache behaves like a slightly slower pypi.org until it has seen your working set once.
+  network. A cold cache behaves like pypi.org plus one hop until it has seen your working set once.
 - **redb has one writer.** Fine for an index server (reads dominate by orders of magnitude), wrong for a
   write-heavy workload.
 - **Trust follows the hash.** velodex verifies artifacts against the digests the index page advertises. If an
-  upstream lies about its own hashes, velodex faithfully caches the lie; it defends the transport, not the source.
+  upstream lies about its own hashes, velodex caches the lie; it defends the transport, not the source.
 
 ## In practice
 

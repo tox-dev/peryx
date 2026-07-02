@@ -2,6 +2,9 @@
 title = "From pypicloud"
 description = "pypicloud is archived; velodex covers its cache-on-miss fallback and hosting model in a maintained binary."
 weight = 4
+
+[extra]
+logos = ["logos/python.svg"]
 +++
 
 [pypicloud](https://github.com/stevearc/pypicloud) was the closest thing to velodex in Python: private hosting

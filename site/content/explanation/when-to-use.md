@@ -22,12 +22,12 @@ setup, and the [usage counters](@/guides/monitor.md) show what it saves you.
 
 ### You install private packages next to public ones
 
-The common pattern — a private index in `--extra-index-url` with pypi.org as fallback — is how
+The common pattern, a private index in `--extra-index-url` with pypi.org as fallback, is how
 [dependency confusion](https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610) works: pip happily takes
 a same-named, higher-versioned package from the public side. This is not theoretical; it compromised
 [PyTorch nightly users](https://pytorch.org/blog/compromised-nightly-dependency/) and earned one researcher bug
 bounties from 35 companies. velodex's overlay indexes answer it server-side: your uploads shadow upstream files
-with the same name, deterministically, for every client — pip, uv, and poetry alike keep a single `index-url`.
+with the same name, for every client; pip, uv, and poetry alike keep a single `index-url`.
 [The index model](@/explanation/indexes.md) explains the mechanics.
 
 ### pypi.org being down should not stop your team
@@ -49,7 +49,7 @@ connected network and carry the data directory across. The [air-gap guide](@/gui
 A CUDA-enabled torch wheel is measured in gigabytes. A classroom, a Raspberry Pi fleet, or a GPU team behind one
 uplink downloads it once through velodex and then never again: the store is content-addressed, so one copy serves
 every project, tag, and student. Because velodex speaks PEP 658, resolvers also stop downloading wheels just to
-read their dependency metadata — a few kilobytes of `.metadata` replaces each candidate download.
+read their dependency metadata; a few kilobytes of `.metadata` replaces each candidate download.
 
 ### You would run Artifactory or Nexus for Python alone
 
@@ -61,7 +61,7 @@ binary, one TOML file, and one data directory.
 
 - **You need a complete offline PyPI**, every package and every release, without a warm-up phase.
   That is a full mirror; run [bandersnatch](https://github.com/pypa/bandersnatch) and budget the terabytes.
-- **You need one registry for many ecosystems** — npm, Maven, Docker images, Debian packages.
+- **You need one registry for many ecosystems**: npm, Maven, Docker images, Debian packages.
   That is [Artifactory](https://jfrog.com/artifactory/) and [Nexus](https://www.sonatype.com/products/nexus-repository)
   territory; velodex only speaks Python's index protocols.
 - **You need high availability or replication.** velodex is one process with local state.

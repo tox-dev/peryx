@@ -6,21 +6,20 @@
 
 Two workloads:
 
-- **install** (default): time ``uv pip install`` (and with ``--pip``, ``pip install``) of the top
-  PyPI packages through each server, cold (fresh server state) and warm (the server keeps its
-  cache, the client starts over). This is the number a user feels.
-- **load** (``--load``): request-level throughput with locust, one user and a concurrent swarm,
-  against each warm server.
+- **install**: time ``uv pip install`` and ``pip install`` of the top PyPI packages through each
+  server, cold (fresh server state) and warm (the server keeps its cache, the client starts
+  over). This is the number a user feels.
+- **load**: request-level throughput with locust, one user and a concurrent swarm, against each
+  warm server.
 
 Results land as JSON feeds under ``site/data/bench/``; the documentation renders them as tinted
 tables (best-in-row green to worst-in-row red) via the ``bench`` shortcode. Competitors run from
 their published packages via ``uvx``; nothing is installed globally.
 
-Run from the repository root::
+One command reproduces every table the documentation shows (velodex is built automatically when
+the release binary is missing)::
 
-    cargo build --release
     uv run tests/perf/run.py
-    uv run tests/perf/run.py --load
 """
 
 from __future__ import annotations
@@ -63,31 +62,66 @@ MIN_SPAN: Final = math.log(8.0)
 
 @dataclass(frozen=True)
 class Server:
-    """One index server under test: how to start it and where its simple index lives."""
+    """One index server under test: how to start it, where its simple index lives, and its docs."""
 
     name: str
+    homepage: str
     simple_url: Callable[[int], str]
     command: Callable[[int, Path], list[str]] | None
+    setup: Callable[[int, Path], None] | None = None
+
+
+def _pypicloud_config(port: int, state: Path) -> None:
+    """pypicloud's `fallback = cache` mode is the closest analog to a read-through cache."""
+    (state / "pypicloud.ini").write_text(
+        f"""\
+[app:main]
+use = egg:pypicloud
+pyramid.reload_templates = False
+pypi.fallback = cache
+pypi.default_read = everyone
+pypi.cache_update = everyone
+pypi.storage = file
+storage.dir = {state / "packages"}
+db.url = sqlite:///{state / "db.sqlite"}
+session.encrypt_key = 0000000000000000000000000000000000000000000000000000000000000000
+session.validate_key = 0000000000000000000000000000000000000000000000000000000000000000
+auth.admins =
+
+[server:main]
+use = egg:waitress#main
+host = 127.0.0.1
+port = {port}
+threads = 8
+"""
+    )
 
 
 SERVERS: Final = (
     Server(
         name="velodex",
+        homepage="https://velodex.readthedocs.io/",
         simple_url=lambda port: f"http://127.0.0.1:{port}/root/pypi/simple/",
         command=lambda port, state: [
             str(REPO / "target" / "release" / "velodex"),
+            "serve",
             "--host",
             "127.0.0.1",
             "--port",
             str(port),
             "--data-dir",
             str(state),
-            "serve",
         ],
     ),
-    Server(name="direct", simple_url=lambda _port: "https://pypi.org/simple/", command=None),
+    Server(
+        name="direct",
+        homepage="https://pypi.org/",
+        simple_url=lambda _port: "https://pypi.org/simple/",
+        command=None,
+    ),
     Server(
         name="devpi",
+        homepage="https://devpi.net/docs/",
         simple_url=lambda port: f"http://127.0.0.1:{port}/root/pypi/+simple/",
         command=lambda port, state: [
             "uvx",
@@ -102,6 +136,7 @@ SERVERS: Final = (
     ),
     Server(
         name="proxpi",
+        homepage="https://github.com/EpicWink/proxpi",
         simple_url=lambda port: f"http://127.0.0.1:{port}/index/",
         command=lambda port, _state: [
             "uvx",
@@ -117,14 +152,55 @@ SERVERS: Final = (
             "proxpi.server:app",
         ],
     ),
+    Server(
+        name="pypiserver",
+        homepage="https://github.com/pypiserver/pypiserver",
+        simple_url=lambda port: f"http://127.0.0.1:{port}/simple/",
+        command=lambda port, state: [
+            "uvx",
+            "--from",
+            "pypiserver[passlib]",
+            "pypi-server",
+            "run",
+            "-p",
+            str(port),
+            "--fallback-url",
+            "https://pypi.org/simple/",
+            "-P",
+            ".",
+            "-a",
+            ".",
+            str(state),
+        ],
+    ),
+    Server(
+        name="pypicloud",
+        homepage="https://pypicloud.readthedocs.io/",
+        simple_url=lambda port: f"http://127.0.0.1:{port}/simple/",
+        command=lambda _port, state: [
+            "uvx",
+            "--python",
+            "3.10",
+            "--from",
+            "pypicloud",
+            "--with",
+            "sqlalchemy<2",
+            "--with",
+            "waitress",
+            "pserve",
+            str(state / "pypicloud.ini"),
+        ],
+        setup=_pypicloud_config,
+    ),
 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=1, help="measurements per cell; the best is kept")
-    parser.add_argument("--pip", action="store_true", help="also measure with pip as the client")
-    parser.add_argument("--load", action="store_true", help="run the locust request workload instead")
+    parser.add_argument("--skip-pip", action="store_true", help="skip the pip client (uv only)")
+    parser.add_argument("--skip-load", action="store_true", help="skip the locust request workload")
+    parser.add_argument("--skip-install", action="store_true", help="skip the install workload")
     parser.add_argument(
         "--only",
         default="",
@@ -132,15 +208,26 @@ def main() -> None:
     )
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    ensure_velodex_built()
     servers = [server for server in SERVERS if not arguments.only or server.name in arguments.only.split(",")]
-    if arguments.load:
+    if not arguments.skip_install:
+        bench_installs(servers, ["uv", *([] if arguments.skip_pip else ["pip"])], arguments.runs)
+    if not arguments.skip_load:
         bench_load(servers, users=(1, 32))
-    else:
-        bench_installs(servers, ["uv", *(["pip"] if arguments.pip else [])], arguments.runs)
+
+
+def ensure_velodex_built() -> None:
+    """Build the release binary when it is absent, so one command reproduces everything."""
+    binary = REPO / "target" / "release" / "velodex"
+    if binary.exists():
+        return
+    _LOG.info("building velodex (release)")
+    subprocess.run(["cargo", "build", "--release"], check=True, cwd=REPO)
 
 
 def bench_installs(servers: list[Server], clients: list[str], runs: int) -> None:
     """The install workload: every server, cold then warm, per client; best of `runs`."""
+    prewarm_cdn()
     for client in clients:
         results: dict[str, dict[str, float]] = {}
         for server in servers:
@@ -157,15 +244,21 @@ def bench_installs(servers: list[Server], clients: list[str], runs: int) -> None
                         warms.append(install_once(client, index_url, Path(scratch)))
             results[server.name] = {"cold": min(colds), "warm": min(warms)}
             _LOG.info("[%s] %s: cold %.1fs warm %.1fs", client, server.name, min(colds), min(warms))
+        names = [server.name for server in servers]
+        baseline = names.index("direct") if "direct" in names else 0
         rows = [
-            {"name": f"{phase} cache", "cells": tinted_cells([results[server.name][phase] for server in servers])}
+            {
+                "name": f"{phase} cache",
+                "cells": tinted_cells([results[server.name][phase] for server in servers], baseline=baseline),
+            }
             for phase in ("cold", "warm")
         ]
         write_feed(
             f"install-{client}",
             {
                 "label": f"{client}: install the top {len(TOP_PACKAGES)} PyPI packages",
-                "parties": [server.name for server in servers],
+                "baseline": names[baseline],
+                "parties": [{"name": server.name, "url": server.homepage} for server in servers],
                 "rows": rows,
             },
         )
@@ -191,6 +284,8 @@ def running(server: Server, state: Path) -> Iterator[str]:
             check=True,
             capture_output=True,
         )
+    if server.setup is not None:
+        server.setup(port, state)
     log_path = state / "server.log"
     with log_path.open("wb") as log:
         process = subprocess.Popen(server.command(port, state), stdout=log, stderr=subprocess.STDOUT)
@@ -228,6 +323,17 @@ def _wait_ready(url: str, process: subprocess.Popen[bytes]) -> None:
             time.sleep(0.3)
     msg = f"server never answered at {url}"
     raise TimeoutError(msg)
+
+
+def prewarm_cdn() -> None:
+    """One unmeasured direct install so PyPI's CDN edge is equally warm for every party.
+
+    Without it the first party measured pays the CDN's cold-cache penalty and everyone after
+    rides the edge cache that run just warmed, biasing the comparison by run order.
+    """
+    _LOG.info("prewarming the CDN edge (unmeasured)")
+    with tempfile.TemporaryDirectory(prefix="bench-prewarm-") as scratch:
+        install_once("uv", "https://pypi.org/simple/", Path(scratch))
 
 
 def install_once(client: str, index_url: str, scratch: Path) -> float:
@@ -281,21 +387,28 @@ def bench_load(servers: list[Server], users: tuple[int, ...]) -> None:
             with running(server, state) as index_url:
                 warm_pages(index_url)
                 for count in users:
+                    _LOG.info("[load] %s: %d user(s)", server.name, count)
                     metrics.setdefault(server.name, {})[count] = locust_run(index_url, count, Path(scratch))
+    names = [server.name for server in servers]
+    baseline = names.index("direct") if "direct" in names else 0
     rows = []
     for count in users:
         label = f"{count} user" + ("s" if count > 1 else "")
         rps = [metrics[server.name][count]["rps"] for server in servers]
         p95 = [metrics[server.name][count]["p95"] / 1000 for server in servers]
         rows.extend((
-            {"name": f"{label}: requests/s", "cells": tinted_cells(rps, higher_is_better=True, unit="req/s")},
-            {"name": f"{label}: p95 latency", "cells": tinted_cells(p95)},
+            {
+                "name": f"{label}: requests/s",
+                "cells": tinted_cells(rps, baseline=baseline, higher_is_better=True, unit="req/s"),
+            },
+            {"name": f"{label}: p95 latency", "cells": tinted_cells(p95, baseline=baseline)},
         ))
     write_feed(
         "load",
         {
             "label": "simple-page requests against a warm cache",
-            "parties": [server.name for server in servers],
+            "baseline": names[baseline],
+            "parties": [{"name": server.name, "url": server.homepage} for server in servers],
             "rows": rows,
         },
     )
@@ -337,13 +450,18 @@ def locust_run(index_url: str, users: int, scratch: Path) -> dict[str, float]:
     }
 
 
-def tinted_cells(values: list[float], *, higher_is_better: bool = False, unit: str = "s") -> list[dict[str, str]]:
-    """Format one row: readable value, ratio against velodex (party 0), and a best-to-worst tint.
+def tinted_cells(
+    values: list[float], *, baseline: int = 0, higher_is_better: bool = False, unit: str = "s"
+) -> list[dict[str, str]]:
+    """Format one row: readable value, ratio against the baseline party, and a best-to-worst tint.
+
+    The baseline is the no-proxy `direct` measurement where present, so every other cell reads as
+    the overhead (or win) a server adds on top of talking to the upstream itself.
 
     Returns:
         One cell dict (`text`, `ratio`, `tint`) per value, in input order.
     """
-    reference = values[0]
+    reference = values[baseline]
     costs = [1.0 / value if higher_is_better else value for value in values]
     best = min(costs)
     span = max(math.log(max(costs) / best), MIN_SPAN)

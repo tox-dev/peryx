@@ -18,11 +18,11 @@ velodex serve --host 0.0.0.0 --port 4433 --data-dir /var/lib/velodex
 The data directory is the cache; give it a persistent volume. Nothing else is stateful.
 
 In Kubernetes or docker-compose, the same thing is one container with one volume. The image only needs the binary
-and the data mount — there is no database or sidecar.
+and the data mount; there is no database or sidecar.
 
 ## Point the installers at it
 
-Installers pick up the index from an environment variable, so most setups change zero pipeline files — set it once
+Installers pick up the index from an environment variable, so most setups change zero pipeline files: set it once
 at the runner or organization level:
 
 {% tabs(names="uv, pip, project file") %}

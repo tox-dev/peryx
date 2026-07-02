@@ -1,0 +1,130 @@
+<!DOCTYPE html><html data-country-code="us"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>GitLab The One DevOps Platform</title><link rel="preconnect" href="https://cdn.cookielaw.org"><link rel="preconnect" href="https://geolocation.onetrust.com"><script src="https://client-registry.mutinycdn.com/personalize/client/c18972324098ea25.js" async type="text/plain" class="optanon-category-C0004"></script><script hid="gtagConsent" defer>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+
+  const defaultConsents = window.dataLayer.filter(item => item.length && Array.from(item).indexOf('default') >= 0);
+
+  if(defaultConsents.length <= 2) {
+    gtag('consent', 'default', {
+      'analytics_storage': 'granted',
+      'ad_storage': 'granted',
+      'ad_user_data': 'granted',
+      'functionality_storage': 'granted',
+      'ad_personalization': 'granted',
+      'wait_for_update': 500
+    });
+    gtag('consent', 'default', {
+      'analytics_storage': 'denied',
+      'ad_storage': 'denied',
+      'ad_user_data': 'denied',
+      'functionality_storage': 'denied',
+      'ad_personalization': 'denied',
+      'region': [
+        'AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE','IS','LI','NO','RU','GB','PE','CO','KR','CA-QC'
+      ],
+      'wait_for_update': 500
+    });
+  }
+
+  window.geofeed = (options) => {
+    dataLayer.push({
+      'event': 'OneTrustCountryLoad',
+      'oneTrustCountryId': options.country.toString(),
+      'oneTrustStateId': options.state?.toString()
+    });
+  }
+</script><script id="oneTrustAutoBlocking" src="https://cdn.cookielaw.org/consent/7f944245-c5cd-4eed-a90e-dd955adfdd08/OtAutoBlock.js" type="text/javascript"></script><script id="oneTrustSDK" src="https://cdn.cookielaw.org/scripttemplates/otSDKStub.js" type="text/javascript" data-domain-script="7f944245-c5cd-4eed-a90e-dd955adfdd08"></script><script id="oneTrustGeolocation" src="https://geolocation.onetrust.com/cookieconsentpub/v1/geo/location/geofeed" type="text/javascript"></script><script src="https://cdn.optimizely.com/js/5113954737848320.js" type="text/plain" class="optanon-category-C0002"></script><script id="mutiny" defer>
+          (function () {
+            var a = (window.mutiny = window.mutiny || {});
+            if (!window.mutiny.client) {
+              a.client = { _queue: {} };
+              var b = ['identify', 'trackConversion'];
+              var c = [].concat(b, ['defaultOptOut', 'optOut', 'optIn']);
+              var d = function factory(c) {
+                return function () {
+                  for (var d = arguments.length, e = new Array(d), f = 0; f < d; f++) {
+                    e[f] = arguments[f];
+                  }
+                  a.client._queue[c] = a.client._queue[c] || [];
+                  if (b.includes(c)) {
+                    return new Promise(function (b, d) {
+                      a.client._queue[c].push({ args: e, resolve: b, reject: d });
+                    });
+                  } else {
+                    a.client._queue[c].push({ args: e });
+                  }
+                };
+              };
+              c.forEach(function (b) {
+                a.client[b] = d(b);
+              });
+            }
+          })();
+          </script><script id="onetrust-initialization">
+            function OptanonWrapper() {
+              try {
+                setupConsentObservers();
+              } catch (e) {
+                console.error("OneTrust consent observer failed to setup", e);
+              }
+            }
+            function removeNonConsentedCookies(activeGroups) {
+              if (!window.OneTrust || !OneTrust.GetDomainData) return;
+              var activeArr = Array.isArray(activeGroups) ? activeGroups : String(activeGroups || '').split(',');
+              var groups = OneTrust.GetDomainData().Groups || [];
+              function rulesFor(wantConsented) {
+                var exact = {}, prefixes = [];
+                groups.forEach(function (g) {
+                  if ((activeArr.indexOf(g.OptanonGroupId) !== -1) !== wantConsented) return;
+                  (g.FirstPartyCookies || []).forEach(function (c) {
+                    var x = c.Name.search(/x{2,}$/);
+                    if (x === -1) exact[c.Name] = true; else if (x >= 2) prefixes.push(c.Name.slice(0, x));
+                  });
+                });
+                return { exact: exact, prefixes: prefixes };
+              }
+              var keep = rulesFor(true), remove = rulesFor(false);
+              function hit(r, name) { return r.exact[name] || r.prefixes.some(function (p) { return name.indexOf(p) === 0; }); }
+              document.cookie.split('; ').forEach(function (pair) {
+                var name = pair.split('=')[0];
+                if (!name || !hit(remove, name) || hit(keep, name)) return;
+                ['', location.hostname, '.' + location.hostname, '.gitlab.com'].forEach(function (d) {
+                  document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/' + (d ? '; domain=' + d : '');
+                });
+              });
+            }
+            function setupConsentObservers() {
+              // Check if onetrust and mutiny is active and opt in if right group is active
+              if (OnetrustActiveGroups && window.mutiny) {
+                if (OnetrustActiveGroups.includes('C0002') || OnetrustActiveGroups.includes('C0004')) {
+                  window.mutiny.client.optIn();
+                }
+              }
+
+              removeNonConsentedCookies(OnetrustActiveGroups);
+
+              if (OneTrust) {
+                OneTrust.OnConsentChanged((consentEvent) => {
+                  const mutinyEnabled = consentEvent.detail.includes('C0002') || consentEvent.detail.includes('C0004');
+                  if (mutinyEnabled && window.mutiny) {
+                    window.mutiny.client.optIn();
+                  } else if (!mutinyEnabled) {
+                    window.mutiny.client.optOut();
+                  }
+                  removeNonConsentedCookies(consentEvent.detail);
+                });
+              }
+            }
+          </script><link rel="stylesheet" href="/_nuxt/entry.DHIyJ6OQ.css" crossorigin><link rel="modulepreload" as="script" crossorigin href="/_nuxt/N3R1aRK2.js"><link rel="preload" as="font" crossorigin href="/fonts/gitlab-sans/GitLabSans.woff2"><link rel="preload" as="font" crossorigin href="/fonts/gitlab-mono/GitLabMono.woff2"><script src="https://cdn.bizible.com/scripts/bizible.js" defer type="text/plain" class="optanon-category-C0002"></script><script src="https://munchkin.marketo.net/munchkin.js" defer type="text/plain" class="optanon-category-C0002"></script><script type="module" src="/_nuxt/N3R1aRK2.js" crossorigin></script><link rel="icon" type="image/x-icon" href="/images/ico/favicon.ico"><link rel="icon" type="image/png" sizes="32x32" href="/images/ico/favicon-32x32.png"><link rel="icon" type="image/png" sizes="192x192" href="/images/ico/favicon-192x192.png"><link rel="apple-touch-icon" href="/images/ico/favicon-192x192.png"><link rel="alternate" type="application/atom+xml" title="Major Releases" href="/releases.xml"><meta hid="contentSecurityPolicy" http-equiv="Content-Security-Policy" content="
+            default-src 'self' https: http:;
+            script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http: *.googletagmanager.com *.mutinycdn.com;
+            style-src 'self' 'unsafe-inline' https: http:;
+            object-src https: http:;
+            base-uri 'self';
+            connect-src 'self' https: http: wss: ws: *.google-analytics.com *.analytics.google.com *.googletagmanager.com *.mutinyhq.com *.mutinyhq.io *.mutinycdn.com;
+            frame-src 'self' https: http:;
+            img-src 'self' https: http: data: *.google-analytics.com *.googletagmanager.com *.mutinycdn.com;
+            manifest-src 'self'; media-src 'self' https: http:;
+            child-src 'self' blob: https: http:;
+            font-src 'self' https: http: data:;
+          "><meta name="format-detection" content="telephone=no"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:site" content="@GitLab"><meta property="og:type" content="website"><script id="unhead:payload" type="application/json">{"title":"GitLab The One DevOps Platform"}</script><meta name="robots" content="noindex, nofollow" /></head><body><div id="__nuxt"></div><div id="teleports"></div><script>window.__NUXT_SITE_CONFIG__=(function(a){return {_priority:{name:-10,env:0,url:a,trailingSlash:a},defaultLocale:"en-US",env:"production",name:"about.gitlab.com",trailingSlash:true,url:"https:\u002F\u002Fabout.gitlab.com"}}(-3))</script><script>window.__NUXT__={};window.__NUXT__.config={public:{projectId:"55044057",siteEnv:"production",mdc:{components:{prose:true,map:{},customElements:[]},headings:{anchorLinks:{h1:false,h2:true,h3:true,h4:true,h5:false,h6:false}},highlight:{noApiRoute:false,theme:"github-light",langs:["awk","bash","c","cpp","csharp","css","csv","cypher","diff","docker","erb","go","graphql","groovy","hcl","html","ini","java","javascript","json","liquid","log","markdown","mermaid","objective-c","perl","php","python","ruby","rust","sass","scss","shellsession","swift","terraform","toml","typescript","vue","xml","yaml","awk","bash","c","cpp","csharp","css","csv","cypher","diff","docker","erb","go","graphql","groovy","hcl","html","ini","java","javascript","json","liquid","log","markdown","mermaid","objective-c","perl","php","python","ruby","rust","sass","scss","shellsession","swift","terraform","toml","typescript","vue","xml","yaml"],highlighter:"shiki",shikiEngine:"oniguruma"}},"nuxt-scripts":{version:"",prefix:"/_scripts",defaultScriptOptions:{trigger:"onNuxtReady"},googleStaticMapsProxy:"",endpoints:{}},"seo-utils":{canonicalQueryWhitelist:["page","sort","filter","search","q","category","tag"],canonicalLowercase:true},content:{wsUrl:""},i18n:{baseUrl:"",defaultLocale:"en-us",rootRedirect:"",redirectStatusCode:302,skipSettingLocaleOnNavigate:false,locales:[{code:"en-us",language:"en-US",label:"English",langLabel:"Language"},{code:"de-de",language:"de-DE",label:"Deutsch",englishLabel:"German",langLabel:"Sprache"},{code:"es",language:"es",label:"Español",englishLabel:"Spanish",langLabel:"Idioma"},{code:"fr-fr",language:"fr-FR",label:"Français",englishLabel:"French",langLabel:"Langue"},{code:"it-it",language:"it-IT",label:"Italiano",englishLabel:"Italian",langLabel:"Lingua"},{code:"ja-jp",language:"ja-JP",label:"日本語",englishLabel:"Japanese",langLabel:"言語"},{code:"ko-kr",language:"ko-KR",label:"한국어",englishLabel:"Korean",langLabel:"언어"},{code:"pt-br",language:"pt-BR",label:"Português",englishLabel:"Portuguese",langLabel:"Idioma"}],detectBrowserLanguage:false,experimental:{localeDetector:"",typedPages:true,typedOptionsAndMessages:false,alternateLinkCanonicalQueries:true,devCache:false,cacheLifetime:"",stripMessagesPayload:false,preload:false,strictSeo:false,nitroContextDetection:true,httpCacheDuration:10},domainLocales:{"en-us":{domain:""},"de-de":{domain:""},es:{domain:""},"fr-fr":{domain:""},"it-it":{domain:""},"ja-jp":{domain:""},"ko-kr":{domain:""},"pt-br":{domain:""}}},"nuxt-robots":{version:"5.7.1",isNuxtContentV2:false,debug:false,credits:true,groups:[{userAgent:["*"],disallow:["/search/","/de-de/search/","/es/search/","/fr-fr/search/","/it-it/search/","/ja-jp/search/","/ko-kr/search/","/pt-br/search/","/api/"],allow:[],contentUsage:[],contentSignal:[],_indexable:true,_rules:[{pattern:"/search/",allow:false},{pattern:"/de-de/search/",allow:false},{pattern:"/es/search/",allow:false},{pattern:"/fr-fr/search/",allow:false},{pattern:"/it-it/search/",allow:false},{pattern:"/ja-jp/search/",allow:false},{pattern:"/ko-kr/search/",allow:false},{pattern:"/pt-br/search/",allow:false},{pattern:"/api/",allow:false}],_normalized:true}],sitemap:["https://about.gitlab.com/sitemap.xml","/sitemap_index.xml"],header:true,robotsEnabledValue:"index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1",robotsDisabledValue:"noindex, nofollow",cacheControl:"max-age=14400, must-revalidate",botDetection:true,pageMetaRobots:{}}},app:{baseURL:"/",buildId:"e874df89-c445-404d-bb0f-4191148021f9",buildAssetsDir:"/_nuxt/",cdnURL:""}}</script><script type="application/json" data-nuxt-data="nuxt-app" data-ssr="false" id="__NUXT_DATA__">[{"prerenderedAt":1,"serverRendered":2},1783011435490,false]</script></body></html>

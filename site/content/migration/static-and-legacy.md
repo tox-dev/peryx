@@ -2,6 +2,9 @@
 title = "From static and legacy setups"
 description = "dumb-pypi, --find-links directories, pip2pi, nginx caches, and the other duct tape, mapped to one server."
 weight = 10
+
+[extra]
+logos = ["logos/pypi.svg"]
 +++
 
 A family of small solutions covers pieces of the job. Each is fine at its piece; the migrations below are for
@@ -10,7 +13,7 @@ when the pieces stop composing.
 ## dumb-pypi
 
 [dumb-pypi](https://github.com/chriskuehl/dumb-pypi) generates a static PEP 503 index from a list of filenames;
-the files live wherever a URL can reach (S3, nginx), and there is deliberately no server. Publishing means
+the files live wherever a URL can reach (S3, nginx), and having no server is the design. Publishing means
 regenerating the site; PyPI itself still needs `--extra-index-url`; name normalization is your web server's
 problem. In velodex, uploads are the write path (`twine upload`, index updated transactionally) and the same
 process mirrors PyPI, so clients keep one `index-url`. Migration is a one-time twine loop over the bucket's

@@ -1,33 +1,64 @@
 {
   "label": "simple-page requests against a warm cache",
+  "baseline": "direct",
   "parties": [
-    "velodex",
-    "direct",
-    "devpi",
-    "proxpi"
+    {
+      "name": "velodex",
+      "url": "https://velodex.readthedocs.io/"
+    },
+    {
+      "name": "direct",
+      "url": "https://pypi.org/"
+    },
+    {
+      "name": "devpi",
+      "url": "https://devpi.net/docs/"
+    },
+    {
+      "name": "proxpi",
+      "url": "https://github.com/EpicWink/proxpi"
+    },
+    {
+      "name": "pypiserver",
+      "url": "https://github.com/pypiserver/pypiserver"
+    },
+    {
+      "name": "pypicloud",
+      "url": "https://pypicloud.readthedocs.io/"
+    }
   ],
   "rows": [
     {
       "name": "1 user: requests/s",
       "cells": [
         {
-          "text": "4,650 req/s",
-          "ratio": "1.00x",
+          "text": "3,735 req/s",
+          "ratio": "16.78x",
           "tint": "faster"
         },
         {
-          "text": "241 req/s",
-          "ratio": "0.05x",
+          "text": "223 req/s",
+          "ratio": "1.00x",
           "tint": "veryslow"
         },
         {
-          "text": "109 req/s",
-          "ratio": "0.02x",
+          "text": "105 req/s",
+          "ratio": "0.47x",
           "tint": "worst"
         },
         {
-          "text": "156 req/s",
-          "ratio": "0.03x",
+          "text": "148 req/s",
+          "ratio": "0.66x",
+          "tint": "worst"
+        },
+        {
+          "text": "173 req/s",
+          "ratio": "0.78x",
+          "tint": "worst"
+        },
+        {
+          "text": "106 req/s",
+          "ratio": "0.48x",
           "tint": "worst"
         }
       ]
@@ -37,22 +68,32 @@
       "cells": [
         {
           "text": "1 ms",
-          "ratio": "1.00x",
+          "ratio": "0.10x",
           "tint": "faster"
         },
         {
           "text": "10 ms",
-          "ratio": "10.00x",
+          "ratio": "1.00x",
           "tint": "slow"
         },
         {
-          "text": "35 ms",
-          "ratio": "35.00x",
+          "text": "36 ms",
+          "ratio": "3.60x",
           "tint": "worst"
         },
         {
-          "text": "24 ms",
-          "ratio": "24.00x",
+          "text": "25 ms",
+          "ratio": "2.50x",
+          "tint": "worst"
+        },
+        {
+          "text": "12 ms",
+          "ratio": "1.20x",
+          "tint": "veryslow"
+        },
+        {
+          "text": "35 ms",
+          "ratio": "3.50x",
           "tint": "worst"
         }
       ]
@@ -61,24 +102,34 @@
       "name": "32 users: requests/s",
       "cells": [
         {
-          "text": "5,317 req/s",
-          "ratio": "1.00x",
+          "text": "5,300 req/s",
+          "ratio": "6.91x",
           "tint": "faster"
         },
         {
           "text": "767 req/s",
-          "ratio": "0.14x",
+          "ratio": "1.00x",
           "tint": "mild"
         },
         {
-          "text": "109 req/s",
-          "ratio": "0.02x",
+          "text": "94 req/s",
+          "ratio": "0.12x",
           "tint": "worst"
         },
         {
-          "text": "620 req/s",
-          "ratio": "0.12x",
+          "text": "406 req/s",
+          "ratio": "0.53x",
           "tint": "slow"
+        },
+        {
+          "text": "720 req/s",
+          "ratio": "0.94x",
+          "tint": "mild"
+        },
+        {
+          "text": "132 req/s",
+          "ratio": "0.17x",
+          "tint": "worst"
         }
       ]
     },
@@ -86,24 +137,34 @@
       "name": "32 users: p95 latency",
       "cells": [
         {
-          "text": "6 ms",
-          "ratio": "1.00x",
+          "text": "7 ms",
+          "ratio": "0.05x",
           "tint": "faster"
         },
         {
           "text": "140 ms",
-          "ratio": "23.33x",
+          "ratio": "1.00x",
           "tint": "veryslow"
         },
         {
-          "text": "370 ms",
-          "ratio": "61.67x",
+          "text": "470 ms",
+          "ratio": "3.36x",
           "tint": "worst"
         },
         {
-          "text": "70 ms",
-          "ratio": "11.67x",
+          "text": "110 ms",
+          "ratio": "0.79x",
           "tint": "slow"
+        },
+        {
+          "text": "140 ms",
+          "ratio": "1.00x",
+          "tint": "veryslow"
+        },
+        {
+          "text": "410 ms",
+          "ratio": "2.93x",
+          "tint": "worst"
         }
       ]
     }

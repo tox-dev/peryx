@@ -39,7 +39,7 @@ uv pip install --dry-run -r requirements.txt   # resolve pulls pages and metadat
 uv pip install -r requirements.txt             # download pulls the wheels
 ```
 
-Everything the installs touched — pages, PEP 658 metadata, wheels — now sits under `./velodex-data`. Copy that
+Everything the installs touched (pages, PEP 658 metadata, wheels) now sits under `./velodex-data`. Copy that
 directory to the isolated network (it is plain files; `tar` and `rsync` both work) and serve it there:
 
 ```shell
@@ -47,7 +47,7 @@ velodex serve --data-dir ./velodex-data
 ```
 
 Artifacts serve straight from the store. Cached pages past their freshness window serve stale when the upstream is
-unreachable, which on an air-gapped network is always — so the index keeps answering with exactly what was carried
+unreachable, which on an air-gapped network is the permanent state, so the index keeps answering with what was carried
 over. Repeat the warm-and-carry cycle whenever the requirement set changes.
 
 Resolve against a lock file (`uv.lock`, `requirements.txt` with hashes) on the connected side, so the isolated side
@@ -55,7 +55,7 @@ asks only for things the carry-over contains.
 
 ## What to check
 
-- `curl http://<host>:4433/+status` — the index list and counters.
-- `curl 'http://<host>:4433/+stats?index=root/pypi'` — what is being served from the cache.
+- `curl http://<host>:4433/+status` shows the index list and counters.
+- `curl 'http://<host>:4433/+stats?index=root/pypi'` shows what the cache is serving.
 - The `stale_served` counter climbing on the gapped side is normal; `upstream_errors` above zero means a client
   asked for something the cache has never seen.

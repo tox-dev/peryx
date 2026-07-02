@@ -60,13 +60,21 @@ Three effects compound:
 
 ## The benchmark suite
 
-The repository carries the harness that produced the tables below: `tests/perf/run.py` starts velodex and its
-competitors from their published packages, times the same workload through each, and writes the JSON feeds these
-tables render from. Cells tint from best-in-row green to worst-in-row red; the ratio in parentheses compares
-against velodex.
+The tables below come from a [benchmark harness](https://github.com/tox-dev/velodex/tree/main/tests/perf) the
+repository carries: it builds velodex, starts every competitor from its published package, times the same
+workload through each, and writes the feeds these tables render from. Cells tint from best-in-row green to
+worst-in-row red; the ratio in parentheses compares against **direct**, the no-proxy baseline, so each server's
+cell reads as the overhead (or win) it adds over talking to pypi.org yourself.
 
-The install workload is the top 51 most-downloaded PyPI packages (snapshot in
-`tests/perf/packages.py`, torch included for one genuinely large wheel), installed with uv into a fresh virtualenv
+The table covers every alternative that can be started hermetically from a published package: velodex, devpi,
+proxpi, pypiserver (whose upstream fallback is a redirect rather than a cache), and pypicloud (archived upstream;
+it still runs, but only under Python 3.10 with SQLAlchemy pinned below 2). Pulp needs PostgreSQL plus four
+services, nginx_pypi_cache is a Docker configuration rather than a package, and Artifactory, Nexus, and the cloud
+registries need licenses or accounts, so none of them can be measured this way.
+
+The install workload is the top 51 most-downloaded PyPI packages
+([the snapshot](https://github.com/tox-dev/velodex/blob/main/tests/perf/packages.py), torch included for one
+large wheel), installed with uv into a fresh virtualenv
 with a fresh client cache. **Cold** is the first install against a server with empty state; **warm** reruns it
 with the server's cache full and only the client reset.
 
@@ -83,8 +91,12 @@ the way a resolver does.
 
 {{ bench(file="load") }}
 
-Single-process Python servers and velodex are all measured the same way, on the same machine, in the same run;
-`uv run tests/perf/run.py` reproduces the install table and `--load` the request table.
+Every server is measured the same way, on the same machine, in the same run, and one command reproduces all
+three tables:
+
+```shell
+uv run tests/perf/run.py
+```
 
 ## Reproducing
 

@@ -2,6 +2,9 @@
 title = "From devpi"
 description = "Map devpi's indexes, commands, and knobs onto velodex; what gets faster, and what devpi still does that velodex does not."
 weight = 1
+
+[extra]
+logos = ["logos/devpi.png"]
 +++
 
 [devpi](https://devpi.net/) is the long-standing Python answer to this problem: a caching pypi.org mirror plus

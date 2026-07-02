@@ -2,6 +2,9 @@
 title = "From Pulp"
 description = "pulp_python covers the same ground with a platform's machinery; velodex is the same ground as one process."
 weight = 9
+
+[extra]
+logos = ["logos/pulp.png"]
 +++
 
 [Pulp](https://pulpproject.org/) is a content-management platform whose

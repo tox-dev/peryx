@@ -97,7 +97,7 @@ upload = "local"
 ```
 
 ```shell
-./target/release/velodex --config velodex.toml serve
+./target/release/velodex serve --config velodex.toml
 ```
 
 Now publish a wheel with [twine](https://twine.readthedocs.io/) or uv (any username; the token is the password):

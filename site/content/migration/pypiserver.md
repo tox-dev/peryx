@@ -2,6 +2,9 @@
 title = "From pypiserver"
 description = "Keep the twine workflow, gain a real cache: pypiserver redirects misses upstream, velodex serves and keeps them."
 weight = 3
+
+[extra]
+logos = ["logos/pypiserver.png"]
 +++
 
 [pypiserver](https://github.com/pypiserver/pypiserver) serves a directory of your own packages over the simple

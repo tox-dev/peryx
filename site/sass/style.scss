@@ -679,3 +679,52 @@ pre:hover .copy-snippet,
   td.bench-veryslow { background: rgba(208, 59, 59, 0.28); }
   td.bench-worst { background: rgba(208, 59, 59, 0.44); }
 }
+
+
+.docs img[src^="/screens/"],
+.docs img[src*="screens/"] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: 100%;
+}
+
+
+/* Screenshots ship in both themes; the pair swaps with the page theme so the picture always
+   matches the chrome around it. */
+.screen {
+  margin: 1.2rem 0;
+
+  img {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+
+  figcaption {
+    color: var(--text-soft);
+    font-size: 0.8rem;
+    margin-top: 0.35rem;
+  }
+}
+.screen-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .screen-dark { display: block; }
+  :root:not([data-theme="light"]) .screen-light { display: none; }
+}
+[data-theme="dark"] .screen-dark { display: block !important; }
+[data-theme="dark"] .screen-light { display: none !important; }
+
+
+.title-logos {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-right: 0.5rem;
+  vertical-align: -0.15em;
+
+  img {
+    border-radius: 5px;
+    background: #ffffff;
+    padding: 2px;
+  }
+}

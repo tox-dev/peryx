@@ -2,12 +2,15 @@
 title = "From Artifactory or Nexus"
 description = "Keep them for the other ecosystems if you must; serve Python from one small binary with the modern protocols first."
 weight = 6
+
+[extra]
+logos = ["logos/jfrog.svg", "logos/sonatype.svg"]
 +++
 
 [Artifactory](https://jfrog.com/artifactory/) and
 [Sonatype Nexus Repository](https://www.sonatype.com/products/nexus-repository) are multi-format repository
 managers: local, remote (proxy), and virtual (group) repositories for every ecosystem at once, with enterprise
-auth and support behind them. Both are sized accordingly: Artifactory documents a
+auth and support behind them. Both are sized for that breadth: Artifactory documents a
 [minimum of 8 GB RAM for production](https://docs.jfrog.com/installation/docs/system-requirements), Nexus
 [2 CPUs and 8 GB with Java 21](https://help.sonatype.com/en/sonatype-nexus-repository-system-requirements.html),
 and both gate features by edition: PyPI support is absent from Artifactory's OSS build entirely, and Nexus

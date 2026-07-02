@@ -1,12 +1,12 @@
 {%- set feed = load_data(path="data/bench/" ~ file ~ ".json") -%}
 <div class="bench">
   <table class="bench-table">
-    <caption>{{ feed.label }}</caption>
+    <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}</caption>
     <thead>
       <tr>
         <th></th>
         {%- for party in feed.parties %}
-        <th>{{ party }}</th>
+        <th>{% if party.url %}<a href="{{ party.url }}" rel="external">{{ party.name }}</a>{% else %}{{ party }}{% endif %}</th>
         {%- endfor %}
       </tr>
     </thead>
