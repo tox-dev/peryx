@@ -1,0 +1,25 @@
+{%- set report = load_data(path="data/bench/report.toml") -%}
+{%- set feed = report.tables[file] -%}
+<div class="bench">
+  <table class="bench-table">
+    <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}</caption>
+    <thead>
+      <tr>
+        <th></th>
+        {%- for party in feed.parties %}
+        <th>{% if party.url %}<a href="{{ party.url }}" rel="external">{{ party.name }}</a>{% else %}{{ party }}{% endif %}</th>
+        {%- endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {%- for row in feed.rows %}
+      <tr>
+        <th>{{ row.name }}</th>
+        {%- for cell in row.cells %}
+        <td class="bench-{{ cell.tint }}">{{ cell.text }} <span class="bench-ratio">({{ cell.ratio }})</span></td>
+        {%- endfor %}
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</div>

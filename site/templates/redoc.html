@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
+
+{% block content %}
+<div class="container docs api-intro">
+  <article>
+    <h1>{{ page.title }}</h1>
+    {{ page.content | safe }}
+  </article>
+</div>
+<div id="redoc-container" class="redoc-full"></div>
+<script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+<script>
+  (function () {
+    var specUrl = "{{ get_url(path='openapi.json') }}";
+    var container = document.getElementById("redoc-container");
+
+    function isDark() {
+      var forced = document.documentElement.dataset.theme;
+      if (forced) return forced === "dark";
+      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+
+    function redocTheme(dark) {
+      return dark
+        ? {
+            colors: {
+              primary: { main: "#ff8a3d" },
+              text: { primary: "#e8ebee", secondary: "#9aa4b0" },
+              http: { get: "#34c496", post: "#ff8a3d", put: "#ffb600", delete: "#e5484d" }
+            },
+            sidebar: { backgroundColor: "#191d24", textColor: "#e8ebee" },
+            rightPanel: { backgroundColor: "#12151a" },
+            typography: {
+              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+              code: { backgroundColor: "#1c212a" }
+            },
+            schema: { nestedBackground: "#191d24" }
+          }
+        : {
+            colors: { primary: { main: "#d94400" } },
+            typography: { fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }
+          };
+    }
+
+    function render() {
+      Redoc.init(specUrl, { hideDownloadButton: false, expandResponses: "200", scrollYOffset: ".site-header", theme: redocTheme(isDark()) }, container);
+    }
+
+    // Re-render when the header toggle (or the OS) changes the theme.
+    new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+    render();
+  })();
+</script>
+{% endblock content %}

@@ -1,0 +1,146 @@
+use std::path::PathBuf;
+
+use crate::config::{self, Config, IndexKind, LogConfig, LogFormat, LogSink, PartialConfig, PartialLogConfig};
+
+fn toml_config(text: &str) -> Config {
+    let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    Config::default().apply(partial).unwrap()
+}
+
+#[test]
+fn test_default_config() {
+    let c = Config::default();
+    assert_eq!(c.host, "127.0.0.1");
+    assert_eq!(c.port, 4433);
+    assert_eq!(c.data_dir, PathBuf::from("velodex-data"));
+    assert_eq!(c.cache_ttl_secs, 300);
+    assert_eq!(c.log, LogConfig::default());
+    // A pypi mirror with a local store overlaid in front, served at root/pypi.
+    let routes: Vec<&str> = c.indexes.iter().map(|index| index.route.as_str()).collect();
+    assert_eq!(routes, ["pypi", "local", "root/pypi"]);
+    assert!(matches!(c.indexes[0].kind, IndexKind::Mirror { .. }));
+    assert!(matches!(c.indexes[1].kind, IndexKind::Local { .. }));
+    assert!(matches!(&c.indexes[2].kind, IndexKind::Overlay { upload: Some(target), .. } if target == "local"));
+}
+
+#[test]
+fn test_apply_overlays_only_present_fields() {
+    let merged = Config::default()
+        .apply(PartialConfig {
+            host: Some("0.0.0.0".to_owned()),
+            port: Some(9000),
+            cache_ttl_secs: Some(60),
+            ..PartialConfig::default()
+        })
+        .unwrap();
+    assert_eq!(merged.host, "0.0.0.0");
+    assert_eq!(merged.port, 9000);
+    assert_eq!(merged.cache_ttl_secs, 60);
+    assert_eq!(merged.data_dir, PathBuf::from("velodex-data"));
+    assert_eq!(merged.indexes.len(), 3); // untouched, so the defaults remain
+}
+
+#[test]
+fn test_apply_data_dir_and_log() {
+    let merged = Config::default()
+        .apply(PartialConfig {
+            data_dir: Some(PathBuf::from("/tmp/velodex")),
+            log: PartialLogConfig {
+                level: Some("debug".to_owned()),
+                format: Some(LogFormat::Json),
+                sink: Some(LogSink::File),
+                file: Some(PathBuf::from("velodex.log")),
+            },
+            ..PartialConfig::default()
+        })
+        .unwrap();
+    assert_eq!(merged.data_dir, PathBuf::from("/tmp/velodex"));
+    assert_eq!(merged.log.level, "debug");
+    assert_eq!(merged.log.format, LogFormat::Json);
+    assert_eq!(merged.log.sink, LogSink::File);
+    assert_eq!(merged.log.file, Some(PathBuf::from("velodex.log")));
+}
+
+#[test]
+fn test_log_config_apply_empty_keeps_defaults() {
+    let base = LogConfig::default();
+    assert_eq!(base.clone().apply(PartialLogConfig::default()), base);
+}
+
+#[test]
+fn test_indexes_from_toml_classify_all_kinds() {
+    let text = "\
+[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\ntoken = \"bear\"\n\
+[[index]]\nname = \"corp\"\nmirror = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
+[[index]]\nname = \"team-local\"\nlocal = true\nupload_token = \"s\"\nvolatile = false\n\
+[[index]]\nname = \"secret\"\nupload_token = \"z\"\n\
+[[index]]\nname = \"team\"\nroute = \"team/dev\"\nlayers = [\"team-local\", \"pypi\"]\nupload = \"team-local\"\n";
+    let c = toml_config(text);
+    assert_eq!(c.indexes.len(), 5);
+    assert_eq!(c.indexes[0].route, "pypi"); // route defaults to name
+    assert!(matches!(&c.indexes[0].kind, IndexKind::Mirror { token: Some(token), .. } if token == "bear"));
+    assert!(matches!(
+        &c.indexes[1].kind,
+        IndexKind::Mirror {
+            username: Some(_),
+            password: Some(_),
+            token: None,
+            ..
+        }
+    ));
+    assert!(matches!(c.indexes[2].kind, IndexKind::Local { volatile: false, .. })); // explicit local, non-volatile
+    assert!(matches!(c.indexes[3].kind, IndexKind::Local { volatile: true, .. })); // upload_token implies local, default volatile
+    assert_eq!(c.indexes[4].route, "team/dev");
+    assert!(
+        matches!(&c.indexes[4].kind, IndexKind::Overlay { layers, upload: Some(upload) }
+            if layers == &["team-local".to_owned(), "pypi".to_owned()] && upload == "team-local")
+    );
+}
+
+#[test]
+fn test_index_without_kind_is_error() {
+    let partial = config::from_toml(PathBuf::from("x.toml"), "[[index]]\nname = \"bad\"\n").unwrap();
+    let err = Config::default().apply(partial).unwrap_err();
+    assert!(err.to_string().contains("bad"));
+}
+
+#[test]
+fn test_from_toml_rejects_unknown_key() {
+    let err = config::from_toml(PathBuf::from("bad.toml"), "bogus = 1").unwrap_err();
+    assert!(err.to_string().contains("bad.toml"));
+}
+
+#[test]
+fn test_from_toml_rejects_unknown_index_key() {
+    assert!(config::from_toml(PathBuf::from("x.toml"), "[[index]]\nname = \"a\"\nbogus = 1\n").is_err());
+}
+
+#[test]
+fn test_from_toml_rejects_unknown_log_key() {
+    assert!(config::from_toml(PathBuf::from("x.toml"), "[log]\nbogus = 1\n").is_err());
+}
+
+#[test]
+fn test_from_toml_rejects_invalid_log_format() {
+    assert!(config::from_toml(PathBuf::from("x.toml"), "[log]\nformat = \"xml\"\n").is_err());
+}
+
+#[test]
+fn test_from_toml_rejects_invalid_log_sink() {
+    assert!(config::from_toml(PathBuf::from("x.toml"), "[log]\nsink = \"kafka\"\n").is_err());
+}
+
+#[test]
+fn test_from_file_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("velodex.toml");
+    std::fs::write(&path, "port = 1234\n").unwrap();
+    assert_eq!(config::from_file(path).unwrap().port, Some(1234));
+}
+
+#[test]
+fn test_from_file_missing_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = config::from_file(dir.path().join("nope.toml")).unwrap_err();
+    assert!(err.to_string().contains("nope.toml"));
+}

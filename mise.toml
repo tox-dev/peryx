@@ -1,0 +1,13 @@
+# Bootstrap every non-Rust dev tool with `mise install` (https://mise.jdx.dev), no brew required.
+# The Rust toolchain itself comes from rust-toolchain.toml via rustup. cargo-binstall makes the
+# cargo-backed tools install as prebuilt binaries instead of compiling.
+[tools]
+zola = "0.22.1"
+node = "22"
+uv = "latest"
+prek = "latest"
+cargo-binstall = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-llvm-cov" = "latest"
+"pipx:twine" = "latest"
+"ubi:leptos-rs/cargo-leptos" = { version = "latest", exe = "cargo-leptos" }

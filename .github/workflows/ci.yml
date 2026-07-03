@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run --workspace --no-fail-fast
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      # Lines and functions are gated at 100%. Region coverage is reported but not gated: it
+      # includes compiler/macro-generated branches (tracing expansions, drop glue) that are not
+      # reachable from a test on stable. main.rs is the entrypoint shell; velodex-web is the UI,
+      # whose browser-event closures only execute as wasm (uninstrumentable) — its server rendering
+      # is asserted by velodex's UI tests and its interactivity by the Playwright suite.
+      - run: >
+          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/velodex-web/|crates/velodex-bench/)' --fail-under-lines 100 --fail-under-functions 100 --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
+  # Hermetic end-to-end: real pip/uv drive a spawned velodex that proxies a local fixture index, so no
+  # external network is touched. Proves downstream clients work through velodex on every PR.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - run: uv tool install twine
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build e2e tests
+        run: cargo build -p velodex --features e2e --tests
+      - name: Run e2e tests
+        run: cargo nextest run -p velodex --features e2e
+
+  # The same client flows against the real pypi.org, to catch upstream drift.
+  e2e-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - run: uv tool install twine
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build e2e tests
+        run: cargo build -p velodex --features e2e-live --tests
+      - name: Run live e2e tests
+        run: cargo nextest run -p velodex --features e2e-live -E 'test(e2e_live)'
+
+  # The hydrated web UI, driven by Playwright: the wasm bundle is built with cargo-leptos and the
+  # suite exercises search, the project page, the archive browser, and token-authenticated actions.
+  frontend:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_LEPTOS_VERSION: "0.3.6"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          target: wasm32-unknown-unknown
+      - name: Install cargo-leptos
+        run: |
+          curl -sL "https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-x86_64-unknown-linux-musl.tar.gz" | tar xz --strip-components=1
+          sudo mv cargo-leptos /usr/local/bin/
+      - run: cargo build -p velodex
+      - run: cargo leptos build
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/frontend/package-lock.json
+      - run: npm ci
+        working-directory: tests/frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: tests/frontend
+      - run: npx playwright test
+        working-directory: tests/frontend

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
+
+{% block content %}
+<div class="container docs">
+  <nav class="breadcrumb">
+    {% for ancestor in page.ancestors %}
+      {% set section = get_section(path=ancestor) %}
+      <a href="{{ section.permalink }}">{{ section.title | default(value="Home") }}</a> /
+    {% endfor %}
+    <span>{{ page.title }}</span>
+  </nav>
+  <article>
+    <h1>
+      {%- if page.extra.logos %}
+      <span class="title-logos">
+        {%- for logo in page.extra.logos %}
+        <img src="{{ get_url(path=logo) }}" alt="" width="28" height="28">
+        {%- endfor %}
+      </span>
+      {%- endif %}
+      {{ page.title }}
+    </h1>
+    {{ page.content | safe }}
+  </article>
+</div>
+{% endblock content %}

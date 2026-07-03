@@ -1,0 +1,53 @@
+[package]
+name = "velodex-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reactive web UI for velodex: server-side rendered, hydrated in the browser."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["ssr"]
+# The server half: axum handlers that render the app to HTML with data injected from AppState.
+ssr = [
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+    "dep:leptos_axum",
+    "dep:velodex-http",
+    "dep:velodex-storage",
+    "dep:axum",
+    "dep:tower-http",
+]
+# The browser half: compiled to wasm32 by cargo-leptos, hydrates the server-rendered page.
+hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:gloo-net", "dep:base64", "dep:console_error_panic_hook", "dep:send_wrapper", "dep:web-sys"]
+
+[dependencies]
+leptos.workspace = true
+leptos_meta.workspace = true
+leptos_router.workspace = true
+leptos_axum = { workspace = true, optional = true }
+velodex-http = { workspace = true, optional = true }
+velodex-storage = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true, features = ["fs"] }
+wasm-bindgen = { workspace = true, optional = true }
+gloo-net = { workspace = true, optional = true }
+console_error_panic_hook = { workspace = true, optional = true }
+send_wrapper = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+pulldown-cmark.workspace = true
+velodex-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

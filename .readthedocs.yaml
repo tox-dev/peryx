@@ -1,0 +1,14 @@
+# Read the Docs builds the Zola site with generic build commands and serves the output.
+# READTHEDOCS_CANONICAL_URL carries the version-aware base URL (e.g. .../en/latest/), so links
+# stay correct across versions and PR previews.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+  commands:
+    - curl -sL "https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz"
+      | tar xz
+    - ./zola --root site build --base-url "${READTHEDOCS_CANONICAL_URL}" --output-dir "${READTHEDOCS_OUTPUT}/html"
+      --force

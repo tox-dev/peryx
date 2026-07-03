@@ -1,0 +1,898 @@
+[tables.install-pip]
+baseline = "direct"
+label = "pip: install the top 51 PyPI packages"
+
+[[tables.install-pip.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.install-pip.parties]]
+name = "direct"
+url = "https://pypi.org/"
+
+[[tables.install-pip.parties]]
+name = "devpi"
+url = "https://devpi.net/docs/"
+
+[[tables.install-pip.parties]]
+name = "proxpi"
+url = "https://github.com/EpicWink/proxpi"
+
+[[tables.install-pip.parties]]
+name = "pypiserver"
+url = "https://github.com/pypiserver/pypiserver"
+
+[[tables.install-pip.parties]]
+name = "pypicloud"
+url = "https://pypicloud.readthedocs.io/"
+
+[[tables.install-pip.rows]]
+name = "cold cache"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.12x"
+text = "20.7 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.00x"
+text = "18.4 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.43x"
+text = "26.4 s"
+tint = "par"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.47x"
+text = "27.1 s"
+tint = "par"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.04x"
+text = "19.2 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.28x"
+text = "23.6 s"
+tint = "faster"
+
+[[tables.install-pip.rows]]
+name = "warm cache"
+
+[[tables.install-pip.rows.cells]]
+ratio = "0.94x"
+text = "17.2 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.00x"
+text = "18.3 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "0.96x"
+text = "17.6 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.09x"
+text = "20.0 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.02x"
+text = "18.8 s"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "0.85x"
+text = "15.6 s"
+tint = "faster"
+
+[[tables.install-pip.rows]]
+name = "server CPU"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.00x"
+text = "1.2 s"
+tint = "slow"
+
+[[tables.install-pip.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.install-pip.rows.cells]]
+ratio = "9.63x"
+text = "11.5 s"
+tint = "worst"
+
+[[tables.install-pip.rows.cells]]
+ratio = "2.52x"
+text = "3.0 s"
+tint = "veryslow"
+
+[[tables.install-pip.rows.cells]]
+ratio = "0.02x"
+text = "21 ms"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.63x"
+text = "1.9 s"
+tint = "veryslow"
+
+[[tables.install-pip.rows]]
+name = "server peak memory"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.00x"
+text = "325 MB"
+tint = "slow"
+
+[[tables.install-pip.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.install-pip.rows.cells]]
+ratio = "3.66x"
+text = "1,188 MB"
+tint = "worst"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.81x"
+text = "587 MB"
+tint = "veryslow"
+
+[[tables.install-pip.rows.cells]]
+ratio = "0.22x"
+text = "71 MB"
+tint = "faster"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.16x"
+text = "378 MB"
+tint = "slow"
+
+[tables.install-uv]
+baseline = "direct"
+label = "uv: install the top 51 PyPI packages"
+
+[[tables.install-uv.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.install-uv.parties]]
+name = "direct"
+url = "https://pypi.org/"
+
+[[tables.install-uv.parties]]
+name = "devpi"
+url = "https://devpi.net/docs/"
+
+[[tables.install-uv.parties]]
+name = "proxpi"
+url = "https://github.com/EpicWink/proxpi"
+
+[[tables.install-uv.parties]]
+name = "pypiserver"
+url = "https://github.com/pypiserver/pypiserver"
+
+[[tables.install-uv.parties]]
+name = "pypicloud"
+url = "https://pypicloud.readthedocs.io/"
+
+[[tables.install-uv.rows]]
+name = "cold cache"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.14x"
+text = "3.8 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.00x"
+text = "3.3 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "4.12x"
+text = "13.8 s"
+tint = "veryslow"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.54x"
+text = "5.1 s"
+tint = "par"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.08x"
+text = "3.6 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "2.99x"
+text = "10.0 s"
+tint = "slow"
+
+[[tables.install-uv.rows]]
+name = "warm cache"
+
+[[tables.install-uv.rows.cells]]
+ratio = "0.83x"
+text = "2.7 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.00x"
+text = "3.2 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.86x"
+text = "6.0 s"
+tint = "mild"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.14x"
+text = "3.7 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.14x"
+text = "3.7 s"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.36x"
+text = "4.4 s"
+tint = "par"
+
+[[tables.install-uv.rows]]
+name = "server CPU"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.00x"
+text = "1.0 s"
+tint = "slow"
+
+[[tables.install-uv.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.install-uv.rows.cells]]
+ratio = "14.52x"
+text = "15.2 s"
+tint = "worst"
+
+[[tables.install-uv.rows.cells]]
+ratio = "2.52x"
+text = "2.6 s"
+tint = "veryslow"
+
+[[tables.install-uv.rows.cells]]
+ratio = "0.03x"
+text = "29 ms"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "3.16x"
+text = "3.3 s"
+tint = "veryslow"
+
+[[tables.install-uv.rows]]
+name = "server peak memory"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.00x"
+text = "537 MB"
+tint = "veryslow"
+
+[[tables.install-uv.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.install-uv.rows.cells]]
+ratio = "2.21x"
+text = "1,190 MB"
+tint = "worst"
+
+[[tables.install-uv.rows.cells]]
+ratio = "1.33x"
+text = "716 MB"
+tint = "veryslow"
+
+[[tables.install-uv.rows.cells]]
+ratio = "0.13x"
+text = "72 MB"
+tint = "faster"
+
+[[tables.install-uv.rows.cells]]
+ratio = "0.75x"
+text = "402 MB"
+tint = "slow"
+
+[tables.load]
+baseline = "direct"
+label = "simple-page requests against a warm cache"
+
+[[tables.load.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.load.parties]]
+name = "direct"
+url = "https://pypi.org/"
+
+[[tables.load.parties]]
+name = "devpi"
+url = "https://devpi.net/docs/"
+
+[[tables.load.parties]]
+name = "proxpi"
+url = "https://github.com/EpicWink/proxpi"
+
+[[tables.load.parties]]
+name = "pypiserver"
+url = "https://github.com/pypiserver/pypiserver"
+
+[[tables.load.parties]]
+name = "pypicloud"
+url = "https://pypicloud.readthedocs.io/"
+
+[[tables.load.rows]]
+name = "1 user: requests/s"
+
+[[tables.load.rows.cells]]
+ratio = "2.95x"
+text = "681 req/s"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "231 req/s"
+tint = "slow"
+
+[[tables.load.rows.cells]]
+ratio = "0.34x"
+text = "79 req/s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "0.47x"
+text = "109 req/s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "0.93x"
+text = "216 req/s"
+tint = "slow"
+
+[[tables.load.rows.cells]]
+ratio = "0.92x"
+text = "212 req/s"
+tint = "slow"
+
+[[tables.load.rows]]
+name = "1 user: p95 latency"
+
+[[tables.load.rows.cells]]
+ratio = "0.62x"
+text = "6 ms"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "9 ms"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "5.10x"
+text = "45 ms"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "3.96x"
+text = "35 ms"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "1.08x"
+text = "10 ms"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "1.65x"
+text = "15 ms"
+tint = "mild"
+
+[[tables.load.rows]]
+name = "32 users: requests/s"
+
+[[tables.load.rows.cells]]
+ratio = "3.32x"
+text = "2,987 req/s"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "900 req/s"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "0.08x"
+text = "76 req/s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "0.48x"
+text = "437 req/s"
+tint = "slow"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "904 req/s"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "0.24x"
+text = "214 req/s"
+tint = "veryslow"
+
+[[tables.load.rows]]
+name = "32 users: p95 latency"
+
+[[tables.load.rows.cells]]
+ratio = "0.20x"
+text = "24 ms"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "121 ms"
+tint = "mild"
+
+[[tables.load.rows.cells]]
+ratio = "5.22x"
+text = "632 ms"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "0.92x"
+text = "112 ms"
+tint = "mild"
+
+[[tables.load.rows.cells]]
+ratio = "0.95x"
+text = "115 ms"
+tint = "mild"
+
+[[tables.load.rows.cells]]
+ratio = "2.16x"
+text = "262 ms"
+tint = "veryslow"
+
+[[tables.load.rows]]
+name = "server CPU"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "2m 49.4s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.load.rows.cells]]
+ratio = "0.23x"
+text = "38.6 s"
+tint = "slow"
+
+[[tables.load.rows.cells]]
+ratio = "0.53x"
+text = "1m 30.2s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "0.02x"
+text = "3.5 s"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "0.22x"
+text = "38.0 s"
+tint = "slow"
+
+[[tables.load.rows]]
+name = "server peak memory"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "324 MB"
+tint = "veryslow"
+
+[[tables.load.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.load.rows.cells]]
+ratio = "1.89x"
+text = "614 MB"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "1.28x"
+text = "416 MB"
+tint = "veryslow"
+
+[[tables.load.rows.cells]]
+ratio = "0.22x"
+text = "72 MB"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "0.75x"
+text = "244 MB"
+tint = "slow"
+
+[tables.parallel-install]
+baseline = "direct"
+label = "uv: ten venvs install polars at once"
+
+[[tables.parallel-install.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.parallel-install.parties]]
+name = "direct"
+url = "https://pypi.org/"
+
+[[tables.parallel-install.parties]]
+name = "devpi"
+url = "https://devpi.net/docs/"
+
+[[tables.parallel-install.parties]]
+name = "proxpi"
+url = "https://github.com/EpicWink/proxpi"
+
+[[tables.parallel-install.parties]]
+name = "pypiserver"
+url = "https://github.com/pypiserver/pypiserver"
+
+[[tables.parallel-install.parties]]
+name = "pypicloud"
+url = "https://pypicloud.readthedocs.io/"
+
+[[tables.parallel-install.rows]]
+name = "cold cache: 10 parallel installs"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.33x"
+text = "1.6 s"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.00x"
+text = "4.8 s"
+tint = "slow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "n/a"
+text = "error"
+tint = "worst"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.94x"
+text = "4.5 s"
+tint = "slow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.78x"
+text = "8.6 s"
+tint = "veryslow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "2.06x"
+text = "10.0 s"
+tint = "worst"
+
+[[tables.parallel-install.rows]]
+name = "warm cache: 10 parallel installs"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.21x"
+text = "1.5 s"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.00x"
+text = "7.2 s"
+tint = "veryslow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "n/a"
+text = "error"
+tint = "worst"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.82x"
+text = "5.9 s"
+tint = "slow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.04x"
+text = "7.4 s"
+tint = "veryslow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.23x"
+text = "8.8 s"
+tint = "worst"
+
+[[tables.parallel-install.rows]]
+name = "server CPU"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.00x"
+text = "545 ms"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.00x"
+text = "0 ms"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.67x"
+text = "912 ms"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.02x"
+text = "9 ms"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "2.31x"
+text = "1.3 s"
+tint = "faster"
+
+[[tables.parallel-install.rows]]
+name = "server peak memory"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "1.00x"
+text = "122 MB"
+tint = "par"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "9.24x"
+text = "1,125 MB"
+tint = "worst"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "2.83x"
+text = "345 MB"
+tint = "slow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.59x"
+text = "72 MB"
+tint = "faster"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "2.46x"
+text = "300 MB"
+tint = "slow"
+
+[tables.throughput]
+baseline = "direct"
+label = "moving one large wheel (torch): cold under contention, hot at speed"
+
+[[tables.throughput.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.throughput.parties]]
+name = "direct"
+url = "https://pypi.org/"
+
+[[tables.throughput.parties]]
+name = "devpi"
+url = "https://devpi.net/docs/"
+
+[[tables.throughput.parties]]
+name = "proxpi"
+url = "https://github.com/EpicWink/proxpi"
+
+[[tables.throughput.parties]]
+name = "pypiserver"
+url = "https://github.com/pypiserver/pypiserver"
+
+[[tables.throughput.parties]]
+name = "pypicloud"
+url = "https://pypicloud.readthedocs.io/"
+
+[[tables.throughput.rows]]
+name = "cold cache: 4 clients, one wheel"
+
+[[tables.throughput.rows.cells]]
+ratio = "0.26x"
+text = "794 ms"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "3.1 s"
+tint = "slow"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "3.1 s"
+tint = "slow"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.99x"
+text = "6.1 s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "0.98x"
+text = "3.0 s"
+tint = "slow"
+
+[[tables.throughput.rows.cells]]
+ratio = "n/a"
+text = "error"
+tint = "worst"
+
+[[tables.throughput.rows]]
+name = "hot cache: single download"
+
+[[tables.throughput.rows.cells]]
+ratio = "52.97x"
+text = "6,166 MB/s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "116 MB/s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "24.15x"
+text = "2,811 MB/s"
+tint = "par"
+
+[[tables.throughput.rows.cells]]
+ratio = "68.13x"
+text = "7,931 MB/s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "116 MB/s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "n/a"
+text = "error"
+tint = "worst"
+
+[[tables.throughput.rows]]
+name = "hot cache: 8 parallel downloads"
+
+[[tables.throughput.rows.cells]]
+ratio = "81.56x"
+text = "9,527 MB/s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "117 MB/s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "29.24x"
+text = "3,415 MB/s"
+tint = "par"
+
+[[tables.throughput.rows.cells]]
+ratio = "104.63x"
+text = "12,222 MB/s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "117 MB/s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "n/a"
+text = "error"
+tint = "worst"
+
+[[tables.throughput.rows]]
+name = "server CPU"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "1.1 s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.77x"
+text = "1.9 s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "0.79x"
+text = "848 ms"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "0.00x"
+text = "0 ms"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "0.61x"
+text = "655 ms"
+tint = "faster"
+
+[[tables.throughput.rows]]
+name = "server peak memory"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.00x"
+text = "54 MB"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "n/a"
+text = "no server"
+tint = "none"
+
+[[tables.throughput.rows.cells]]
+ratio = "12.97x"
+text = "706 MB"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "5.74x"
+text = "312 MB"
+tint = "veryslow"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.23x"
+text = "67 MB"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "5.28x"
+text = "287 MB"
+tint = "slow"

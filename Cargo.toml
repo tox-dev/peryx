@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/tox-dev/velodex"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+velodex-core = { path = "crates/velodex-core" }
+velodex-storage = { path = "crates/velodex-storage" }
+velodex-upstream = { path = "crates/velodex-upstream" }
+velodex-http = { path = "crates/velodex-http" }
+velodex-web = { path = "crates/velodex-web" }
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+http = "1"
+http-body-util = "0.1"
+sha2 = "0.11"
+tempfile = "3"
+mimalloc = "0.1"
+redb = "4.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "rustls-native-certs", "http2", "stream", "gzip", "zstd"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+bytes = "1"
+futures-core = "0.3"
+futures-util = "0.3"
+moka = { version = "0.12", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["io"] }
+base64 = "0.22"
+url = "2"
+wiremock = "0.6"
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+pep440_rs = "0.7"
+tl = "0.7"
+toml = "1.1"
+insta = "1"
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+sysinfo = "0.35"
+utoipa = "5.5"
+leptos = "0.8"
+leptos_axum = "0.8"
+leptos_meta = "0.8"
+leptos_router = "0.8"
+wasm-bindgen = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+gloo-net = "0.6"
+console_error_panic_hook = "0.1"
+send_wrapper = "0.6"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "DomStringMap", "Navigator", "Clipboard", "MediaQueryList", "Storage"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tracing-appender = "0.2"
+
+[profile.release]
+strip = true
+lto = "fat"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# cargo-leptos builds the web UI's browser bundle: `cargo leptos build --release` compiles
+# velodex-web to wasm and writes ui/pkg/, which the server serves at /pkg. The server itself renders
+# pages without the bundle, so this step is only needed for the interactive UI.
+[[workspace.metadata.leptos]]
+name = "velodex"
+bin-package = "velodex"
+lib-package = "velodex-web"
+lib-features = ["hydrate"]
+lib-default-features = false
+output-name = "velodex_web"
+site-root = "ui"
+site-pkg-dir = "pkg"

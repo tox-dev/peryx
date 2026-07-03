@@ -1,0 +1,15 @@
+/target
+# trunk output for the web UI
+crates/velodex-web/dist/
+# coverage artifacts
+/lcov.info
+*.profraw
+site/public/
+# cargo-leptos output (the web UI bundle)
+/ui/
+# frontend test artifacts
+tests/frontend/node_modules/
+tests/frontend/test-results/
+tests/frontend/playwright-report/
+/velodex-data/
+__pycache__/

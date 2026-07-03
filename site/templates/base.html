@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }} — fast PyPI mirror and private index{% endblock title %}</title>
+  <meta name="description" content="{{ config.description }}">
+  <link rel="icon" type="image/svg+xml" href="{{ get_url(path='icon.svg') }}">
+  <script>
+    // Apply a saved theme before first paint so there is no flash; OS preference stays the default.
+    (function () {
+      var theme = localStorage.getItem("theme");
+      if (theme === "light" || theme === "dark") {
+        document.documentElement.dataset.theme = theme;
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="container">
+      <a class="brand" href="{{ config.base_url }}/">
+        <img src="{{ get_url(path='mark.svg') }}" alt="" width="36" height="24">
+        <span>velodex</span>
+      </a>
+      <div class="links">
+        <a href="{{ get_url(path='@/tutorials/_index.md') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5 10-5v6"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
+          Tutorials</a>
+        <a href="{{ get_url(path='@/guides/_index.md') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4.6 4.6 0 0 0-6 6L3 18l3 3 5.7-5.7a4.6 4.6 0 0 0 6-6L14 13l-3-3z"/></svg>
+          How-to guides</a>
+        <a href="{{ get_url(path='@/reference/_index.md') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Reference</a>
+        <a href="{{ get_url(path='@/explanation/_index.md') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"/></svg>
+          Explanation</a>
+        <a href="{{ get_url(path='@/migration/_index.md') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          Migration</a>
+        <a href="{{ get_url(path='@/contributing.md') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><path d="M8.6 7.7 15.4 11M8.6 16.3 15.4 13"/></svg>
+          Contributing</a>
+        <a href="{{ config.extra.repo }}" rel="external">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub</a>
+        <button class="theme-toggle" type="button" aria-label="Switch color theme">
+          <span class="sun" aria-hidden="true">&#9728;</span><span class="moon" aria-hidden="true">&#9789;</span>
+        </button>
+      </div>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock content %}
+  </main>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <img src="{{ get_url(path='mark.svg') }}" alt="" width="30" height="20">
+      <p>velodex is MIT licensed. Built by the <a href="https://github.com/tox-dev">tox-dev</a> organization.</p>
+    </div>
+  </footer>
+  <script>
+    document.querySelector(".theme-toggle").addEventListener("click", function () {
+      var root = document.documentElement;
+      var dark = root.dataset.theme
+        ? root.dataset.theme === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var next = dark ? "light" : "dark";
+      root.dataset.theme = next;
+      localStorage.setItem("theme", next);
+      if (window.velodexRenderMermaid) window.velodexRenderMermaid();
+    });
+    document.querySelectorAll("main pre").forEach(function (pre) {
+      if (pre.classList.contains("mermaid")) return;
+      var button = document.createElement("button");
+      button.className = "copy-snippet";
+      button.type = "button";
+      button.textContent = "copy";
+      button.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).innerText.trim() + "\n");
+        button.textContent = "copied";
+        setTimeout(function () { button.textContent = "copy"; }, 1200);
+      });
+      pre.appendChild(button);
+    });
+    document.querySelectorAll(".tabs").forEach(function (tabs) {
+      var buttons = tabs.querySelectorAll(":scope > .tab-bar > .tab-button");
+      var panes = tabs.querySelectorAll(":scope > .tab-pane");
+      buttons.forEach(function (button, index) {
+        button.addEventListener("click", function () {
+          buttons.forEach(function (other, i) { other.classList.toggle("active", i === index); });
+          panes.forEach(function (pane, i) { pane.classList.toggle("active", i === index); });
+        });
+      });
+    });
+  </script>
+  {%- set mermaid_content = "" -%}
+  {%- if page -%}{%- set mermaid_content = page.content | default(value="") -%}
+  {%- elif section -%}{%- set mermaid_content = section.content | default(value="") -%}
+  {%- endif -%}
+  {% if mermaid_content is containing('class="mermaid"') %}
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs";
+    // Every diagram keeps its source so a theme switch can re-render with the new palette.
+    document.querySelectorAll(".mermaid").forEach(function (node) {
+      node.dataset.source = node.textContent;
+    });
+    function isDark() {
+      var theme = document.documentElement.dataset.theme;
+      if (theme) return theme === "dark";
+      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+    function render() {
+      var dark = isDark();
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: "base",
+        themeVariables: dark
+          ? {
+              darkMode: true,
+              background: "#12151a",
+              primaryColor: "#243040",
+              primaryTextColor: "#e8e6e3",
+              primaryBorderColor: "#3d4b5f",
+              secondaryColor: "#2b3a2e",
+              tertiaryColor: "#3a2f28",
+              lineColor: "#8a94a3",
+              textColor: "#e8e6e3",
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              fontSize: "15px",
+            }
+          : {
+              background: "#ffffff",
+              primaryColor: "#e8eef7",
+              primaryTextColor: "#1f2430",
+              primaryBorderColor: "#9fb3cc",
+              secondaryColor: "#e6f2e8",
+              tertiaryColor: "#f7ece2",
+              lineColor: "#5c6675",
+              textColor: "#1f2430",
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              fontSize: "15px",
+            },
+      });
+      document.querySelectorAll(".mermaid").forEach(function (node) {
+        node.removeAttribute("data-processed");
+        node.textContent = node.dataset.source;
+      });
+      mermaid.run();
+    }
+    window.velodexRenderMermaid = render;
+    render();
+  </script>
+  {% endif %}
+</body>
+</html>

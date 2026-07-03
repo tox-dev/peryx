@@ -1,0 +1,12 @@
+<div class="tabs">
+  <div class="tab-bar" role="tablist">
+    {%- for name in names | split(pat=",") %}
+    <button type="button" role="tab" class="tab-button{% if loop.first %} active{% endif %}">{{ name | trim }}</button>
+    {%- endfor %}
+  </div>
+  {%- for pane in body | trim | split(pat="%%%") %}
+  <div class="tab-pane{% if loop.first %} active{% endif %}" role="tabpanel">
+    {{ pane | trim | markdown | safe }}
+  </div>
+  {%- endfor %}
+</div>

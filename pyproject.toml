@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "velodex"
+description = "A PyPI-compatible read-through cache and private index"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["pypi", "index", "mirror", "cache", "packaging"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: OS Independent",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: System :: Software Distribution",
+]
+dynamic = ["version"]
+
+[project.urls]
+Documentation = "https://velodex.readthedocs.io/"
+Source = "https://github.com/tox-dev/velodex"
+Issues = "https://github.com/tox-dev/velodex/issues"
+
+[tool.maturin]
+# The wheel carries the compiled `velodex` binary as a console script; there are no Python
+# bindings, so one wheel per platform serves every CPython and PyPy version.
+bindings = "bin"
+manifest-path = "crates/velodex/Cargo.toml"

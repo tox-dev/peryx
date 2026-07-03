@@ -1,0 +1,844 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "velodex",
+    "description": "PyPI-compatible read-through cache and private index. Every configured index route serves the same surface; `{route}` is the index's route, for example `root/pypi`. Write operations authenticate with HTTP Basic where the password is the target local index's upload token and the username is ignored.",
+    "contact": {
+      "name": "tox-dev",
+      "url": "https://github.com/tox-dev/velodex"
+    },
+    "license": {
+      "name": "MIT"
+    },
+    "version": "0.0.1"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4433",
+      "description": "A local velodex with the default configuration"
+    }
+  ],
+  "paths": {
+    "/+stats": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Usage statistics",
+        "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. Counters cover pages, downloads (with bytes), metadata, uploads, refreshes, upstream changes, stale fallbacks, upstream errors, and rejected downloads.",
+        "parameters": [
+          {
+            "name": "index",
+            "in": "query",
+            "description": "Drill into one index's projects",
+            "required": false,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "With `index`, drill into one project's files",
+            "required": false,
+            "example": "pandas"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The counters at the requested depth",
+            "content": {
+              "application/json": {
+                "example": {
+                  "root/pypi": {
+                    "bytes": 64733247,
+                    "changed": 1,
+                    "downloads": 6,
+                    "metadata": 6,
+                    "pages": 12,
+                    "refreshes": 2,
+                    "rejected": 0,
+                    "stale_served": 0,
+                    "uploads": 0,
+                    "upstream_errors": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/+status": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Health and identity",
+        "description": "Version, counters, and the configured indexes; the web UI's live dashboard refreshes from this.",
+        "responses": {
+          "200": {
+            "description": "The status document",
+            "content": {
+              "application/json": {
+                "example": {
+                  "indexes": [
+                    {
+                      "kind": "mirror",
+                      "layers": [],
+                      "name": "pypi",
+                      "route": "pypi",
+                      "upload_to": null,
+                      "uploads": false
+                    },
+                    {
+                      "kind": "local",
+                      "layers": [],
+                      "name": "local",
+                      "route": "local",
+                      "upload_to": null,
+                      "uploads": true
+                    },
+                    {
+                      "kind": "overlay",
+                      "layers": [
+                        "local",
+                        "pypi"
+                      ],
+                      "name": "root/pypi",
+                      "route": "root/pypi",
+                      "upload_to": "local",
+                      "uploads": true
+                    }
+                  ],
+                  "metadata_requests": 37,
+                  "requests": 128,
+                  "serial": 42,
+                  "version": "0.0.1"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-docs/openapi.json": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "This document",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 description of this server",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Prometheus metrics",
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition",
+            "content": {
+              "text/plain; version=0.0.4": {
+                "example": "# HELP velodex_requests_total Total HTTP requests served.\n# TYPE velodex_requests_total counter\nvelodex_requests_total 128\n# HELP velodex_metadata_requests_total PEP 658 .metadata siblings served.\n# TYPE velodex_metadata_requests_total counter\nvelodex_metadata_requests_total 37\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{route}/": {
+      "post": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Upload a distribution",
+        "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries the file; a declared `sha256_digest` is verified against the received bytes. The file lands in the index's local layer and shadows any upstream file of the same name.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          }
+        ],
+        "requestBody": {
+          "description": "`multipart/form-data` with `:action=file_upload`",
+          "content": {
+            "multipart/form-data": {
+              "example": {
+                ":action": "file_upload",
+                "content": "<the distribution file>",
+                "name": "velodexpkg",
+                "requires_python": ">=3.8",
+                "sha256_digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                "version": "1.0"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "text/plain": {
+                "example": "upload accepted"
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected",
+            "content": {
+              "text/plain": {
+                "example": "sha256 digest mismatch"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "403": {
+            "description": "Uploads disabled: the local index has no `upload_token`"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/{route}/files/{sha256}/{filename}": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Download an artifact",
+        "description": "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the sha256, caches it, and serves it. Responses are immutable (`Cache-Control: max-age=31536000`).",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The artifact's sha256, lowercase hex",
+            "required": true,
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "example": "velodexpkg-1.0-py3-none-any.whl"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The artifact bytes",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "400": {
+            "description": "The digest is not 64 hex characters"
+          },
+          "404": {
+            "description": "No file with this digest is known"
+          },
+          "502": {
+            "description": "The source mirror failed or the bytes did not match the digest"
+          }
+        }
+      }
+    },
+    "/{route}/files/{sha256}/{filename}.metadata": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Download PEP 658 core metadata",
+        "description": "The `.metadata` sibling of a wheel: the wheel's core-metadata document, verified against the digest the index page advertised. pip and uv resolve through this instead of downloading whole wheels.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The artifact's sha256, lowercase hex",
+            "required": true,
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "example": "velodexpkg-1.0-py3-none-any.whl.metadata"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The core-metadata document",
+            "content": {
+              "application/octet-stream": {
+                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\nRequires-Python: >=3.8\n"
+              }
+            }
+          },
+          "404": {
+            "description": "The wheel has no known metadata sibling"
+          }
+        }
+      }
+    },
+    "/{route}/inspect/{sha256}/{filename}": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "List archive members",
+        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The artifact's sha256, lowercase hex",
+            "required": true,
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "example": "velodexpkg-1.0-py3-none-any.whl"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The archive listing",
+            "content": {
+              "application/json": {
+                "example": {
+                  "filename": "velodexpkg-1.0-py3-none-any.whl",
+                  "members": [
+                    {
+                      "path": "velodexpkg/__init__.py",
+                      "size": 20
+                    },
+                    {
+                      "path": "velodexpkg-1.0.dist-info/METADATA",
+                      "size": 653
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No file with this digest is known"
+          },
+          "415": {
+            "description": "Not a supported archive type"
+          },
+          "422": {
+            "description": "The archive cannot be read"
+          }
+        }
+      }
+    },
+    "/{route}/inspect/{sha256}/{filename}/{member}": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "Read an archive member",
+        "description": "One member's content: UTF-8 members come back as text, others as bytes. Members over 1 MiB are refused inline; download the artifact instead.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The artifact's sha256, lowercase hex",
+            "required": true,
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "example": "velodexpkg-1.0-py3-none-any.whl"
+          },
+          {
+            "name": "member",
+            "in": "path",
+            "required": true,
+            "example": "velodexpkg-1.0.dist-info/METADATA"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The member content",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n"
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown digest or member"
+          },
+          "413": {
+            "description": "Member exceeds the inline limit"
+          }
+        }
+      }
+    },
+    "/{route}/simple/": {
+      "get": {
+        "tags": [
+          "simple"
+        ],
+        "summary": "List projects",
+        "description": "The projects velodex has observed on this index: everything uploaded, plus every mirrored project a client has asked for. An overlay unions its layers. JSON or HTML by `Accept`.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "`application/vnd.pypi.simple.v1+json` for PEP 691 JSON; anything else gets PEP 503 HTML",
+            "required": false,
+            "example": "application/vnd.pypi.simple.v1+json"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project list (PEP 691 shown; PEP 503 HTML without the JSON `Accept`)",
+            "content": {
+              "application/vnd.pypi.simple.v1+json": {
+                "example": {
+                  "meta": {
+                    "api-version": "1.1"
+                  },
+                  "projects": [
+                    {
+                      "name": "requests"
+                    },
+                    {
+                      "name": "velodexpkg"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No index at this route"
+          }
+        }
+      }
+    },
+    "/{route}/simple/{project}/": {
+      "get": {
+        "tags": [
+          "simple"
+        ],
+        "summary": "Project detail",
+        "description": "All files of one project, merged across overlay layers (first match per filename wins, versions union). File URLs point back at velodex's own `files/` route; `core-metadata` advertises the PEP 658 sibling.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "`application/vnd.pypi.simple.v1+json` for PEP 691 JSON; anything else gets PEP 503 HTML",
+            "required": false,
+            "example": "application/vnd.pypi.simple.v1+json"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project detail page",
+            "content": {
+              "application/vnd.pypi.simple.v1+json": {
+                "example": {
+                  "files": [
+                    {
+                      "core-metadata": {
+                        "sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+                      },
+                      "filename": "velodexpkg-1.0-py3-none-any.whl",
+                      "hashes": {
+                        "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                      },
+                      "requires-python": ">=3.8",
+                      "size": 1832,
+                      "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
+                      "yanked": false
+                    }
+                  ],
+                  "meta": {
+                    "api-version": "1.1"
+                  },
+                  "name": "velodexpkg",
+                  "versions": [
+                    "1.0"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No layer of this index has the project"
+          },
+          "502": {
+            "description": "The upstream failed and nothing is cached"
+          }
+        }
+      }
+    },
+    "/{route}/{project}/": {
+      "delete": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Delete a project",
+        "description": "Removes every uploaded file of the project. Requires the local layer to be `volatile`.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts affected files",
+            "content": {
+              "text/plain": {
+                "example": "removed 3 file(s)"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "403": {
+            "description": "The index is not volatile; delete is disabled"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/{route}/{project}/{version}/": {
+      "delete": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Delete a version",
+        "description": "Removes the version's uploaded files outright. Requires the local layer to be `volatile`; for an overlay, the upstream files become visible again.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts affected files",
+            "content": {
+              "text/plain": {
+                "example": "removed 1 file(s)"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "403": {
+            "description": "The index is not volatile; delete is disabled"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/{route}/{project}/{version}/restore": {
+      "put": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Restore hidden files",
+        "description": "Clears the hidden marker a DELETE leaves on files served from a read-only mirror, making them visible on the overlay again. Omit `{version}/` to restore the whole project.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts affected files",
+            "content": {
+              "text/plain": {
+                "example": "affected 1 file(s)"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/{route}/{project}/{version}/yank": {
+      "put": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Yank files",
+        "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only mirror get a reversible override on the overlay's local layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts affected files",
+            "content": {
+              "text/plain": {
+                "example": "affected 1 file(s)"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Un-yank files",
+        "description": "Clears the PEP 592 yank marker set by the PUT form of this path.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts affected files",
+            "content": {
+              "text/plain": {
+                "example": "removed 1 file(s)"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "uploadToken": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Any username; the password is the local index's `upload_token` (the pypi.org `__token__` convention)"
+      }
+    }
+  }
+}

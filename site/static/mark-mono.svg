@@ -1,0 +1,9 @@
+<svg width="180" height="120" viewBox="0 0 180 120" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cache overlay logo, monochrome">
+  <!-- All strokes/fills use currentColor: set `color` on the parent to theme it -->
+  <g stroke="currentColor" fill="none" stroke-width="3">
+    <rect x="6"  y="60" width="110" height="42" rx="9"/>
+    <rect x="21" y="40" width="110" height="42" rx="9"/>
+  </g>
+  <rect x="36" y="20" width="110" height="42" rx="9" fill="currentColor"/>
+  <circle cx="91" cy="41" r="8" fill="none" stroke="currentColor" stroke-width="3"/>
+</svg>
