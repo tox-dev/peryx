@@ -1235,6 +1235,78 @@
         }
       }
     },
+    "/{route}/{project}/{version}/promote": {
+      "put": {
+        "tags": [
+          "publish"
+        ],
+        "summary": "Promote a release",
+        "description": "Copies uploaded file records for one release from the source route's local upload layer into this route's local upload layer. Promotion reuses content-addressed blob digests and preserves sha256, size, upload time, yank state, and metadata sibling hashes. The target route's upload token authenticates the request. Archived and quarantined target projects reject promotion through the same project-status policy used for uploads.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Source route whose local upload layer contains the release",
+            "required": true,
+            "example": "staging"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done; the body counts promoted files",
+            "content": {
+              "text/plain": {
+                "example": "promoted 2 file(s)"
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `from`, unsafe path segment, or missing version"
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "403": {
+            "description": "Project status rejects writes on the target route"
+          },
+          "404": {
+            "description": "Unknown route or no source release matched"
+          },
+          "405": {
+            "description": "The source or target route has no writable local layer"
+          },
+          "409": {
+            "description": "A target filename already exists with a different sha256"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
     "/{route}/{project}/{version}/restore": {
       "put": {
         "tags": [

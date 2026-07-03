@@ -39,3 +39,21 @@ dist plan                  # what a release would build
 uvx maturin build --release   # one wheel for this machine, in target/wheels/
 uvx maturin sdist
 ```
+
+## Promote between local indexes
+
+Use promotion after staging accepts a release and another local index needs the same files without re-uploading artifact
+bytes:
+
+```shell
+curl -u __token__:prod-secret -X PUT \
+  'http://127.0.0.1:4433/prod/velodexpkg/1.0/promote?from=staging'
+```
+
+The target route supplies the upload token. velodex copies the stored file records, preserves sha256, size, upload time,
+yank state, and metadata sibling hashes, and reuses the existing content-addressed blobs. A target filename with a
+different sha256 returns `409 Conflict`.
+
+Project status applies on the target route. Active and deprecated projects accept promotion; archived and quarantined
+projects return `403`. Direct local routes have no upstream project-status source today, so velodex treats them as
+active.

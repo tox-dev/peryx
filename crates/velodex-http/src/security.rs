@@ -11,6 +11,7 @@ pub(crate) struct Event<'a> {
     result: &'static str,
     actor: Option<&'a str>,
     repository: Option<&'a str>,
+    source_repository: Option<&'a str>,
     local_repository: Option<&'a str>,
     project: Option<&'a str>,
     version: Option<&'a str>,
@@ -30,6 +31,7 @@ impl<'a> Event<'a> {
             result,
             actor: None,
             repository: None,
+            source_repository: None,
             local_repository: None,
             project: None,
             version: None,
@@ -50,6 +52,11 @@ impl<'a> Event<'a> {
 
     pub(crate) const fn repository(mut self, repository: &'a str) -> Self {
         self.repository = Some(repository);
+        self
+    }
+
+    pub(crate) const fn source_repository(mut self, source_repository: &'a str) -> Self {
+        self.source_repository = Some(source_repository);
         self
     }
 
@@ -102,6 +109,7 @@ impl<'a> Event<'a> {
     pub(crate) fn emit(&self) {
         let actor = text(self.actor);
         let repository = text(self.repository);
+        let source_repository = text(self.source_repository);
         let local_repository = text(self.local_repository);
         let project = text(self.project);
         let version = text(self.version);
@@ -118,6 +126,7 @@ impl<'a> Event<'a> {
             result = self.result,
             actor,
             repository,
+            source_repository,
             local_repository,
             project,
             version,

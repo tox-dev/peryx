@@ -48,6 +48,14 @@ pub enum CacheError {
     FileNotFound,
     #[error("file already exists: {0}")]
     FileExists(String),
+    #[error("file record lacks sha256: {0}")]
+    MissingSha256(String),
+    #[error("no uploaded files matched source {source_index:?}, project {project:?}, version {version:?}")]
+    NoPromotableFiles {
+        source_index: String,
+        project: String,
+        version: String,
+    },
     #[error("file stream failed: {0}")]
     Stream(String),
     #[error("rate limit exceeded; retry after {retry_after} seconds")]
@@ -81,6 +89,14 @@ impl CacheError {
             Self::NotVolatile => "index is not volatile; delete is disabled".to_owned(),
             Self::FileNotFound => "no matching cached file or upstream source was found".to_owned(),
             Self::FileExists(filename) => format!("file {filename:?} already exists with different content"),
+            Self::MissingSha256(filename) => format!("uploaded file {filename:?} has no sha256 hash"),
+            Self::NoPromotableFiles {
+                source_index,
+                project,
+                version,
+            } => {
+                format!("no uploaded files on source {source_index:?} match project {project:?} version {version:?}")
+            }
             Self::Stream(err) => format!("file stream failed: {err}"),
             Self::RateLimited { retry_after } => format!("rate limit exceeded; retry after {retry_after} seconds"),
         }
@@ -1171,6 +1187,64 @@ pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> R
     state.meta.next_serial()?;
     state.bump_epoch();
     Ok(true)
+}
+
+/// Copy one uploaded release from one local layer to another without touching blob bytes.
+///
+/// # Errors
+/// Returns [`CacheError::NoPromotableFiles`] when the source local layer has no matching upload,
+/// [`CacheError::FileExists`] when a target filename exists with different bytes, or another
+/// [`CacheError`] on metadata-store or decode failures.
+pub fn promote_release(
+    state: &AppState,
+    source: &str,
+    target: &str,
+    target_route: &str,
+    normalized: &str,
+    version: &str,
+) -> Result<usize, CacheError> {
+    let mut matched = false;
+    let mut records = Vec::new();
+    for (filename, bytes) in state.meta.list_upload_entries(source, normalized)? {
+        let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
+        if uploaded.version != version {
+            continue;
+        }
+        matched = true;
+        let digest = uploaded
+            .file
+            .hashes
+            .get("sha256")
+            .cloned()
+            .ok_or_else(|| CacheError::MissingSha256(filename.clone()))?;
+        if let Some(existing) = state.meta.get_upload(target, normalized, &filename)? {
+            let existing: Uploaded = serde_json::from_slice(&existing)?;
+            if existing.file.hashes.get("sha256").is_some_and(|hash| hash == &digest) {
+                continue;
+            }
+            return Err(CacheError::FileExists(filename));
+        }
+        uploaded.file.url = local_file_url(target_route, &digest, &filename);
+        records.push((filename, to_json(&uploaded).into_bytes()));
+    }
+    if !matched {
+        return Err(CacheError::NoPromotableFiles {
+            source_index: source.to_owned(),
+            project: normalized.to_owned(),
+            version: version.to_owned(),
+        });
+    }
+    if records.is_empty() {
+        return Ok(0);
+    }
+    let display = state
+        .meta
+        .get_project(source, normalized)?
+        .unwrap_or_else(|| normalized.to_owned());
+    state.meta.put_uploads(target, normalized, &display, &records)?;
+    state.meta.next_serial()?;
+    state.bump_epoch();
+    Ok(records.len())
 }
 
 /// The two reversible override kinds for files served from read-only layers.

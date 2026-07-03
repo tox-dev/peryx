@@ -673,6 +673,17 @@ impl MetaStore {
         Ok(())
     }
 
+    /// Fetch a project's display name on one index.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn get_project(&self, index: &str, normalized: &str) -> Result<Option<String>, MetaError> {
+        let key = format!("{index}/{normalized}");
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(PROJECTS)?;
+        Ok(table.get(key.as_str())?.map(|value| value.value().to_owned()))
+    }
+
     /// Count the rows a project-cache purge would remove.
     ///
     /// # Errors
@@ -774,6 +785,32 @@ impl MetaStore {
         {
             let mut table = txn.open_table(UPLOAD)?;
             table.insert(key.as_str(), record)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Store promoted upload records and the observed project display name in one transaction.
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    pub fn put_uploads(
+        &self,
+        index: &str,
+        normalized: &str,
+        display: &str,
+        records: &[(String, Vec<u8>)],
+    ) -> Result<(), MetaError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(UPLOAD)?;
+            for (filename, record) in records {
+                let key = format!("{index}/{normalized}/{filename}");
+                table.insert(key.as_str(), record.as_slice())?;
+            }
+            let mut table = txn.open_table(PROJECTS)?;
+            let key = format!("{index}/{normalized}");
+            table.insert(key.as_str(), display)?;
         }
         txn.commit()?;
         Ok(())

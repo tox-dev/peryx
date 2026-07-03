@@ -615,6 +615,30 @@ fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) 
         .emit();
 }
 
+#[derive(Clone, Copy)]
+struct PromotionAudit<'a> {
+    headers: &'a HeaderMap,
+    actor: Option<&'a str>,
+    repository: &'a str,
+    source_repository: &'a str,
+    local_repository: &'a str,
+    project: &'a str,
+    version: &'a str,
+}
+
+fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusBlock) {
+    crate::security::Event::new("promote", block.result)
+        .actor(audit.actor)
+        .repository(audit.repository)
+        .source_repository(audit.source_repository)
+        .local_repository(audit.local_repository)
+        .project(Some(audit.project))
+        .version(Some(audit.version))
+        .reason(Some(&block.reason))
+        .request(audit.headers)
+        .emit();
+}
+
 struct UploadStatusBlock {
     response: Response,
     result: &'static str,
@@ -647,6 +671,27 @@ fn upload_status_response(
     }
 }
 
+fn promotion_source_route(query: Option<&str>) -> Result<String, Response> {
+    let Some(query) = query else {
+        return Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}").into_response());
+    };
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if key == "from" && !value.is_empty() {
+            return Ok(value.into_owned());
+        }
+    }
+    Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}").into_response())
+}
+
+fn promotion_source<'a>(state: &'a AppState, route: &str) -> Result<&'a Index, Response> {
+    let route = route.trim_matches('/');
+    state
+        .indexes
+        .iter()
+        .find(|index| index.route == route)
+        .ok_or_else(not_found)
+}
+
 /// `PUT /{route}/{project}/[{version}/]yank` marks files yanked (PEP 592, reversible);
 /// `PUT .../restore` clears the hidden marker a DELETE left on read-only upstream files.
 pub async fn dispatch_put(
@@ -661,6 +706,55 @@ pub async fn dispatch_put(
         Ok(target) => target,
         Err(response) => return response,
     };
+    if let Some(spec) = strip_action_segment(spec, "promote") {
+        let source_route = match promotion_source_route(uri.query()) {
+            Ok(route) => route,
+            Err(response) => return response,
+        };
+        let source = match promotion_source(&state, &source_route) {
+            Ok(source) => source,
+            Err(response) => return response,
+        };
+        let Some(source_local) = upload_target(&state, source) else {
+            return (
+                StatusCode::METHOD_NOT_ALLOWED,
+                format!("source index {source_route:?} has no local upload layer"),
+            )
+                .into_response();
+        };
+        let (project, version) = match parse_project_version(spec) {
+            Ok((project, Some(version))) => (project, version),
+            Ok((_project, None)) => return (StatusCode::BAD_REQUEST, "promotion requires a version").into_response(),
+            Err(response) => return response,
+        };
+        let audit = PromotionAudit {
+            headers: &headers,
+            actor: actor.as_deref(),
+            repository: &index.route,
+            source_repository: &source.route,
+            local_repository: &local.name,
+            project: &project,
+            version: &version,
+        };
+        if let Some(block) = upload_status_response(
+            cache::project_status(&state, index, &project).await,
+            &index.route,
+            &project,
+        ) {
+            emit_promotion_status_event(&audit, &block);
+            return block.response;
+        }
+        let result = cache::promote_release(
+            &state,
+            &source_local.name,
+            &local.name,
+            &index.route,
+            &project,
+            &version,
+        );
+        security_promotion_event(audit, &result);
+        return promotion_response(result);
+    }
     if let Some(spec) = strip_action_segment(spec, "yank") {
         let yanked = yank_marker(uri.query());
         let (project, version) = match parse_project_version(spec) {
@@ -878,6 +972,28 @@ fn security_mutation_event(audit: MutationAudit<'_>, result: &Result<usize, Cach
         .emit();
 }
 
+fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, CacheError>) {
+    let (security_result, count, reason) = match result {
+        Ok(0) => ("noop", 0, Some("same files already exist on target".to_owned())),
+        Ok(count) => ("success", *count, None),
+        Err(err @ (CacheError::FileExists(_) | CacheError::NoPromotableFiles { .. })) => {
+            ("denied", 0, Some(err.user_message()))
+        }
+        Err(err) => ("failure", 0, Some(err.user_message())),
+    };
+    crate::security::Event::new("promote", security_result)
+        .actor(audit.actor)
+        .repository(audit.repository)
+        .source_repository(audit.source_repository)
+        .local_repository(audit.local_repository)
+        .project(Some(audit.project))
+        .version(Some(audit.version))
+        .count(count)
+        .reason(reason.as_deref())
+        .request(audit.headers)
+        .emit();
+}
+
 fn strip_action_segment<'a>(spec: &'a str, action: &str) -> Option<&'a str> {
     let spec = spec.trim_end_matches('/');
     let base = spec.strip_suffix(action)?;
@@ -1034,6 +1150,21 @@ fn count_response(result: Result<usize, CacheError>) -> Response {
     }
 }
 
+fn promotion_response(result: Result<usize, CacheError>) -> Response {
+    match result {
+        Ok(count) => (StatusCode::OK, format!("promoted {count} file(s)")).into_response(),
+        Err(CacheError::FileExists(filename)) => (
+            StatusCode::CONFLICT,
+            format!("File already exists: {filename:?} has different content; use a different filename"),
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!(error = ?err, "promotion failed");
+            cache_error_response(&err, CacheContext::mutation("promotion"))
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct CacheContext<'a> {
     operation: &'static str,
@@ -1119,12 +1250,12 @@ fn cache_error_response(err: &CacheError, context: CacheContext<'_>) -> Response
 
 fn cache_error_status(err: &CacheError, context: &CacheContext<'_>) -> StatusCode {
     match err {
-        CacheError::Meta(_) | CacheError::Blob(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        CacheError::FileNotFound => StatusCode::NOT_FOUND,
-        CacheError::FileExists(_) => StatusCode::BAD_REQUEST,
+        CacheError::Meta(_) | CacheError::Blob(_) | CacheError::MissingSha256(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        CacheError::FileNotFound | CacheError::NoPromotableFiles { .. } => StatusCode::NOT_FOUND,
+        CacheError::FileExists(_) => StatusCode::CONFLICT,
         CacheError::NotVolatile => StatusCode::FORBIDDEN,
         CacheError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
-        CacheError::Parse(_) if matches!(context.operation, "upload storage" | "file removal") => {
+        CacheError::Parse(_) if matches!(context.operation, "upload storage" | "file removal" | "promotion") => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
         CacheError::Upstream(_)
@@ -1712,7 +1843,7 @@ mod tests {
         );
         assert_eq!(
             cache_error_status(&CacheError::FileExists("pkg-1.0.whl".to_owned()), &context),
-            StatusCode::BAD_REQUEST
+            StatusCode::CONFLICT
         );
         assert_eq!(
             cache_error_status(&CacheError::NotVolatile, &context),

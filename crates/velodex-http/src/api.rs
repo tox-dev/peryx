@@ -146,6 +146,10 @@ fn route_paths(paths: PathsBuilder) -> PathsBuilder {
             PathItemBuilder::new().operation(HttpMethod::Put, restore()).build(),
         )
         .path(
+            "/{route}/{project}/{version}/promote",
+            PathItemBuilder::new().operation(HttpMethod::Put, promote()).build(),
+        )
+        .path(
             "/{route}/{project}/{version}/",
             PathItemBuilder::new()
                 .operation(HttpMethod::Delete, delete_version())
@@ -775,6 +779,61 @@ fn restore() -> OperationBuilder {
          them visible on the overlay again. Omit `{version}/` to restore the whole project.",
         "affected 1 file(s)",
     )
+}
+
+fn promote() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("publish")
+        .summary(Some("Promote a release"))
+        .description(Some(
+            "Copies uploaded file records for one release from the source route's local upload \
+             layer into this route's local upload layer. Promotion reuses content-addressed blob \
+             digests and preserves sha256, size, upload time, yank state, and metadata sibling \
+             hashes. The target route's upload token authenticates the request. Archived and \
+             quarantined target projects reject promotion through the same project-status policy \
+             used for uploads.",
+        ))
+        .parameter(route_param())
+        .parameter(project_param())
+        .parameter(version_param())
+        .parameter(
+            ParameterBuilder::new()
+                .name("from")
+                .parameter_in(ParameterIn::Query)
+                .required(Required::True)
+                .description(Some("Source route whose local upload layer contains the release"))
+                .example(Some(json!("staging"))),
+        )
+        .security(SecurityRequirement::new("uploadToken", [""; 0]))
+        .response(
+            "200",
+            text_response(
+                "Done; the body counts promoted files",
+                "text/plain",
+                "promoted 2 file(s)",
+            ),
+        )
+        .response(
+            "400",
+            ResponseBuilder::new().description("Missing `from`, unsafe path segment, or missing version"),
+        )
+        .response("401", ResponseBuilder::new().description("Missing or wrong token"))
+        .response(
+            "403",
+            ResponseBuilder::new().description("Project status rejects writes on the target route"),
+        )
+        .response(
+            "404",
+            ResponseBuilder::new().description("Unknown route or no source release matched"),
+        )
+        .response(
+            "409",
+            ResponseBuilder::new().description("A target filename already exists with a different sha256"),
+        )
+        .response(
+            "405",
+            ResponseBuilder::new().description("The source or target route has no writable local layer"),
+        )
 }
 
 fn inspect_listing() -> OperationBuilder {
