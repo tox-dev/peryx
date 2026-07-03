@@ -18,6 +18,7 @@ use velodex_upstream::{RangeError, SimpleResponse, UpstreamClient};
 
 use crate::metrics::Event;
 use crate::path_safety::local_file_url;
+use crate::rate_limit::UpstreamPermit;
 use crate::state::{AppState, Index, IndexKind};
 use crate::stream::{PageSummary, PageTransformer, Registration};
 use crate::upload::{PreparedUpload, Uploaded};
@@ -49,6 +50,8 @@ pub enum CacheError {
     FileExists(String),
     #[error("file stream failed: {0}")]
     Stream(String),
+    #[error("rate limit exceeded; retry after {retry_after} seconds")]
+    RateLimited { retry_after: u64 },
 }
 
 impl From<velodex_core::pypi::SimpleError> for CacheError {
@@ -79,6 +82,7 @@ impl CacheError {
             Self::FileNotFound => "no matching cached file or upstream source was found".to_owned(),
             Self::FileExists(filename) => format!("file {filename:?} already exists with different content"),
             Self::Stream(err) => format!("file stream failed: {err}"),
+            Self::RateLimited { retry_after } => format!("rate limit exceeded; retry after {retry_after} seconds"),
         }
     }
 }
@@ -284,6 +288,7 @@ async fn fetch_and_store(
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let route = mirror_route(state, name);
     let event_project = project.to_owned();
+    let _permit = upstream_permit(state, name)?;
     match client.fetch_project(project, etag.as_deref()).await {
         Ok(response) if response.status == 200 => {
             let record = CachedIndex {
@@ -374,6 +379,15 @@ fn mirror_route(state: &AppState, name: &str) -> String {
 
 fn project_negative_key(key: &str) -> String {
     format!("project\0{key}")
+}
+
+fn upstream_permit(state: &AppState, name: &str) -> Result<UpstreamPermit, CacheError> {
+    state
+        .upstream_limits
+        .acquire(name)
+        .map_err(|limited| CacheError::RateLimited {
+            retry_after: limited.retry_after,
+        })
 }
 
 /// One background refresh sweep's outcome.
@@ -699,6 +713,7 @@ fn collect_projects(state: &AppState, index: &Index, names: &mut BTreeSet<String
 
 /// Fetch a URL through the named mirror's client (reusing its authentication).
 async fn fetch_from_source(state: &AppState, source: &str, url: &str) -> Result<Bytes, CacheError> {
+    let _permit = upstream_permit(state, source)?;
     Ok(source_client(state, source)?.fetch_bytes(url).await?)
 }
 
@@ -1467,6 +1482,7 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
     let now = (state.clock)();
     let cached = state.meta.get_index(&key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
+    let permit = upstream_permit(&state, &mirror_name)?;
     let Ok(head) = client.head_project(&project, etag.as_deref()).await else {
         release_flight(&state, &key, guard);
         return Ok(PageOutcome::Fallback);
@@ -1485,6 +1501,7 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
                 cached_present: cached.is_some(),
                 guard,
                 head,
+                permit,
             }
             .stream()
             .await
@@ -1539,6 +1556,7 @@ struct FreshJsonStream {
     cached_present: bool,
     guard: tokio::sync::OwnedMutexGuard<()>,
     head: velodex_upstream::SimpleHead,
+    permit: UpstreamPermit,
 }
 
 impl FreshJsonStream {
@@ -1590,6 +1608,7 @@ impl FreshJsonStream {
                     fetched_at: self.now,
                     fresh_secs: max_age,
                     guard: self.guard,
+                    _permit: self.permit,
                 },
                 raw,
                 served,
@@ -1812,6 +1831,7 @@ struct LiveStream {
     fetched_at: i64,
     fresh_secs: Option<i64>,
     guard: tokio::sync::OwnedMutexGuard<()>,
+    _permit: UpstreamPermit,
 }
 
 /// Stream the upstream body through the transformer to the client, teeing the raw bytes for the
@@ -2002,6 +2022,7 @@ async fn start_download(
         .get_file_url(digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
     let client = source_client(state, &source)?;
+    let permit = upstream_permit(state, &source)?;
     let body = client.stream_bytes(&url).await?;
     let pending = state.blobs.begin()?;
     let (sender, receiver) = tokio::sync::watch::channel(DownloadProgress::default());
@@ -2009,14 +2030,20 @@ async fn start_download(
         path: pending.path().to_owned(),
         progress: receiver,
     };
-    tokio::spawn(pump_download(
-        state.clone(),
-        digest.clone(),
-        body,
-        pending,
-        sender,
-        (route, filename),
-    ));
+    let pump_state = state.clone();
+    let pump_digest = digest.clone();
+    tokio::spawn(async move {
+        pump_download(
+            pump_state,
+            pump_digest,
+            body,
+            pending,
+            sender,
+            (route, filename),
+            permit,
+        )
+        .await;
+    });
     Ok(handle)
 }
 
@@ -2070,6 +2097,7 @@ async fn pump_download(
     mut pending: velodex_storage::blob::PendingBlob,
     sender: tokio::sync::watch::Sender<DownloadProgress>,
     served_as: (String, String),
+    permit: UpstreamPermit,
 ) {
     let started = std::time::Instant::now();
     let outcome = match drain_to_blob(body, &mut pending, &sender).await {
@@ -2084,6 +2112,7 @@ async fn pump_download(
         }
         Err(err) => Err(err),
     };
+    drop(permit);
     let bytes = sender.borrow().flushed;
     let elapsed_ms = started.elapsed().as_millis();
     #[rustfmt::skip]

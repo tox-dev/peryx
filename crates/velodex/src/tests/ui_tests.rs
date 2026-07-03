@@ -28,6 +28,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                     username: None,
                     password: None,
                     token: None,
+                    upstream_concurrency: velodex_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                 },
             },
             IndexConfig {

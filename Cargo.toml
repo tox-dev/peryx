@@ -75,6 +75,7 @@ web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlE
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 tracing-appender = "0.2"
 time = { version = "0.3", features = ["formatting"] }
+criterion = { package = "codspeed-criterion-compat", version = "5.0", default-features = false }
 
 [profile.release]
 strip = true

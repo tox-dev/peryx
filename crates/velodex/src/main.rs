@@ -136,7 +136,11 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
                 let _ = stream.set_nodelay(true);
             });
         tracing::info!(%addr, indexes = config.indexes.len(), "velodex listening");
-        axum::serve(listener, router).await?;
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await?;
         anyhow::Ok(())
     })
 }

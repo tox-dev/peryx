@@ -1024,6 +1024,14 @@ impl<'a> CacheContext<'a> {
 }
 
 fn cache_error_response(err: &CacheError, context: CacheContext<'_>) -> Response {
+    if let CacheError::RateLimited { retry_after } = err {
+        let mut response = (cache_error_status(err, &context), cache_error_message(err, context)).into_response();
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            HeaderValue::from_str(&retry_after.to_string()).expect("integer retry-after is a valid header"),
+        );
+        return response;
+    }
     (cache_error_status(err, &context), cache_error_message(err, context)).into_response()
 }
 
@@ -1033,6 +1041,7 @@ fn cache_error_status(err: &CacheError, context: &CacheContext<'_>) -> StatusCod
         CacheError::FileNotFound => StatusCode::NOT_FOUND,
         CacheError::FileExists(_) => StatusCode::BAD_REQUEST,
         CacheError::NotVolatile => StatusCode::FORBIDDEN,
+        CacheError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         CacheError::Parse(_) if matches!(context.operation, "upload storage" | "file removal") => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -1501,6 +1510,7 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
          # TYPE velodex_metadata_requests_total counter\n\
          velodex_metadata_requests_total {metadata}\n"
     );
+    write_rate_limit_metrics(&mut body, &state);
     let mut totals: Vec<_> = state.metrics.index_totals().into_iter().collect();
     totals.sort_by(|(a, _), (b, _)| a.cmp(b));
     let families: [(&str, &str, CounterOf); 10] = [
@@ -1544,6 +1554,57 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
         }
     }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
+}
+
+fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
+    let _ = writeln!(
+        body,
+        "# HELP velodex_rate_limit_allowed_total HTTP requests allowed by the local rate limiter.\n\
+         # TYPE velodex_rate_limit_allowed_total counter"
+    );
+    for counter in state.rate_limits.counters() {
+        let _ = writeln!(
+            body,
+            "velodex_rate_limit_allowed_total{{class=\"{}\"}} {}",
+            counter.class, counter.allowed
+        );
+    }
+    let _ = writeln!(
+        body,
+        "# HELP velodex_rate_limit_denied_total HTTP requests denied by the local rate limiter.\n\
+         # TYPE velodex_rate_limit_denied_total counter"
+    );
+    for counter in state.rate_limits.counters() {
+        let _ = writeln!(
+            body,
+            "velodex_rate_limit_denied_total{{class=\"{}\"}} {}",
+            counter.class, counter.denied
+        );
+    }
+    let _ = writeln!(
+        body,
+        "# HELP velodex_upstream_rate_limit_denied_total Upstream fetches denied by the local concurrency cap.\n\
+         # TYPE velodex_upstream_rate_limit_denied_total counter"
+    );
+    for counter in state.upstream_limits.snapshots() {
+        let _ = writeln!(
+            body,
+            "velodex_upstream_rate_limit_denied_total{{index=\"{}\"}} {}",
+            counter.index, counter.denied
+        );
+    }
+    let _ = writeln!(
+        body,
+        "# HELP velodex_upstream_inflight_fetches Current upstream fetches held by the local concurrency cap.\n\
+         # TYPE velodex_upstream_inflight_fetches gauge"
+    );
+    for counter in state.upstream_limits.snapshots() {
+        let _ = writeln!(
+            body,
+            "velodex_upstream_inflight_fetches{{index=\"{}\"}} {}",
+            counter.index, counter.in_flight
+        );
+    }
 }
 
 #[cfg(test)]

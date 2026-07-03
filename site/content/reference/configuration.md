@@ -17,6 +17,7 @@ the file. Precedence is `defaults < TOML file < flags`.
 | Config file               | `--config` / `-c` | (n/a)            | (none)         |
 | Cache freshness (seconds) | (file only)       | `cache_ttl_secs` | `300`          |
 | Indexes                   | (file only)       | `[[index]]`      | (see below)    |
+| Rate limits               | (file only)       | `[rate_limit]`   | (see below)    |
 
 `cache_ttl_secs` is a fallback: when an upstream response carries a usable `Cache-Control` lifetime (`s-maxage` or
 `max-age`), that lifetime governs the page instead. The fallback applies when the header is absent,
@@ -28,19 +29,20 @@ is a new entry on the page rather than a mutation.
 Each `[[index]]` table declares one index. `name` is required; exactly one of `mirror`, `local`, or `layers` selects the
 kind. velodex rejects unknown keys.
 
-| Key            | Applies to | Meaning                                                          | Default           |
-| -------------- | ---------- | ---------------------------------------------------------------- | ----------------- |
-| `name`         | all        | Identifier other indexes reference in `layers`                   | (required)        |
-| `route`        | all        | URL prefix the index is served under                             | same as `name`    |
-| `mirror`       | mirror     | Upstream simple-index URL                                        |                   |
-| `username`     | mirror     | Basic-auth username for the upstream                             | (none)            |
-| `password`     | mirror     | Basic-auth password for the upstream                             | (none)            |
-| `token`        | mirror     | Bearer token; takes precedence over username/password            | (none)            |
-| `local`        | local      | `true` marks a hosted store (implied by `upload_token`)          | `false`           |
-| `upload_token` | local      | Basic-auth password uploads must present; unset disables uploads | (none)            |
-| `volatile`     | local      | Allow delete and overwrite                                       | `true`            |
-| `layers`       | overlay    | Ordered index names to compose; first match per filename wins    |                   |
-| `upload`       | overlay    | Local layer that receives uploads                                | first local layer |
+| Key                    | Applies to | Meaning                                                           | Default           |
+| ---------------------- | ---------- | ----------------------------------------------------------------- | ----------------- |
+| `name`                 | all        | Identifier other indexes reference in `layers`                    | (required)        |
+| `route`                | all        | URL prefix the index is served under                              | same as `name`    |
+| `mirror`               | mirror     | Upstream simple-index URL                                         |                   |
+| `username`             | mirror     | Basic-auth username for the upstream                              | (none)            |
+| `password`             | mirror     | Basic-auth password for the upstream                              | (none)            |
+| `token`                | mirror     | Bearer token; takes precedence over username/password             | (none)            |
+| `upstream_concurrency` | mirror     | Concurrent upstream fetches for this mirror; `0` disables the cap | `8`               |
+| `local`                | local      | `true` marks a hosted store (implied by `upload_token`)           | `false`           |
+| `upload_token`         | local      | Basic-auth password uploads must present; unset disables uploads  | (none)            |
+| `volatile`             | local      | Allow delete and overwrite                                        | `true`            |
+| `layers`               | overlay    | Ordered index names to compose; first match per filename wins     |                   |
+| `upload`               | overlay    | Local layer that receives uploads                                 | first local layer |
 
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
@@ -66,6 +68,48 @@ upload = "local"
 
 Startup rejects duplicate names, duplicate routes, invalid routes, `layers` entries that name no index, and an `upload`
 target that is not a local index.
+
+## `[rate_limit]`
+
+Rate limits are local to one velodex process and disabled by default. When `enabled = true`, they use fixed windows and
+bounded in-memory buckets; restarting the process clears the buckets. `max_clients` caps the number of client/class
+buckets kept in memory. Set a class `requests` or `window_secs` to `0` to disable that class limit.
+
+For authenticated requests, velodex hashes the `Authorization` header and uses the hash as the bucket key. It does not
+store the credential value. Other requests use the peer IP address. In in-process tests and deployments without socket
+peer metadata, velodex falls back to `X-Forwarded-For`, then `X-Real-IP`, then `127.0.0.1`.
+
+| Key           | Meaning                                     | Default |
+| ------------- | ------------------------------------------- | ------- |
+| `enabled`     | Install the HTTP request limiter            | `false` |
+| `max_clients` | Maximum client/class buckets kept in memory | `8192`  |
+
+Each route class is a sub-table with `requests` and `window_secs`:
+
+| Table                   | Route class                                     | Default        |
+| ----------------------- | ----------------------------------------------- | -------------- |
+| `[rate_limit.simple]`   | Simple project list and project detail pages    | `600` / `60s`  |
+| `[rate_limit.metadata]` | PEP 658/714 `.metadata` siblings                | `1200` / `60s` |
+| `[rate_limit.artifact]` | Artifact downloads and archive inspection       | `300` / `60s`  |
+| `[rate_limit.upload]`   | Upload, yank, restore, and delete requests      | `60` / `60s`   |
+| `[rate_limit.admin]`    | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
+
+Example:
+
+```toml
+[rate_limit]
+enabled = true
+max_clients = 4096
+
+[rate_limit.simple]
+requests = 300
+window_secs = 60
+
+[[index]]
+name = "pypi"
+mirror = "https://pypi.org/simple/"
+upstream_concurrency = 4
+```
 
 ## `[log]`
 

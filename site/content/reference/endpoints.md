@@ -67,6 +67,7 @@ local upload target; Simple HTML/JSON and PEP 658 metadata siblings are true for
 | `403`  | Uploads disabled (no token configured) or index not volatile                                                                                         |
 | `404`  | Unknown route, project, or nothing matched                                                                                                           |
 | `405`  | The route's index does not accept writes                                                                                                             |
+| `429`  | A route-class limit or mirror upstream concurrency cap rejected the request; retry after the `Retry-After` seconds                                   |
 
 Uploads accept wheels and `.tar.gz` sdists. The server validates the filename, form `name` and `version`, `filetype`,
 archive contents, and core metadata before the artifact becomes visible. Wheel validation requires normalized
@@ -80,6 +81,16 @@ Archive inspection is broader than uploads. It can list and preview cached wheel
 and `.tgz` archives, including supported archives nested inside them. Other legacy compressed tar formats stay
 download-only until velodex adds decoders for them. Mirrored eggs remain downloadable when upstream lists them with a
 sha256 hash, but they do not get PEP 658 metadata.
+
+## Rate limits
+
+When `[rate_limit] enabled = true` and a client exceeds a configured route-class window, velodex returns
+`429 Too Many Requests` before the handler reads multipart bodies, cache state, or upstreams. The response includes
+`Retry-After` in seconds. The same status and header apply when a mirror `upstream_concurrency` cap has no free slot.
+
+Velodex writes a security log for each denial with `event = "rate_limit"`, the denied class or repository, and the retry
+delay. It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class, plus upstream
+concurrency denials by mirror index. HTTP request counters stay at zero while the request limiter is disabled.
 
 ## Status and usage
 
@@ -109,5 +120,9 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 - `velodex_requests_total`: HTTP requests served.
 - `velodex_metadata_requests_total`: PEP 658/714 `.metadata` siblings served; a rising value proves clients resolve via
   the metadata fast path rather than by downloading artifacts.
+- `velodex_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
+- `velodex_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
+- `velodex_upstream_rate_limit_denied_total{index="<name>"}`: mirror concurrency cap denials.
+- `velodex_upstream_inflight_fetches{index="<name>"}`: current upstream fetches holding a concurrency slot.
 - `velodex_index_*_total{index="<route>"}`: the `/+stats` counter set per index route (`pages`, `downloads`,
   `download_bytes`, `metadata`, `uploads`, `refreshes`, `pages_changed`, `stale_served`, `upstream_errors`, `rejected`).

@@ -40,8 +40,16 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let indexes = build_indexes(&config.indexes)?;
     let search_path = config.data_dir.join("search-v1");
     Ok(Arc::new(
-        AppState::with_search_path(meta, blobs, config.cache_ttl_secs, indexes, &search_path)
-            .context(format!("open search index {}", search_path.display()))?,
+        AppState::with_search_path_and_rate_limits(
+            meta,
+            blobs,
+            config.cache_ttl_secs,
+            indexes,
+            &search_path,
+            config.rate_limit.clone(),
+            upstream_concurrency(&config.indexes),
+        )
+        .context(format!("open search index {}", search_path.display()))?,
     ))
 }
 
@@ -89,6 +97,7 @@ fn build_kind(
             username,
             password,
             token,
+            ..
         } => {
             let auth = mirror_auth(token.as_deref(), username.as_deref(), password.as_deref());
             Ok(IndexKind::Mirror(
@@ -117,6 +126,18 @@ fn build_kind(
             })
         }
     }
+}
+
+fn upstream_concurrency(configs: &[IndexConfig]) -> Vec<(String, usize)> {
+    configs
+        .iter()
+        .filter_map(|index| match &index.kind {
+            ConfigKind::Mirror {
+                upstream_concurrency, ..
+            } => Some((index.name.clone(), *upstream_concurrency)),
+            ConfigKind::Local { .. } | ConfigKind::Overlay { .. } => None,
+        })
+        .collect()
 }
 
 fn resolve_name(overlay: &str, name: &str, positions: &HashMap<&str, usize>) -> anyhow::Result<usize> {

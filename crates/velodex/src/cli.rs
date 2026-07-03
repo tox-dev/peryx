@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::config::{LogFormat, LogSink, PartialConfig, PartialLogConfig};
+use crate::config::{LogFormat, LogSink, PartialConfig, PartialLogConfig, PartialRateLimitConfig};
 
 /// uv-style help colors: bold green section headers, cyan literals and placeholders.
 const STYLES: Styles = Styles::styled()
@@ -276,6 +276,7 @@ impl RuntimeArgs {
                 sink: self.log_sink,
                 file: self.log_file.clone(),
             },
+            rate_limit: PartialRateLimitConfig::default(),
         }
     }
 }

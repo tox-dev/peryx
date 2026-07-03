@@ -17,6 +17,7 @@ fn mirror(name: &str, upstream: &str) -> IndexConfig {
             username: None,
             password: None,
             token: None,
+            upstream_concurrency: velodex_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
         },
     }
 }
@@ -72,6 +73,30 @@ fn test_build_state_opens_configured_data_dir() {
 
     assert_eq!(state.indexes.len(), config.indexes.len());
     assert!(dir.path().join("velodex.redb").exists());
+}
+
+#[test]
+fn test_build_state_applies_upstream_concurrency() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut pypi = mirror("pypi", "https://pypi.org/simple/");
+    let IndexKind::Mirror {
+        upstream_concurrency, ..
+    } = &mut pypi.kind
+    else {
+        panic!("expected mirror");
+    };
+    *upstream_concurrency = 2;
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![pypi],
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    let snapshots = state.upstream_limits.snapshots();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].max_concurrent, 2);
 }
 
 #[test]

@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use velodex_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 
 /// A fully resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub struct Config {
     /// The configured indexes: mirrors, local (hosted) stores, and overlays that compose them.
     pub indexes: Vec<IndexConfig>,
     pub log: LogConfig,
+    pub rate_limit: RateLimitConfig,
 }
 
 /// One configured index, addressed at `route`.
@@ -43,6 +45,8 @@ pub enum IndexKind {
         password: Option<String>,
         /// Bearer token; takes precedence over username/password.
         token: Option<String>,
+        /// Concurrent upstream fetches allowed for this mirror in this process; `0` disables the cap.
+        upstream_concurrency: usize,
     },
     /// A hosted store that accepts uploads. `upload_token` is the Basic-auth password an upload must
     /// present (`None` disables uploads); `volatile` allows delete and overwrite.
@@ -67,6 +71,7 @@ impl Default for Config {
             cache_ttl_secs: 300,
             indexes: default_indexes(),
             log: LogConfig::default(),
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -83,6 +88,7 @@ fn default_indexes() -> Vec<IndexConfig> {
                 username: None,
                 password: None,
                 token: None,
+                upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
             },
         },
         IndexConfig {
@@ -127,6 +133,7 @@ impl Config {
             self.indexes = raw.into_iter().map(classify_index).collect::<Result<_, _>>()?;
         }
         self.log = self.log.apply(partial.log);
+        self.rate_limit = apply_rate_limit(self.rate_limit, partial.rate_limit);
         Ok(self)
     }
 }
@@ -146,6 +153,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             username: raw.username,
             password: raw.password,
             token: raw.token,
+            upstream_concurrency: raw.upstream_concurrency.unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
         }
     } else if raw.local == Some(true) || raw.upload_token.is_some() {
         IndexKind::Local {
@@ -238,6 +246,7 @@ pub struct PartialConfig {
     #[serde(rename = "index")]
     pub indexes: Option<Vec<RawIndex>>,
     pub log: PartialLogConfig,
+    pub rate_limit: PartialRateLimitConfig,
 }
 
 /// A raw `[[index]]` table before classification. Exactly one of `mirror`, `local`, or `layers`
@@ -251,6 +260,7 @@ pub struct RawIndex {
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
+    pub upstream_concurrency: Option<usize>,
     pub local: Option<bool>,
     pub upload_token: Option<String>,
     pub volatile: Option<bool>,
@@ -266,6 +276,51 @@ pub struct PartialLogConfig {
     pub format: Option<LogFormat>,
     pub sink: Option<LogSink>,
     pub file: Option<PathBuf>,
+}
+
+/// The rate-limit half of [`PartialConfig`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialRateLimitConfig {
+    pub enabled: Option<bool>,
+    pub max_clients: Option<u64>,
+    pub simple: PartialRouteLimit,
+    pub metadata: PartialRouteLimit,
+    pub artifact: PartialRouteLimit,
+    pub upload: PartialRouteLimit,
+    pub admin: PartialRouteLimit,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialRouteLimit {
+    pub requests: Option<u64>,
+    pub window_secs: Option<u64>,
+}
+
+const fn apply_rate_limit(mut base: RateLimitConfig, partial: PartialRateLimitConfig) -> RateLimitConfig {
+    if let Some(enabled) = partial.enabled {
+        base.enabled = enabled;
+    }
+    if let Some(max_clients) = partial.max_clients {
+        base.max_clients = max_clients;
+    }
+    base.simple = apply_route_limit(base.simple, partial.simple);
+    base.metadata = apply_route_limit(base.metadata, partial.metadata);
+    base.artifact = apply_route_limit(base.artifact, partial.artifact);
+    base.upload = apply_route_limit(base.upload, partial.upload);
+    base.admin = apply_route_limit(base.admin, partial.admin);
+    base
+}
+
+const fn apply_route_limit(mut base: RouteLimit, partial: PartialRouteLimit) -> RouteLimit {
+    if let Some(requests) = partial.requests {
+        base.requests = requests;
+    }
+    if let Some(window_secs) = partial.window_secs {
+        base.window_secs = window_secs;
+    }
+    base
 }
 
 /// An error while assembling configuration.

@@ -10,6 +10,7 @@ use velodex_storage::meta::MetaStore;
 use velodex_upstream::UpstreamClient;
 
 use crate::metrics::Metrics;
+use crate::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, UpstreamLimits};
 use crate::search::{PackageSearch, SearchError};
 
 /// A source of the current unix time, injectable so cache-freshness logic is deterministic in
@@ -38,6 +39,14 @@ pub enum IndexKind {
         layers: Vec<usize>,
         upload: Option<usize>,
     },
+}
+
+struct StateParts {
+    meta: MetaStore,
+    blobs: BlobStore,
+    ttl_secs: i64,
+    indexes: Vec<Index>,
+    clock: Clock,
 }
 
 /// Everything a request handler needs. Shared as `Arc<AppState>`.
@@ -75,6 +84,10 @@ pub struct AppState {
     pub metrics: Metrics,
     /// Derived package search index, refreshed from storage when the mutation epoch advances.
     pub search: PackageSearch,
+    /// Per-client HTTP request limits. The bucket cache has a fixed capacity.
+    pub rate_limits: RateLimiter,
+    /// Per-mirror upstream fetch gates, keyed by configured index name.
+    pub upstream_limits: UpstreamLimits,
 }
 
 impl AppState {
@@ -84,10 +97,39 @@ impl AppState {
         Self::with_clock(meta, blobs, ttl_secs, indexes, Arc::new(system_now))
     }
 
+    /// Build the state with system time plus local abuse-control settings.
+    #[must_use]
+    pub fn with_rate_limits(
+        meta: MetaStore,
+        blobs: BlobStore,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        rate_limit: RateLimitConfig,
+        upstream_concurrency: impl IntoIterator<Item = (String, usize)>,
+    ) -> Self {
+        Self::with_limits(
+            meta,
+            blobs,
+            ttl_secs,
+            indexes,
+            Arc::new(system_now),
+            rate_limit,
+            upstream_concurrency,
+        )
+    }
+
     /// Build the state with an injected clock.
     #[must_use]
     pub fn with_clock(meta: MetaStore, blobs: BlobStore, ttl_secs: i64, indexes: Vec<Index>, clock: Clock) -> Self {
-        Self::with_clock_and_search(meta, blobs, ttl_secs, indexes, clock, PackageSearch::in_memory())
+        Self::with_limits(
+            meta,
+            blobs,
+            ttl_secs,
+            indexes,
+            clock,
+            RateLimitConfig::default(),
+            std::iter::empty(),
+        )
     }
 
     /// Build the state with an on-disk search index.
@@ -101,24 +143,96 @@ impl AppState {
         indexes: Vec<Index>,
         search_path: impl AsRef<std::path::Path>,
     ) -> Result<Self, SearchError> {
-        Ok(Self::with_clock_and_search(
+        Self::with_search_path_and_rate_limits(
             meta,
             blobs,
             ttl_secs,
             indexes,
-            Arc::new(system_now),
+            search_path,
+            RateLimitConfig::default(),
+            std::iter::empty(),
+        )
+    }
+
+    /// Build the state with an on-disk search index and local abuse-control settings.
+    ///
+    /// # Errors
+    /// Returns an error if the search index cannot be opened.
+    pub fn with_search_path_and_rate_limits(
+        meta: MetaStore,
+        blobs: BlobStore,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        search_path: impl AsRef<std::path::Path>,
+        rate_limit: RateLimitConfig,
+        upstream_concurrency: impl IntoIterator<Item = (String, usize)>,
+    ) -> Result<Self, SearchError> {
+        Ok(Self::with_limits_and_search(
+            StateParts {
+                meta,
+                blobs,
+                ttl_secs,
+                indexes,
+                clock: Arc::new(system_now),
+            },
+            rate_limit,
+            upstream_concurrency,
             PackageSearch::open(search_path)?,
         ))
     }
 
-    fn with_clock_and_search(
+    /// Build the state with an injected clock plus local abuse-control settings.
+    #[must_use]
+    pub fn with_limits(
         meta: MetaStore,
         blobs: BlobStore,
         ttl_secs: i64,
         indexes: Vec<Index>,
         clock: Clock,
+        rate_limit: RateLimitConfig,
+        upstream_concurrency: impl IntoIterator<Item = (String, usize)>,
+    ) -> Self {
+        Self::with_limits_and_search(
+            StateParts {
+                meta,
+                blobs,
+                ttl_secs,
+                indexes,
+                clock,
+            },
+            rate_limit,
+            upstream_concurrency,
+            PackageSearch::in_memory(),
+        )
+    }
+
+    fn with_limits_and_search(
+        parts: StateParts,
+        rate_limit: RateLimitConfig,
+        upstream_concurrency: impl IntoIterator<Item = (String, usize)>,
         search: PackageSearch,
     ) -> Self {
+        let StateParts {
+            meta,
+            blobs,
+            ttl_secs,
+            indexes,
+            clock,
+        } = parts;
+        let configured: HashMap<_, _> = upstream_concurrency.into_iter().collect();
+        let upstream_limits = indexes
+            .iter()
+            .filter_map(|index| match &index.kind {
+                IndexKind::Mirror(_) => Some((
+                    index.name.clone(),
+                    configured
+                        .get(&index.name)
+                        .copied()
+                        .unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
+                )),
+                IndexKind::Local { .. } | IndexKind::Overlay { .. } => None,
+            })
+            .collect::<Vec<_>>();
         Self {
             meta,
             blobs,
@@ -142,6 +256,8 @@ impl AppState {
             epoch: AtomicU64::new(0),
             metrics: Metrics::start(),
             search,
+            rate_limits: RateLimiter::new(rate_limit),
+            upstream_limits: UpstreamLimits::new(upstream_limits),
         }
     }
 

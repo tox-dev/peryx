@@ -40,9 +40,14 @@ time.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
 wiremock.workspace = true
 tracing-subscriber.workspace = true
 redb.workspace = true
+
+[[bench]]
+name = "rate_limit"
+harness = false
 
 [lints]
 workspace = true

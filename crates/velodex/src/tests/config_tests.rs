@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use velodex_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+
 use crate::config::{self, Config, IndexKind, LogConfig, LogFormat, LogSink, PartialConfig, PartialLogConfig};
 
 fn toml_config(text: &str) -> Config {
@@ -15,11 +17,12 @@ fn test_default_config() {
     assert_eq!(c.data_dir, PathBuf::from("velodex-data"));
     assert_eq!(c.cache_ttl_secs, 300);
     assert_eq!(c.log, LogConfig::default());
+    assert_eq!(c.rate_limit, RateLimitConfig::default());
     // A pypi mirror with a local store overlaid in front, served at root/pypi.
     let routes: Vec<&str> = c.indexes.iter().map(|index| index.route.as_str()).collect();
     assert_eq!(routes, ["pypi", "local", "root/pypi"]);
-    assert!(matches!(c.indexes[0].kind, IndexKind::Mirror { .. }));
-    assert!(matches!(c.indexes[1].kind, IndexKind::Local { .. }));
+    assert!(matches!(&c.indexes[0].kind, IndexKind::Mirror { .. }));
+    assert!(matches!(&c.indexes[1].kind, IndexKind::Local { .. }));
     assert!(matches!(&c.indexes[2].kind, IndexKind::Overlay { upload: Some(target), .. } if target == "local"));
 }
 
@@ -70,7 +73,7 @@ fn test_log_config_apply_empty_keeps_defaults() {
 #[test]
 fn test_indexes_from_toml_classify_all_kinds() {
     let text = "\
-[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\ntoken = \"bear\"\n\
+[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\ntoken = \"bear\"\nupstream_concurrency = 3\n\
 [[index]]\nname = \"corp\"\nmirror = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
 [[index]]\nname = \"team-local\"\nlocal = true\nupload_token = \"s\"\nvolatile = false\n\
 [[index]]\nname = \"secret\"\nupload_token = \"z\"\n\
@@ -78,7 +81,9 @@ fn test_indexes_from_toml_classify_all_kinds() {
     let c = toml_config(text);
     assert_eq!(c.indexes.len(), 5);
     assert_eq!(c.indexes[0].route, "pypi"); // route defaults to name
-    assert!(matches!(&c.indexes[0].kind, IndexKind::Mirror { token: Some(token), .. } if token == "bear"));
+    assert!(
+        matches!(&c.indexes[0].kind, IndexKind::Mirror { token: Some(token), upstream_concurrency: 3, .. } if token == "bear")
+    );
     assert!(matches!(
         &c.indexes[1].kind,
         IndexKind::Mirror {
@@ -88,13 +93,45 @@ fn test_indexes_from_toml_classify_all_kinds() {
             ..
         }
     ));
-    assert!(matches!(c.indexes[2].kind, IndexKind::Local { volatile: false, .. })); // explicit local, non-volatile
-    assert!(matches!(c.indexes[3].kind, IndexKind::Local { volatile: true, .. })); // upload_token implies local, default volatile
+    assert!(matches!(&c.indexes[2].kind, IndexKind::Local { volatile: false, .. })); // explicit local, non-volatile
+    assert!(matches!(&c.indexes[3].kind, IndexKind::Local { volatile: true, .. })); // upload_token implies local, default volatile
     assert_eq!(c.indexes[4].route, "team/dev");
     assert!(
         matches!(&c.indexes[4].kind, IndexKind::Overlay { layers, upload: Some(upload) }
             if layers == &["team-local".to_owned(), "pypi".to_owned()] && upload == "team-local")
     );
+}
+
+#[test]
+fn test_rate_limits_from_toml_overlay_defaults() {
+    let c = toml_config(
+        "\
+[rate_limit]\nenabled = true\nmax_clients = 32\n\
+[rate_limit.simple]\nrequests = 10\nwindow_secs = 5\n\
+[rate_limit.upload]\nrequests = 2\n",
+    );
+
+    assert!(c.rate_limit.enabled);
+    assert_eq!(c.rate_limit.max_clients, 32);
+    assert_eq!(c.rate_limit.simple, RouteLimit::new(10, 5));
+    assert_eq!(c.rate_limit.upload.requests, 2);
+    assert_eq!(
+        c.rate_limit.upload.window_secs,
+        RateLimitConfig::default().upload.window_secs
+    );
+    assert_eq!(c.rate_limit.artifact, RateLimitConfig::default().artifact);
+}
+
+#[test]
+fn test_mirror_upstream_concurrency_defaults() {
+    let c = toml_config("[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\n");
+    assert!(matches!(
+        &c.indexes[0].kind,
+        IndexKind::Mirror {
+            upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -118,6 +155,11 @@ fn test_from_toml_rejects_unknown_index_key() {
 #[test]
 fn test_from_toml_rejects_unknown_log_key() {
     assert!(config::from_toml(PathBuf::from("x.toml"), "[log]\nbogus = 1\n").is_err());
+}
+
+#[test]
+fn test_from_toml_rejects_unknown_rate_limit_key() {
+    assert!(config::from_toml(PathBuf::from("x.toml"), "[rate_limit]\nbogus = 1\n").is_err());
 }
 
 #[test]
