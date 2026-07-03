@@ -79,6 +79,37 @@ test("project page renders pypi.org-style metadata", async ({ page }) => {
   await expect(row).toContainText("1.2 kB");
 });
 
+test("project file search keeps URL history", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  const row = page.locator("table.files tbody tr", { hasText: "veloxdemo-1.0.0" });
+  await expect(row).toBeVisible();
+  await page.locator(".file-search").fill("missing");
+  await expect(page.locator("table.files .empty")).toContainText("No artifacts match");
+  await expect(page.locator(".file-filter-count")).toContainText("0 of 1 file");
+  await expect(page).toHaveURL(/filename=missing/);
+
+  await page.goBack();
+  await expect(row).toBeVisible();
+  await expect(page.locator(".file-filter-count")).toContainText("1 file");
+  await expect(page).toHaveURL(/\/browse\?index=root%2Fpypi&project=veloxdemo$/);
+
+  await page.goForward();
+  await expect(page.locator("table.files .empty")).toContainText("No artifacts match");
+});
+
+test("project file regex errors keep the last results", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  const row = page.locator("table.files tbody tr", { hasText: "veloxdemo-1.0.0" });
+  await page.locator(".file-search").fill("veloxdemo.*\\.whl");
+  await page.locator(".file-filter-mode input").check();
+  await expect(row).toBeVisible();
+
+  await page.locator(".file-search").fill("[");
+  await expect(page.locator(".error")).toContainText("Invalid regex");
+  await expect(row).toBeVisible();
+  await expect(page.locator(".file-filter-count")).toContainText("1 file");
+});
+
 test("archive browser lists members and shows file content", async ({ page }) => {
   await goto(page, PROJECT_URL);
   await page.locator("a.inspect").click();

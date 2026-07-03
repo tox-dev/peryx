@@ -4053,6 +4053,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "pulldown-cmark",
+ "regex",
  "send_wrapper",
  "serde",
  "serde_json",

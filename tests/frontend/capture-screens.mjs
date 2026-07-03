@@ -11,7 +11,7 @@ const pages = [
   { name: "dashboard", path: "/", height: 560 },
   { name: "stats-index", path: "/stats?index=root%2Fpypi", height: 720 },
   { name: "stats-project", path: "/stats?index=root%2Fpypi&project=requests", height: 640 },
-  { name: "project", path: "/browse?index=root%2Fpypi&project=requests", height: 900 },
+  { name: "project", path: "/browse?index=root%2Fpypi&project=veloxdemo", height: 900 },
 ];
 
 const browser = await chromium.launch();

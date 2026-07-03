@@ -8,8 +8,12 @@
     reason = "cfg-split helpers are const only without the hydrate feature; constness cannot vary by cfg"
 )]
 
+use std::sync::Arc;
+
 use leptos::prelude::*;
-use leptos_router::hooks::use_query_map;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::{use_navigate, use_query_map};
+use regex::Regex;
 use velodex_core::pypi::CoreMetadataDoc;
 
 use crate::data::{
@@ -21,7 +25,8 @@ use crate::model::{
 };
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url, browse_archive_url,
-    browse_index_url, browse_project_url, simple_index_url, stats_index_url, stats_project_url,
+    browse_index_url, browse_project_file_search_url, browse_project_url, simple_index_url, stats_index_url,
+    stats_project_url,
 };
 
 type ProjectPage = Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String>;
@@ -737,41 +742,220 @@ fn copy_to_clipboard(text: &str) {
 
 #[component]
 fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoView {
+    let query = use_query_map();
+    let navigate = use_navigate();
+    let files = Arc::new(files);
+    let filenames = Arc::new(
+        files
+            .iter()
+            .map(|file| file.filename.to_lowercase())
+            .collect::<Vec<_>>(),
+    );
+    let initial = FileSearch::from_query(&query.read());
+    let (initial_matches, initial_error) =
+        match matching_file_indexes(&files, &filenames, &initial.pattern, initial.mode) {
+            Ok(indexes) => (indexes, None),
+            Err(message) => ((0..files.len()).collect(), Some(message)),
+        };
+    let (pattern, set_pattern) = signal(initial.pattern);
+    let (mode, set_mode) = signal(initial.mode);
+    let (matches, set_matches) = signal(initial_matches);
+    let (error, set_error) = signal(initial_error);
+    let total = files.len();
+    Effect::new(move |_| {
+        let search = FileSearch::from_query(&query.read());
+        if pattern.get_untracked() != search.pattern {
+            set_pattern.set(search.pattern);
+        }
+        if mode.get_untracked() != search.mode {
+            set_mode.set(search.mode);
+        }
+    });
+    Effect::new({
+        let files = files.clone();
+        move |_| match matching_file_indexes(&files, &filenames, &pattern.get(), mode.get()) {
+            Ok(indexes) => {
+                set_error.set(None);
+                set_matches.set(indexes);
+            }
+            Err(message) => set_error.set(Some(message)),
+        }
+    });
     view! {
+        <div class="file-filter">
+            <input
+                class="search file-search"
+                type="search"
+                placeholder="Filter filenames"
+                prop:value=move || pattern.get()
+                on:input:target={
+                    let navigate = navigate.clone();
+                    let route = route.clone();
+                    let project = project.clone();
+                    move |event| {
+                        let next = event.target().value();
+                        let replace = pattern.get_untracked().is_empty() == next.is_empty();
+                        set_pattern.set(next.clone());
+                        navigate(
+                            &browse_project_file_search_url(
+                                &route,
+                                &project,
+                                &next,
+                                mode.get_untracked() == FileSearchMode::Regex,
+                            ),
+                            NavigateOptions { replace, scroll: false, ..NavigateOptions::default() },
+                        );
+                    }
+                }
+            />
+            <label class="file-filter-mode">
+                <input
+                    type="checkbox"
+                    prop:checked=move || mode.get() == FileSearchMode::Regex
+                    on:change:target={
+                        let navigate = navigate.clone();
+                        let route = route.clone();
+                        let project = project.clone();
+                        move |event| {
+                            let next = if event.target().checked() {
+                                FileSearchMode::Regex
+                            } else {
+                                FileSearchMode::Substring
+                            };
+                            set_mode.set(next);
+                            navigate(
+                                &browse_project_file_search_url(
+                                    &route,
+                                    &project,
+                                    &pattern.get_untracked(),
+                                    next == FileSearchMode::Regex,
+                                ),
+                                NavigateOptions { replace: false, scroll: false, ..NavigateOptions::default() },
+                            );
+                        }
+                    }
+                />
+                <span>"regex"</span>
+            </label>
+            <span class="file-filter-count">
+                {move || file_count(matches.with(Vec::len), total)}
+            </span>
+        </div>
+        {move || error.get().map(|message| view! { <p class="error">{message}</p> })}
         <table class="files">
             <thead><tr><th>"File"</th><th>"Size"</th><th>"Uploaded"</th><th>"sha256"</th><th>"Flags"</th></tr></thead>
             <tbody>
-                {files
-                    .into_iter()
-                    .map(|file| {
-                        let class = if file.yanked { "yanked" } else { "" };
-                        let inspect = browse_archive_url(&route, &project, &file.sha256, &file.filename);
-                        let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
-                        view! {
-                            <tr class=class>
-                                <td>
-                                    <a href=file.url.clone()>{file.filename.clone()}</a>
-                                    {supports_archive_browser(&file.filename)
-                                        .then(|| view! {
-                                            " · "
-                                            <a class="inspect" href=inspect>"contents"</a>
-                                        })}
-                                </td>
-                                <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
-                                <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |t| t.chars().take(10).collect())}</td>
-                                <td><code title=file.sha256.clone()>{short_hash}</code></td>
-                                <td>
-                                    {file.yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
-                                    {file
-                                        .has_metadata
-                                        .then(|| view! { <span class="badge meta-badge">"metadata"</span> })}
-                                </td>
-                            </tr>
-                        }
-                    })
-                    .collect_view()}
+                {move || {
+                    if matches.with(Vec::is_empty) {
+                        view! { <tr><td colspan="5" class="empty">"No artifacts match this filename filter."</td></tr> }
+                            .into_any()
+                    } else {
+                        matches
+                            .get()
+                            .into_iter()
+                            .map(|index| file_row(&route, &project, &files[index]))
+                            .collect_view()
+                            .into_any()
+                    }
+                }}
             </tbody>
         </table>
+    }
+}
+
+fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
+    let class = if file.yanked { "yanked" } else { "" };
+    let inspect = browse_archive_url(route, project, &file.sha256, &file.filename);
+    let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
+    view! {
+        <tr class=class>
+            <td>
+                <a href=file.url.clone()>{file.filename.clone()}</a>
+                {supports_archive_browser(&file.filename)
+                    .then(|| view! {
+                        " · "
+                        <a class="inspect" href=inspect>"contents"</a>
+                    })}
+            </td>
+            <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
+            <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |time| time.chars().take(10).collect())}</td>
+            <td><code title=file.sha256.clone()>{short_hash}</code></td>
+            <td>
+                {file.yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
+                {file.has_metadata.then(|| view! { <span class="badge meta-badge">"metadata"</span> })}
+            </td>
+        </tr>
+    }
+}
+
+fn file_count(shown: usize, total: usize) -> String {
+    if shown == total {
+        format!("{total} {}", file_label(total))
+    } else {
+        format!("{shown} of {total} {}", file_label(total))
+    }
+}
+
+fn file_label(count: usize) -> &'static str {
+    if count == 1 { "file" } else { "files" }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSearch {
+    pattern: String,
+    mode: FileSearchMode,
+}
+
+impl FileSearch {
+    fn from_query(query: &leptos_router::params::ParamsMap) -> Self {
+        Self {
+            pattern: query.get("filename").unwrap_or_default(),
+            mode: FileSearchMode::from_query(query.get_str("filename_match")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileSearchMode {
+    Substring,
+    Regex,
+}
+
+impl FileSearchMode {
+    fn from_query(value: Option<&str>) -> Self {
+        match value {
+            Some("regex") => Self::Regex,
+            _ => Self::Substring,
+        }
+    }
+}
+
+fn matching_file_indexes(
+    files: &[UiFile],
+    filenames: &[String],
+    pattern: &str,
+    mode: FileSearchMode,
+) -> Result<Vec<usize>, String> {
+    if pattern.is_empty() {
+        return Ok((0..files.len()).collect());
+    }
+    match mode {
+        FileSearchMode::Substring => {
+            let needle = pattern.to_lowercase();
+            Ok(filenames
+                .iter()
+                .enumerate()
+                .filter_map(|(index, filename)| filename.contains(&needle).then_some(index))
+                .collect())
+        }
+        FileSearchMode::Regex => {
+            let regex = Regex::new(pattern).map_err(|err| format!("Invalid regex: {err}"))?;
+            Ok(files
+                .iter()
+                .enumerate()
+                .filter_map(|(index, file)| regex.is_match(&file.filename).then_some(index))
+                .collect())
+        }
     }
 }
 

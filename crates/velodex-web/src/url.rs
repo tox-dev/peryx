@@ -33,6 +33,18 @@ pub(crate) fn browse_project_url(route: &str, project: &str) -> String {
 }
 
 #[must_use]
+pub(crate) fn browse_project_file_search_url(route: &str, project: &str, pattern: &str, regex: bool) -> String {
+    let mut url = browse_project_url(route, project);
+    if !pattern.is_empty() {
+        push_query(&mut url, "filename", pattern);
+    }
+    if regex {
+        push_query(&mut url, "filename_match", "regex");
+    }
+    url
+}
+
+#[must_use]
 pub(crate) fn browse_archive_url(route: &str, project: &str, sha256: &str, filename: &str) -> String {
     let mut url = browse_project_url(route, project);
     push_query(&mut url, "sha256", sha256);
@@ -188,8 +200,8 @@ fn push_query(url: &mut String, key: &str, value: &str) {
 mod tests {
     use super::{
         admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url,
-        browse_archive_url, browse_index_url, browse_project_url, inspect_url, simple_index_url, simple_project_url,
-        stats_api_url, stats_index_url, stats_project_url,
+        browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_url, inspect_url,
+        simple_index_url, simple_project_url, stats_api_url, stats_index_url, stats_project_url,
     };
 
     #[test]
@@ -207,6 +219,10 @@ mod tests {
         assert_eq!(
             browse_archive_url("root/pypi", "pkg name", "aa", "pkg 1.0#x?.whl"),
             "/browse?index=root%2Fpypi&project=pkg%20name&sha256=aa&file=pkg%201.0%23x%3F.whl"
+        );
+        assert_eq!(
+            browse_project_file_search_url("root/pypi", "pkg name", "cp313.*\\.whl", true),
+            "/browse?index=root%2Fpypi&project=pkg%20name&filename=cp313.%2A%5C.whl&filename_match=regex"
         );
     }
 
