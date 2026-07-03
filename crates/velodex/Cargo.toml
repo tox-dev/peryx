@@ -8,6 +8,16 @@ repository.workspace = true
 description = "PyPI-compatible read-through cache and private-index overlay."
 default-run = "velodex"
 
+[[bin]]
+name = "velodex"
+path = "src/main.rs"
+test = false
+
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+required-features = ["e2e"]
+
 [features]
 # End-to-end tests that drive real pip/uv/twine against a spawned velodex binary. Off by default
 # (they need the clients and are not part of the coverage gate); CI runs them explicitly. `e2e` is
@@ -32,6 +42,7 @@ mimalloc.workspace = true
 tokio.workspace = true
 clap.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -53,6 +64,7 @@ serde_json.workspace = true
 zip.workspace = true
 base64.workspace = true
 sha2.workspace = true
+redb.workspace = true
 
 [lints]
 workspace = true

@@ -48,6 +48,32 @@ it renders.
 A steady `refreshes` with zero `changed` is the normal idle state. `rejected` above zero deserves attention: either the
 upstream served corrupt bytes or something rewrote them in transit.
 
+## Inspect the disk cache
+
+Use the cache CLI when you need the state on disk, not request counters.
+
+```shell
+velodex cache size --data-dir /var/lib/velodex
+velodex cache list --data-dir /var/lib/velodex --stale
+velodex cache fsck --data-dir /var/lib/velodex
+```
+
+`cache size` reports cached pages, stale pages, blob files, bytes, and metadata row counts. `cache list --stale` lists
+the stale pages with age and freshness lifetime. `cache fsck` validates metadata row shapes and stream-hashes blob files
+against their sha256 path.
+
+Use two steps for project purge. First print the plan, then rerun with `--yes` if the row counts match what you expect.
+
+```shell
+velodex cache purge project --data-dir /var/lib/velodex --index pypi --project flask
+velodex cache purge project --data-dir /var/lib/velodex --index pypi --project flask --yes
+velodex cache purge orphaned-blobs --data-dir /var/lib/velodex
+velodex cache purge orphaned-blobs --data-dir /var/lib/velodex --yes
+```
+
+Project purge removes metadata rows and leaves blobs in place. Orphaned-blob purge removes blob files that no metadata
+row references.
+
 ## Related
 
 - Where the counters come from: [architecture](@/explanation/architecture.md)

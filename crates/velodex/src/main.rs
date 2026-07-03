@@ -162,6 +162,10 @@ fn main() -> anyhow::Result<()> {
             app::init(&config)
         }
         velodex::cli::Command::ConfigSnippet(args) => print_config_snippet(&args),
+        velodex::cli::Command::Cache(command) => {
+            let config = resolve_config(command.runtime_args())?;
+            app::cache(&config, &command, &mut std::io::stdout())
+        }
         velodex::cli::Command::Openapi => {
             print!("{}", velodex_http::api::openapi_json());
             Ok(())

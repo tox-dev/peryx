@@ -1,4 +1,6 @@
-use crate::meta::{CachedIndex, MetaStore};
+use std::error::Error as _;
+
+use crate::meta::{CachedIndex, MetaError, MetaScanError, MetaStore};
 
 fn store() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -332,4 +334,137 @@ fn test_list_index_pages_reads_legacy_records() {
         store.list_index_pages().unwrap(),
         vec![("pypi/old".to_owned(), 1_700_000_000, None)]
     );
+}
+
+#[test]
+fn test_cached_index_summary_reports_body_and_record_size() {
+    let bytes = record().encode();
+    assert_eq!(
+        CachedIndex::summary(&bytes).unwrap(),
+        crate::meta::CachedIndexSummary {
+            fetched_at_unix: 1_700_000_000,
+            fresh_secs: None,
+            body_bytes: 13,
+            record_bytes: bytes.len() as u64,
+            last_serial: Some(42),
+            content_type: None,
+        }
+    );
+}
+
+#[test]
+fn test_scan_index_pages_visits_records_without_collecting() {
+    let (_dir, store) = store();
+    store.put_index("pypi/flask", &record()).unwrap();
+    let mut pages = Vec::new();
+    store
+        .scan_index_pages(|page| {
+            pages.push((page.key, page.summary.body_bytes));
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    assert_eq!(pages, vec![("pypi/flask".to_owned(), 13)]);
+}
+
+#[test]
+fn test_scan_visit_error_reports_source() {
+    let (_dir, store) = store();
+    store.put_index("pypi/flask", &record()).unwrap();
+    let err = store
+        .scan_index_pages(|_page| Err(std::io::Error::other("stop")))
+        .unwrap_err();
+    assert_eq!(err.to_string(), "stop");
+    assert!(err.source().is_some());
+}
+
+#[test]
+fn test_scan_store_error_reports_source() {
+    let decode = serde_json::from_slice::<serde_json::Value>(b"not json").unwrap_err();
+    let err: MetaScanError<std::io::Error> = MetaError::Decode(decode).into();
+    assert!(!err.to_string().is_empty());
+    assert!(err.source().is_some());
+}
+
+#[test]
+fn test_scan_upload_and_override_records_visit_rows() {
+    let (_dir, store) = store();
+    store.put_upload("local", "flask", "flask-1.0.whl", b"upload").unwrap();
+    store.put_override("local", "flask", "flask-1.0.whl", "hidden").unwrap();
+
+    let mut uploads = Vec::new();
+    store
+        .scan_upload_records(|key, value| {
+            uploads.push((key.to_owned(), value.to_vec()));
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    assert_eq!(
+        uploads,
+        vec![("local/flask/flask-1.0.whl".to_owned(), b"upload".to_vec())]
+    );
+
+    let mut overrides = Vec::new();
+    store
+        .scan_override_records(|key, value| {
+            overrides.push((key.to_owned(), value.to_owned()));
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    assert_eq!(
+        overrides,
+        vec![("local/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
+    );
+}
+
+#[test]
+fn test_open_existing_requires_database_file() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(MetaStore::open_existing(dir.path().join("missing.redb")).is_err());
+}
+
+#[test]
+fn test_count_and_delete_project_cache_purge() {
+    let (_dir, store) = store();
+    store.put_index("pypi/flask", &record()).unwrap();
+    store.put_project("pypi", "flask", "Flask").unwrap();
+    store
+        .put_file_url("a".repeat(64).as_str(), "https://files.example/flask.whl", "pypi")
+        .unwrap();
+    store
+        .put_metadata(
+            "b".repeat(64).as_str(),
+            "https://files.example/flask.whl.metadata",
+            "c".repeat(64).as_str(),
+            "pypi",
+        )
+        .unwrap();
+
+    let file_digests = vec!["a".repeat(64)];
+    let metadata_digests = vec!["b".repeat(64)];
+    assert_eq!(
+        store
+            .count_project_cache_purge("pypi", "flask", &file_digests, &metadata_digests)
+            .unwrap(),
+        crate::meta::ProjectCachePurgeCounts {
+            index_pages: 1,
+            project_records: 1,
+            file_url_records: 1,
+            metadata_records: 1,
+        }
+    );
+    assert_eq!(
+        store
+            .delete_project_cache("pypi", "flask", &file_digests, &metadata_digests)
+            .unwrap(),
+        crate::meta::ProjectCachePurgeCounts {
+            index_pages: 1,
+            project_records: 1,
+            file_url_records: 1,
+            metadata_records: 1,
+        }
+    );
+    assert!(store.get_index("pypi/flask").unwrap().is_none());
+    assert!(store.get_file_url("a".repeat(64).as_str()).unwrap().is_none());
+    assert!(store.get_metadata("b".repeat(64).as_str()).unwrap().is_none());
+    assert!(store.list_projects("pypi").unwrap().is_empty());
 }

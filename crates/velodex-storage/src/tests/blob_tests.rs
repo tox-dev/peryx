@@ -1,4 +1,6 @@
-use crate::blob::{BlobError, BlobStore, Digest};
+use std::error::Error as _;
+
+use crate::blob::{BlobError, BlobScanError, BlobStore, Digest};
 
 #[test]
 fn test_digest_of_known_vector() {
@@ -71,6 +73,125 @@ fn test_read_missing_is_not_found() {
     let store = BlobStore::new(dir.path());
     let err = store.read(&Digest::of(b"absent")).unwrap_err();
     assert!(matches!(err, BlobError::NotFound(_)));
+}
+
+#[test]
+fn test_scan_reports_blob_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path());
+    let digest = store.write(b"payload").unwrap();
+    let mut entries = Vec::new();
+    store
+        .scan(|entry| {
+            entries.push((entry.digest, entry.bytes));
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    assert_eq!(entries, vec![(Some(digest), 7)]);
+}
+
+#[test]
+fn test_scan_empty_store_reports_no_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut count = 0;
+    BlobStore::new(dir.path())
+        .scan(|_entry| {
+            count += 1;
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_scan_marks_invalid_blob_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    for path in [
+        dir.path().join("sha256/zz"),
+        dir.path().join("sha256/aa/bb/not-a-digest"),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"x").unwrap();
+    }
+    let mut entries = Vec::new();
+    BlobStore::new(dir.path())
+        .scan(|entry| {
+            entries.push((entry.digest, entry.bytes));
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    entries.sort_by_key(|(_, bytes)| *bytes);
+    assert_eq!(entries, vec![(None, 1), (None, 1)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_skips_symlink_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sha256/aa")).unwrap();
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("sha256/aa/link")).unwrap();
+    let mut entries = Vec::new();
+    BlobStore::new(dir.path())
+        .scan(|entry| {
+            entries.push(entry);
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+    assert!(entries.is_empty());
+}
+
+#[test]
+fn test_scan_visit_error_reports_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path());
+    store.write(b"payload").unwrap();
+    let err = store.scan(|_entry| Err(std::io::Error::other("stop"))).unwrap_err();
+    assert_eq!(err.to_string(), "stop");
+    assert!(err.source().is_some());
+}
+
+#[test]
+fn test_scan_store_error_reports_source() {
+    let err: BlobScanError<std::io::Error> = BlobError::NotFound("missing".to_owned()).into();
+    assert_eq!(err.to_string(), "blob missing not found");
+    assert!(err.source().is_some());
+}
+
+#[test]
+fn test_verify_streams_blob_hash_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path());
+    let digest = store.write(b"payload").unwrap();
+    assert!(store.verify(&digest).unwrap());
+}
+
+#[test]
+fn test_verify_detects_digest_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path());
+    let digest = Digest::of(b"expected");
+    let path = store.path_for(&digest);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"tampered").unwrap();
+    assert!(!store.verify(&digest).unwrap());
+}
+
+#[test]
+fn test_verify_missing_is_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path());
+    let err = store.verify(&Digest::of(b"absent")).unwrap_err();
+    assert!(matches!(err, BlobError::NotFound(_)));
+}
+
+#[test]
+fn test_remove_deletes_existing_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path());
+    let digest = store.write(b"payload").unwrap();
+    assert!(store.remove(&digest).unwrap());
+    assert!(!store.exists(&digest));
+    assert!(!store.remove(&digest).unwrap());
 }
 
 #[test]

@@ -43,6 +43,9 @@ pub enum Command {
         after_help = "Examples:\n  velodex config-snippet --base-url https://packages.example --index root/pypi pip.conf\n  velodex config-snippet --base-url https://packages.example --index root/pypi uv.toml\n  velodex config-snippet --base-url https://packages.example --index root/pypi .pypirc"
     )]
     ConfigSnippet(ConfigSnippetArgs),
+    /// Inspect and maintain the on-disk cache.
+    #[command(subcommand)]
+    Cache(CacheCommand),
     /// Print the `OpenAPI` description of the HTTP API as JSON.
     Openapi,
     /// Manage this velodex installation.
@@ -59,44 +62,116 @@ pub enum SelfCommand {
     Update,
 }
 
-/// Configuration flags shared by the commands that read the runtime configuration.
+/// Cache inspection and maintenance commands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CacheCommand {
+    /// List cached index pages and blobs.
+    List(CacheListArgs),
+    /// Report cache record and blob sizes.
+    Size(CacheRuntimeArgs),
+    /// Validate metadata records and blob hashes.
+    Fsck(CacheRuntimeArgs),
+    /// Plan or run cache cleanup.
+    #[command(subcommand)]
+    Purge(CachePurgeCommand),
+}
+
+impl CacheCommand {
+    #[must_use]
+    pub const fn runtime_args(&self) -> &RuntimeArgs {
+        match self {
+            Self::List(args) => &args.runtime,
+            Self::Size(args) | Self::Fsck(args) => &args.runtime,
+            Self::Purge(command) => command.runtime_args(),
+        }
+    }
+}
+
+/// Runtime configuration flags for cache commands.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct RuntimeArgs {
-    /// Path to a TOML config file.
-    #[arg(long, short = 'c')]
-    pub config: Option<PathBuf>,
+pub struct CacheRuntimeArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+}
 
-    /// Bind host.
+/// Filters for `velodex cache list`.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct CacheListArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Only show cached pages for this configured index name.
     #[arg(long)]
-    pub host: Option<String>,
+    pub index: Option<String>,
 
-    /// Bind port.
+    /// Only show cached pages for this project.
     #[arg(long)]
-    pub port: Option<u16>,
+    pub project: Option<String>,
 
-    /// Data directory.
+    /// Only show this blob digest.
     #[arg(long)]
-    pub data_dir: Option<PathBuf>,
+    pub digest: Option<String>,
 
-    /// Log level filter, e.g. `info` or `velodex_upstream=debug`.
-    #[arg(long, help_heading = "Logging")]
-    pub log_level: Option<String>,
+    /// Only show stale cached index pages.
+    #[arg(long)]
+    pub stale: bool,
 
-    /// Increase log verbosity: `-v` for debug, `-vv` for trace.
-    #[arg(long, short = 'v', action = clap::ArgAction::Count, help_heading = "Logging")]
-    pub verbose: u8,
+    /// Only show entries at least this many seconds old.
+    #[arg(long)]
+    pub min_age_secs: Option<u64>,
 
-    /// Log output format.
-    #[arg(long, value_enum, help_heading = "Logging")]
-    pub log_format: Option<LogFormat>,
+    /// Only show entries at least this many bytes.
+    #[arg(long)]
+    pub min_size_bytes: Option<u64>,
+}
 
-    /// Log sink.
-    #[arg(long, value_enum, help_heading = "Logging")]
-    pub log_sink: Option<LogSink>,
+/// Cache cleanup commands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CachePurgeCommand {
+    /// Remove cached metadata for one project.
+    Project(CachePurgeProjectArgs),
+    /// Remove blob files that no metadata record references.
+    OrphanedBlobs(CachePurgeOrphanedBlobsArgs),
+}
 
-    /// Log file path, used when `--log-sink file`.
-    #[arg(long, help_heading = "Logging")]
-    pub log_file: Option<PathBuf>,
+impl CachePurgeCommand {
+    #[must_use]
+    pub const fn runtime_args(&self) -> &RuntimeArgs {
+        match self {
+            Self::Project(args) => &args.runtime,
+            Self::OrphanedBlobs(args) => &args.runtime,
+        }
+    }
+}
+
+/// Options for project cache cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct CachePurgeProjectArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Cached index name.
+    #[arg(long)]
+    pub index: String,
+
+    /// Project name to purge.
+    #[arg(long)]
+    pub project: String,
+
+    /// Delete the planned records. Without this flag, the command only prints the plan.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Options for orphaned blob cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct CachePurgeOrphanedBlobsArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Delete the planned blob files. Without this flag, the command only prints the plan.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Configuration flags for the client snippet command.
@@ -138,6 +213,46 @@ impl From<SnippetFormat> for velodex_http::discovery::SnippetKind {
             SnippetFormat::Pypirc => Self::Pypirc,
         }
     }
+}
+
+/// Configuration flags shared by the commands that read the runtime configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct RuntimeArgs {
+    /// Path to a TOML config file.
+    #[arg(long, short = 'c')]
+    pub config: Option<PathBuf>,
+
+    /// Bind host.
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Bind port.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Data directory.
+    #[arg(long)]
+    pub data_dir: Option<PathBuf>,
+
+    /// Log level filter, e.g. `info` or `velodex_upstream=debug`.
+    #[arg(long, help_heading = "Logging")]
+    pub log_level: Option<String>,
+
+    /// Increase log verbosity: `-v` for debug, `-vv` for trace.
+    #[arg(long, short = 'v', action = clap::ArgAction::Count, help_heading = "Logging")]
+    pub verbose: u8,
+
+    /// Log output format.
+    #[arg(long, value_enum, help_heading = "Logging")]
+    pub log_format: Option<LogFormat>,
+
+    /// Log sink.
+    #[arg(long, value_enum, help_heading = "Logging")]
+    pub log_sink: Option<LogSink>,
+
+    /// Log file path, used when `--log-sink file`.
+    #[arg(long, help_heading = "Logging")]
+    pub log_file: Option<PathBuf>,
 }
 
 impl RuntimeArgs {

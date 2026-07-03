@@ -5,8 +5,10 @@
 //! and atomically renamed into place, so a blob is never visible until it is complete. The path is
 //! the digest, so anything present is by construction correct.
 
-use std::io::Write as _;
-use std::path::PathBuf;
+use std::error::Error;
+use std::fmt;
+use std::io::{Read as _, Write as _};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
@@ -57,6 +59,45 @@ pub enum BlobError {
     NotFound(String),
     #[error("digest mismatch: expected {expected}, got {actual}")]
     DigestMismatch { expected: String, actual: String },
+}
+
+/// A file found while walking the content-addressed blob tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobEntry {
+    pub path: PathBuf,
+    pub digest: Option<Digest>,
+    pub bytes: u64,
+}
+
+/// A blob scan error: either the store failed or the visitor rejected one row.
+#[derive(Debug)]
+pub enum BlobScanError<E> {
+    Store(BlobError),
+    Visit(E),
+}
+
+impl<E> From<BlobError> for BlobScanError<E> {
+    fn from(err: BlobError) -> Self {
+        Self::Store(err)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for BlobScanError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Store(err) => err.fmt(formatter),
+            Self::Visit(err) => err.fmt(formatter),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for BlobScanError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Store(err) => Some(err),
+            Self::Visit(err) => Some(err),
+        }
+    }
 }
 
 /// A content-addressed blob store rooted at a directory.
@@ -133,6 +174,105 @@ impl BlobStore {
             return Err(BlobError::NotFound(digest.as_str().to_owned()));
         }
         Ok(std::fs::read(&path)?)
+    }
+
+    /// Visit blob files under the content-addressed tree without collecting the store.
+    ///
+    /// # Errors
+    /// Returns a scan error if directory walking fails or the visitor returns an error.
+    pub fn scan<E>(&self, mut visit: impl FnMut(BlobEntry) -> Result<(), E>) -> Result<(), BlobScanError<E>> {
+        let root = self.root.join("sha256");
+        if !root.exists() {
+            return Ok(());
+        }
+        let mut dirs = vec![root];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).map_err(BlobError::from)? {
+                let entry = entry.map_err(BlobError::from)?;
+                let file_type = entry.file_type().map_err(BlobError::from)?;
+                if file_type.is_dir() {
+                    dirs.push(entry.path());
+                } else if file_type.is_file() {
+                    let path = entry.path();
+                    visit(BlobEntry {
+                        bytes: entry.metadata().map_err(BlobError::from)?.len(),
+                        digest: self.digest_from_path(&path),
+                        path,
+                    })
+                    .map_err(BlobScanError::Visit)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stream-hash a stored blob and check that its bytes match its address.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::NotFound`] if the blob is absent, or [`BlobError::Io`] on a read
+    /// failure.
+    pub fn verify(&self, digest: &Digest) -> Result<bool, BlobError> {
+        let path = self.path_for(digest);
+        if !path.is_file() {
+            return Err(BlobError::NotFound(digest.as_str().to_owned()));
+        }
+        let mut file = std::fs::File::open(path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; 1024 * 1024].into_boxed_slice();
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(to_hex(&hasher.finalize()) == digest.as_str())
+    }
+
+    /// Remove a blob by digest, returning whether a file existed.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] if the filesystem removal fails.
+    pub fn remove(&self, digest: &Digest) -> Result<bool, BlobError> {
+        let path = self.path_for(digest);
+        if !path.is_file() {
+            return Ok(false);
+        }
+        std::fs::remove_file(path)?;
+        Ok(true)
+    }
+
+    fn digest_from_path(&self, path: &Path) -> Option<Digest> {
+        let mut components = path.strip_prefix(&self.root).ok()?.components();
+        let (
+            Some(Component::Normal(algorithm)),
+            Some(Component::Normal(first)),
+            Some(Component::Normal(second)),
+            Some(Component::Normal(filename)),
+            None,
+        ) = (
+            components.next(),
+            components.next(),
+            components.next(),
+            components.next(),
+            components.next(),
+        )
+        else {
+            return None;
+        };
+        let first = first.as_encoded_bytes();
+        let second = second.as_encoded_bytes();
+        let filename_bytes = filename.as_encoded_bytes();
+        if algorithm != std::ffi::OsStr::new("sha256")
+            || first.len() != 2
+            || second.len() != 2
+            || filename_bytes.len() < 4
+            || &filename_bytes[..2] != first
+            || &filename_bytes[2..4] != second
+        {
+            return None;
+        }
+        Digest::from_hex(filename.to_str()?)
     }
 }
 
