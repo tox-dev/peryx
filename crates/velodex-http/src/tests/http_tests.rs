@@ -657,6 +657,22 @@ async fn test_upload_non_utf8_field_is_bad_request() {
 }
 
 #[tokio::test]
+async fn test_upload_malformed_multipart_is_bad_request() {
+    let h = harness().await;
+    let body = b"--b\r\nContent-Disposition: form-data; name=\"name\"\r\n".to_vec();
+    let (status, body) = post_upload_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        "multipart/form-data; boundary=b",
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with("bad upload: "));
+}
+
+#[tokio::test]
 async fn test_upload_declared_digest_mismatch_is_bad_request() {
     let h = harness().await;
     let wrong = "00".repeat(32);
@@ -1302,6 +1318,37 @@ async fn test_inspect_missing_member_is_not_found() {
 }
 
 #[tokio::test]
+async fn test_inspect_rejects_bad_member_chunk_parameters() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!(
+        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
+        digest.as_str()
+    );
+
+    let (status, _, body) = get(&h.state, &format!("{uri}&limit=0"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("limit must be between 1 and"));
+
+    let (status, _, body) = get(&h.state, &format!("{uri}&limit=nope"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("limit must be an integer between 1 and 1048576"));
+
+    let (status, _, body) = get(&h.state, &format!("{uri}&offset=nope"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("offset must be a non-negative integer"));
+
+    let (status, headers, body) = get(&h.state, &format!("{uri}&limit=8"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "Metadata");
+    assert_eq!(headers.get("x-velodex-next-offset").unwrap(), "8");
+
+    let (status, _, body) = get(&h.state, &format!("{uri}&offset=999999"), None).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert!(body.contains("offset 999999 is beyond member size"));
+}
+
+#[tokio::test]
 async fn test_inspect_unsupported_type() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0.txt", b"not an archive").await;
@@ -1334,7 +1381,7 @@ async fn test_inspect_tarball_and_size_limit() {
         builder
             .append_data(&mut head, "velodexpkg-1.0/setup.py", &small[..])
             .unwrap();
-        let big = vec![0_u8; usize::try_from(crate::archive::MEMBER_LIMIT + 1).unwrap()];
+        let big = vec![0_u8; usize::try_from(crate::archive::DEFAULT_MEMBER_CHUNK + 1).unwrap()];
         let mut head = tar::Header::new_gnu();
         head.set_size(big.len() as u64);
         head.set_cksum();
@@ -1354,8 +1401,29 @@ async fn test_inspect_tarball_and_size_limit() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(content, "print()\n");
 
-    let (status, ..) = get(&h.state, &format!("{uri}/velodexpkg-1.0/big.bin"), None).await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let (status, headers, content) = get(&h.state, &format!("{uri}/velodexpkg-1.0/big.bin"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        content.len(),
+        usize::try_from(crate::archive::DEFAULT_MEMBER_CHUNK).unwrap()
+    );
+    assert_eq!(
+        headers.get("x-velodex-next-offset").unwrap(),
+        crate::archive::DEFAULT_MEMBER_CHUNK.to_string().as_str()
+    );
+
+    let (status, headers, content) = get(
+        &h.state,
+        &format!(
+            "{uri}/velodexpkg-1.0/big.bin?offset={}",
+            crate::archive::DEFAULT_MEMBER_CHUNK
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content.len(), 1);
+    assert!(!headers.contains_key("x-velodex-next-offset"));
 }
 
 #[tokio::test]

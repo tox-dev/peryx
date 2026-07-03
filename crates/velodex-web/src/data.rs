@@ -7,7 +7,7 @@
 
 use velodex_core::pypi::CoreMetadataDoc;
 
-use crate::model::{UiMember, UiProject, UiSnapshot};
+use crate::model::{UiMember, UiMemberChunk, UiProject, UiSnapshot};
 #[cfg(feature = "hydrate")]
 use crate::url::{encode_component, encode_path};
 
@@ -134,8 +134,7 @@ pub async fn admin_request(method: &str, url: &str, token: &str) -> String {
 pub async fn load_members(route: String, sha256: String, filename: String) -> Vec<UiMember> {
     #[cfg(feature = "ssr")]
     {
-        let _ = &route;
-        crate::ssr::members(&sha256, &filename).await
+        crate::ssr::members(&route, &sha256, &filename).await
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
@@ -158,33 +157,69 @@ pub async fn load_members(route: String, sha256: String, filename: String) -> Ve
     }
 }
 
-/// One archive member's content, rendered as text (binary members come back as a note).
-pub async fn load_member(route: String, sha256: String, filename: String, member: String) -> String {
+/// One archive member chunk, rendered as text.
+pub async fn load_member_chunk(
+    route: String,
+    sha256: String,
+    filename: String,
+    member: String,
+    offset: u64,
+) -> UiMemberChunk {
     #[cfg(feature = "ssr")]
     {
-        let _ = &route;
-        crate::ssr::member(&sha256, &filename, &member).await
+        crate::ssr::member_chunk(&route, &sha256, &filename, &member, offset).await
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_text(&format!(
-                "/{}/inspect/{}/{}?member={}",
+            fetch_member_chunk(&format!(
+                "/{}/inspect/{}/{}?member={}&offset={}",
                 encode_path(&route),
                 encode_component(&sha256),
                 encode_component(&filename),
-                encode_component(&member)
+                encode_component(&member),
+                offset
             ))
             .await
-            .unwrap_or_else(|| "(binary or unavailable)".to_owned())
+            .unwrap_or_else(|| UiMemberChunk {
+                text: "(binary or unavailable)".to_owned(),
+                ..UiMemberChunk::default()
+            })
         })
         .await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
-        let _ = (route, sha256, filename, member);
-        String::new()
+        let _ = (route, sha256, filename, member, offset);
+        UiMemberChunk::default()
     }
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+async fn fetch_member_chunk(url: &str) -> Option<UiMemberChunk> {
+    let response = gloo_net::http::Request::get(url).send().await.ok()?;
+    if !response.ok() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Some(UiMemberChunk {
+            text: format!("{status}: {text}"),
+            ..UiMemberChunk::default()
+        });
+    }
+    let size = parse_header_u64(&response, "x-velodex-member-size");
+    let offset = parse_header_u64(&response, "x-velodex-member-offset").unwrap_or_default();
+    let next_offset = parse_header_u64(&response, "x-velodex-next-offset");
+    Some(UiMemberChunk {
+        text: response.text().await.ok()?,
+        size,
+        offset,
+        next_offset,
+    })
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+fn parse_header_u64(response: &gloo_net::http::Response, name: &str) -> Option<u64> {
+    response.headers().get(name)?.parse().ok()
 }
 
 /// The stats drill at the requested depth: all indexes, one index's projects, or one project's

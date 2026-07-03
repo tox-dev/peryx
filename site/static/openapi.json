@@ -319,7 +319,7 @@
           "files"
         ],
         "summary": "List archive members",
-        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it. Pass `member` as a query parameter to read one member without ambiguity around slashes in member names.",
+        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it. Pass `member` as a query parameter to read one bounded member chunk without ambiguity around slashes in member names.",
         "parameters": [
           {
             "name": "route",
@@ -345,14 +345,28 @@
           {
             "name": "member",
             "in": "query",
-            "description": "Optional archive member path to read inline",
+            "description": "Optional archive member path to read as a bounded chunk",
             "required": false,
             "example": "velodexpkg-1.0.dist-info/METADATA"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Byte offset inside the selected member; defaults to 0",
+            "required": false,
+            "example": 262144
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum bytes to return, from 1 through 1048576; defaults to 262144",
+            "required": false,
+            "example": 262144
           }
         ],
         "responses": {
           "200": {
-            "description": "The archive listing",
+            "description": "The archive listing, or a member chunk when `member` is set",
             "content": {
               "application/json": {
                 "example": {
@@ -368,17 +382,24 @@
                     }
                   ]
                 }
-              }
+              },
+              "text/plain; charset=utf-8": {
+                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n"
+              },
+              "application/octet-stream": {}
             }
           },
           "400": {
             "description": "Bad digest or unsafe filename"
           },
           "404": {
-            "description": "No file with this digest is known"
+            "description": "No file with this digest is known, or the member does not exist"
           },
           "415": {
             "description": "Not a supported archive type"
+          },
+          "416": {
+            "description": "The requested member offset is beyond the member size"
           },
           "422": {
             "description": "The archive cannot be read"

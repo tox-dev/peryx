@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::{Multipart, OriginalUri, Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use velodex_core::pypi::{ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html, to_json};
 use velodex_storage::blob::Digest;
@@ -25,6 +25,9 @@ use crate::upload::{self, UploadError, UploadForm};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 const MIME_HTML: &str = "text/html; charset=utf-8";
+const MEMBER_SIZE_HEADER: &str = "x-velodex-member-size";
+const MEMBER_OFFSET_HEADER: &str = "x-velodex-member-offset";
+const MEMBER_NEXT_OFFSET_HEADER: &str = "x-velodex-next-offset";
 
 #[derive(Clone, Copy)]
 pub(crate) enum Format {
@@ -94,14 +97,14 @@ pub async fn dispatch_get(
         return file_route(&state, index.route.clone(), file).await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
-        return inspect_route(&state, target, uri.query()).await;
+        return inspect_route(state.clone(), index.route.clone(), target, uri.query()).await;
     }
     not_found()
 }
 
 /// `GET /{route}/inspect/{sha256}/{filename}[/{member}]` — list a cached archive's members, or read
 /// one member inline (pypi-browser-style introspection over the blob store).
-async fn inspect_route(state: &AppState, target: &str, query: Option<&str>) -> Response {
+async fn inspect_route(state: Arc<AppState>, route: String, target: &str, query: Option<&str>) -> Response {
     let Some((sha256, rest)) = target.split_once('/') else {
         return not_found();
     };
@@ -109,7 +112,11 @@ async fn inspect_route(state: &AppState, target: &str, query: Option<&str>) -> R
         Ok(digest) => digest,
         Err(err) => return path_error_response(&err),
     };
-    let (raw_filename, member) = match archive_member_query(query) {
+    let archive_query = match archive_query(query) {
+        Ok(query) => query,
+        Err(response) => return response,
+    };
+    let (raw_filename, member) = match archive_query.member {
         Some(member) => (rest, Some(member)),
         None => match rest.split_once('/') {
             Some((filename, member)) => match path_safety::decode_path(member) {
@@ -123,54 +130,127 @@ async fn inspect_route(state: &AppState, target: &str, query: Option<&str>) -> R
         Ok(filename) => filename,
         Err(err) => return path_error_response(&err),
     };
-    let bytes = match cache::file_bytes(state, &digest).await {
-        Ok(bytes) => bytes,
+    let path = match cache::file_path(state, digest, route, filename.clone()).await {
+        Ok(path) => path,
         Err(err) => return file_response(Err(err)),
     };
-    member.map_or_else(
-        || archive_listing(&filename, &bytes),
-        |member| archive_member(&filename, &bytes, &member),
-    )
+    match member {
+        Some(member) => archive_member(&filename, path, &member, archive_query.offset, archive_query.limit).await,
+        None => archive_listing(&filename, path).await,
+    }
 }
 
-fn archive_member_query(query: Option<&str>) -> Option<String> {
-    let query = query?;
+struct ArchiveQuery {
+    member: Option<String>,
+    offset: u64,
+    limit: u64,
+}
+
+fn archive_query(query: Option<&str>) -> Result<ArchiveQuery, Response> {
+    let mut parsed = ArchiveQuery {
+        member: None,
+        offset: 0,
+        limit: crate::archive::DEFAULT_MEMBER_CHUNK,
+    };
+    let Some(query) = query else {
+        return Ok(parsed);
+    };
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        if key == "member" {
-            return Some(value.into_owned());
+        match key.as_ref() {
+            "member" => parsed.member = Some(value.into_owned()),
+            "offset" => {
+                parsed.offset = value
+                    .parse::<u64>()
+                    .map_err(|_| (StatusCode::BAD_REQUEST, "offset must be a non-negative integer").into_response())?;
+            }
+            "limit" => {
+                let limit = value.parse::<u64>().map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "limit must be an integer between 1 and 1048576",
+                    )
+                        .into_response()
+                })?;
+                if !(1..=crate::archive::MAX_MEMBER_CHUNK).contains(&limit) {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("limit must be between 1 and {} bytes", crate::archive::MAX_MEMBER_CHUNK),
+                    )
+                        .into_response());
+                }
+                parsed.limit = limit;
+            }
+            _ => {}
         }
     }
-    None
+    Ok(parsed)
 }
 
 /// Render an archive's member list as JSON.
-fn archive_listing(filename: &str, bytes: &[u8]) -> Response {
-    match crate::archive::list_members(filename, bytes) {
+async fn archive_listing(filename: &str, path: std::path::PathBuf) -> Response {
+    let filename = filename.to_owned();
+    match tokio::task::spawn_blocking({
+        let filename = filename.clone();
+        move || crate::archive::list_members_path(&filename, &path)
+    })
+    .await
+    .expect("archive listing task panicked")
+    {
         Ok(members) => axum::Json(serde_json::json!({ "filename": filename, "members": members })).into_response(),
-        Err(err) => archive_error(&err),
+        Err(err) => archive_error(&err, &filename, None),
     }
 }
 
-/// Serve one archive member: UTF-8 content as text, anything else as bytes.
-fn archive_member(filename: &str, bytes: &[u8], member: &str) -> Response {
-    match crate::archive::read_member(filename, bytes, member) {
-        Ok(content) => match String::from_utf8(content) {
-            Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response(),
-            Err(raw) => ([(header::CONTENT_TYPE, "application/octet-stream")], raw.into_bytes()).into_response(),
-        },
-        Err(err) => archive_error(&err),
+/// Serve one archive member chunk: UTF-8 chunks as text, anything else as bytes.
+async fn archive_member(filename: &str, path: std::path::PathBuf, member: &str, offset: u64, limit: u64) -> Response {
+    let filename = filename.to_owned();
+    let member = member.to_owned();
+    match tokio::task::spawn_blocking({
+        let filename = filename.clone();
+        let member = member.clone();
+        move || crate::archive::read_member_chunk_path(&filename, &path, &member, offset, limit)
+    })
+    .await
+    .expect("archive member task panicked")
+    {
+        Ok(chunk) => {
+            let content_type = if std::str::from_utf8(&chunk.bytes).is_ok() {
+                "text/plain; charset=utf-8"
+            } else {
+                "application/octet-stream"
+            };
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            insert_header(&mut headers, MEMBER_SIZE_HEADER, chunk.size);
+            insert_header(&mut headers, MEMBER_OFFSET_HEADER, chunk.offset);
+            if let Some(next) = chunk.next_offset {
+                insert_header(&mut headers, MEMBER_NEXT_OFFSET_HEADER, next);
+            }
+            (headers, chunk.bytes).into_response()
+        }
+        Err(err) => archive_error(&err, &filename, Some(&member)),
     }
 }
 
-fn archive_error(err: &crate::archive::ArchiveError) -> Response {
+fn insert_header(headers: &mut HeaderMap, name: &'static str, value: u64) {
+    if let Ok(value) = HeaderValue::from_str(&value.to_string()) {
+        headers.insert(name, value);
+    }
+}
+
+fn archive_error(err: &crate::archive::ArchiveError, filename: &str, member: Option<&str>) -> Response {
     use crate::archive::ArchiveError;
     let status = match err {
         ArchiveError::Unsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         ArchiveError::MemberNotFound => StatusCode::NOT_FOUND,
-        ArchiveError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-        ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        ArchiveError::InvalidRange { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
+        ArchiveError::UnsafeMember(_) | ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
     };
-    (status, err.to_string()).into_response()
+    let target = member.map_or_else(
+        || format!("archive {filename:?}"),
+        |member| format!("member {member:?} in archive {filename:?}"),
+    );
+    (status, format!("{target}: {err}")).into_response()
 }
 
 async fn file_route(state: &Arc<AppState>, route: String, file: &str) -> Response {

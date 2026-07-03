@@ -26,17 +26,17 @@ project links, grouped classifiers, and a file table with sizes, upload dates, s
 
 {{ screen(name="project", alt="A project page: description and files on the left, metadata panel on the right") }}
 
-Each file's `contents` link opens the archive browser: the members of the wheel or sdist with their sizes, and each
-text member readable in place, the way [pypi-browser](https://github.com/chriskuehl/pypi-browser) presents packages.
-The browser URL stores the file's sha256, display filename, and selected member as separate query parameters. That
-keeps links stable for filenames and member paths containing spaces, slashes, `#`, or `?`.
+Inspectable wheels, zips, and `.tar.gz` sdists get a `contents` link. It opens the archive browser: members with their
+sizes, and member text in bounded chunks for large generated files. Unsupported formats still show as downloadable
+files, but do not get a broken archive link. The browser URL stores the file's sha256, display filename, selected
+member, and chunk offset as separate query parameters. That keeps links stable for filenames and member paths containing
+spaces, slashes, `#`, or `?`.
 
 ## Managing uploads
 
-"Manage uploads" on a project page takes the index's upload token and offers yank, un-yank, and delete per version,
-plus whole-project delete. The buttons drive the same HTTP endpoints as [curl would](@/guides/remove.md), so the rules
-match: deleting uploads needs a `volatile` index, and files served from a mirror are hidden reversibly rather than
-deleted.
+"Manage uploads" on a project page takes the index's upload token and offers yank, un-yank, and delete per version, plus
+whole-project delete. The buttons drive the same HTTP endpoints as [curl would](@/guides/remove.md), so the rules match:
+deleting uploads needs a `volatile` index, and files served from a mirror are hidden reversibly rather than deleted.
 
 ## Requirements
 

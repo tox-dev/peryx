@@ -12,9 +12,9 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 use velodex_core::pypi::CoreMetadataDoc;
 
-use crate::data::{load_member, load_members, load_project, load_projects, load_snapshot, load_stats};
+use crate::data::{load_member_chunk, load_members, load_project, load_projects, load_snapshot, load_stats};
 use crate::markdown::render_description;
-use crate::model::{UiCounters, UiFile, UiIndex, UiProject, UiSnapshot, UiStats};
+use crate::model::{UiCounters, UiFile, UiIndex, UiMemberChunk, UiProject, UiSnapshot, UiStats};
 use crate::url::encode_component as url_encode;
 
 /// The landing dashboard: identity, live counters, and the configured indexes with their usage.
@@ -213,15 +213,22 @@ pub fn Browse() -> impl IntoView {
     let file = Memo::new(move |_| query.read().get("file").filter(|name| !name.is_empty()));
     let sha256 = Memo::new(move |_| query.read().get("sha256").filter(|digest| !digest.is_empty()));
     let member = Memo::new(move |_| query.read().get("member").filter(|name| !name.is_empty()));
+    let offset = Memo::new(move |_| {
+        query
+            .read()
+            .get("offset")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_default()
+    });
     view! {
         <section class="page">
             {move || match (project.get(), sha256.get(), file.get()) {
                 (Some(name), Some(sha256), Some(file)) => {
-                    view! { <ArchiveView route=route.get() project=name sha256 filename=file member=member.get() /> }.into_any()
+                    view! { <ArchiveView route=route.get() project=name sha256 filename=file member=member.get() offset=offset.get() /> }.into_any()
                 }
                 (Some(name), None, Some(file)) => {
                     let (sha256, filename) = split_legacy_archive_file(&file);
-                    view! { <ArchiveView route=route.get() project=name sha256 filename member=member.get() /> }.into_any()
+                    view! { <ArchiveView route=route.get() project=name sha256 filename member=member.get() offset=offset.get() /> }.into_any()
                 }
                 (Some(name), _, None) => view! { <ProjectView route=route.get() project=name /> }.into_any(),
                 (None, _, _) => view! { <IndexView route=route.get() /> }.into_any(),
@@ -404,8 +411,11 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                             <tr class=class>
                                 <td>
                                     <a href=file.url.clone()>{file.filename.clone()}</a>
-                                    " · "
-                                    <a class="inspect" href=inspect>"contents"</a>
+                                    {supports_archive_browser(&file.filename)
+                                        .then(|| view! {
+                                            " · "
+                                            <a class="inspect" href=inspect>"contents"</a>
+                                        })}
                                 </td>
                                 <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
                                 <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |t| t.chars().take(10).collect())}</td>
@@ -425,6 +435,15 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
     }
 }
 
+fn supports_archive_browser(filename: &str) -> bool {
+    let path = std::path::Path::new(filename);
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("whl") || ext.eq_ignore_ascii_case("zip"))
+        || filename
+            .get(filename.len().saturating_sub(7)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
+}
+
 /// The archive browser: member listing of one distribution, or one member's content.
 #[component]
 fn ArchiveView(
@@ -433,6 +452,7 @@ fn ArchiveView(
     sha256: String,
     filename: String,
     member: Option<String>,
+    offset: u64,
 ) -> impl IntoView {
     let back = format!("/browse?index={}&project={}", url_encode(&route), url_encode(&project));
     view! {
@@ -445,7 +465,7 @@ fn ArchiveView(
         </p>
         {match member {
             Some(path) => {
-                view! { <MemberView route project sha256 filename member=path /> }.into_any()
+                view! { <MemberView route project sha256 filename member=path offset /> }.into_any()
             }
             None => view! { <MemberList route project sha256 filename /> }.into_any(),
         }}
@@ -505,13 +525,20 @@ fn MemberList(route: String, project: String, sha256: String, filename: String) 
 }
 
 #[component]
-fn MemberView(route: String, project: String, sha256: String, filename: String, member: String) -> impl IntoView {
+fn MemberView(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    member: String,
+    offset: u64,
+) -> impl IntoView {
     let content = Resource::new(
         {
-            let key = (route.clone(), sha256.clone(), filename.clone(), member.clone());
+            let key = (route.clone(), sha256.clone(), filename.clone(), member.clone(), offset);
             move || key.clone()
         },
-        |(route, sha256, filename, member)| load_member(route, sha256, filename, member),
+        |(route, sha256, filename, member, offset)| load_member_chunk(route, sha256, filename, member, offset),
     );
     let back = format!(
         "/browse?index={}&project={}&sha256={}&file={}",
@@ -521,14 +548,54 @@ fn MemberView(route: String, project: String, sha256: String, filename: String, 
         url_encode(&filename)
     );
     view! {
-        <h1><code>{member}</code></h1>
+        <h1><code>{member.clone()}</code></h1>
         <p><a href=back>"back to the archive listing"</a></p>
         <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-            {move || Suspend::new(async move {
-                let text = content.await;
-                view! { <pre class="member-content"><code>{text}</code></pre> }
-            })}
+            {move || {
+                let route = route.clone();
+                let project = project.clone();
+                let sha256 = sha256.clone();
+                let filename = filename.clone();
+                let member = member.clone();
+                Suspend::new(async move {
+                    let chunk = content.await;
+                    view! { <MemberChunk route project sha256 filename member chunk /> }
+                })
+            }}
         </Suspense>
+    }
+}
+
+#[component]
+fn MemberChunk(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    member: String,
+    chunk: UiMemberChunk,
+) -> impl IntoView {
+    let next = chunk.next_offset.map(|offset| {
+        format!(
+            "/browse?index={}&project={}&sha256={}&file={}&member={}&offset={offset}",
+            url_encode(&route),
+            url_encode(&project),
+            url_encode(&sha256),
+            url_encode(&filename),
+            url_encode(&member)
+        )
+    });
+    let end = chunk
+        .next_offset
+        .or(chunk.size)
+        .unwrap_or_else(|| chunk.offset + chunk.text.len() as u64);
+    let range = chunk.size.map(|size| {
+        view! { <p class="dim">"bytes "{chunk.offset}"-"{end}" of "{size}</p> }
+    });
+    view! {
+        {range}
+        <pre class="member-content"><code>{chunk.text}</code></pre>
+        {next.map(|href| view! { <p><a class="button-link" href=href>"next chunk"</a></p> })}
     }
 }
 

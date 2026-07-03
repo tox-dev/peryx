@@ -93,7 +93,9 @@ cached, and shows up as `rejected` in the [usage counters](@/reference/endpoints
 File URLs put the sha256 in the path because it is the real storage key. The filename is kept for installer behavior,
 browser save names, and operator logs, but velodex treats it as one percent-encoded path segment and rejects decoded
 separators, traversal, and control characters. Archive inspection uses the same rule for the distribution filename
-and passes member paths in a query parameter so member names can contain `/` without becoming route structure.
+and passes member paths in a query parameter so member names can contain `/` without becoming route structure. The
+inspector opens cached blobs from disk and returns member text by byte offset, so looking at a large generated file does
+not require loading the whole archive member into server memory or the browser.
 
 Three more decisions keep the cold path at wire speed:
 

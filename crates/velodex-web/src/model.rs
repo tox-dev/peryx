@@ -89,6 +89,15 @@ pub struct UiMember {
     pub size: u64,
 }
 
+/// One rendered chunk of an archive member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiMemberChunk {
+    pub text: String,
+    pub size: Option<u64>,
+    pub offset: u64,
+    pub next_offset: Option<u64>,
+}
+
 /// Rebuild an archive listing from the inspect endpoint's JSON document.
 #[must_use]
 pub fn members_from_listing(value: &serde_json::Value) -> Vec<UiMember> {

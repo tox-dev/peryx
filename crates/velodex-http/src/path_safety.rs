@@ -32,39 +32,37 @@ pub fn encode_path_segment(segment: &str) -> String {
     out
 }
 
-/// Percent-decode one URL path segment.
+/// Decode a percent-encoded route segment.
 ///
 /// # Errors
-///
-/// Returns an error when the segment has invalid percent encoding or is not valid UTF-8 after decoding.
+/// Returns [`PathSafetyError::InvalidEncoding`] if the segment contains malformed percent escapes
+/// or decodes to non-UTF-8 bytes.
 pub fn decode_path_segment(segment: &str) -> Result<String, PathSafetyError> {
     decode_percent(segment)
 }
 
-/// Percent-decode a URL path.
+/// Decode a percent-encoded path remainder.
 ///
 /// # Errors
-///
-/// Returns an error when the path has invalid percent encoding or is not valid UTF-8 after decoding.
+/// Returns [`PathSafetyError::InvalidEncoding`] if the path contains malformed percent escapes or
+/// decodes to non-UTF-8 bytes.
 pub fn decode_path(path: &str) -> Result<String, PathSafetyError> {
     decode_percent(path)
 }
 
-/// Parse a lowercase SHA-256 digest.
+/// Parse a sha256 digest from a route parameter.
 ///
 /// # Errors
-///
-/// Returns an error when the digest is not 64 lowercase hexadecimal characters.
+/// Returns [`PathSafetyError::InvalidDigest`] if `hex` is not exactly 64 lowercase hex characters.
 pub fn parse_digest(hex: &str) -> Result<Digest, PathSafetyError> {
     Digest::from_hex(hex).ok_or_else(|| PathSafetyError::InvalidDigest(hex.to_owned()))
 }
 
-/// Validate a display filename before using it in local URLs.
+/// Validate a display filename as one safe path segment.
 ///
 /// # Errors
-///
-/// Returns an error when the filename is empty, a traversal segment, contains separators, or contains control
-/// characters.
+/// Returns [`PathSafetyError::InvalidFilename`] for empty names, traversal names, separators, or
+/// control characters.
 pub fn validate_filename(filename: &str) -> Result<(), PathSafetyError> {
     if filename.is_empty()
         || filename == "."

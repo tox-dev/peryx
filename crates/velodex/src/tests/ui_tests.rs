@@ -57,6 +57,10 @@ async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
 /// Upload the frontend fixture wheel through the router, so UI pages have a metadata-rich package.
 async fn upload_fixture(router: &axum::Router) {
     let wheel = include_bytes!("../../../../tests/frontend/fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+    upload_file(router, "veloxdemo-1.0.0-py3-none-any.whl", wheel).await;
+}
+
+async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     let boundary = "velodexuitest";
     let mut body = Vec::new();
     for (name, value) in [(":action", "file_upload"), ("name", "veloxdemo"), ("version", "1.0.0")] {
@@ -67,11 +71,11 @@ async fn upload_fixture(router: &axum::Router) {
     body.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; \
-             filename=\"veloxdemo-1.0.0-py3-none-any.whl\"\r\n\r\n"
+             filename=\"{filename}\"\r\n\r\n"
         )
         .as_bytes(),
     );
-    body.extend_from_slice(wheel);
+    body.extend_from_slice(content);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let request = Request::builder()
         .uri("/root/pypi/")
@@ -151,6 +155,17 @@ async fn test_ui_project_page_missing_project() {
     let (status, body) = get(&router, "/browse?index=local&project=ghost").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Project not found on this index."));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_hides_contents_for_unsupported_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    upload_file(&router, "veloxdemo-1.0.0.egg", b"legacy egg").await;
+    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo-1.0.0.egg"));
+    assert!(!body.contains("class=\"inspect\""));
 }
 
 #[tokio::test]
