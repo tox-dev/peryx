@@ -5,8 +5,8 @@ weight = 9
 +++
 
 The log level comes from `--log-level {error,warn,info,debug,trace}` or the `level` key under `[log]` in the config
-file. `-v` raises the level to debug and `-vv` to trace. A directive can target one module, which keeps the rest of
-the output quiet:
+file. `-v` raises the level to debug and `-vv` to trace. A directive can target one module, which keeps the rest of the
+output quiet:
 
 ```shell
 velodex serve --log-level "info,velodex_upstream=debug"
@@ -19,8 +19,7 @@ pip and uv take the [PEP 658](https://peps.python.org/pep-0658/) `.metadata` pat
 
 Output goes to one sink, selected with `--log-sink` or `[log] sink`:
 
-- `stdout` (default): pretty for a terminal, or one JSON object per line with `--log-format json` for log
-  aggregation.
+- `stdout` (default): pretty for a terminal, or one JSON object per line with `--log-format json` for log aggregation.
 - `file`: a daily-rotating file at `--log-file <path>`.
 - `journald`: the systemd journal (Linux only).
 - `syslog`: the local syslog daemon (Unix only).
@@ -36,7 +35,6 @@ file = "/var/log/velodex/velodex.log"
 ```
 
 velodex validates the combination at startup and refuses, for example, a `file` sink without a path.
-
 
 ## Related
 

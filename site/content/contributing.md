@@ -30,8 +30,8 @@ cargo llvm-cov nextest --workspace --ignore-filename-regex 'main\.rs' \
   --fail-under-lines 100 --fail-under-functions 100
 ```
 
-Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on
-stable Rust can reach compiler-generated branches (async expansions, drop glue).
+Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on stable Rust
+can reach compiler-generated branches (async expansions, drop glue).
 
 ## End-to-end tests
 
@@ -43,13 +43,13 @@ cargo test -p velodex --features e2e-live -- e2e_live   # live smoke tests again
 ```
 
 Each test owns an isolated server, fixture, and virtualenv on ephemeral ports, so the suite runs in parallel and
-finishes in about two seconds. New index features need a matching e2e test; a client exit code alone does not count
-as proof, so assert on velodex's own state or metrics.
+finishes in about two seconds. New index features need a matching e2e test; a client exit code alone does not count as
+proof, so assert on velodex's own state or metrics.
 
 ## The web UI
 
-`cargo leptos build` compiles the UI's wasm bundle into `ui/pkg/` (mise provides cargo-leptos and node). The
-Playwright suite drives the hydrated UI against a real velodex with an uploaded fixture package:
+`cargo leptos build` compiles the UI's wasm bundle into `ui/pkg/` (mise provides cargo-leptos and node). The Playwright
+suite drives the hydrated UI against a real velodex with an uploaded fixture package:
 
 ```shell
 cargo build -p velodex
@@ -66,15 +66,15 @@ browser, so the Playwright suite and velodex's server-side render tests are its 
 ## The documentation site
 
 The site you are reading is [Zola](https://www.getzola.org/) under `site/`, structured by the
-[Diátaxis](https://diataxis.fr/) framework: tutorials teach, guides solve one task, reference states facts,
-explanation gives reasons. Put new pages in the quadrant that matches their job.
+[Diátaxis](https://diataxis.fr/) framework: tutorials teach, guides solve one task, reference states facts, explanation
+gives reasons. Put new pages in the quadrant that matches their job.
 
 ```shell
 zola --root site serve   # live-reloading preview at 127.0.0.1:1111
 ```
 
-Read the Docs builds and hosts the site from `.readthedocs.yaml` on each merge; CI builds it on each pull request so
-a broken site blocks the merge.
+Read the Docs builds and hosts the site from `.readthedocs.yaml` on each merge; CI builds it on each pull request so a
+broken site blocks the merge.
 
 ## Conventions
 

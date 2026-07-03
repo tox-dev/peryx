@@ -4,8 +4,8 @@ description = "Install velodex, serve your first packages through it, publish a 
 weight = 1
 +++
 
-In this tutorial you will install velodex, start it with no configuration, install packages through it with
-pip and uv, publish a package of your own, then yank and delete it. It takes about ten minutes.
+In this tutorial you will install velodex, start it with no configuration, install packages through it with pip and uv,
+publish a package of your own, then yank and delete it. It takes about ten minutes.
 
 ## Prerequisites
 
@@ -44,8 +44,8 @@ cargo build --release
 
 ## Start velodex
 
-Start the server. It needs no configuration; the defaults give you a pypi.org mirror with a private local store
-overlaid in front of it, served at `root/pypi`:
+Start the server. It needs no configuration; the defaults give you a pypi.org mirror with a private local store overlaid
+in front of it, served at `root/pypi`:
 
 ```shell
 velodex serve            # ./target/release/velodex serve when built from source
@@ -70,8 +70,8 @@ python -m venv demo
 demo/bin/pip install --index-url http://127.0.0.1:4433/root/pypi/simple/ requests
 ```
 
-Both clients use the [PEP 658](https://peps.python.org/pep-0658/) metadata fast path through velodex: they resolve dependency trees by fetching small
-`.metadata` files rather than whole wheels. You can see this on the metrics endpoint:
+Both clients use the [PEP 658](https://peps.python.org/pep-0658/) metadata fast path through velodex: they resolve
+dependency trees by fetching small `.metadata` files rather than whole wheels. You can see this on the metrics endpoint:
 
 ```shell
 curl -s http://127.0.0.1:4433/metrics | grep metadata
@@ -116,8 +116,8 @@ Now publish a wheel with [twine](https://twine.readthedocs.io/) or uv (any usern
 uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p demo-secret dist/*
 ```
 
-Your package installs from the same URL as everything else: the overlay serves your upload and pypi.org side by
-side, and your file shadows any upstream file with the same name.
+Your package installs from the same URL as everything else: the overlay serves your upload and pypi.org side by side,
+and your file shadows any upstream file with the same name.
 
 ## Yank and delete it
 

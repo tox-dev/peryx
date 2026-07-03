@@ -4,8 +4,8 @@ description = "Put velodex between your runners and pypi.org: one environment va
 weight = 1
 +++
 
-CI rebuilds environments from scratch, so every job downloads the same wheels again. Run one velodex where your
-runners live and point the installers at it; the first job warms the cache and the rest install from local disk.
+CI rebuilds environments from scratch, so every job downloads the same wheels again. Run one velodex where your runners
+live and point the installers at it; the first job warms the cache and the rest install from local disk.
 
 ## Run velodex next to the runners
 
@@ -17,13 +17,13 @@ velodex serve --host 0.0.0.0 --port 4433 --data-dir /var/lib/velodex
 
 The data directory is the cache; give it a persistent volume. Nothing else is stateful.
 
-In Kubernetes or docker-compose, the same thing is one container with one volume. The image only needs the binary
-and the data mount; there is no database or sidecar.
+In Kubernetes or docker-compose, the same thing is one container with one volume. The image only needs the binary and
+the data mount; there is no database or sidecar.
 
 ## Point the installers at it
 
-Installers pick up the index from an environment variable, so most setups change zero pipeline files: set it once
-at the runner or organization level:
+Installers pick up the index from an environment variable, so most setups change zero pipeline files: set it once at the
+runner or organization level:
 
 {% tabs(names="uv, pip, project file") %}
 ```shell
@@ -46,8 +46,7 @@ Jobs that already pass `--index-url` explicitly keep working; the flag and the v
 
 ## Docker builds
 
-Builds inside `docker build` do not see the host network by default. Either pass the index through a build
-argument:
+Builds inside `docker build` do not see the host network by default. Either pass the index through a build argument:
 
 ```dockerfile
 ARG PIP_INDEX_URL
@@ -58,8 +57,8 @@ RUN pip install -r requirements.txt
 docker build --build-arg PIP_INDEX_URL=http://velodex.internal:4433/root/pypi/simple/ .
 ```
 
-or run the build on a network where `velodex.internal` resolves (`--network` with BuildKit). BuildKit's own cache
-mounts still help per machine; velodex makes the cache shared across machines, tags, and projects.
+or run the build on a network where `velodex.internal` resolves (`--network` with BuildKit). BuildKit's own cache mounts
+still help per machine; velodex makes the cache shared across machines, tags, and projects.
 
 ## Verify it is working
 
@@ -70,8 +69,8 @@ curl -s 'http://velodex.internal:4433/+stats?index=root/pypi' | jq .totals
 ```
 
 `downloads` and `bytes` count what velodex served; once the working set is warm, upstream traffic drops to page
-revalidations (`refreshes`, mostly `304`s with no body). The [dashboard](@/guides/web-ui.md) shows the same
-numbers with per-project drill-down, and [`/metrics`](@/guides/monitor.md) feeds Prometheus.
+revalidations (`refreshes`, mostly `304`s with no body). The [dashboard](@/guides/web-ui.md) shows the same numbers with
+per-project drill-down, and [`/metrics`](@/guides/monitor.md) feeds Prometheus.
 
 ## Why this works as well as it does
 

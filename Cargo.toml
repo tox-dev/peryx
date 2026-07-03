@@ -25,7 +25,7 @@ velodex-http = { path = "crates/velodex-http" }
 velodex-web = { path = "crates/velodex-web" }
 axum = { version = "0.8", features = ["multipart"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 http = "1"
 http-body-util = "0.1"
 sha2 = "0.11"
@@ -55,7 +55,7 @@ insta = "1"
 thiserror = "2.0"
 anyhow = "1.0"
 tracing = "0.1"
-sysinfo = "0.35"
+sysinfo = "0.39"
 utoipa = "5.5"
 leptos = "0.8"
 leptos_axum = "0.8"
@@ -66,7 +66,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 zip = { version = "8", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
-gloo-net = "0.6"
+gloo-net = "0.7"
 console_error_panic_hook = "0.1"
 send_wrapper = "0.6"
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "DomStringMap", "Navigator", "Clipboard", "MediaQueryList", "Storage"] }

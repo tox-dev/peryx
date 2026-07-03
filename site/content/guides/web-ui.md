@@ -13,7 +13,7 @@ visual style as this site.
 and a card per configured index with its kind, route, layers, whether it accepts uploads, and its usage: pages served,
 downloads, and bytes. The counters refresh every few seconds.
 
-{{ screen(name="dashboard", alt="The dashboard: counters on top, one card per index with its layer stack and usage") }}
+{{ screen(alt="The dashboard: counters on top, one card per index with its layer stack and usage", name="dashboard") }}
 
 Each card's `usage` link opens the drill-down described in [monitoring](@/guides/monitor.md): index totals, a
 per-project table, and per-file download counts.
@@ -35,7 +35,7 @@ An index card links to its project list, filterable as you type. A project page 
 long description, summary, install command with a copy button, versions, dependencies, keywords, license, author,
 project links, grouped classifiers, and a file table with sizes, upload dates, sha256 digests, and yank/metadata badges.
 
-{{ screen(name="project", alt="A project page: description and files on the left, metadata panel on the right") }}
+{{ screen(alt="A project page: description and files on the left, metadata panel on the right", name="project") }}
 
 Inspectable wheels, zips, and `.tar.gz` sdists get a `contents` link. It opens the archive browser: members with their
 sizes, and member text in bounded chunks for large generated files. Unsupported formats still show as downloadable

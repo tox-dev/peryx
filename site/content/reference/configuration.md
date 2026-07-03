@@ -28,19 +28,19 @@ is a new entry on the page rather than a mutation.
 Each `[[index]]` table declares one index. `name` is required; exactly one of `mirror`, `local`, or `layers` selects the
 kind. velodex rejects unknown keys.
 
-| Key            | Applies to | Meaning                                                              | Default           |
-| -------------- | ---------- | -------------------------------------------------------------------- | ----------------- |
-| `name`         | all        | Identifier other indexes reference in `layers`                       | (required)        |
-| `route`        | all        | URL prefix the index is served under                                 | same as `name`    |
-| `mirror`       | mirror     | Upstream simple-index URL                                            |                   |
-| `username`     | mirror     | Basic-auth username for the upstream                                 | (none)            |
-| `password`     | mirror     | Basic-auth password for the upstream                                 | (none)            |
-| `token`        | mirror     | Bearer token; takes precedence over username/password                | (none)            |
-| `local`        | local      | `true` marks a hosted store (implied by `upload_token`)              | `false`           |
-| `upload_token` | local      | Basic-auth password uploads must present; unset disables uploads     | (none)            |
-| `volatile`     | local      | Allow delete and overwrite                                           | `true`            |
-| `layers`       | overlay    | Ordered index names to compose; first match per filename wins        |                   |
-| `upload`       | overlay    | Local layer that receives uploads                                    | first local layer |
+| Key            | Applies to | Meaning                                                          | Default           |
+| -------------- | ---------- | ---------------------------------------------------------------- | ----------------- |
+| `name`         | all        | Identifier other indexes reference in `layers`                   | (required)        |
+| `route`        | all        | URL prefix the index is served under                             | same as `name`    |
+| `mirror`       | mirror     | Upstream simple-index URL                                        |                   |
+| `username`     | mirror     | Basic-auth username for the upstream                             | (none)            |
+| `password`     | mirror     | Basic-auth password for the upstream                             | (none)            |
+| `token`        | mirror     | Bearer token; takes precedence over username/password            | (none)            |
+| `local`        | local      | `true` marks a hosted store (implied by `upload_token`)          | `false`           |
+| `upload_token` | local      | Basic-auth password uploads must present; unset disables uploads | (none)            |
+| `volatile`     | local      | Allow delete and overwrite                                       | `true`            |
+| `layers`       | overlay    | Ordered index names to compose; first match per filename wins    |                   |
+| `upload`       | overlay    | Local layer that receives uploads                                | first local layer |
 
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
@@ -69,11 +69,11 @@ target that is not a local index.
 
 ## `[log]`
 
-| Key      | Values                                                                                                                       | Default  |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------- | -------- |
+| Key      | Values                                                                                                                                                      | Default  |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
 | `level`  | a [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `error` ... `trace`, per-module filters | `info`   |
-| `format` | `pretty`, `json`                                                                                                             | `pretty` |
-| `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                                       | `stdout` |
-| `file`   | path, required when `sink = "file"`                                                                                          | (none)   |
+| `format` | `pretty`, `json`                                                                                                                                            | `pretty` |
+| `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                                                                      | `stdout` |
+| `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
 
 The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these.

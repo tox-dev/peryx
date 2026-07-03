@@ -6,19 +6,19 @@ weight = 0
 
 Every channel ships the same single static binary; pick by how you manage tools.
 
-| Channel                    | Command                                                                                     | Updates with                 |
-| -------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------- |
-| Installer script (Unix)    | `curl -LsSf https://github.com/tox-dev/velodex/releases/latest/download/velodex-installer.sh \| sh` | `velodex self update`        |
-| Installer script (Windows) | `powershell -c "irm https://github.com/tox-dev/velodex/releases/latest/download/velodex-installer.ps1 \| iex"` | `velodex self update`        |
-| PyPI wheel                 | `uv tool install velodex` or `pip install velodex`                                          | `uv tool upgrade` / `pip`    |
-| From source                | `cargo build --release` in a checkout                                                        | `git pull` and rebuild       |
+| Channel                    | Command                                                                                                        | Updates with              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| Installer script (Unix)    | `curl -LsSf https://github.com/tox-dev/velodex/releases/latest/download/velodex-installer.sh \| sh`            | `velodex self update`     |
+| Installer script (Windows) | `powershell -c "irm https://github.com/tox-dev/velodex/releases/latest/download/velodex-installer.ps1 \| iex"` | `velodex self update`     |
+| PyPI wheel                 | `uv tool install velodex` or `pip install velodex`                                                             | `uv tool upgrade` / `pip` |
+| From source                | `cargo build --release` in a checkout                                                                          | `git pull` and rebuild    |
 
 ## Platforms
 
-GitHub releases carry binaries for macOS (Apple Silicon and Intel), Linux glibc (x86_64 and aarch64), and Windows
-x64, each with a sha256 checksum. PyPI wheels additionally cover musl Linux (Alpine) on both architectures and
-Windows arm64; the wheel embeds the same binary as a console script, so no Python ABI is involved and one wheel per
-platform serves every interpreter.
+GitHub releases carry binaries for macOS (Apple Silicon and Intel), Linux glibc (x86_64 and aarch64), and Windows x64,
+each with a sha256 checksum. PyPI wheels additionally cover musl Linux (Alpine) on both architectures and Windows arm64;
+the wheel embeds the same binary as a console script, so no Python ABI is involved and one wheel per platform serves
+every interpreter.
 
 ## Self-update
 

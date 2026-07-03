@@ -4,8 +4,8 @@ description = "Read the usage counters, drill down to files, watch for upstream 
 weight = 8
 +++
 
-velodex counts everything it serves, off the request path. Four surfaces show the same numbers: the dashboard, the
-admin status page, the `/+stats` JSON endpoint, and Prometheus `/metrics`.
+velodex counts everything it serves, off the request path. Four surfaces show the same numbers: the dashboard, the admin
+status page, the `/+stats` JSON endpoint, and Prometheus `/metrics`.
 
 ## Drill down from the dashboard
 
@@ -13,9 +13,9 @@ Each index card on the dashboard shows its pages, downloads, and bytes served, w
 drill-down: totals for the index and a table of its projects, each project linking to its per-file counters. The same
 pages live at `/stats`, `/stats?index={route}`, and `/stats?index={route}&project={name}`.
 
-{{ screen(name="stats-index", alt="The usage drill-down for one index: totals up top, busiest projects first") }}
+{{ screen(alt="The usage drill-down for one index: totals up top, busiest projects first", name="stats-index") }}
 
-{{ screen(name="stats-project", alt="One project drilled to file level: downloads, bytes, and metadata hits per artifact") }}
+{{ screen(alt="One project drilled to file level: downloads, bytes, and metadata hits per artifact", name="stats-project") }}
 
 ## Query the counters
 
@@ -37,13 +37,13 @@ it renders.
 
 ## What the cache-health counters mean
 
-| Counter | Signal |
+| Counter           | Signal                                                                      |
 | ----------------- | --------------------------------------------------------------------------- |
-| `refreshes` | Revalidations against upstream, on demand or from the background sweep |
-| `changed` | Revalidations that found new upstream content; also logged at `info` |
-| `stale_served` | Pages served from cache because upstream was down; rising means an outage |
+| `refreshes`       | Revalidations against upstream, on demand or from the background sweep      |
+| `changed`         | Revalidations that found new upstream content; also logged at `info`        |
+| `stale_served`    | Pages served from cache because upstream was down; rising means an outage   |
 | `upstream_errors` | Upstream failures with nothing cached to fall back to; clients saw an error |
-| `rejected` | Downloads whose bytes did not match the advertised digest; never cached |
+| `rejected`        | Downloads whose bytes did not match the advertised digest; never cached     |
 
 A steady `refreshes` with zero `changed` is the normal idle state. `rejected` above zero deserves attention: either the
 upstream served corrupt bytes or something rewrote them in transit.

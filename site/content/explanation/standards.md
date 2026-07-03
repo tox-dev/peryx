@@ -31,20 +31,20 @@ metadata shortcut is PEP 658/714, and the filename pip parsed to pick a wheel is
 this conversation, a server to your clients and a client to its upstreams, which is why the table below mixes "served"
 and "parsed".
 
-| Standard | Role in velodex |
-| -------- | ------------- |
-| [PEP 503](https://peps.python.org/pep-0503/) | The HTML simple index and project-name normalization; served to clients that do not ask for JSON, and parsed from HTML-only upstreams |
-| [PEP 691](https://peps.python.org/pep-0691/) | The JSON simple index and its content negotiation; the primary wire format both directions |
-| [PEP 629](https://peps.python.org/pep-0629/) | Version marker on responses so clients can detect capabilities |
-| [PEP 700](https://peps.python.org/pep-0700/) | The `versions`, `size`, and `upload-time` fields introduced in api-version 1.1 |
-| [PEP 592](https://peps.python.org/pep-0592/) | Yanked files: parsed from upstreams, re-served, and settable on uploads |
-| [PEP 658](https://peps.python.org/pep-0658/) / [PEP 714](https://peps.python.org/pep-0714/) | The `.metadata` sibling that lets resolvers skip wheel downloads; advertised, fetched, verified, and cached |
-| [PEP 740](https://peps.python.org/pep-0740/) | Provenance URLs on Simple API file entries; preserved when an upstream provides them |
-| [PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) | Version parsing, ordering, and `Requires-Python` validation |
-| [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; modern `.tar.gz` sdist filename, root, and required-file checks |
-| [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/) | `METADATA` and `PKG-INFO` parsing for upload identity checks, PEP 658 siblings, and Metadata 2.4+ sdist license-file checks |
-| [Legacy upload API](https://docs.pypi.org/api/upload/) | The multipart upload protocol twine and `uv publish` speak |
-| [`.pypirc`](https://packaging.python.org/en/latest/specifications/pypirc/) | The `__token__` authentication convention for uploads and upstream mirrors |
+| Standard                                                                                                                                                                                    | Role in velodex                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| [PEP 503](https://peps.python.org/pep-0503/)                                                                                                                                                | The HTML simple index and project-name normalization; served to clients that do not ask for JSON, and parsed from HTML-only upstreams |
+| [PEP 691](https://peps.python.org/pep-0691/)                                                                                                                                                | The JSON simple index and its content negotiation; the primary wire format both directions                                            |
+| [PEP 629](https://peps.python.org/pep-0629/)                                                                                                                                                | Version marker on responses so clients can detect capabilities                                                                        |
+| [PEP 700](https://peps.python.org/pep-0700/)                                                                                                                                                | The `versions`, `size`, and `upload-time` fields introduced in api-version 1.1                                                        |
+| [PEP 592](https://peps.python.org/pep-0592/)                                                                                                                                                | Yanked files: parsed from upstreams, re-served, and settable on uploads                                                               |
+| [PEP 658](https://peps.python.org/pep-0658/) / [PEP 714](https://peps.python.org/pep-0714/)                                                                                                 | The `.metadata` sibling that lets resolvers skip wheel downloads; advertised, fetched, verified, and cached                           |
+| [PEP 740](https://peps.python.org/pep-0740/)                                                                                                                                                | Provenance URLs on Simple API file entries; preserved when an upstream provides them                                                  |
+| [PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/)                                                                                                        | Version parsing, ordering, and `Requires-Python` validation                                                                           |
+| [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; modern `.tar.gz` sdist filename, root, and required-file checks           |
+| [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/)                                                                                                       | `METADATA` and `PKG-INFO` parsing for upload identity checks, PEP 658 siblings, and Metadata 2.4+ sdist license-file checks           |
+| [Legacy upload API](https://docs.pypi.org/api/upload/)                                                                                                                                      | The multipart upload protocol twine and `uv publish` speak                                                                            |
+| [`.pypirc`](https://packaging.python.org/en/latest/specifications/pypirc/)                                                                                                                  | The `__token__` authentication convention for uploads and upstream mirrors                                                            |
 
 ## PEP 714 and the `core-metadata` key
 
@@ -60,9 +60,9 @@ Features the upstream cannot express (a missing `.metadata` sibling, absent size
 index. An upstream that advertises another Simple API major version is rejected with a 502 response; velodex supports
 Simple API 1.x.
 
-The discovery documents at `/+api` and `/{route}/+api` report only capabilities Velodex implements today. They
-advertise Simple HTML/JSON, api-version 1.1, and PEP 658 metadata siblings. `project_status`, `provenance`, and
-`legacy_json` are false until Velodex preserves Simple API 1.4 fields and serves the legacy JSON API.
+The discovery documents at `/+api` and `/{route}/+api` report only capabilities Velodex implements today. They advertise
+Simple HTML/JSON, api-version 1.1, and PEP 658 metadata siblings. `project_status`, `provenance`, and `legacy_json` are
+false until Velodex preserves Simple API 1.4 fields and serves the legacy JSON API.
 
 ## In practice
 
