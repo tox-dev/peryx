@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use axum::Router;
-use velodex_http::{AppState, Index, IndexKind, path_safety, router};
+use velodex_http::webhook::{WebhookRuntime, WebhookTargetConfig};
+use velodex_http::{AppState, Index, IndexKind, RuntimeOptions, path_safety, router, webhook};
 use velodex_storage::blob::BlobStore;
 use velodex_storage::meta::MetaStore;
 use velodex_upstream::{Auth, UpstreamClient, redact_url};
 
-use crate::config::{Config, IndexConfig, IndexKind as ConfigKind};
+use crate::config::{Config, IndexConfig, IndexKind as ConfigKind, WebhookSecret};
 
 /// Build the velodex router from configuration.
 ///
@@ -38,19 +39,27 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let indexes = build_indexes(&config.indexes)?;
+    let webhooks = build_webhooks(&config.indexes)?;
     let search_path = config.data_dir.join("search-v1");
-    Ok(Arc::new(
-        AppState::with_search_path_and_rate_limits(
+    let state = Arc::new(
+        AppState::with_search_path_and_runtime(
             meta,
             blobs,
             config.cache_ttl_secs,
             indexes,
             &search_path,
-            config.rate_limit.clone(),
-            upstream_concurrency(&config.indexes),
+            RuntimeOptions {
+                rate_limit: config.rate_limit.clone(),
+                upstream_concurrency: upstream_concurrency(&config.indexes),
+                webhooks,
+            },
         )
         .context(format!("open search index {}", search_path.display()))?,
-    ))
+    );
+    if !state.webhooks.is_empty() {
+        webhook::kick(state.clone());
+    }
+    Ok(state)
 }
 
 /// The full router over prepared state. The web UI mounts first: its routes (`/`, `/browse`,
@@ -84,6 +93,31 @@ pub(crate) fn build_indexes(configs: &[IndexConfig]) -> anyhow::Result<Vec<Index
             })
         })
         .collect()
+}
+
+fn build_webhooks(configs: &[IndexConfig]) -> anyhow::Result<WebhookRuntime> {
+    let mut targets = Vec::new();
+    for index in configs {
+        for webhook in &index.webhooks {
+            targets.push(WebhookTargetConfig {
+                index: index.name.clone(),
+                name: webhook.name.clone(),
+                url: webhook.url.clone(),
+                secret: webhook_secret(&webhook.secret, &webhook.name)?,
+                events: webhook.events.clone(),
+            });
+        }
+    }
+    WebhookRuntime::new(targets).context("build webhook targets")
+}
+
+fn webhook_secret(secret: &WebhookSecret, name: &str) -> anyhow::Result<String> {
+    match secret {
+        WebhookSecret::Literal(secret) => Ok(secret.clone()),
+        WebhookSecret::Env(var) => {
+            std::env::var(var).with_context(|| format!("read webhook secret env var {var} for target {name}"))
+        }
+    }
 }
 
 fn build_kind(

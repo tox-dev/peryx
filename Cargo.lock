@@ -4685,6 +4685,8 @@ dependencies = [
  "http-body-util",
  "moka",
  "redb",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.0",

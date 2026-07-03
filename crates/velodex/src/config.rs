@@ -32,6 +32,7 @@ pub struct IndexConfig {
     /// URL prefix the index is served under, for example `root/pypi`.
     pub route: String,
     pub kind: IndexKind,
+    pub webhooks: Vec<WebhookConfig>,
 }
 
 /// The three composable index shapes: a read-through mirror, a writable local store, or an overlay
@@ -62,6 +63,20 @@ pub enum IndexKind {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookConfig {
+    pub name: String,
+    pub url: String,
+    pub secret: WebhookSecret,
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebhookSecret {
+    Literal(String),
+    Env(String),
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -83,6 +98,7 @@ fn default_indexes() -> Vec<IndexConfig> {
         IndexConfig {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
+            webhooks: Vec::new(),
             kind: IndexKind::Mirror {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
@@ -94,6 +110,7 @@ fn default_indexes() -> Vec<IndexConfig> {
         IndexConfig {
             name: "local".to_owned(),
             route: "local".to_owned(),
+            webhooks: Vec::new(),
             kind: IndexKind::Local {
                 upload_token: None,
                 volatile: true,
@@ -102,6 +119,7 @@ fn default_indexes() -> Vec<IndexConfig> {
         IndexConfig {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
+            webhooks: Vec::new(),
             kind: IndexKind::Overlay {
                 layers: vec!["local".to_owned(), "pypi".to_owned()],
                 upload: Some("local".to_owned()),
@@ -170,6 +188,42 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
         name: raw.name,
         route,
         kind,
+        webhooks: raw
+            .webhooks
+            .into_iter()
+            .map(classify_webhook)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn classify_webhook(raw: RawWebhook) -> Result<WebhookConfig, ConfigError> {
+    if raw.name.is_empty() {
+        return Err(ConfigError::Webhook {
+            name: raw.name,
+            reason: "webhook name is required",
+        });
+    }
+    if raw.url.is_empty() {
+        return Err(ConfigError::Webhook {
+            name: raw.name,
+            reason: "webhook url is required",
+        });
+    }
+    let secret = match (raw.secret, raw.secret_env) {
+        (Some(secret), None) if !secret.is_empty() => WebhookSecret::Literal(secret),
+        (None, Some(secret_env)) if !secret_env.is_empty() => WebhookSecret::Env(secret_env),
+        _ => {
+            return Err(ConfigError::Webhook {
+                name: raw.name,
+                reason: "webhook needs exactly one of `secret` or `secret_env`",
+            });
+        }
+    };
+    Ok(WebhookConfig {
+        name: raw.name,
+        url: raw.url,
+        secret,
+        events: raw.events,
     })
 }
 
@@ -266,6 +320,19 @@ pub struct RawIndex {
     pub volatile: Option<bool>,
     pub layers: Option<Vec<String>>,
     pub upload: Option<String>,
+    #[serde(default, rename = "webhook")]
+    pub webhooks: Vec<RawWebhook>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawWebhook {
+    pub name: String,
+    pub url: String,
+    pub secret: Option<String>,
+    pub secret_env: Option<String>,
+    #[serde(default)]
+    pub events: Vec<String>,
 }
 
 /// The logging half of [`PartialConfig`].
@@ -332,6 +399,8 @@ pub enum ConfigError {
     Parse { path: PathBuf, source: toml::de::Error },
     #[error("index {name}: {reason}")]
     Index { name: String, reason: &'static str },
+    #[error("webhook {name}: {reason}")]
+    Webhook { name: String, reason: &'static str },
 }
 
 /// Parse a TOML document into a [`PartialConfig`].

@@ -12,6 +12,7 @@ mod search_tests;
 mod serve_tests;
 mod stream_tests;
 mod upload_tests;
+mod webhooks_tests;
 
 #[derive(Clone, Default)]
 struct LogCapture {

@@ -12,6 +12,7 @@ use velodex_upstream::UpstreamClient;
 use crate::metrics::Metrics;
 use crate::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, UpstreamLimits};
 use crate::search::{PackageSearch, SearchError};
+use crate::webhook::WebhookRuntime;
 
 /// A source of the current unix time, injectable so cache-freshness logic is deterministic in
 /// tests.
@@ -47,6 +48,13 @@ struct StateParts {
     ttl_secs: i64,
     indexes: Vec<Index>,
     clock: Clock,
+}
+
+/// Runtime controls applied when building [`AppState`].
+pub struct RuntimeOptions<I> {
+    pub rate_limit: RateLimitConfig,
+    pub upstream_concurrency: I,
+    pub webhooks: WebhookRuntime,
 }
 
 /// Everything a request handler needs. Shared as `Arc<AppState>`.
@@ -88,6 +96,8 @@ pub struct AppState {
     pub rate_limits: RateLimiter,
     /// Per-mirror upstream fetch gates, keyed by configured index name.
     pub upstream_limits: UpstreamLimits,
+    /// Signed webhook delivery runtime.
+    pub webhooks: WebhookRuntime,
 }
 
 impl AppState {
@@ -167,6 +177,35 @@ impl AppState {
         rate_limit: RateLimitConfig,
         upstream_concurrency: impl IntoIterator<Item = (String, usize)>,
     ) -> Result<Self, SearchError> {
+        Self::with_search_path_and_runtime(
+            meta,
+            blobs,
+            ttl_secs,
+            indexes,
+            search_path,
+            RuntimeOptions {
+                rate_limit,
+                upstream_concurrency,
+                webhooks: WebhookRuntime::disabled(),
+            },
+        )
+    }
+
+    /// Build the state with an on-disk search index and runtime controls.
+    ///
+    /// # Errors
+    /// Returns an error if the search index cannot be opened.
+    pub fn with_search_path_and_runtime<I>(
+        meta: MetaStore,
+        blobs: BlobStore,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        search_path: impl AsRef<std::path::Path>,
+        runtime: RuntimeOptions<I>,
+    ) -> Result<Self, SearchError>
+    where
+        I: IntoIterator<Item = (String, usize)>,
+    {
         Ok(Self::with_limits_and_search(
             StateParts {
                 meta,
@@ -175,9 +214,8 @@ impl AppState {
                 indexes,
                 clock: Arc::new(system_now),
             },
-            rate_limit,
-            upstream_concurrency,
             PackageSearch::open(search_path)?,
+            runtime,
         ))
     }
 
@@ -200,18 +238,46 @@ impl AppState {
                 indexes,
                 clock,
             },
-            rate_limit,
-            upstream_concurrency,
             PackageSearch::in_memory(),
+            RuntimeOptions {
+                rate_limit,
+                upstream_concurrency,
+                webhooks: WebhookRuntime::disabled(),
+            },
         )
     }
 
-    fn with_limits_and_search(
-        parts: StateParts,
-        rate_limit: RateLimitConfig,
-        upstream_concurrency: impl IntoIterator<Item = (String, usize)>,
-        search: PackageSearch,
+    /// Build the state with an injected clock and webhook runtime.
+    #[must_use]
+    pub fn with_clock_and_webhooks(
+        meta: MetaStore,
+        blobs: BlobStore,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        clock: Clock,
+        webhooks: WebhookRuntime,
     ) -> Self {
+        Self::with_limits_and_search(
+            StateParts {
+                meta,
+                blobs,
+                ttl_secs,
+                indexes,
+                clock,
+            },
+            PackageSearch::in_memory(),
+            RuntimeOptions {
+                rate_limit: RateLimitConfig::default(),
+                upstream_concurrency: std::iter::empty(),
+                webhooks,
+            },
+        )
+    }
+
+    fn with_limits_and_search<I>(parts: StateParts, search: PackageSearch, runtime: RuntimeOptions<I>) -> Self
+    where
+        I: IntoIterator<Item = (String, usize)>,
+    {
         let StateParts {
             meta,
             blobs,
@@ -219,6 +285,11 @@ impl AppState {
             indexes,
             clock,
         } = parts;
+        let RuntimeOptions {
+            rate_limit,
+            upstream_concurrency,
+            webhooks,
+        } = runtime;
         let configured: HashMap<_, _> = upstream_concurrency.into_iter().collect();
         let upstream_limits = indexes
             .iter()
@@ -258,6 +329,7 @@ impl AppState {
             search,
             rate_limits: RateLimiter::new(rate_limit),
             upstream_limits: UpstreamLimits::new(upstream_limits),
+            webhooks,
         }
     }
 

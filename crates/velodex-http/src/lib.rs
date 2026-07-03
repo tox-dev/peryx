@@ -15,9 +15,10 @@ pub mod security;
 pub mod state;
 pub mod stream;
 pub mod upload;
+pub mod webhook;
 
 pub use router::router;
-pub use state::{AppState, Index, IndexDescription, IndexKind, describe_indexes};
+pub use state::{AppState, Index, IndexDescription, IndexKind, RuntimeOptions, describe_indexes};
 
 #[cfg(test)]
 mod tests;

@@ -180,7 +180,7 @@ async fn get_bytes(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (S
     (status, headers, bytes.to_vec())
 }
 
-async fn request(state: &Arc<AppState>, verb: &str, uri: &str, auth: Option<&str>) -> StatusCode {
+pub(super) async fn request(state: &Arc<AppState>, verb: &str, uri: &str, auth: Option<&str>) -> StatusCode {
     request_response(state, verb, uri, auth).await.0
 }
 
@@ -1714,7 +1714,7 @@ async fn assert_upload_response(
     assert_eq!(body, expected_body);
 }
 
-async fn upload_velodexpkg(state: &Arc<AppState>, uri: &str, wheel: &[u8]) -> StatusCode {
+pub(super) async fn upload_velodexpkg(state: &Arc<AppState>, uri: &str, wheel: &[u8]) -> StatusCode {
     let (ct, body) = multipart_body(&upload_fields(), Some(("velodexpkg-1.0-py3-none-any.whl", wheel)));
     post_upload(state, uri, Some(&upload_auth()), &ct, body).await
 }

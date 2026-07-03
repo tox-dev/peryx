@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use velodex_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 
-use crate::config::{self, Config, IndexKind, LogConfig, LogFormat, LogSink, PartialConfig, PartialLogConfig};
+use crate::config::{
+    self, Config, IndexKind, LogConfig, LogFormat, LogSink, PartialConfig, PartialLogConfig, WebhookSecret,
+};
 
 fn toml_config(text: &str) -> Config {
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
@@ -76,6 +78,7 @@ fn test_indexes_from_toml_classify_all_kinds() {
 [[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\ntoken = \"bear\"\nupstream_concurrency = 3\n\
 [[index]]\nname = \"corp\"\nmirror = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
 [[index]]\nname = \"team-local\"\nlocal = true\nupload_token = \"s\"\nvolatile = false\n\
+[[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret_env = \"VELODEX_WEBHOOK_SECRET\"\nevents = [\"upload\", \"delete\"]\n\
 [[index]]\nname = \"secret\"\nupload_token = \"z\"\n\
 [[index]]\nname = \"team\"\nroute = \"team/dev\"\nlayers = [\"team-local\", \"pypi\"]\nupload = \"team-local\"\n";
     let c = toml_config(text);
@@ -94,6 +97,14 @@ fn test_indexes_from_toml_classify_all_kinds() {
         }
     ));
     assert!(matches!(&c.indexes[2].kind, IndexKind::Local { volatile: false, .. })); // explicit local, non-volatile
+    assert_eq!(c.indexes[2].webhooks.len(), 1);
+    assert_eq!(c.indexes[2].webhooks[0].name, "ci");
+    assert_eq!(c.indexes[2].webhooks[0].url, "https://ci.example/hook");
+    assert_eq!(
+        c.indexes[2].webhooks[0].secret,
+        WebhookSecret::Env("VELODEX_WEBHOOK_SECRET".to_owned())
+    );
+    assert_eq!(c.indexes[2].webhooks[0].events, ["upload", "delete"]);
     assert!(matches!(&c.indexes[3].kind, IndexKind::Local { volatile: true, .. })); // upload_token implies local, default volatile
     assert_eq!(c.indexes[4].route, "team/dev");
     assert!(
@@ -139,6 +150,48 @@ fn test_index_without_kind_is_error() {
     let partial = config::from_toml(PathBuf::from("x.toml"), "[[index]]\nname = \"bad\"\n").unwrap();
     let err = Config::default().apply(partial).unwrap_err();
     assert!(err.to_string().contains("bad"));
+}
+
+#[test]
+fn test_index_webhook_accepts_literal_secret() {
+    let text = "\
+[[index]]\nname = \"local\"\nlocal = true\n\
+[[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"signing-secret\"\n";
+    let c = toml_config(text);
+    assert_eq!(
+        c.indexes[0].webhooks[0].secret,
+        WebhookSecret::Literal("signing-secret".to_owned())
+    );
+}
+
+#[test]
+fn test_index_webhook_rejects_ambiguous_secret_source() {
+    let text = "\
+[[index]]\nname = \"local\"\nlocal = true\n\
+[[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\nsecret_env = \"S\"\n";
+    let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    let err = Config::default().apply(partial).unwrap_err();
+    assert!(err.to_string().contains("exactly one of `secret` or `secret_env`"));
+}
+
+#[test]
+fn test_index_webhook_rejects_empty_name() {
+    let text = "\
+[[index]]\nname = \"local\"\nlocal = true\n\
+[[index.webhook]]\nname = \"\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\n";
+    let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    let err = Config::default().apply(partial).unwrap_err();
+    assert!(err.to_string().contains("webhook name is required"));
+}
+
+#[test]
+fn test_index_webhook_rejects_empty_url() {
+    let text = "\
+[[index]]\nname = \"local\"\nlocal = true\n\
+[[index.webhook]]\nname = \"ci\"\nurl = \"\"\nsecret = \"s\"\n";
+    let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    let err = Config::default().apply(partial).unwrap_err();
+    assert!(err.to_string().contains("webhook url is required"));
 }
 
 #[test]

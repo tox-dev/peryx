@@ -5,13 +5,14 @@ use tower::ServiceExt as _;
 use velodex_http::IndexKind as RuntimeKind;
 use velodex_upstream::Auth;
 
-use crate::config::{Config, IndexConfig, IndexKind};
+use crate::config::{Config, IndexConfig, IndexKind, WebhookConfig, WebhookSecret};
 use crate::server::{build_indexes, build_router, build_state, mirror_auth};
 
 fn mirror(name: &str, upstream: &str) -> IndexConfig {
     IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
+        webhooks: Vec::new(),
         kind: IndexKind::Mirror {
             upstream: upstream.to_owned(),
             username: None,
@@ -26,6 +27,7 @@ fn local(name: &str) -> IndexConfig {
     IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
+        webhooks: Vec::new(),
         kind: IndexKind::Local {
             upload_token: None,
             volatile: true,
@@ -37,6 +39,7 @@ fn overlay(layers: &[&str], upload: Option<&str>) -> IndexConfig {
     IndexConfig {
         name: "team".to_owned(),
         route: "team/dev".to_owned(),
+        webhooks: Vec::new(),
         kind: IndexKind::Overlay {
             layers: layers.iter().map(|&name| name.to_owned()).collect(),
             upload: upload.map(str::to_owned),
@@ -129,6 +132,76 @@ fn test_build_state_reports_index_errors() {
     };
 
     assert!(err.to_string().contains("build mirror index pypi"));
+}
+
+#[test]
+fn test_build_state_reports_webhook_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = local("local");
+    index.webhooks.push(WebhookConfig {
+        name: "ci".to_owned(),
+        url: "ftp://ci.example/hook".to_owned(),
+        secret: WebhookSecret::Literal("secret".to_owned()),
+        events: Vec::new(),
+    });
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![index],
+        ..Config::default()
+    };
+
+    let Err(err) = build_state(&config) else {
+        panic!("expected webhook error");
+    };
+
+    assert!(err.to_string().contains("build webhook targets"));
+}
+
+#[test]
+fn test_build_state_reports_missing_webhook_secret_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = local("local");
+    index.webhooks.push(WebhookConfig {
+        name: "ci".to_owned(),
+        url: "https://ci.example/hook".to_owned(),
+        secret: WebhookSecret::Env("VELODEX_TEST_MISSING_WEBHOOK_SECRET".to_owned()),
+        events: Vec::new(),
+    });
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![index],
+        ..Config::default()
+    };
+
+    let Err(err) = build_state(&config) else {
+        panic!("expected webhook env error");
+    };
+
+    assert!(
+        err.to_string()
+            .contains("read webhook secret env var VELODEX_TEST_MISSING_WEBHOOK_SECRET")
+    );
+}
+
+#[tokio::test]
+async fn test_build_state_starts_webhook_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = local("local");
+    index.webhooks.push(WebhookConfig {
+        name: "ci".to_owned(),
+        url: "https://ci.example/hook".to_owned(),
+        secret: WebhookSecret::Literal("secret".to_owned()),
+        events: Vec::new(),
+    });
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![index],
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert!(!state.webhooks.is_empty());
 }
 
 #[test]

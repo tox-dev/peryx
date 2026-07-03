@@ -29,6 +29,7 @@ use crate::path_safety::{self, PathSafetyError};
 use crate::search::{SearchError, SearchParams};
 use crate::state::{AppState, Index, IndexKind, describe_index};
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
+use crate::webhook::{WebhookEvent, WebhookEventKind};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 const MIME_LEGACY_JSON: &str = "application/json";
@@ -502,7 +503,8 @@ async fn accept_upload(
     let form_project = form.name.as_deref().map(normalize_name);
     let form_version = form.version.clone();
     let form_filename = form.filename.clone();
-    let prepared = match upload::prepare(form, staged, &index.route, (state.clock)()) {
+    let upload_time_unix = (state.clock)();
+    let prepared = match upload::prepare(form, staged, &index.route, upload_time_unix) {
         Ok(prepared) => prepared,
         Err(err) => {
             let (_, reason) = upload_error_message(&err);
@@ -521,7 +523,10 @@ async fn accept_upload(
     let digest = prepared.digest.as_str().to_owned();
     let audit = UploadAudit {
         headers,
-        actor,
+        actor: actor.map(str::to_owned),
+        request_id: request_id(headers),
+        created_at_unix: upload_time_unix,
+        index: &index.name,
         route: &index.route,
         local: &local.name,
         project: &project,
@@ -542,7 +547,10 @@ async fn accept_upload(
 
 struct UploadAudit<'a> {
     headers: &'a HeaderMap,
-    actor: Option<&'a str>,
+    actor: Option<String>,
+    request_id: Option<String>,
+    created_at_unix: i64,
+    index: &'a str,
     route: &'a str,
     local: &'a str,
     project: &'a str,
@@ -551,7 +559,7 @@ struct UploadAudit<'a> {
     digest: &'a str,
 }
 
-fn upload_store_response(state: &AppState, audit: &UploadAudit<'_>, result: Result<bool, CacheError>) -> Response {
+fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result: Result<bool, CacheError>) -> Response {
     match result {
         Ok(stored) => {
             if stored {
@@ -559,10 +567,27 @@ fn upload_store_response(state: &AppState, audit: &UploadAudit<'_>, result: Resu
                     route: audit.route.to_owned(),
                     project: audit.project.to_owned(),
                 });
+                crate::webhook::emit(
+                    state.clone(),
+                    &WebhookEvent {
+                        kind: WebhookEventKind::Upload,
+                        created_at_unix: audit.created_at_unix,
+                        index: audit.index.to_owned(),
+                        route: audit.route.to_owned(),
+                        local_index: audit.local.to_owned(),
+                        project: audit.project.to_owned(),
+                        version: Some(audit.version.to_owned()),
+                        filename: Some(audit.filename.to_owned()),
+                        digest: Some(audit.digest.to_owned()),
+                        count: 1,
+                        actor: audit.actor.clone(),
+                        request_id: audit.request_id.clone(),
+                    },
+                );
             }
             security_upload_event(
                 audit.headers,
-                audit.actor,
+                audit.actor.as_deref(),
                 audit.route,
                 Some(audit.local),
                 if stored { "success" } else { "noop" },
@@ -577,13 +602,19 @@ fn upload_store_response(state: &AppState, audit: &UploadAudit<'_>, result: Resu
             (StatusCode::OK, "upload accepted").into_response()
         }
         Err(CacheError::FileExists(filename)) => {
-            security_upload_event(audit.headers, audit.actor, audit.route, Some(audit.local), "denied")
-                .project(Some(audit.project))
-                .version(Some(audit.version))
-                .filename(Some(&filename))
-                .digest(Some(audit.digest))
-                .reason(Some("file exists with different content"))
-                .emit();
+            security_upload_event(
+                audit.headers,
+                audit.actor.as_deref(),
+                audit.route,
+                Some(audit.local),
+                "denied",
+            )
+            .project(Some(audit.project))
+            .version(Some(audit.version))
+            .filename(Some(&filename))
+            .digest(Some(audit.digest))
+            .reason(Some("file exists with different content"))
+            .emit();
             (
                 StatusCode::BAD_REQUEST,
                 format!("File already exists: {filename:?} has different content; use a different filename"),
@@ -592,13 +623,19 @@ fn upload_store_response(state: &AppState, audit: &UploadAudit<'_>, result: Resu
         }
         Err(err) => {
             let reason = err.user_message();
-            security_upload_event(audit.headers, audit.actor, audit.route, Some(audit.local), "failure")
-                .project(Some(audit.project))
-                .version(Some(audit.version))
-                .filename(Some(audit.filename))
-                .digest(Some(audit.digest))
-                .reason(Some(&reason))
-                .emit();
+            security_upload_event(
+                audit.headers,
+                audit.actor.as_deref(),
+                audit.route,
+                Some(audit.local),
+                "failure",
+            )
+            .project(Some(audit.project))
+            .version(Some(audit.version))
+            .filename(Some(audit.filename))
+            .digest(Some(audit.digest))
+            .reason(Some(&reason))
+            .emit();
             tracing::error!(error = ?err, "upload store failed");
             cache_error_response(&err, CacheContext::upload(audit.route, audit.project))
         }
@@ -606,13 +643,19 @@ fn upload_store_response(state: &AppState, audit: &UploadAudit<'_>, result: Resu
 }
 
 fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) {
-    security_upload_event(audit.headers, audit.actor, audit.route, Some(audit.local), block.result)
-        .project(Some(audit.project))
-        .version(Some(audit.version))
-        .filename(Some(audit.filename))
-        .digest(Some(audit.digest))
-        .reason(Some(&block.reason))
-        .emit();
+    security_upload_event(
+        audit.headers,
+        audit.actor.as_deref(),
+        audit.route,
+        Some(audit.local),
+        block.result,
+    )
+    .project(Some(audit.project))
+    .version(Some(audit.version))
+    .filename(Some(audit.filename))
+    .digest(Some(audit.digest))
+    .reason(Some(&block.reason))
+    .emit();
 }
 
 #[derive(Clone, Copy)]
@@ -707,96 +750,133 @@ pub async fn dispatch_put(
         Err(response) => return response,
     };
     if let Some(spec) = strip_action_segment(spec, "promote") {
-        let source_route = match promotion_source_route(uri.query()) {
-            Ok(route) => route,
-            Err(response) => return response,
-        };
-        let source = match promotion_source(&state, &source_route) {
-            Ok(source) => source,
-            Err(response) => return response,
-        };
-        let Some(source_local) = upload_target(&state, source) else {
-            return (
-                StatusCode::METHOD_NOT_ALLOWED,
-                format!("source index {source_route:?} has no local upload layer"),
-            )
-                .into_response();
-        };
-        let (project, version) = match parse_project_version(spec) {
-            Ok((project, Some(version))) => (project, version),
-            Ok((_project, None)) => return (StatusCode::BAD_REQUEST, "promotion requires a version").into_response(),
-            Err(response) => return response,
-        };
-        let audit = PromotionAudit {
-            headers: &headers,
-            actor: actor.as_deref(),
-            repository: &index.route,
-            source_repository: &source.route,
-            local_repository: &local.name,
-            project: &project,
-            version: &version,
-        };
-        if let Some(block) = upload_status_response(
-            cache::project_status(&state, index, &project).await,
-            &index.route,
-            &project,
-        ) {
-            emit_promotion_status_event(&audit, &block);
-            return block.response;
-        }
-        let result = cache::promote_release(
-            &state,
-            &source_local.name,
-            &local.name,
-            &index.route,
-            &project,
-            &version,
-        );
-        security_promotion_event(audit, &result);
-        return promotion_response(result);
+        return promote_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
     }
     if let Some(spec) = strip_action_segment(spec, "yank") {
-        let yanked = yank_marker(uri.query());
-        let (project, version) = match parse_project_version(spec) {
-            Ok(parsed) => parsed,
-            Err(response) => return response,
-        };
-        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), yanked).await;
-        security_mutation_event(
-            MutationAudit {
-                headers: &headers,
-                action: "yank",
-                actor: actor.as_deref(),
-                repository: &index.route,
-                local_repository: &local.name,
-                project: &project,
-                version: version.as_deref(),
-            },
-            &result,
-        );
-        return count_response(result);
+        return yank_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
     }
     if let Some(spec) = strip_action_segment(spec, "restore") {
-        let (project, version) = match parse_project_version(spec) {
-            Ok(parsed) => parsed,
-            Err(response) => return response,
-        };
-        let result = cache::restore_files(&state, &local.name, &project, version.as_deref());
-        security_mutation_event(
-            MutationAudit {
-                headers: &headers,
-                action: "restore",
-                actor: actor.as_deref(),
-                repository: &index.route,
-                local_repository: &local.name,
-                project: &project,
-                version: version.as_deref(),
-            },
-            &result,
-        );
-        return count_response(result);
+        return restore_request(&state, index, local, spec, &headers, actor.as_deref());
     }
     not_found()
+}
+
+async fn promote_request(
+    state: &Arc<AppState>,
+    index: &Index,
+    local: &Index,
+    spec: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+    actor: Option<&str>,
+) -> Response {
+    let source_route = match promotion_source_route(query) {
+        Ok(route) => route,
+        Err(response) => return response,
+    };
+    let source = match promotion_source(state, &source_route) {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let Some(source_local) = upload_target(state, source) else {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            format!("source index {source_route:?} has no local upload layer"),
+        )
+            .into_response();
+    };
+    let (project, version) = match parse_project_version(spec) {
+        Ok((project, Some(version))) => (project, version),
+        Ok((_project, None)) => return (StatusCode::BAD_REQUEST, "promotion requires a version").into_response(),
+        Err(response) => return response,
+    };
+    let audit = PromotionAudit {
+        headers,
+        actor,
+        repository: &index.route,
+        source_repository: &source.route,
+        local_repository: &local.name,
+        project: &project,
+        version: &version,
+    };
+    if let Some(block) = upload_status_response(
+        cache::project_status(state, index, &project).await,
+        &index.route,
+        &project,
+    ) {
+        emit_promotion_status_event(&audit, &block);
+        return block.response;
+    }
+    let result = cache::promote_release(state, &source_local.name, &local.name, &index.route, &project, &version);
+    security_promotion_event(audit, &result);
+    promotion_response(result)
+}
+
+async fn yank_request(
+    state: &Arc<AppState>,
+    index: &Index,
+    local: &Index,
+    spec: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+    actor: Option<&str>,
+) -> Response {
+    let (project, version) = match parse_project_version(spec) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    let result = cache::set_yanked(
+        state,
+        index,
+        &local.name,
+        &project,
+        version.as_deref(),
+        yank_marker(query),
+    )
+    .await;
+    let audit = MutationAudit {
+        headers,
+        action: "yank",
+        actor,
+        index: &index.name,
+        repository: &index.route,
+        local_repository: &local.name,
+        project: &project,
+        version: version.as_deref(),
+        request_id: request_id(headers),
+    };
+    security_mutation_event(&audit, &result);
+    emit_mutation_webhook(state.clone(), WebhookEventKind::Yank, &audit, &result);
+    count_response(result)
+}
+
+fn restore_request(
+    state: &Arc<AppState>,
+    index: &Index,
+    local: &Index,
+    spec: &str,
+    headers: &HeaderMap,
+    actor: Option<&str>,
+) -> Response {
+    let (project, version) = match parse_project_version(spec) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    let result = cache::restore_files(state, &local.name, &project, version.as_deref());
+    let audit = MutationAudit {
+        headers,
+        action: "restore",
+        actor,
+        index: &index.name,
+        repository: &index.route,
+        local_repository: &local.name,
+        project: &project,
+        version: version.as_deref(),
+        request_id: request_id(headers),
+    };
+    security_mutation_event(&audit, &result);
+    emit_mutation_webhook(state.clone(), WebhookEventKind::Restore, &audit, &result);
+    count_response(result)
 }
 
 /// `DELETE /{route}/{project}/[{version}/]` removes files: uploads are deleted outright (volatile
@@ -819,18 +899,19 @@ pub async fn dispatch_delete(
             Err(response) => return response,
         };
         let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), Yanked::No).await;
-        security_mutation_event(
-            MutationAudit {
-                headers: &headers,
-                action: "unyank",
-                actor: actor.as_deref(),
-                repository: &index.route,
-                local_repository: &local.name,
-                project: &project,
-                version: version.as_deref(),
-            },
-            &result,
-        );
+        let audit = MutationAudit {
+            headers: &headers,
+            action: "unyank",
+            actor: actor.as_deref(),
+            index: &index.name,
+            repository: &index.route,
+            local_repository: &local.name,
+            project: &project,
+            version: version.as_deref(),
+            request_id: request_id(&headers),
+        };
+        security_mutation_event(&audit, &result);
+        emit_mutation_webhook(state.clone(), WebhookEventKind::Unyank, &audit, &result);
         return count_response(result);
     }
     let (project, version) = match parse_project_version(spec) {
@@ -839,18 +920,19 @@ pub async fn dispatch_delete(
     };
     let volatile = is_volatile(local);
     let result = cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await;
-    security_mutation_event(
-        MutationAudit {
-            headers: &headers,
-            action: "delete",
-            actor: actor.as_deref(),
-            repository: &index.route,
-            local_repository: &local.name,
-            project: &project,
-            version: version.as_deref(),
-        },
-        &result,
-    );
+    let audit = MutationAudit {
+        headers: &headers,
+        action: "delete",
+        actor: actor.as_deref(),
+        index: &index.name,
+        repository: &index.route,
+        local_repository: &local.name,
+        project: &project,
+        version: version.as_deref(),
+        request_id: request_id(&headers),
+    };
+    security_mutation_event(&audit, &result);
+    emit_mutation_webhook(state.clone(), WebhookEventKind::Delete, &audit, &result);
     count_response(result)
 }
 
@@ -906,6 +988,13 @@ fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
+fn request_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
 fn security_upload_event<'a>(
     headers: &'a HeaderMap,
     actor: Option<&'a str>,
@@ -942,18 +1031,19 @@ fn security_token_event(
     }
 }
 
-#[derive(Clone, Copy)]
 struct MutationAudit<'a> {
     headers: &'a HeaderMap,
     action: &'static str,
     actor: Option<&'a str>,
+    index: &'a str,
     repository: &'a str,
     local_repository: &'a str,
     project: &'a str,
     version: Option<&'a str>,
+    request_id: Option<String>,
 }
 
-fn security_mutation_event(audit: MutationAudit<'_>, result: &Result<usize, CacheError>) {
+fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, CacheError>) {
     let (security_result, count, reason) = match result {
         Ok(0) => ("noop", 0, Some("nothing matched".to_owned())),
         Ok(count) => ("success", *count, None),
@@ -992,6 +1082,38 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
         .reason(reason.as_deref())
         .request(audit.headers)
         .emit();
+}
+
+fn emit_mutation_webhook(
+    state: Arc<AppState>,
+    kind: WebhookEventKind,
+    audit: &MutationAudit<'_>,
+    result: &Result<usize, CacheError>,
+) {
+    let Ok(count) = result else {
+        return;
+    };
+    if *count == 0 {
+        return;
+    }
+    let created_at_unix = (state.clock)();
+    crate::webhook::emit(
+        state,
+        &WebhookEvent {
+            kind,
+            created_at_unix,
+            index: audit.index.to_owned(),
+            route: audit.repository.to_owned(),
+            local_index: audit.local_repository.to_owned(),
+            project: audit.project.to_owned(),
+            version: audit.version.map(str::to_owned),
+            filename: None,
+            digest: None,
+            count: *count,
+            actor: audit.actor.map(str::to_owned),
+            request_id: audit.request_id.clone(),
+        },
+    );
 }
 
 fn strip_action_segment<'a>(spec: &'a str, action: &str) -> Option<&'a str> {
