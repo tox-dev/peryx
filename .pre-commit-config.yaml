@@ -59,5 +59,8 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Benchmark fixtures are captured verbatim from pypi.org; whitespace must stay byte-exact.
       - id: end-of-file-fixer
+        exclude: ^crates/velodex-bench/benches/fixtures/
       - id: trailing-whitespace
+        exclude: ^crates/velodex-bench/benches/fixtures/
