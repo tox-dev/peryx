@@ -359,8 +359,9 @@ fn upload() -> OperationBuilder {
             "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart \
              form's `content` part carries a wheel or modern `.tar.gz` sdist. velodex streams the \
              bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` \
-             values, then checks filename, archive, and core-metadata identity before the file lands \
-             in the index's local layer. The upload shadows any upstream file of the same name.",
+             values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and \
+             core-metadata identity before the file lands in the index's local layer. The upload shadows \
+             any upstream file of the same name.",
         ))
         .parameter(route_param())
         .security(SecurityRequirement::new("uploadToken", [""; 0]))

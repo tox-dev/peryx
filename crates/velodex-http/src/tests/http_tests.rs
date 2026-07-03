@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -5,8 +6,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
+use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
@@ -620,6 +622,23 @@ async fn test_upload_sdist_is_accepted_without_metadata_sibling() {
 }
 
 #[tokio::test]
+async fn test_upload_sdist_missing_pkg_info_is_bad_request() {
+    let h = harness().await;
+    let sdist = fixture_sdist_without_pkg_info();
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "velodexpkg"),
+        ("version", "1.0"),
+        ("filetype", "sdist"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0.tar.gz", &sdist)));
+    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "uploaded artifact is missing required PKG-INFO metadata");
+}
+
+#[tokio::test]
 async fn test_upload_same_file_is_idempotent() {
     let h = harness().await;
     let wheel = fixture_wheel();
@@ -933,7 +952,7 @@ async fn test_upload_content_validation_errors_include_actionable_body() {
             fixture_wheel_without_metadata().as_slice(),
         )),
         StatusCode::BAD_REQUEST,
-        "uploaded artifact is missing required METADATA metadata",
+        "uploaded content does not match the filename format: invalid wheel: missing required velodexpkg-1.0.dist-info/METADATA",
     )
     .await;
 
@@ -1679,6 +1698,23 @@ fn fixture_sdist() -> Vec<u8> {
     buf
 }
 
+fn fixture_sdist_without_pkg_info() -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let encoder = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let content = b"x = 1\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "velodexpkg-1.0/module.py", content.as_slice())
+            .unwrap();
+        tar.finish().unwrap();
+    }
+    buf
+}
+
 fn fixture_wheel_for(version: &str) -> Vec<u8> {
     fixture_wheel_with_body(version, b"VALUE = 1\n")
 }
@@ -1704,16 +1740,33 @@ fn fixture_wheel_with_body_and_metadata(version: &str, body: &[u8], metadata: Op
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("velodexpkg/__init__.py", options).unwrap();
-        zip.write_all(body).unwrap();
+        let dist_info = format!("velodexpkg-{version}.dist-info");
+        let wheel = b"Wheel-Version: 1.0\nGenerator: velodex-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
+        let mut entries = vec![("velodexpkg/__init__.py".to_owned(), body.to_vec())];
         if let Some(metadata) = metadata {
-            zip.start_file(format!("velodexpkg-{version}.dist-info/METADATA"), options)
-                .unwrap();
-            zip.write_all(metadata).unwrap();
+            entries.push((format!("{dist_info}/METADATA"), metadata.to_vec()));
         }
+        entries.push((format!("{dist_info}/WHEEL"), wheel.to_vec()));
+        for (path, bytes) in &entries {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let record_path = format!("{dist_info}/RECORD");
+        zip.start_file(&record_path, options).unwrap();
+        zip.write_all(record(&entries, &record_path).as_bytes()).unwrap();
         zip.finish().unwrap();
     }
     buf
+}
+
+fn record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {
+    let mut record = String::new();
+    for (path, bytes) in entries {
+        let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(bytes));
+        writeln!(record, "{path},sha256={digest},{}", bytes.len()).unwrap();
+    }
+    writeln!(record, "{record_path},,").unwrap();
+    record
 }
 
 async fn upload_wheel(state: &Arc<AppState>, filename: &str, bytes: &[u8]) -> Digest {
@@ -1769,7 +1822,15 @@ async fn test_inspect_lists_wheel_members() {
         .iter()
         .map(|member| member["path"].as_str().unwrap())
         .collect();
-    assert_eq!(paths, ["velodexpkg-1.0.dist-info/METADATA", "velodexpkg/__init__.py"]);
+    assert_eq!(
+        paths,
+        [
+            "velodexpkg-1.0.dist-info/METADATA",
+            "velodexpkg-1.0.dist-info/RECORD",
+            "velodexpkg-1.0.dist-info/WHEEL",
+            "velodexpkg/__init__.py"
+        ]
+    );
 }
 
 #[tokio::test]

@@ -3,8 +3,8 @@ use std::io::Write as _;
 use crate::archive::{
     ArchiveError, DEFAULT_MEMBER_CHUNK, MAX_CONTAINER_DEPTH, MAX_LISTED_ENTRIES, MAX_NESTED_ARCHIVE_SIZE, Member,
     MemberKind, list_members, list_members_nested_path, list_members_path, read_member, read_member_chunk,
-    read_member_chunk_path, read_text_member_chunk_nested_path, sdist_metadata_path, wheel_metadata,
-    wheel_metadata_path,
+    read_member_chunk_path, read_text_member_chunk_nested_path, sdist_metadata_path, validate_wheel_path,
+    wheel_metadata, wheel_metadata_path,
 };
 
 fn small_zip() -> Vec<u8> {
@@ -78,6 +78,8 @@ fn test_extracts_metadata_documents_without_buffering_archives() {
         wheel_metadata("pkg-1.0-py3-none-any.whl", &wheel).as_deref(),
         Some(b"Metadata-Version: 2.1\nName: pkg\n".as_slice())
     );
+    let wheel_without_metadata = zip_with_file("pkg/module.py", b"x = 1\n", zip::CompressionMethod::Stored);
+    assert!(wheel_metadata("pkg-1.0-py3-none-any.whl", &wheel_without_metadata).is_none());
     let mut file = tempfile::NamedTempFile::new().unwrap();
     file.write_all(&wheel).unwrap();
     file.flush().unwrap();
@@ -127,6 +129,22 @@ fn test_extracts_metadata_documents_without_buffering_archives() {
     file.write_all(&sdist).unwrap();
     file.flush().unwrap();
     assert!(sdist_metadata_path("pkg-1.0.tar.gz", file.path()).unwrap().is_none());
+}
+
+#[test]
+fn test_validate_wheel_path_rejects_non_wheel_filename_before_zip_read() {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(b"not a zip").unwrap();
+    file.flush().unwrap();
+
+    assert!(matches!(
+        validate_wheel_path("pkg.whl", file.path()),
+        Err(ArchiveError::InvalidWheel(message)) if message.contains("invalid wheel filename \"pkg.whl\"")
+    ));
+    assert!(matches!(
+        validate_wheel_path("pkg-1.0.tar.gz", file.path()),
+        Err(ArchiveError::InvalidWheel(message)) if message == "\"pkg-1.0.tar.gz\" is not a wheel filename"
+    ));
 }
 
 #[test]

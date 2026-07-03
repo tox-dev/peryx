@@ -273,7 +273,9 @@ fn archive_error(err: &crate::archive::ArchiveError, filename: &str, member: Opt
         }
         ArchiveError::MemberNotFound => StatusCode::NOT_FOUND,
         ArchiveError::InvalidRange { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
-        ArchiveError::UnsafeMember(_) | ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        ArchiveError::UnsafeMember(_) | ArchiveError::InvalidWheel(_) | ArchiveError::Read(_) => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         ArchiveError::NestingTooDeep { .. } => StatusCode::BAD_REQUEST,
         ArchiveError::NestedArchiveTooLarge { .. } | ArchiveError::TooManyEntries(_) => StatusCode::PAYLOAD_TOO_LARGE,
     };

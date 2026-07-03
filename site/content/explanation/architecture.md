@@ -153,8 +153,8 @@ occupies disk once.
 
 Uploads use the same staged path as downloads: the multipart `content` field streams into a temp blob while sha256 and
 blake2b-256 are computed. Validation reads the archive back from that staged file, so a large wheel is not buffered in
-the HTTP handler. Only the core metadata document is loaded into memory, and only after the archive and filename checks
-identify the expected member.
+the HTTP handler. Wheel validation scans the ZIP directory, buffers capped `METADATA`, `WHEEL`, and `RECORD` files, and
+streams members through the RECORD hash checks instead of loading wheel payloads into memory.
 
 ## Why PEP 658 matters here
 

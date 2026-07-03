@@ -31,6 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use velodex_storage::blob::Digest;
 use zip::CompressionMethod;
@@ -66,22 +69,41 @@ fn build_dist(name: &str, version: &str, requires: &[&str]) -> Dist {
         writeln!(metadata, "Requires-Dist: {dep}").expect("write metadata");
     }
     let wheel_meta = "Wheel-Version: 1.0\nGenerator: velodex-e2e\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
-    let record = format!("{name}/__init__.py,,\n{dist_info}/METADATA,,\n{dist_info}/WHEEL,,\n{dist_info}/RECORD,,\n");
     let init = format!("VALUE = {name:?}\n");
+    let init_path = format!("{name}/__init__.py");
+    let metadata_path = format!("{dist_info}/METADATA");
+    let wheel_path = format!("{dist_info}/WHEEL");
+    let record_path = format!("{dist_info}/RECORD");
+    let record_entries: [(&str, &[u8]); 3] = [
+        (init_path.as_str(), init.as_bytes()),
+        (metadata_path.as_str(), metadata.as_bytes()),
+        (wheel_path.as_str(), wheel_meta.as_bytes()),
+    ];
+    let mut record = String::new();
+    for (path, content) in record_entries {
+        writeln!(
+            record,
+            "{path},sha256={},{}",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(content)),
+            content.len()
+        )
+        .expect("write record");
+    }
+    writeln!(record, "{record_path},,").expect("write record");
     let mut buf = Vec::new();
     {
         // Entries borrow their contents; only the zip's compressed output is allocated. `metadata`
         // is then moved (not copied) into the Dist to double as the PEP 658 sibling.
-        let entries: [(String, &[u8]); 4] = [
-            (format!("{name}/__init__.py"), init.as_bytes()),
-            (format!("{dist_info}/METADATA"), metadata.as_bytes()),
-            (format!("{dist_info}/WHEEL"), wheel_meta.as_bytes()),
-            (format!("{dist_info}/RECORD"), record.as_bytes()),
+        let entries: [(&str, &[u8]); 4] = [
+            (init_path.as_str(), init.as_bytes()),
+            (metadata_path.as_str(), metadata.as_bytes()),
+            (wheel_path.as_str(), wheel_meta.as_bytes()),
+            (record_path.as_str(), record.as_bytes()),
         ];
         let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         for (path, content) in &entries {
-            zip.start_file(path.as_str(), options).expect("zip entry");
+            zip.start_file(*path, options).expect("zip entry");
             zip.write_all(content).expect("zip write");
         }
         zip.finish().expect("zip finish");
@@ -670,7 +692,7 @@ fn e2e_yank_and_delete_round_trip() {
 
 /// A raw authenticated HTTP request with no body, as `curl -X <verb> -u __token__:<token>` sends.
 fn http_verb(port: u16, verb: &str, path: &str) -> u16 {
-    let credentials = base64_encode(format!("__token__:{UPLOAD_TOKEN}").as_bytes());
+    let credentials = STANDARD.encode(format!("__token__:{UPLOAD_TOKEN}").as_bytes());
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     stream
         .write_all(
@@ -687,25 +709,6 @@ fn http_verb(port: u16, verb: &str, path: &str) -> u16 {
         .nth(1)
         .and_then(|code| code.parse().ok())
         .expect("status code")
-}
-
-/// Standard base64, enough for the Basic-auth header without pulling a crate into the test.
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let block = (u32::from(chunk[0]) << 16)
-            | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
-            | u32::from(chunk.get(2).copied().unwrap_or(0));
-        for position in 0..4 {
-            if position <= chunk.len() {
-                out.push(ALPHABET[(block >> (18 - 6 * position)) as usize & 0x3f] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// The same client flows, but against the real pypi.org, to catch upstream drift.

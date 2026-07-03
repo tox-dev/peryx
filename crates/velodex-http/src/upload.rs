@@ -285,9 +285,8 @@ fn metadata_bytes(
     path: &std::path::Path,
 ) -> Result<Vec<u8>, UploadError> {
     match parsed.kind {
-        DistributionKind::Wheel => crate::archive::wheel_metadata_path(filename, path)
-            .map_err(|err| UploadError::InvalidContent(err.to_string()))?
-            .ok_or(UploadError::MissingMetadata("METADATA")),
+        DistributionKind::Wheel => crate::archive::validate_wheel_path(filename, path)
+            .map_err(|err| UploadError::InvalidContent(err.to_string())),
         DistributionKind::SdistTarGz => crate::archive::sdist_metadata_path(filename, path)
             .map_err(|err| UploadError::InvalidContent(err.to_string()))?
             .ok_or(UploadError::MissingMetadata("PKG-INFO")),

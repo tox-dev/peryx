@@ -51,8 +51,9 @@ Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+
 | `405`  | The route's index does not accept writes |
 
 Uploads accept wheels and `.tar.gz` sdists. The server validates the filename, form `name` and `version`, `filetype`,
-archive contents, and core metadata before the artifact becomes visible. Wheel uploads get a PEP 658 `.metadata`
-sibling; sdist metadata is validated at upload time and remains part of the archive.
+archive contents, and core metadata before the artifact becomes visible. Wheel validation requires normalized
+`.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD` files, WHEEL tag/build consistency, RECORD hashes, and matching
+RECORD sizes when present. Wheel uploads get a PEP 658 `.metadata` sibling; sdist metadata remains part of the archive.
 
 ## Usage statistics
 

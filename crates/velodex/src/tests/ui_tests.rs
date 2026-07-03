@@ -1,10 +1,12 @@
+use std::fmt::Write as _;
 use std::io::Write as _;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
+use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
 use velodex_http::path_safety::local_file_url;
@@ -186,7 +188,7 @@ async fn test_ui_project_page_renders_metadata() {
     assert!(body.contains("Development Status"));
     assert!(body.contains("badge meta-badge"));
     assert!(body.contains("Manage uploads"));
-    assert!(body.contains("1.1 kB"));
+    assert!(body.contains("1.2 kB"));
 }
 
 #[tokio::test]
@@ -255,15 +257,27 @@ async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() 
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut wheel));
         let options = zip::write::SimpleFileOptions::default();
-        zip.start_file("veloxdemo/__init__.py", options).unwrap();
-        zip.write_all(b"").unwrap();
-        zip.start_file("veloxdemo/data.bin", options).unwrap();
-        zip.write_all(&[0xff, 0xfe]).unwrap();
-        zip.start_file("vendor/inner.zip", options).unwrap();
-        zip.write_all(&inner).unwrap();
-        zip.start_file("veloxdemo-1.0.0.dist-info/METADATA", options).unwrap();
-        zip.write_all(b"Metadata-Version: 2.1\nName: veloxdemo\nVersion: 1.0.0\n")
-            .unwrap();
+        let dist_info = "veloxdemo-1.0.0.dist-info";
+        let entries = vec![
+            ("veloxdemo/__init__.py".to_owned(), Vec::new()),
+            ("veloxdemo/data.bin".to_owned(), vec![0xff, 0xfe]),
+            ("vendor/inner.zip".to_owned(), inner),
+            (
+                format!("{dist_info}/METADATA"),
+                b"Metadata-Version: 2.1\nName: veloxdemo\nVersion: 1.0.0\n".to_vec(),
+            ),
+            (
+                format!("{dist_info}/WHEEL"),
+                b"Wheel-Version: 1.0\nGenerator: velodex-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n".to_vec(),
+            ),
+        ];
+        for (path, bytes) in &entries {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let record_path = format!("{dist_info}/RECORD");
+        zip.start_file(&record_path, options).unwrap();
+        zip.write_all(wheel_record(&entries, &record_path).as_bytes()).unwrap();
         zip.finish().unwrap();
     }
     upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;
@@ -298,6 +312,16 @@ async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() 
     let (status, content) = get(&router, &member_url).await;
     assert_eq!(status, StatusCode::OK);
     assert!(content.contains("x = 1"));
+}
+
+fn wheel_record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {
+    let mut record = String::new();
+    for (path, bytes) in entries {
+        let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(bytes));
+        writeln!(record, "{path},sha256={digest},{}", bytes.len()).unwrap();
+    }
+    writeln!(record, "{record_path},,").unwrap();
+    record
 }
 
 #[tokio::test]

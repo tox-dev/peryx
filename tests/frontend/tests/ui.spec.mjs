@@ -60,7 +60,7 @@ test("project page renders pypi.org-style metadata", async ({ page }) => {
   // The file table shows size, hash, and the metadata badge.
   const row = page.locator("table.files tbody tr");
   await expect(row.locator(".badge.meta-badge")).toBeVisible();
-  await expect(row).toContainText("1.1 kB");
+  await expect(row).toContainText("1.2 kB");
 });
 
 test("archive browser lists members and shows file content", async ({ page }) => {
