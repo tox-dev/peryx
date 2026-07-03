@@ -4,9 +4,10 @@ description = "Upload distributions with twine or uv publish, authenticated by a
 weight = 5
 +++
 
-velodex accepts the [legacy upload API](https://docs.pypi.org/api/upload/), the wire protocol both [twine](https://twine.readthedocs.io/) and
-[`uv publish`](https://docs.astral.sh/uv/guides/package/) speak. Uploads need a local index with an `upload_token`; the default topology's `local` index has none,
-so uploads are off until you set one:
+velodex accepts the [legacy upload API](https://docs.pypi.org/api/upload/), the wire protocol both
+[twine](https://twine.readthedocs.io/) and [`uv publish`](https://docs.astral.sh/uv/guides/package/) speak. Uploads need
+a local index with an `upload_token`; the default topology's `local` index has none, so uploads are off until you set
+one:
 
 ```toml
 [[index]]
@@ -32,14 +33,23 @@ twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <
 uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
 ```
 
-velodex verifies the declared sha256 digest against the received bytes, stores the file content-addressed, and serves
-it from `/root/pypi/simple/<project>/` alongside the mirror's packages. Your file shadows an upstream file of the
-same name. For wheels, velodex extracts the `METADATA` document and serves it as the PEP 658 sibling, exactly as
-pypi.org does, so resolvers get the fast path for your uploads too and the web UI can show the full package page.
+velodex accepts wheels and modern `.tar.gz` source distributions. It rejects `.egg`, `.zip`, and ambiguous legacy
+archives on upload; those files can still be mirrored if an upstream index lists them. During upload, velodex checks the
+declared sha256 and blake2b-256 digests while streaming the artifact into a staged blob. A lone md5 digest is rejected.
+
+Before publishing the staged blob, velodex validates the project name, PEP 440 version, safe filename shape, `filetype`,
+archive readability, and metadata identity. The filename, form fields, and `METADATA` or `PKG-INFO` `Name` and `Version`
+must agree. `Requires-Python`, when present in the form or metadata, must parse as Python version specifiers.
+
+Accepted files are stored content-addressed and served from `/root/pypi/simple/<project>/` alongside the mirror's
+packages. Your file shadows an upstream file of the same name. For wheels, velodex extracts the `METADATA` document and
+serves it as the PEP 658 sibling, so resolvers get the fast path for your uploads too and the web UI can show the full
+package page.
 
 ## In `.pypirc`
 
-The [`.pypirc` file](https://packaging.python.org/en/latest/specifications/pypirc/) holds the repository and credentials:
+The [`.pypirc` file](https://packaging.python.org/en/latest/specifications/pypirc/) holds the repository and
+credentials:
 
 ```ini
 [distutils]
@@ -53,6 +63,16 @@ password = <secret>
 
 `twine upload -r velodex dist/*` then works without flags.
 
+## Upload failures
+
+Validation failures return `400` with the field or archive check that failed. Common causes:
+
+- The filename is not a wheel or `.tar.gz` sdist.
+- The filename's normalized project name or version does not match the form fields.
+- The archive is corrupt or missing `METADATA` or `PKG-INFO`.
+- Core metadata names a different project or version.
+- A declared sha256 or blake2b-256 digest does not match the received bytes.
+- The same filename was already uploaded with different bytes.
 
 ## Related
 

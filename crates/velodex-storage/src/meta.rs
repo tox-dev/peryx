@@ -392,6 +392,17 @@ impl MetaStore {
         Ok(())
     }
 
+    /// Fetch one uploaded file record.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn get_upload(&self, index: &str, normalized: &str, filename: &str) -> Result<Option<Vec<u8>>, MetaError> {
+        let key = format!("{index}/{normalized}/{filename}");
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(UPLOAD)?;
+        Ok(table.get(key.as_str())?.map(|value| value.value().to_vec()))
+    }
+
     /// List the `(filename, record)` pairs uploaded for `normalized` on `index`, sorted by filename.
     ///
     /// # Errors

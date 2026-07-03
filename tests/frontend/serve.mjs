@@ -53,6 +53,7 @@ for (let attempt = 0; attempt < 100; attempt += 1) {
     form.set(":action", "file_upload");
     form.set("name", "veloxdemo");
     form.set("version", "1.0.0");
+    form.set("filetype", "bdist_wheel");
     form.set("content", new Blob([wheel]), "veloxdemo-1.0.0-py3-none-any.whl");
     const response = await fetch("http://127.0.0.1:4455/root/pypi/", {
       method: "POST",

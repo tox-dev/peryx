@@ -689,15 +689,63 @@ fn read_error(err: impl std::fmt::Display) -> ArchiveError {
 /// sibling of an upload. Returns `None` for non-wheels or wheels without one.
 #[must_use]
 pub fn wheel_metadata(filename: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    wheel_metadata_reader(filename, Cursor::new(bytes)).ok().flatten()
+}
+
+/// Extract a wheel's `*.dist-info/METADATA` document from a staged file without buffering the wheel.
+///
+/// # Errors
+/// Returns [`ArchiveError::Read`] when the staged file or ZIP cannot be read.
+pub fn wheel_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>>, ArchiveError> {
+    let file = std::fs::File::open(path).map_err(read_error)?;
+    wheel_metadata_reader(filename, file)
+}
+
+/// Extract an sdist's `PKG-INFO` document from a staged file without buffering the sdist.
+///
+/// # Errors
+/// Returns [`ArchiveError::Read`] when the staged file or tarball cannot be read.
+pub fn sdist_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>>, ArchiveError> {
+    if !is_tar_gz(filename) {
+        return Ok(None);
+    }
+    let file = std::fs::File::open(path).map_err(read_error)?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for entry in archive.entries().map_err(read_error)? {
+        let mut entry = entry.map_err(read_error)?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
+        let path = safe_member_name(&path)?;
+        if path == "PKG-INFO" || path.ends_with("/PKG-INFO") {
+            let mut bytes = Vec::with_capacity(entry.size().min(256 * 1024) as usize);
+            entry.read_to_end(&mut bytes).map_err(read_error)?;
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
+}
+
+fn wheel_metadata_reader(filename: &str, reader: impl Read + Seek) -> Result<Option<Vec<u8>>, ArchiveError> {
     if !std::path::Path::new(filename)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("whl"))
     {
-        return None;
+        return Ok(None);
     }
-    let member = list_members(filename, bytes)
-        .ok()?
-        .into_iter()
-        .find(|member| member.path.ends_with(".dist-info/METADATA"))?;
-    read_member(filename, bytes, &member.path).ok()
+    let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
+    for position in 0..archive.len() {
+        let mut entry = archive.by_index(position).map_err(read_error)?;
+        if !entry.is_file() {
+            continue;
+        }
+        let name = safe_member_name(entry.name())?;
+        if name.ends_with(".dist-info/METADATA") {
+            let mut bytes = Vec::with_capacity(entry.size().min(256 * 1024) as usize);
+            entry.read_to_end(&mut bytes).map_err(read_error)?;
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
 }

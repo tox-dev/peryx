@@ -6,9 +6,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
+use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
+use velodex_http::path_safety::local_file_url;
+use velodex_http::upload::Uploaded;
+use velodex_storage::blob::Digest;
 
 use crate::config::{Config, IndexConfig, IndexKind};
-use crate::server::build_router;
+use crate::server::{build_router, build_state, router_for};
 
 fn ui_config(dir: &tempfile::TempDir) -> Config {
     Config {
@@ -65,7 +69,19 @@ async fn upload_fixture(router: &axum::Router) {
 async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     let boundary = "velodexuitest";
     let mut body = Vec::new();
-    for (name, value) in [(":action", "file_upload"), ("name", "veloxdemo"), ("version", "1.0.0")] {
+    let filetype = if filename.ends_with(".tar.gz") {
+        "sdist"
+    } else {
+        "bdist_wheel"
+    };
+    let sha256 = Digest::of(content);
+    for (name, value) in [
+        (":action", "file_upload"),
+        ("name", "veloxdemo"),
+        ("version", "1.0.0"),
+        ("filetype", filetype),
+        ("sha256_digest", sha256.as_str()),
+    ] {
         body.extend_from_slice(
             format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
         );
@@ -94,6 +110,29 @@ async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
         .unwrap();
     let response = router.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8]) {
+    let digest = Digest::of(content);
+    state.blobs.write_verified(content, &digest).unwrap();
+    let uploaded = Uploaded {
+        version: "1.0.0".to_owned(),
+        file: File {
+            filename: filename.to_owned(),
+            url: local_file_url("local", digest.as_str(), filename),
+            hashes: std::collections::BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+            requires_python: None,
+            size: Some(content.len() as u64),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+        },
+    };
+    state
+        .meta
+        .put_upload("local", "veloxdemo", filename, &to_json(&uploaded).into_bytes())
+        .unwrap();
+    state.meta.put_project("local", "veloxdemo", "veloxdemo").unwrap();
 }
 
 #[tokio::test]
@@ -162,8 +201,9 @@ async fn test_ui_project_page_missing_project() {
 #[tokio::test]
 async fn test_ui_project_page_hides_contents_for_unsupported_files() {
     let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
-    upload_file(&router, "veloxdemo-1.0.0.egg", b"legacy egg").await;
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_legacy_file(&state, "veloxdemo-1.0.0.egg", b"legacy egg");
+    let router = router_for(state);
     let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("veloxdemo-1.0.0.egg"));
@@ -221,6 +261,9 @@ async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() 
         zip.write_all(&[0xff, 0xfe]).unwrap();
         zip.start_file("vendor/inner.zip", options).unwrap();
         zip.write_all(&inner).unwrap();
+        zip.start_file("veloxdemo-1.0.0.dist-info/METADATA", options).unwrap();
+        zip.write_all(b"Metadata-Version: 2.1\nName: veloxdemo\nVersion: 1.0.0\n")
+            .unwrap();
         zip.finish().unwrap();
     }
     upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;

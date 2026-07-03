@@ -1,3 +1,4 @@
+mod filename_tests;
 mod html_tests;
 mod metadata_tests;
 mod name_tests;

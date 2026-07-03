@@ -1,0 +1,63 @@
+use crate::pypi::{DistributionFilenameError, DistributionKind, parse_distribution_filename};
+
+#[test]
+fn test_parse_distribution_filename_accepts_upload_formats() {
+    for (filename, kind, name, version) in [
+        ("Flask-1.0-py3-none-any.whl", DistributionKind::Wheel, "Flask", "1.0"),
+        ("Flask-1.0-1-py3-none-any.whl", DistributionKind::Wheel, "Flask", "1.0"),
+        (
+            "zope.interface-7.2-cp313-cp313-macosx_11_0_arm64.whl",
+            DistributionKind::Wheel,
+            "zope.interface",
+            "7.2",
+        ),
+        ("Flask-1.0.tar.gz", DistributionKind::SdistTarGz, "Flask", "1.0"),
+        ("Flask-1.0-PY3-NONE-ANY.WHL", DistributionKind::Wheel, "Flask", "1.0"),
+        ("Flask-1.0.TAR.GZ", DistributionKind::SdistTarGz, "Flask", "1.0"),
+    ] {
+        let parsed = parse_distribution_filename(filename).unwrap();
+        assert_eq!(parsed.kind, kind);
+        assert_eq!(
+            parsed.kind.upload_filetype(),
+            match kind {
+                DistributionKind::Wheel => "bdist_wheel",
+                DistributionKind::SdistTarGz => "sdist",
+            }
+        );
+        assert_eq!(parsed.name, name);
+        assert_eq!(parsed.normalized_name, crate::pypi::normalize_name(name));
+        assert_eq!(parsed.version.to_string(), version);
+    }
+}
+
+#[test]
+fn test_parse_distribution_filename_rejects_bad_shapes() {
+    for (filename, expected) in [
+        ("pkg-1.0.egg", DistributionFilenameError::LegacyEgg),
+        ("pkg-1.0.zip", DistributionFilenameError::UnsupportedExtension),
+        ("pkg-1.0-py3-none.whl", DistributionFilenameError::InvalidWheelShape),
+        (
+            "pkg-1.0-py3-*-any.whl",
+            DistributionFilenameError::InvalidTag("*".to_owned()),
+        ),
+        (
+            "pkg-1.0--py3-none-any.whl",
+            DistributionFilenameError::InvalidWheelShape,
+        ),
+        (
+            "pkg-1.0-build-py3-none-any.whl",
+            DistributionFilenameError::InvalidTag("build".to_owned()),
+        ),
+        (
+            "pkg!-1.0-py3-none-any.whl",
+            DistributionFilenameError::InvalidName("pkg!".to_owned()),
+        ),
+        (
+            "pkg-bad-py3-none-any.whl",
+            DistributionFilenameError::InvalidVersion("bad".to_owned()),
+        ),
+        ("pkg.tar.gz", DistributionFilenameError::InvalidSdistShape),
+    ] {
+        assert_eq!(parse_distribution_filename(filename).unwrap_err(), expected);
+    }
+}

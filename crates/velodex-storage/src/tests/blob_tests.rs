@@ -95,6 +95,21 @@ fn test_streamed_blob_commits_after_verification() {
 }
 
 #[test]
+fn test_staged_blob_reports_digest_and_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let mut pending = store.begin().unwrap();
+    pending.write(b"staged").unwrap();
+    let staged = pending.finish().unwrap();
+    assert_eq!(
+        (staged.digest(), staged.len(), staged.is_empty()),
+        (&Digest::of(b"staged"), 6, false)
+    );
+    store.commit_staged(staged).unwrap();
+    assert_eq!(store.read(&Digest::of(b"staged")).unwrap(), b"staged");
+}
+
+#[test]
 fn test_streamed_blob_with_wrong_digest_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let store = BlobStore::new(dir.path().join("blobs"));

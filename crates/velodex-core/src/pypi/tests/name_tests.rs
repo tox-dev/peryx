@@ -1,4 +1,4 @@
-use crate::pypi::{PackageName, normalize_name};
+use crate::pypi::{PackageName, is_valid_name, normalize_name};
 
 #[test]
 fn test_normalize_name_matches_pep503() {
@@ -29,4 +29,14 @@ fn test_package_name_normalizes_and_displays() {
 #[test]
 fn test_package_name_equal_when_normalized_equal() {
     assert_eq!(PackageName::new("Foo_Bar"), PackageName::new("foo-bar"));
+}
+
+#[test]
+fn test_is_valid_name_matches_pypa_shape() {
+    for valid in ["a", "Flask", "zope.interface", "a_b-c.1"] {
+        assert!(is_valid_name(valid), "{valid}");
+    }
+    for invalid in ["", "-a", "a-", ".a", "a.", "bad/name", "snow☃"] {
+        assert!(!is_valid_name(invalid), "{invalid}");
+    }
 }

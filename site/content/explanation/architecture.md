@@ -151,6 +151,11 @@ Writes go to a temp file, fsync, then an atomic rename, so a crash cannot leave 
 digest, so anything present is by construction correct. One wheel uploaded to two indexes, or cached from two mirrors,
 occupies disk once.
 
+Uploads use the same staged path as downloads: the multipart `content` field streams into a temp blob while sha256 and
+blake2b-256 are computed. Validation reads the archive back from that staged file, so a large wheel is not buffered in
+the HTTP handler. Only the core metadata document is loaded into memory, and only after the archive and filename checks
+identify the expected member.
+
 ## Why PEP 658 matters here
 
 Resolvers spend most of their network time learning dependencies. The [PEP 658/714](https://peps.python.org/pep-0658/)
