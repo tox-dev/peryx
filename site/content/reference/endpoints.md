@@ -12,6 +12,8 @@ breaks each endpoint down with copyable example requests and responses.
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `GET /{route}/simple/`                              | Project list, JSON or HTML by `Accept`                                                     |
 | `GET /{route}/simple/{project}/`                    | Project detail, merged across overlay layers                                               |
+| `GET /{route}/{project}/json`                       | Legacy PyPI project JSON: `info`, `releases`, and latest-release `urls`                    |
+| `GET /{route}/{project}/{version}/json`             | Legacy PyPI release JSON for one version                                                   |
 | `GET /{route}/files/{sha256}/{filename}`            | Artifact download, cached content-addressed                                                |
 | `GET /{route}/files/{sha256}/{filename}.metadata`   | [PEP 658](https://peps.python.org/pep-0658/) core-metadata sibling                         |
 | `POST /{route}/`                                    | Upload ([legacy API](https://docs.pypi.org/api/upload/), used by twine and `uv publish`)   |
@@ -39,6 +41,12 @@ Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+
 `meta.api-version` 1.4. velodex preserves upstream Simple API fields it understands, including `versions`, `size`,
 `upload-time`, `project-status`, `provenance`, `gpg-sig`, and both `core-metadata` and `dist-info-metadata`.
 
+Legacy PyPI JSON API responses use `application/json`. Velodex builds `/pypi/<project>/json`-style responses from the
+resolved Simple detail page for the requested index route, so `releases`, `urls`, hashes, yanked markers, upload time,
+size, and `requires_python` match the Simple API. Simple pages do not carry PyPI's upload-form metadata, vulnerability
+database, ownership data, download counts, last serial values, or MD5/BLAKE2 hashes when the upstream did not advertise
+them; those fields are null, empty, `0`, or `-1`.
+
 ## Discovery
 
 `GET /+api` returns a compact JSON document for the server and every configured index. `GET /{route}/+api` returns the
@@ -51,8 +59,8 @@ snippet uses `__token__` as the username and `<upload-token>` as the password, a
 upload token. Read-only indexes omit upload URLs and `.pypirc`.
 
 Capability flags describe the current route only. `uploads`, `yanking`, and `volatile_deletes` follow the configured
-local upload target; Simple HTML/JSON and PEP 658 metadata siblings are true for all indexes. `project_status`,
-`provenance`, and `legacy_json` stay false until those protocol surfaces exist.
+local upload target; Simple HTML/JSON, PEP 658 metadata siblings, project status, provenance, and legacy JSON are true
+for all indexes.
 
 ## Authentication
 

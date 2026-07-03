@@ -397,7 +397,7 @@
                 "example": {
                   "index": {
                     "capabilities": {
-                      "legacy_json": false,
+                      "legacy_json": true,
                       "metadata_siblings": true,
                       "project_status": true,
                       "provenance": true,
@@ -982,6 +982,111 @@
         ]
       }
     },
+    "/{route}/{project}/json": {
+      "get": {
+        "tags": [
+          "legacy"
+        ],
+        "summary": "Legacy project JSON",
+        "description": "PyPI's legacy project JSON shape, built from the resolved Simple API detail page. The `releases` and `urls` file entries preserve hashes, yanked markers, upload time, size, and `requires_python`; metadata that Simple pages do not expose is null, empty, or `-1`.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The legacy project JSON document",
+            "content": {
+              "application/json": {
+                "example": {
+                  "info": {
+                    "downloads": {
+                      "last_day": -1,
+                      "last_month": -1,
+                      "last_week": -1
+                    },
+                    "name": "velodexpkg",
+                    "requires_python": ">=3.8",
+                    "summary": "",
+                    "version": "1.0",
+                    "yanked": false,
+                    "yanked_reason": null
+                  },
+                  "last_serial": 0,
+                  "ownership": {
+                    "organization": null,
+                    "roles": []
+                  },
+                  "releases": {
+                    "1.0": [
+                      {
+                        "comment_text": "",
+                        "digests": {
+                          "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                        },
+                        "downloads": -1,
+                        "filename": "velodexpkg-1.0-py3-none-any.whl",
+                        "has_sig": false,
+                        "md5_digest": null,
+                        "packagetype": "bdist_wheel",
+                        "python_version": "py3",
+                        "requires_python": ">=3.8",
+                        "size": 1832,
+                        "upload_time": "2026-01-01T00:00:00",
+                        "upload_time_iso_8601": "2026-01-01T00:00:00Z",
+                        "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
+                        "yanked": false,
+                        "yanked_reason": null
+                      }
+                    ]
+                  },
+                  "urls": [
+                    {
+                      "comment_text": "",
+                      "digests": {
+                        "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                      },
+                      "downloads": -1,
+                      "filename": "velodexpkg-1.0-py3-none-any.whl",
+                      "has_sig": false,
+                      "md5_digest": null,
+                      "packagetype": "bdist_wheel",
+                      "python_version": "py3",
+                      "requires_python": ">=3.8",
+                      "size": 1832,
+                      "upload_time": "2026-01-01T00:00:00",
+                      "upload_time_iso_8601": "2026-01-01T00:00:00Z",
+                      "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
+                      "yanked": false,
+                      "yanked_reason": null
+                    }
+                  ],
+                  "vulnerabilities": []
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No layer has the project"
+          },
+          "502": {
+            "description": "The upstream failed and nothing is cached"
+          }
+        }
+      }
+    },
     "/{route}/{project}/{version}/": {
       "delete": {
         "tags": [
@@ -1039,6 +1144,95 @@
             "uploadToken": []
           }
         ]
+      }
+    },
+    "/{route}/{project}/{version}/json": {
+      "get": {
+        "tags": [
+          "legacy"
+        ],
+        "summary": "Legacy release JSON",
+        "description": "Version-specific legacy JSON. This has the same `info`, `urls`, `vulnerabilities`, and `ownership` shape as the project endpoint, without the deprecated `releases` map.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "The normalized (PEP 503) project name",
+            "required": true,
+            "example": "requests"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "One release version",
+            "required": true,
+            "example": "1.2.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The legacy release JSON document",
+            "content": {
+              "application/json": {
+                "example": {
+                  "info": {
+                    "downloads": {
+                      "last_day": -1,
+                      "last_month": -1,
+                      "last_week": -1
+                    },
+                    "name": "velodexpkg",
+                    "requires_python": ">=3.8",
+                    "summary": "",
+                    "version": "1.0",
+                    "yanked": false,
+                    "yanked_reason": null
+                  },
+                  "last_serial": 0,
+                  "ownership": {
+                    "organization": null,
+                    "roles": []
+                  },
+                  "urls": [
+                    {
+                      "comment_text": "",
+                      "digests": {
+                        "sha256": "0ace7980f82c5815ede4cd7bf9f6693684cec2ae47b9b7ade9add533b8627c6b"
+                      },
+                      "downloads": -1,
+                      "filename": "velodexpkg-1.0.tar.gz",
+                      "has_sig": false,
+                      "md5_digest": null,
+                      "packagetype": "sdist",
+                      "python_version": "source",
+                      "requires_python": ">=3.8",
+                      "size": 5760,
+                      "upload_time": "2026-01-01T00:00:01",
+                      "upload_time_iso_8601": "2026-01-01T00:00:01Z",
+                      "url": "/root/pypi/files/0ace7980f82c5815ede4cd7bf9f6693684cec2ae47b9b7ade9add533b8627c6b/velodexpkg-1.0.tar.gz",
+                      "yanked": false,
+                      "yanked_reason": null
+                    }
+                  ],
+                  "vulnerabilities": []
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No layer has the project or version"
+          },
+          "502": {
+            "description": "The upstream failed and nothing is cached"
+          }
+        }
       }
     },
     "/{route}/{project}/{version}/restore": {

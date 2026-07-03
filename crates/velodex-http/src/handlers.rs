@@ -18,7 +18,7 @@ use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use velodex_core::pypi::{
     DistributionFilenameError, ProjectDetail, ProjectList, ProjectStatus, Yanked, normalize_name, render_detail_html,
-    render_index_html, to_json,
+    render_index_html, render_legacy_json, to_json,
 };
 use velodex_storage::blob::Digest;
 
@@ -31,6 +31,7 @@ use crate::state::{AppState, Index, IndexKind, describe_index};
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
+const MIME_LEGACY_JSON: &str = "application/json";
 const MIME_HTML: &str = "text/html; charset=utf-8";
 const MEMBER_SIZE_HEADER: &str = "x-velodex-member-size";
 const MEMBER_OFFSET_HEADER: &str = "x-velodex-member-offset";
@@ -79,6 +80,22 @@ pub async fn dispatch_get(
         };
         params.route = Some(index.route.clone());
         return search_response(&state, params);
+    }
+    match legacy_json_target(rest) {
+        Ok(Some(target)) => {
+            state.metrics.record(Event::Page {
+                route: index.route.clone(),
+                project: target.project.clone(),
+            });
+            return legacy_json_response(
+                cache::resolve_detail(&state, index, &target.project, &index.route).await,
+                &index.route,
+                &target.project,
+                target.version.as_deref(),
+            );
+        }
+        Ok(None) => {}
+        Err(response) => return response,
     }
     if rest == "simple/" {
         return index_response(cache::resolve_list(&state, index), negotiate(&headers), &index.route);
@@ -359,6 +376,34 @@ fn safe_filename(raw: &str) -> Result<String, PathSafetyError> {
 
 fn path_error_response(err: &PathSafetyError) -> Response {
     (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+}
+
+struct LegacyJsonTarget {
+    project: String,
+    version: Option<String>,
+}
+
+fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> {
+    let trimmed = rest.trim_end_matches('/');
+    let Some(spec) = trimmed.strip_suffix("/json") else {
+        return Ok(None);
+    };
+    let Some((project, version)) = spec.split_once('/') else {
+        let project = path_safety::decode_path_segment(spec).map_err(|err| path_error_response(&err))?;
+        path_safety::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
+        return Ok(Some(LegacyJsonTarget {
+            project: normalize_name(&project),
+            version: None,
+        }));
+    };
+    let project = path_safety::decode_path_segment(project).map_err(|err| path_error_response(&err))?;
+    let version = path_safety::decode_path(version).map_err(|err| path_error_response(&err))?;
+    path_safety::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
+    path_safety::validate_path_segment("version", &version).map_err(|err| path_error_response(&err))?;
+    Ok(Some(LegacyJsonTarget {
+        project: normalize_name(&project),
+        version: Some(version),
+    }))
 }
 
 /// Stream a blob to the client: from disk when cached, teed from the source mirror otherwise.
@@ -924,6 +969,43 @@ pub(crate) fn detail_response(
         Format::Json => ([(header::CONTENT_TYPE, MIME_JSON), vary], to_json(&detail)).into_response(),
         Format::Html => ([(header::CONTENT_TYPE, MIME_HTML), vary], render_detail_html(&detail)).into_response(),
     }
+}
+
+fn legacy_json_response(
+    result: Result<Option<ProjectDetail>, CacheError>,
+    index: &str,
+    project: &str,
+    version: Option<&str>,
+) -> Response {
+    let detail = match result {
+        Ok(Some(detail)) => detail,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("project {project:?} was not found on index {index:?}"),
+            )
+                .into_response();
+        }
+        Err(CacheError::Upstream(
+            err @ (velodex_upstream::UpstreamError::MissingContentType { .. }
+            | velodex_upstream::UpstreamError::UnsupportedContentType { .. }),
+        )) => {
+            tracing::warn!(error = ?err, "unsupported upstream simple api content type");
+            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+        }
+        Err(err) => {
+            tracing::error!(error = ?err, "legacy project json failed");
+            return cache_error_response(&err, CacheContext::project(index, project));
+        }
+    };
+    let Some(body) = render_legacy_json(&detail, version) else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("version {version:?} was not found for project {project:?} on index {index:?}"),
+        )
+            .into_response();
+    };
+    ([(header::CONTENT_TYPE, MIME_LEGACY_JSON)], body).into_response()
 }
 
 /// Map a file-bytes result to a response. Sync so every arm is directly unit-testable.

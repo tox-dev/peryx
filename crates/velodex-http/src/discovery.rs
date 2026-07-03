@@ -236,7 +236,7 @@ where
         "volatile_deletes": capabilities.volatile_deletes,
         "project_status": true,
         "provenance": true,
-        "legacy_json": false,
+        "legacy_json": true,
     })
     .serialize(serializer)
 }

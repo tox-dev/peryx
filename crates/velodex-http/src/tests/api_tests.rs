@@ -7,6 +7,8 @@ fn test_openapi_document_covers_every_endpoint() {
     for path in [
         "/{route}/simple/",
         "/{route}/simple/{project}/",
+        "/{route}/{project}/json",
+        "/{route}/{project}/{version}/json",
         "/{route}/files/{sha256}/{filename}",
         "/{route}/files/{sha256}/{filename}.metadata",
         "/{route}/",
@@ -27,7 +29,7 @@ fn test_openapi_document_covers_every_endpoint() {
     ] {
         assert!(paths.contains_key(path), "missing path {path}");
     }
-    assert_eq!(paths.len(), 19);
+    assert_eq!(paths.len(), 21);
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
 }
 

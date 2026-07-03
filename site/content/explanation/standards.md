@@ -43,6 +43,7 @@ and "parsed".
 | [PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/)                                                                                                        | Version parsing, ordering, and `Requires-Python` validation                                                                           |
 | [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; modern `.tar.gz` sdist filename, root, and required-file checks           |
 | [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/)                                                                                                       | `METADATA` and `PKG-INFO` parsing for upload identity checks, PEP 658 siblings, and Metadata 2.4+ sdist license-file checks           |
+| [Legacy JSON API](https://docs.pypi.org/api/json/)                                                                                                                                          | Compatibility responses for tools that call `/pypi/{project}/json` and `/pypi/{project}/{version}/json`                               |
 | [Legacy upload API](https://docs.pypi.org/api/upload/)                                                                                                                                      | The multipart upload protocol twine and `uv publish` speak                                                                            |
 | [`.pypirc`](https://packaging.python.org/en/latest/specifications/pypirc/)                                                                                                                  | The `__token__` authentication convention for uploads and upstream mirrors                                                            |
 
@@ -61,8 +62,9 @@ index. An upstream that advertises another Simple API major version is rejected 
 Simple API 1.x.
 
 The discovery documents at `/+api` and `/{route}/+api` report only capabilities Velodex implements today. They advertise
-Simple HTML/JSON, api-version 1.1, and PEP 658 metadata siblings. `project_status`, `provenance`, and `legacy_json` are
-false until Velodex preserves Simple API 1.4 fields and serves the legacy JSON API.
+Simple HTML/JSON, api-version 1.4, PEP 658 metadata siblings, project status, provenance, and legacy JSON. The legacy
+JSON responses are derived from Simple detail pages, so fields outside that source, such as ownership and vulnerability
+data, are empty.
 
 ## In practice
 
