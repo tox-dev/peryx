@@ -1,6 +1,6 @@
 +++
 title = "Use the web UI"
-description = "Browse indexes, read package pages, inspect status, and inspect archive contents from the browser."
+description = "Search packages, browse indexes, read package pages, inspect status, and inspect archives from the browser."
 weight = 7
 +++
 
@@ -31,6 +31,13 @@ upload tokens, upstream passwords, bearer tokens, URL user info, URL queries, or
 
 ## Browsing packages
 
+The header search box starts suggesting packages after two characters. Suggestions and the full `/search` page use the
+same `GET /+search` API, so hosted uploads, cached upstream pages, and overlay overrides rank from one indexed view.
+
+`/search` keeps `q`, `type`, `page`, and `page_size` in the URL. The `type` filter accepts hosted, upstream, and
+upstream-overrides packages; the UI labels the last one as `Upstream+`. Page size choices are 25, 50, and 100, and the
+browser stores the last selected size for the next search.
+
 An index card links to its project list, filterable as you type. A project page shows what pypi.org would: the rendered
 long description, summary, install command with a copy button, versions, dependencies, keywords, license, author,
 project links, grouped classifiers, and a file table with sizes, upload dates, sha256 digests, and yank/metadata badges.
@@ -58,7 +65,7 @@ deleting uploads needs a `volatile` index, and files served from a mirror are hi
 
 The interactive layer is a wasm bundle built by [cargo-leptos](https://github.com/leptos-rs/cargo-leptos)
 (`cargo leptos build --release`, output in `ui/pkg/`, served at `/pkg`). Without the bundle every page still renders
-server-side; filtering, live counters, and the admin buttons need it.
+server-side; typeahead, filtering, live counters, stored page-size choices, and the admin buttons need it.
 
 ## Related
 

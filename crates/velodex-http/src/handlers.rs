@@ -26,6 +26,7 @@ use crate::cache::{self, CacheError, PageOutcome};
 use crate::discovery::{self, BaseUrl};
 use crate::metrics::Event;
 use crate::path_safety::{self, PathSafetyError};
+use crate::search::{SearchError, SearchParams};
 use crate::state::{AppState, Index, IndexKind, describe_index};
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
 
@@ -70,6 +71,14 @@ pub async fn dispatch_get(
     if matches!(rest, "+api" | "+api/") {
         let base = BaseUrl::from_request(&headers, &uri);
         return index_api(&state, position, base.as_ref());
+    }
+    if matches!(rest, "+search" | "+search/") {
+        let mut params = match SearchParams::from_query(uri.query()) {
+            Ok(params) => params,
+            Err(err) => return search_error_response(&err),
+        };
+        params.route = Some(index.route.clone());
+        return search_response(&state, params);
     }
     if rest == "simple/" {
         return index_response(cache::resolve_list(&state, index), negotiate(&headers), &index.route);
@@ -1059,6 +1068,29 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
+fn search_response(state: &AppState, params: SearchParams) -> Response {
+    match state.search.search(state, params) {
+        Ok(results) => axum::Json(results).into_response(),
+        Err(err) => search_error_response(&err),
+    }
+}
+
+fn search_error_response(err: &SearchError) -> Response {
+    let status = match err {
+        SearchError::InvalidSource(_) | SearchError::Tantivy(tantivy::TantivyError::InvalidArgument(_)) => {
+            StatusCode::BAD_REQUEST
+        }
+        SearchError::Tantivy(_)
+        | SearchError::Directory(_)
+        | SearchError::Io(_)
+        | SearchError::Meta(_)
+        | SearchError::Blob(_)
+        | SearchError::Json(_)
+        | SearchError::Simple(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, axum::Json(serde_json::json!({ "error": err.to_string() }))).into_response()
+}
+
 /// Drain a multipart body into an [`UploadForm`], staging the `content` part on disk while the rest
 /// stays as UTF-8 text. Unknown fields are ignored, as the upload API carries many metadata fields
 /// velodex does not need. Every read or decode error funnels through [`reject`] as a 400.
@@ -1331,6 +1363,14 @@ pub async fn openapi_spec() -> Response {
 pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri, headers: HeaderMap) -> Response {
     let base = BaseUrl::from_request(&headers, &uri);
     axum::Json(discovery::root_document(&state, base.as_ref())).into_response()
+}
+
+/// `GET /+search` — search cached packages across configured indexes.
+pub async fn search(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri) -> Response {
+    match SearchParams::from_query(uri.query()) {
+        Ok(params) => search_response(&state, params),
+        Err(err) => search_error_response(&err),
+    }
 }
 
 fn index_api(state: &AppState, position: usize, base: Option<&BaseUrl>) -> Response {

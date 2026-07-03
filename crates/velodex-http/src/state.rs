@@ -10,6 +10,7 @@ use velodex_storage::meta::MetaStore;
 use velodex_upstream::UpstreamClient;
 
 use crate::metrics::Metrics;
+use crate::search::{PackageSearch, SearchError};
 
 /// A source of the current unix time, injectable so cache-freshness logic is deterministic in
 /// tests.
@@ -72,6 +73,8 @@ pub struct AppState {
     pub epoch: AtomicU64,
     /// Off-thread usage aggregation: index → project → file counters for the dashboard.
     pub metrics: Metrics,
+    /// Derived package search index, refreshed from storage when the mutation epoch advances.
+    pub search: PackageSearch,
 }
 
 impl AppState {
@@ -84,6 +87,38 @@ impl AppState {
     /// Build the state with an injected clock.
     #[must_use]
     pub fn with_clock(meta: MetaStore, blobs: BlobStore, ttl_secs: i64, indexes: Vec<Index>, clock: Clock) -> Self {
+        Self::with_clock_and_search(meta, blobs, ttl_secs, indexes, clock, PackageSearch::in_memory())
+    }
+
+    /// Build the state with an on-disk search index.
+    ///
+    /// # Errors
+    /// Returns an error if the search index cannot be opened.
+    pub fn with_search_path(
+        meta: MetaStore,
+        blobs: BlobStore,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        search_path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, SearchError> {
+        Ok(Self::with_clock_and_search(
+            meta,
+            blobs,
+            ttl_secs,
+            indexes,
+            Arc::new(system_now),
+            PackageSearch::open(search_path)?,
+        ))
+    }
+
+    fn with_clock_and_search(
+        meta: MetaStore,
+        blobs: BlobStore,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        clock: Clock,
+        search: PackageSearch,
+    ) -> Self {
         Self {
             meta,
             blobs,
@@ -106,6 +141,7 @@ impl AppState {
             negative: moka::sync::Cache::builder().max_capacity(65_536).build(),
             epoch: AtomicU64::new(0),
             metrics: Metrics::start(),
+            search,
         }
     }
 

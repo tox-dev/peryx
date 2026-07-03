@@ -19,6 +19,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api-docs/openapi.json", get(handlers::openapi_spec))
         .route("/+api", get(handlers::api))
         .route("/+api/", get(handlers::api))
+        .route("/+search", get(handlers::search))
+        .route("/+search/", get(handlers::search))
         .route("/+status", get(handlers::status))
         .route("/+stats", get(handlers::stats))
         .route("/metrics", get(handlers::metrics))

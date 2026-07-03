@@ -1,7 +1,7 @@
 use velodex_core::pypi::parse_metadata;
 
 use crate::markdown::render_description;
-use crate::model::{UiProject, UiSnapshot, members_from_listing, projects_from_list};
+use crate::model::{UiProject, UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};
 
 #[test]
 fn test_snapshot_from_status_roundtrip() {
@@ -68,6 +68,30 @@ fn test_projects_and_members_from_json() {
     assert_eq!(members[0].size, 5);
     assert_eq!(members[0].kind, "text");
     assert!(members[0].previewable);
+}
+
+#[test]
+fn test_search_page_from_json() {
+    let value = serde_json::json!({
+        "query": "flask",
+        "type": "upstream-overrides",
+        "page": 2,
+        "page_size": 50,
+        "total": 51,
+        "results": [{
+            "display_name": "Flask",
+            "normalized_name": "flask",
+            "route": "root/pypi",
+            "repository": "root/pypi",
+            "type": "upstream-overrides",
+            "summary": "web framework",
+        }],
+    });
+    let page = UiSearchPage::from_search(&value);
+    assert_eq!(page.query, "flask");
+    assert_eq!(page.page, 2);
+    assert_eq!(page.results[0].source_label(), "Upstream+");
+    assert_eq!(page.results[0].summary.as_deref(), Some("web framework"));
 }
 
 #[test]

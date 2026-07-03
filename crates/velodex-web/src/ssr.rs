@@ -8,10 +8,13 @@ use axum::extract::FromRef;
 use leptos::prelude::*;
 use leptos_axum::{LeptosRoutes as _, generate_route_list};
 use velodex_core::pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
+use velodex_http::search::{SearchParams, SourceFilter};
 use velodex_http::{AppState, cache};
 use velodex_storage::blob::Digest;
 
-use crate::model::{UiIndex, UiLocal, UiMember, UiMemberChunk, UiProject, UiRecentUpload, UiSnapshot, UiUpstream};
+use crate::model::{
+    UiIndex, UiLocal, UiMember, UiMemberChunk, UiProject, UiRecentUpload, UiSearchPage, UiSnapshot, UiUpstream,
+};
 use crate::{App, shell};
 
 /// The router state: leptos options plus the velodex application state.
@@ -203,6 +206,30 @@ pub async fn project(route: &str, project: &str) -> Result<Option<(UiProject, Op
         None => None,
     };
     Ok(Some((ui, doc)))
+}
+
+/// Search cached packages during server rendering.
+///
+/// # Errors
+/// Returns a user-visible message when search fails.
+pub fn search(query: &str, source_type: &str, page: usize, page_size: usize) -> Result<UiSearchPage, String> {
+    let app = expect_context::<Arc<AppState>>();
+    let params = SearchParams {
+        query: query.to_owned(),
+        route: None,
+        source: SourceFilter::from_value(source_type).unwrap_or(SourceFilter::All),
+        page: page.max(1),
+        page_size: match page_size {
+            25 | 50 | 100 => page_size,
+            _ => 25,
+        },
+    };
+    let response = app
+        .search
+        .search(&app, params)
+        .map_err(|err| format!("package search: {err}"))?;
+    let value = serde_json::to_value(response).map_err(|err| format!("search result: {err}"))?;
+    Ok(UiSearchPage::from_search(&value))
 }
 
 fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a velodex_http::Index> {

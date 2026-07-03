@@ -87,6 +87,51 @@ pub(crate) fn browse_archive_member_url(
 }
 
 #[must_use]
+pub(crate) fn search_page_url(query: &str, source_type: &str, page: usize, page_size: usize) -> String {
+    let mut url = "/search".to_owned();
+    append_search_query(&mut url, None, query, source_type, page, page_size);
+    url
+}
+
+#[must_use]
+#[cfg(any(feature = "hydrate", test))]
+pub(crate) fn search_api_url(
+    route: Option<&str>,
+    query: &str,
+    source_type: &str,
+    page: usize,
+    page_size: usize,
+) -> String {
+    let mut url = "/+search".to_owned();
+    append_search_query(&mut url, route, query, source_type, page, page_size);
+    url
+}
+
+fn append_search_query(
+    url: &mut String,
+    route: Option<&str>,
+    query: &str,
+    source_type: &str,
+    page: usize,
+    page_size: usize,
+) {
+    let mut appender = QueryAppender::new(url);
+    if let Some(route) = route {
+        appender.push("route", route);
+    }
+    if !query.is_empty() {
+        appender.push("q", query);
+    }
+    if !source_type.is_empty() && source_type != "all" {
+        appender.push("type", source_type);
+    }
+    if page > 1 {
+        appender.push("page", &page.to_string());
+    }
+    appender.push("page_size", &page_size.to_string());
+}
+
+#[must_use]
 #[cfg(any(feature = "hydrate", test))]
 pub(crate) fn inspect_url(
     route: &str,
@@ -201,7 +246,8 @@ mod tests {
     use super::{
         admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url,
         browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_url, inspect_url,
-        simple_index_url, simple_project_url, stats_api_url, stats_index_url, stats_project_url,
+        search_api_url, search_page_url, simple_index_url, simple_project_url, stats_api_url, stats_index_url,
+        stats_project_url,
     };
 
     #[test]
@@ -252,6 +298,14 @@ mod tests {
 
     #[test]
     fn test_stats_and_admin_urls_encode_arguments() {
+        assert_eq!(
+            search_page_url("flask cache", "upstream-overrides", 2, 50),
+            "/search?q=flask%20cache&type=upstream-overrides&page=2&page_size=50"
+        );
+        assert_eq!(
+            search_api_url(Some("root/pypi"), "flask", "all", 1, 25),
+            "/+search?route=root%2Fpypi&q=flask&page_size=25"
+        );
         assert_eq!(stats_index_url("root/pypi"), "/stats?index=root%2Fpypi");
         assert_eq!(
             stats_project_url("root/pypi", "pkg name"),

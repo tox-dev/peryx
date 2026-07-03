@@ -75,7 +75,11 @@ pub fn openapi() -> OpenApi {
 }
 
 fn paths() -> PathsBuilder {
-    PathsBuilder::new()
+    service_paths(route_paths(PathsBuilder::new()))
+}
+
+fn route_paths(paths: PathsBuilder) -> PathsBuilder {
+    paths
         .path(
             "/{route}/simple/",
             PathItemBuilder::new()
@@ -108,6 +112,12 @@ fn paths() -> PathsBuilder {
             "/{route}/+api",
             PathItemBuilder::new()
                 .operation(HttpMethod::Get, index_discovery())
+                .build(),
+        )
+        .path(
+            "/{route}/+search",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, package_search(true))
                 .build(),
         )
         .path(
@@ -145,6 +155,10 @@ fn paths() -> PathsBuilder {
                 .operation(HttpMethod::Delete, delete_project())
                 .build(),
         )
+}
+
+fn service_paths(paths: PathsBuilder) -> PathsBuilder {
+    paths
         .path(
             "/+status",
             PathItemBuilder::new().operation(HttpMethod::Get, status()).build(),
@@ -152,6 +166,12 @@ fn paths() -> PathsBuilder {
         .path(
             "/+api",
             PathItemBuilder::new().operation(HttpMethod::Get, discovery()).build(),
+        )
+        .path(
+            "/+search",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, package_search(false))
+                .build(),
         )
         .path(
             "/+stats",
@@ -206,6 +226,14 @@ fn accept_param() -> ParameterBuilder {
         .example(Some(json!(MIME_SIMPLE_JSON)))
 }
 
+fn query_param(name: &'static str, description: &'static str, example: serde_json::Value) -> ParameterBuilder {
+    ParameterBuilder::new()
+        .name(name)
+        .parameter_in(ParameterIn::Query)
+        .description(Some(description))
+        .example(Some(example))
+}
+
 fn json_response(description: &str, example: serde_json::Value) -> ResponseBuilder {
     ResponseBuilder::new()
         .description(description)
@@ -223,6 +251,65 @@ fn text_response(description: &str, content_type: &str, example: &str) -> Respon
         content_type,
         ContentBuilder::new().example(Some(json!(example))).build(),
     )
+}
+
+fn package_search(scoped: bool) -> OperationBuilder {
+    let mut operation = OperationBuilder::new()
+        .tag("search")
+        .summary(Some(if scoped {
+            "Search one index route"
+        } else {
+            "Search cached packages"
+        }))
+        .description(Some(
+            "Searches the derived package index built from cached simple pages, local uploads, \
+             and cached core metadata. `q` uses substring matching; prefix it with `re:` for a \
+             regex. Results are sorted by display name and paged without collecting every match.",
+        ))
+        .parameter(query_param(
+            "q",
+            "Search text. Prefix with `re:` to use a regex.",
+            json!("flask"),
+        ))
+        .parameter(query_param(
+            "type",
+            "`hosted`, `upstream`, or `upstream-overrides`; omit for all sources.",
+            json!("upstream-overrides"),
+        ))
+        .parameter(query_param("page", "One-based page number.", json!(1)))
+        .parameter(query_param("page_size", "Page size: 25, 50, or 100.", json!(25)))
+        .response(
+            "200",
+            api_json_response(
+                "Search results",
+                json!({
+                    "query": "flask",
+                    "type": "all",
+                    "page": 1,
+                    "page_size": 25,
+                    "total": 1,
+                    "results": [{
+                        "display_name": "Flask",
+                        "normalized_name": "flask",
+                        "route": "root/pypi",
+                        "repository": "root/pypi",
+                        "type": "upstream",
+                        "summary": "A simple framework for building complex web applications.",
+                    }],
+                }),
+            ),
+        )
+        .response(
+            "400",
+            api_json_response(
+                "Invalid search parameters",
+                json!({"error": "invalid package source type"}),
+            ),
+        );
+    if scoped {
+        operation = operation.parameter(route_param());
+    }
+    operation
 }
 
 fn index_discovery() -> OperationBuilder {

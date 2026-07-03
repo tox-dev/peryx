@@ -21,6 +21,10 @@ use leptos_meta::{MetaTags, Style, Title, provide_meta_context};
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
+use crate::data::load_search;
+use crate::model::UiSearchResult;
+use crate::url::{browse_project_url, search_page_url};
+
 pub mod data;
 pub mod markdown;
 pub mod model;
@@ -30,7 +34,7 @@ pub mod ssr;
 pub mod style;
 pub mod url;
 
-use pages::{AdminStatus, Browse, Dashboard, Stats};
+use pages::{AdminStatus, Browse, Dashboard, Search, Stats};
 
 /// The HTML document shell used by server rendering: head, hydration scripts, and the app.
 #[must_use]
@@ -70,6 +74,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=Dashboard />
                     <Route path=path!("/admin/status") view=AdminStatus />
                     <Route path=path!("/browse") view=Browse />
+                    <Route path=path!("/search") view=Search />
                     <Route path=path!("/stats") view=Stats />
                 </Routes>
             </main>
@@ -86,8 +91,10 @@ fn Header() -> impl IntoView {
                     <BrandMark />
                     <span>"velodex"</span>
                 </a>
+                <HeaderSearch />
                 <div class="nav-links">
                     <a href="/">"Dashboard"</a>
+                    <a href="/search?page_size=25">"Search"</a>
                     <a href="/admin/status">"Status"</a>
                     <a href="https://velodex.readthedocs.io/" rel="external">"Docs"</a>
                     <a href="https://github.com/tox-dev/velodex" rel="external">"GitHub"</a>
@@ -95,6 +102,74 @@ fn Header() -> impl IntoView {
                 </div>
             </nav>
         </header>
+    }
+}
+
+#[component]
+fn HeaderSearch() -> impl IntoView {
+    let (query, set_query) = signal(String::new());
+    let suggestions = Resource::new(
+        move || query.get(),
+        |query| async move {
+            if query.trim().chars().count() < 2 {
+                return Ok(Vec::new());
+            }
+            load_search(query, "all".to_owned(), 1, 25)
+                .await
+                .map(|page| page.results.into_iter().take(6).collect::<Vec<_>>())
+        },
+    );
+    let (last, set_last) = signal(Vec::<UiSearchResult>::new());
+    Effect::new(move |_| {
+        if query.get().trim().chars().count() < 2 {
+            set_last.set(Vec::new());
+            return;
+        }
+        if let Some(Ok(results)) = suggestions.get() {
+            set_last.set(results);
+        }
+    });
+    view! {
+        <form class="header-search" method="get" action="/search">
+            <input
+                type="search"
+                name="q"
+                autocomplete="off"
+                placeholder="Search packages"
+                on:input:target=move |event| set_query.set(event.target().value())
+            />
+            <input type="hidden" name="page_size" value="25" />
+            {move || {
+                let query = query.get();
+                (query.trim().chars().count() >= 2)
+                    .then(|| view! {
+                        <div class="suggestions">
+                            {last
+                                .get()
+                                .into_iter()
+                                .map(|result| {
+                                    let href = browse_project_url(&result.route, &result.normalized_name);
+                                    view! { <Suggestion result href /> }
+                                })
+                                .collect_view()}
+                            <a class="suggestion all-results" href=search_page_url(&query, "all", 1, 25)>"All results"</a>
+                        </div>
+                    })
+            }}
+        </form>
+    }
+}
+
+#[component]
+fn Suggestion(result: UiSearchResult, href: String) -> impl IntoView {
+    let source_class = format!("badge source-{}", result.source_type);
+    let source_label = result.source_label();
+    view! {
+        <a class="suggestion" href=href>
+            <span>{result.display_name}</span>
+            <code>{result.normalized_name}</code>
+            <span class=source_class>{source_label}</span>
+        </a>
     }
 }
 

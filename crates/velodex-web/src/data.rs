@@ -7,9 +7,9 @@
 
 use velodex_core::pypi::CoreMetadataDoc;
 
-use crate::model::{UiMember, UiMemberChunk, UiProject, UiSnapshot};
+use crate::model::{UiMember, UiMemberChunk, UiProject, UiSearchPage, UiSnapshot};
 #[cfg(feature = "hydrate")]
-use crate::url::{inspect_url, simple_index_url, simple_project_url, stats_api_url};
+use crate::url::{inspect_url, search_api_url, simple_index_url, simple_project_url, stats_api_url};
 
 /// The dashboard snapshot.
 pub async fn load_snapshot() -> UiSnapshot {
@@ -115,6 +115,36 @@ pub async fn load_project(
     {
         let _ = (route, project);
         Ok(None)
+    }
+}
+
+/// Search cached packages.
+///
+/// # Errors
+/// Returns a user-visible message when search parameters are invalid or the index cannot be read.
+pub async fn load_search(
+    query: String,
+    source_type: String,
+    page: usize,
+    page_size: usize,
+) -> Result<UiSearchPage, String> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::ssr::search(&query, &source_type, page, page_size)
+    }
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+    {
+        send_wrapper::SendWrapper::new(async move {
+            fetch_json_required(&search_api_url(None, &query, &source_type, page, page_size))
+                .await
+                .map(|value| UiSearchPage::from_search(&value))
+        })
+        .await
+    }
+    #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
+    {
+        let _ = (query, source_type, page, page_size);
+        Ok(UiSearchPage::default())
     }
 }
 

@@ -38,7 +38,11 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let indexes = build_indexes(&config.indexes)?;
-    Ok(Arc::new(AppState::new(meta, blobs, config.cache_ttl_secs, indexes)))
+    let search_path = config.data_dir.join("search-v1");
+    Ok(Arc::new(
+        AppState::with_search_path(meta, blobs, config.cache_ttl_secs, indexes, &search_path)
+            .context(format!("open search index {}", search_path.display()))?,
+    ))
 }
 
 /// The full router over prepared state. The web UI mounts first: its routes (`/`, `/browse`,

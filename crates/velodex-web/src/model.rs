@@ -225,12 +225,78 @@ pub fn projects_from_list(value: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiSearchPage {
+    pub query: String,
+    pub source_type: String,
+    pub page: usize,
+    pub page_size: usize,
+    pub total: usize,
+    pub results: Vec<UiSearchResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSearchResult {
+    pub display_name: String,
+    pub normalized_name: String,
+    pub route: String,
+    pub repository: String,
+    pub source_type: String,
+    pub summary: Option<String>,
+}
+
+impl UiSearchPage {
+    #[must_use]
+    pub fn from_search(value: &serde_json::Value) -> Self {
+        Self {
+            query: string_at(value, "query"),
+            source_type: string_at(value, "type"),
+            page: usize_from(value["page"].as_u64(), 1),
+            page_size: usize_from(value["page_size"].as_u64(), 25),
+            total: usize_from(value["total"].as_u64(), 0),
+            results: value["results"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|result| UiSearchResult {
+                    display_name: string_at(result, "display_name"),
+                    normalized_name: string_at(result, "normalized_name"),
+                    route: string_at(result, "route"),
+                    repository: string_at(result, "repository"),
+                    source_type: string_at(result, "type"),
+                    summary: result["summary"].as_str().map(str::to_owned),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl UiSearchResult {
+    #[must_use]
+    pub fn source_label(&self) -> &'static str {
+        source_label(&self.source_type)
+    }
+}
+
+#[must_use]
+pub fn source_label(source_type: &str) -> &'static str {
+    match source_type {
+        "hosted" => "Hosted",
+        "upstream-overrides" => "Upstream+",
+        _ => "Upstream",
+    }
+}
+
 fn string_at(value: &serde_json::Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
 
 fn u64_at(value: &serde_json::Value, key: &str) -> u64 {
     value[key].as_u64().unwrap_or_default()
+}
+
+fn usize_from(value: Option<u64>, default: usize) -> usize {
+    value.and_then(|value| usize::try_from(value).ok()).unwrap_or(default)
 }
 
 /// Usage counters at one aggregation level of `/+stats`. File-level entries fill only the fields
