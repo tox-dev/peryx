@@ -38,5 +38,11 @@ wiremock.workspace = true
 name = "serve"
 harness = false
 
+# CPU-bound transform microbenchmark: runs under CodSpeed's instrumented instrument on an ordinary
+# runner, so page-rewrite regressions are caught per commit without the macro runners walltime needs.
+[[bench]]
+name = "transform"
+harness = false
+
 [lints]
 workspace = true

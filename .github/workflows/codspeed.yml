@@ -14,11 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  benchmarks:
-    name: Run serving benchmarks
-    # The benchmarks drive a real server: network mirroring and disk persistence are the point, and
-    # those are system calls the CPU-simulation instrument cannot measure. Walltime on CodSpeed's
-    # dedicated bare-metal macro runners measures the whole thing, syscalls included, with low noise.
+  transform:
+    name: Transform microbenchmarks
+    # The page-rewrite transform is the one stretch of the serving path that is pure CPU, so the
+    # instrumented instrument measures it deterministically on an ordinary runner. This guards it on
+    # every pull request, fast and free, without the macro runners that walltime needs.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC auth with CodSpeed; no token secret needed on a public repo
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          submodules: true # the benchmark fixtures live in the velodex-data submodule
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: cargo-codspeed
+      - run: cargo codspeed build -p velodex-bench --bench transform
+      - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
+        with:
+          mode: instrumentation
+          run: cargo codspeed run
+
+  serving:
+    name: Serving benchmarks
+    # The end-to-end serving benchmark drives a real server: network mirroring and disk persistence
+    # are the point, and those are system calls the instruction-counting instrument cannot measure.
+    # Walltime measures the whole thing on CodSpeed's bare-metal macro runners, which are slower and
+    # metered, so this runs only on pushes to main rather than blocking every pull request.
+    if: github.event_name != 'pull_request'
     runs-on: codspeed-macro
     permissions:
       contents: read
@@ -32,7 +58,7 @@ jobs:
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-codspeed
-      - run: cargo codspeed build -p velodex-bench
+      - run: cargo codspeed build -p velodex-bench --bench serve
       - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           mode: walltime
