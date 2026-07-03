@@ -21,6 +21,8 @@ use crate::state::{AppState, Index, IndexKind};
 use crate::stream::{PageSummary, PageTransformer};
 use crate::upload::{PreparedUpload, Uploaded};
 
+const NEGATIVE_TTL_SECS: i64 = 30;
+
 /// An error while producing a cached response.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -201,12 +203,18 @@ async fn mirror_detail(
     if let Some(record) = fresh_cached(state, &key)? {
         return Ok(Some(raw_to_detail(route, &record)?));
     }
+    if state.negative_fresh(&project_negative_key(&key)) {
+        return Ok(None);
+    }
 
     let gate = flight_gate(state, &key);
     let _guard = gate.lock().await;
     // Whoever held the gate first has stored the page by now; everyone else serves it from cache.
     if let Some(record) = fresh_cached(state, &key)? {
         return Ok(Some(raw_to_detail(route, &record)?));
+    }
+    if state.negative_fresh(&project_negative_key(&key)) {
+        return Ok(None);
     }
 
     let result = fetch_and_store(state, &key, name, project, client).await;
@@ -299,7 +307,10 @@ async fn fetch_and_store(
             });
             Ok(Some(record))
         }
-        Ok(response) if response.status == 404 => Ok(None),
+        Ok(response) if response.status == 404 => {
+            state.remember_negative(project_negative_key(key), NEGATIVE_TTL_SECS);
+            Ok(None)
+        }
         Ok(response) => cached.map_or_else(
             || {
                 state.metrics.record(Event::UpstreamError {
@@ -345,6 +356,10 @@ fn mirror_route(state: &AppState, name: &str) -> String {
         .find(|index| index.name == name)
         .map(|index| index.route.clone())
         .expect("events are recorded only for resolved mirrors")
+}
+
+fn project_negative_key(key: &str) -> String {
+    format!("project\0{key}")
 }
 
 /// One background refresh sweep's outcome.
@@ -633,6 +648,10 @@ pub async fn file_path(
 /// Returns [`CacheError::FileNotFound`] if the artifact has no known metadata sibling, or another
 /// error on a store or upstream failure.
 pub async fn metadata_bytes(state: &AppState, artifact_digest: &Digest) -> Result<Bytes, CacheError> {
+    let negative_key = metadata_negative_key(artifact_digest);
+    if state.negative_fresh(&negative_key) {
+        return Err(CacheError::FileNotFound);
+    }
     let (url, metadata_hex, source) = state
         .meta
         .get_metadata(artifact_digest.as_str())?
@@ -641,9 +660,20 @@ pub async fn metadata_bytes(state: &AppState, artifact_digest: &Digest) -> Resul
     if state.blobs.exists(&metadata_digest) {
         return Ok(Bytes::from(state.blobs.read(&metadata_digest)?));
     }
-    let bytes = fetch_from_source(state, &source, &url).await?;
+    let bytes = match fetch_from_source(state, &source, &url).await {
+        Ok(bytes) => bytes,
+        Err(CacheError::Upstream(err)) if err.status() == Some(404) => {
+            state.remember_negative(negative_key, NEGATIVE_TTL_SECS);
+            return Err(CacheError::FileNotFound);
+        }
+        Err(err) => return Err(err),
+    };
     state.blobs.write_verified(&bytes, &metadata_digest)?;
     Ok(bytes)
+}
+
+fn metadata_negative_key(artifact_digest: &Digest) -> String {
+    format!("metadata\0{}", artifact_digest.as_str())
 }
 
 /// Persist a prepared upload into the local store `name`: commit the staged blob, record the file
@@ -922,6 +952,9 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
     if let Some(record) = fresh_cached(&state, &key)? {
         return Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?));
     }
+    if state.negative_fresh(&project_negative_key(&key)) {
+        return Ok(missing_upstream_outcome(&context));
+    }
 
     let gate = flight_gate(&state, &key);
     let guard = gate.lock_owned().await;
@@ -930,6 +963,10 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
     }
     if let Some(record) = fresh_cached(&state, &key)? {
         return Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?));
+    }
+    if state.negative_fresh(&project_negative_key(&key)) {
+        release_flight(&state, &key, guard);
+        return Ok(missing_upstream_outcome(&context));
     }
 
     let now = (state.clock)();
@@ -970,13 +1007,9 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
             Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?))
         }
         404 => {
+            state.remember_negative(project_negative_key(&key), NEGATIVE_TTL_SECS);
             release_flight(&state, &key, guard);
-            // An overlay with local files still has a page to serve without the upstream.
-            if context.local_files.is_empty() && context.local_versions.is_empty() {
-                Ok(PageOutcome::NotFound)
-            } else {
-                Ok(PageOutcome::Fallback)
-            }
+            Ok(missing_upstream_outcome(&context))
         }
         200 => {
             let record = buffer_html_page(&state, &key, &mirror_name, &project, now, head).await?;
@@ -987,6 +1020,14 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
             release_flight(&state, &key, guard);
             Ok(PageOutcome::Fallback)
         }
+    }
+}
+
+const fn missing_upstream_outcome(context: &crate::stream::PageContext) -> PageOutcome {
+    if context.local_files.is_empty() && context.local_versions.is_empty() {
+        PageOutcome::NotFound
+    } else {
+        PageOutcome::Fallback
     }
 }
 

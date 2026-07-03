@@ -591,6 +591,13 @@ pub(crate) fn detail_response(
             )
                 .into_response();
         }
+        Err(CacheError::Upstream(
+            err @ (velodex_upstream::UpstreamError::MissingContentType { .. }
+            | velodex_upstream::UpstreamError::UnsupportedContentType { .. }),
+        )) => {
+            tracing::warn!(error = ?err, "unsupported upstream simple api content type");
+            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+        }
         Err(err) => {
             tracing::error!(error = ?err, "project detail failed");
             return cache_error_response(&err, CacheContext::project(index, project));

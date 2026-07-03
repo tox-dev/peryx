@@ -4,6 +4,37 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::{Auth, UpstreamClient, UpstreamError, redact_url};
 
+fn truncated_then_ok_server(body: &'static [u8], content_type: Option<&'static str>) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        write_response(
+            listener.accept().unwrap().0,
+            &body[..body.len().min(4)],
+            body.len() + 16,
+            content_type,
+        );
+        write_response(listener.accept().unwrap().0, body, body.len(), content_type);
+    });
+    format!("http://{addr}/simple/")
+}
+
+fn write_response(mut socket: std::net::TcpStream, body: &[u8], content_length: usize, content_type: Option<&str>) {
+    use std::io::{Read as _, Write as _};
+
+    let mut buffer = [0; 1024];
+    let _ = socket.read(&mut buffer);
+    let mut headers = format!("HTTP/1.1 200 OK\r\ncontent-length: {content_length}\r\nconnection: close\r\n");
+    if let Some(content_type) = content_type {
+        headers.push_str("content-type: ");
+        headers.push_str(content_type);
+        headers.push_str("\r\n");
+    }
+    socket.write_all(headers.as_bytes()).unwrap();
+    socket.write_all(b"\r\n").unwrap();
+    socket.write_all(body).unwrap();
+}
+
 #[tokio::test]
 async fn test_fetch_project_json_with_metadata() {
     let server = MockServer::start().await;
@@ -48,11 +79,11 @@ async fn test_fetch_project_revalidate_304() {
 }
 
 #[tokio::test]
-async fn test_fetch_project_without_headers() {
+async fn test_fetch_project_without_optional_cache_headers() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/bare/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("hi"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"hi".to_vec(), "text/html"))
         .mount(&server)
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
@@ -64,11 +95,54 @@ async fn test_fetch_project_without_headers() {
 }
 
 #[tokio::test]
+async fn test_fetch_project_rejects_missing_content_type() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/bare/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hi".to_vec()))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let err = client.fetch_project("bare", None).await.unwrap_err();
+
+    assert!(matches!(&err, UpstreamError::MissingContentType { url } if url.as_str().ends_with("/simple/bare/")));
+    assert_eq!(err.status(), None);
+    assert_eq!(err.user_message(), "upstream response missed Simple API Content-Type");
+}
+
+#[tokio::test]
+async fn test_fetch_project_rejects_unsupported_content_type() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/bare/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"hi".to_vec(), "application/octet-stream"))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let err = client.fetch_project("bare", None).await.unwrap_err();
+
+    assert!(
+        matches!(&err, UpstreamError::UnsupportedContentType { url, content_type } if url.as_str().ends_with("/simple/bare/") && content_type == "application/octet-stream")
+    );
+    assert_eq!(err.status(), None);
+    assert_eq!(
+        err.user_message(),
+        "upstream returned unsupported Simple API Content-Type"
+    );
+}
+
+#[tokio::test]
 async fn test_fetch_project_invalid_serial_header() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/x/"))
-        .respond_with(ResponseTemplate::new(200).insert_header("x-pypi-last-serial", "not-a-number"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pypi-last-serial", "not-a-number")
+                .set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
         .mount(&server)
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
@@ -81,6 +155,7 @@ async fn test_fetch_bytes() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/pkg.whl"))
+        .and(header("accept-encoding", "identity"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
         .mount(&server)
         .await;
@@ -112,10 +187,38 @@ async fn test_head_project_bytes_reads_body() {
 }
 
 #[tokio::test]
+async fn test_head_project_into_stream_reads_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"{\"meta\":{}}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let body = client
+        .head_project("flask", None)
+        .await
+        .unwrap()
+        .into_stream()
+        .try_fold(Vec::new(), |mut body, chunk| async move {
+            body.extend_from_slice(&chunk);
+            Ok(body)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(body, b"{\"meta\":{}}");
+}
+
+#[tokio::test]
 async fn test_stream_bytes_streams_file() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/pkg.whl"))
+        .and(header("accept-encoding", "identity"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
         .mount(&server)
         .await;
@@ -157,6 +260,25 @@ async fn test_fetch_bytes_reports_decode_errors() {
 }
 
 #[tokio::test]
+async fn test_fetch_project_reports_decode_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .set_body_raw(b"not gzip".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let err = client.fetch_project("flask", None).await.unwrap_err();
+
+    assert_eq!(err.user_message(), "upstream response could not be decoded");
+}
+
+#[tokio::test]
 async fn test_fetch_bytes_reports_request_failures() {
     let client = UpstreamClient::new("https://pypi.org/simple/").unwrap();
     let err = client.fetch_bytes("ftp://example.invalid/pkg.whl").await.unwrap_err();
@@ -182,6 +304,115 @@ async fn test_fetch_bytes_rejects_error_status() {
 }
 
 #[tokio::test]
+async fn test_fetch_bytes_checks_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/missing.whl"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let err = client
+        .fetch_bytes(&format!("{}/files/missing.whl", server.uri()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.status(), Some(404));
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_retries_transient_statuses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .and(header("accept-encoding", "identity"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let bytes = client
+        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .await
+        .unwrap();
+
+    assert_eq!(&bytes[..], b"wheelbytes");
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_retries_body_errors() {
+    let base = truncated_then_ok_server(b"wheelbytes", None);
+    let client = UpstreamClient::new(&base).unwrap();
+
+    let bytes = client.fetch_bytes(&format!("{base}pkg.whl")).await.unwrap();
+
+    assert_eq!(&bytes[..], b"wheelbytes");
+}
+
+#[tokio::test]
+async fn test_stream_bytes_checks_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/missing.whl"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let err = client
+        .stream_bytes(&format!("{}/files/missing.whl", server.uri()))
+        .await
+        .err()
+        .unwrap();
+
+    assert_eq!(err.status(), Some(404));
+}
+
+#[tokio::test]
+async fn test_fetch_project_retries_transient_statuses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"{\"meta\":{}}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let response = client.fetch_project("flask", None).await.unwrap();
+
+    assert_eq!(response.status, 200);
+}
+
+#[tokio::test]
+async fn test_fetch_project_retries_body_errors() {
+    let base = truncated_then_ok_server(b"{\"meta\":{}}", Some("application/vnd.pypi.simple.v1+json"));
+    let client = UpstreamClient::new(&base).unwrap();
+
+    let response = client.fetch_project("flask", None).await.unwrap();
+
+    assert_eq!(&response.body[..], b"{\"meta\":{}}");
+}
+
+#[tokio::test]
 async fn test_new_adds_trailing_slash() {
     let client = UpstreamClient::new("https://pypi.org/simple").unwrap();
     // A trailing slash was added, so joining a project stays under /simple/.
@@ -203,7 +434,7 @@ async fn test_fetch_with_basic_auth() {
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .and(header_regex("authorization", "^Basic "))
-        .respond_with(ResponseTemplate::new(200))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"))
         .mount(&server)
         .await;
     let auth = Auth::Basic {
@@ -212,6 +443,68 @@ async fn test_fetch_with_basic_auth() {
     };
     let client = UpstreamClient::with_auth(&format!("{}/simple/", server.uri()), auth).unwrap();
     assert_eq!(client.fetch_project("flask", None).await.unwrap().status, 200);
+}
+
+#[tokio::test]
+async fn test_fetch_project_preserves_basic_auth_on_same_host_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/source/"))
+        .and(header_regex("authorization", "^Basic "))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/simple/flask/", server.uri())))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .and(header_regex("authorization", "^Basic "))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"{\"meta\":{}}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::with_auth(
+        &format!("{}/simple/", server.uri()),
+        Auth::Basic {
+            username: "__token__".to_owned(),
+            password: "secret".to_owned(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(client.fetch_project("source", None).await.unwrap().status, 200);
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_preserves_basic_auth_on_same_host_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/redirect/pkg.whl"))
+        .and(header_regex("authorization", "^Basic "))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/files/pkg.whl", server.uri())))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .and(header_regex("authorization", "^Basic "))
+        .and(header("accept-encoding", "identity"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::with_auth(
+        &format!("{}/simple/", server.uri()),
+        Auth::Basic {
+            username: "__token__".to_owned(),
+            password: "secret".to_owned(),
+        },
+    )
+    .unwrap();
+
+    let bytes = client
+        .fetch_bytes(&format!("{}/redirect/pkg.whl", server.uri()))
+        .await
+        .unwrap();
+
+    assert_eq!(&bytes[..], b"wheelbytes");
 }
 
 #[test]
@@ -244,7 +537,7 @@ async fn test_fetch_with_bearer_auth() {
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .and(header("authorization", "Bearer tok123"))
-        .respond_with(ResponseTemplate::new(200))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"))
         .mount(&server)
         .await;
     let client =

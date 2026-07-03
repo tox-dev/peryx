@@ -1,13 +1,24 @@
 //! The upstream HTTP client.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use bytes::Bytes;
 use futures_core::Stream;
-use reqwest::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, IF_NONE_MATCH};
+use reqwest::StatusCode;
+use reqwest::header::{
+    ACCEPT, ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, IF_NONE_MATCH,
+};
 use url::Url;
 
 /// The `Accept` header velodex sends upstream: PEP 691 JSON first, then PEP 503 HTML.
 const ACCEPT_SIMPLE: &str =
     "application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html;q=0.2, text/html;q=0.01";
+const USER_AGENT: &str = concat!("velodex/", env!("CARGO_PKG_VERSION"));
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_RETRIES: u32 = 2;
+const RETRY_BASE_MILLIS: u64 = 100;
+const RETRY_CAP_MILLIS: u64 = 2_000;
 
 /// A response to an upstream simple-page fetch. Kept status-agnostic: `304` and `404` are returned
 /// to the caller rather than raised, so the cache layer decides what to do.
@@ -63,6 +74,21 @@ pub enum UpstreamError {
     Url(#[from] url::ParseError),
     #[error(transparent)]
     Http(#[from] reqwest::Error),
+    #[error("missing upstream Simple API Content-Type from {url}")]
+    MissingContentType { url: Url },
+    #[error("unsupported upstream Simple API Content-Type {content_type:?} from {url}")]
+    UnsupportedContentType { url: Url, content_type: String },
+}
+
+impl UpstreamError {
+    /// The HTTP status attached to a transport error, when reqwest has one.
+    #[must_use]
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Self::Http(err) => err.status().map(|status| status.as_u16()),
+            Self::Url(_) | Self::MissingContentType { .. } | Self::UnsupportedContentType { .. } => None,
+        }
+    }
 }
 
 impl UpstreamError {
@@ -77,6 +103,8 @@ impl UpstreamError {
             Self::Http(err) if err.is_connect() => "upstream connection failed".to_owned(),
             Self::Http(err) if err.is_decode() => "upstream response could not be decoded".to_owned(),
             Self::Http(_) => "upstream request failed".to_owned(),
+            Self::MissingContentType { .. } => "upstream response missed Simple API Content-Type".to_owned(),
+            Self::UnsupportedContentType { .. } => "upstream returned unsupported Simple API Content-Type".to_owned(),
         }
     }
 }
@@ -150,20 +178,24 @@ impl UpstreamClient {
             base.set_path(&with_slash);
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("velodex/", env!("CARGO_PKG_VERSION")))
+            .user_agent(USER_AGENT)
             // Saturate the network: plenty of warm connections per upstream host, HTTP/2 with
             // adaptive flow-control windows, and no idle-pool eviction between resolver bursts.
             .pool_max_idle_per_host(32)
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .http2_adaptive_window(true)
             .tcp_keepalive(std::time::Duration::from_mins(1))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
             .build()?;
         let bulk = reqwest::Client::builder()
-            .user_agent(concat!("velodex/", env!("CARGO_PKG_VERSION")))
+            .user_agent(USER_AGENT)
             .pool_max_idle_per_host(32)
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .http1_only()
             .tcp_keepalive(std::time::Duration::from_mins(1))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
             .build()?;
         Ok(Self { http, bulk, base, auth })
     }
@@ -181,17 +213,30 @@ impl UpstreamClient {
     /// # Errors
     /// Returns [`UpstreamError`] if the URL cannot be formed or the request fails.
     pub async fn fetch_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-        let response = self.head_project(project, etag).await?;
-        let body = response.response.bytes().await?;
-        Ok(SimpleResponse {
-            status: response.status,
-            url: response.url,
-            content_type: response.content_type,
-            etag: response.etag,
-            last_serial: response.last_serial,
-            max_age: response.max_age,
-            body,
-        })
+        let url = self.base.join(&format!("{project}/"))?;
+        let mut attempt = 0;
+        loop {
+            let response = self.send_simple(&url, etag).await?;
+            let head = simple_head(response)?;
+            match head.response.bytes().await {
+                Ok(body) => {
+                    return Ok(SimpleResponse {
+                        status: head.status,
+                        url: head.url,
+                        content_type: head.content_type,
+                        etag: head.etag,
+                        last_serial: head.last_serial,
+                        max_age: head.max_age,
+                        body,
+                    });
+                }
+                Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
+                    sleep_before_retry(&head.url, attempt, &err).await;
+                    attempt += 1;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
     }
 
     /// Open a connection to the upstream host ahead of traffic, so the first real request skips
@@ -207,22 +252,7 @@ impl UpstreamClient {
     /// Returns [`UpstreamError`] if the URL cannot be formed or the request fails.
     pub async fn head_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
         let url = self.base.join(&format!("{project}/"))?;
-        let mut request = self.authenticate(self.http.get(url)).header(ACCEPT, ACCEPT_SIMPLE);
-        if let Some(etag) = etag {
-            request = request.header(IF_NONE_MATCH, etag);
-        }
-        let response = request.send().await?;
-        let headers = response.headers();
-        Ok(SimpleHead {
-            status: response.status().as_u16(),
-            url: response.url().clone(),
-            content_type: header_str(headers, &CONTENT_TYPE),
-            etag: header_str(headers, &ETAG),
-            last_serial: header_str(headers, &HeaderName::from_static("x-pypi-last-serial"))
-                .and_then(|value| value.parse().ok()),
-            max_age: max_age(headers),
-            response,
-        })
+        simple_head(self.send_simple(&url, etag).await?)
     }
 
     /// Start fetching a file's bytes from an absolute URL, for streaming.
@@ -234,7 +264,10 @@ impl UpstreamClient {
         url: &str,
     ) -> Result<impl Stream<Item = Result<Bytes, UpstreamError>> + Send + use<>, UpstreamError> {
         use futures_util::TryStreamExt as _;
-        let response = self.authenticate(self.bulk.get(url)).send().await?.error_for_status()?;
+        let response = self
+            .send_with_retry(|| self.authenticate(self.bulk.get(url).header(ACCEPT_ENCODING, "identity")))
+            .await?
+            .error_for_status()?;
         Ok(response.bytes_stream().map_err(UpstreamError::from))
     }
 
@@ -243,8 +276,21 @@ impl UpstreamClient {
     /// # Errors
     /// Returns [`UpstreamError::Http`] if the request fails or answers a non-success status.
     pub async fn fetch_bytes(&self, url: &str) -> Result<Bytes, UpstreamError> {
-        let response = self.authenticate(self.http.get(url)).send().await?.error_for_status()?;
-        Ok(response.bytes().await?)
+        let mut attempt = 0;
+        loop {
+            let response = self
+                .send_with_retry(|| self.authenticate(self.bulk.get(url).header(ACCEPT_ENCODING, "identity")))
+                .await?
+                .error_for_status()?;
+            match response.bytes().await {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
+                    sleep_before_retry_str(url, attempt, &err).await;
+                    attempt += 1;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
     }
 
     /// The upstream base URL with user info, query, and fragment removed for status pages.
@@ -260,6 +306,42 @@ impl UpstreamClient {
             Auth::None => AuthStatus::None,
             Auth::Basic { .. } => AuthStatus::Basic,
             Auth::Bearer(_) => AuthStatus::Bearer,
+        }
+    }
+
+    async fn send_simple(&self, url: &Url, etag: Option<&str>) -> Result<reqwest::Response, UpstreamError> {
+        self.send_with_retry(|| {
+            let mut request = self
+                .authenticate(self.http.get(url.clone()))
+                .header(ACCEPT, ACCEPT_SIMPLE);
+            if let Some(etag) = etag {
+                request = request.header(IF_NONE_MATCH, etag);
+            }
+            request
+        })
+        .await
+    }
+
+    async fn send_with_retry(
+        &self,
+        mut request: impl FnMut() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, UpstreamError> {
+        let mut attempt = 0;
+        loop {
+            match request().send().await {
+                Ok(response) if should_retry_status(response.status()) && attempt < MAX_RETRIES => {
+                    let url = response.url().clone();
+                    let status = response.status();
+                    sleep_before_retry_status(&url, attempt, status).await;
+                    attempt += 1;
+                }
+                Ok(response) => return Ok(response),
+                Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
+                    sleep_before_retry_str(err.url().map_or("unknown URL", Url::as_str), attempt, &err).await;
+                    attempt += 1;
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
     }
 }
@@ -281,6 +363,45 @@ fn header_str(headers: &HeaderMap, name: &HeaderName) -> Option<String> {
     headers.get(name)?.to_str().ok().map(str::to_owned)
 }
 
+fn simple_head(response: reqwest::Response) -> Result<SimpleHead, UpstreamError> {
+    let headers = response.headers();
+    let content_type = header_str(headers, &CONTENT_TYPE);
+    if response.status() == StatusCode::OK {
+        validate_simple_content_type(response.url(), content_type.as_deref())?;
+    }
+    Ok(SimpleHead {
+        status: response.status().as_u16(),
+        url: response.url().clone(),
+        content_type,
+        etag: header_str(headers, &ETAG),
+        last_serial: header_str(headers, &HeaderName::from_static("x-pypi-last-serial"))
+            .and_then(|value| value.parse().ok()),
+        max_age: max_age(headers),
+        response,
+    })
+}
+
+fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result<(), UpstreamError> {
+    let Some(content_type) = content_type else {
+        return Err(UpstreamError::MissingContentType { url: url.clone() });
+    };
+    let media_type = content_type
+        .split_once(';')
+        .map_or(content_type, |(media_type, _)| media_type)
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(
+        media_type.as_str(),
+        "application/vnd.pypi.simple.v1+json" | "application/vnd.pypi.simple.v1+html" | "text/html"
+    ) {
+        return Ok(());
+    }
+    Err(UpstreamError::UnsupportedContentType {
+        url: url.clone(),
+        content_type: content_type.to_owned(),
+    })
+}
+
 /// The freshness lifetime a `Cache-Control` header grants a shared cache: `s-maxage` beats
 /// `max-age`, `no-cache`/`no-store` disable caching, and a non-positive lifetime counts as none.
 fn max_age(headers: &HeaderMap) -> Option<i64> {
@@ -300,4 +421,40 @@ fn max_age(headers: &HeaderMap) -> Option<i64> {
         }
     }
     s_maxage.or(max_age).filter(|&secs| secs > 0)
+}
+
+fn should_retry_status(status: StatusCode) -> bool {
+    status.is_server_error() || matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS)
+}
+
+fn should_retry_error(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_body() || err.is_decode()
+}
+
+async fn sleep_before_retry(url: &Url, attempt: u32, err: &reqwest::Error) {
+    sleep_before_retry_str(url.as_str(), attempt, err).await;
+}
+
+async fn sleep_before_retry_str(url: &str, attempt: u32, err: &reqwest::Error) {
+    let delay = retry_delay(attempt);
+    tracing::debug!(url, error = ?err, delay_ms = delay.as_millis(), "upstream request failed, retrying");
+    tokio::time::sleep(delay).await;
+}
+
+async fn sleep_before_retry_status(url: &Url, attempt: u32, status: StatusCode) {
+    let delay = retry_delay(attempt);
+    tracing::debug!(%url, %status, delay_ms = delay.as_millis(), "upstream returned retryable status");
+    tokio::time::sleep(delay).await;
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    let cap = RETRY_CAP_MILLIS.min(RETRY_BASE_MILLIS.saturating_mul(1_u64 << attempt.min(20)));
+    let floor = cap / 2;
+    Duration::from_millis(floor + jitter(cap - floor + 1))
+}
+
+fn jitter(modulus: u64) -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| u64::from(duration.subsec_nanos()) % modulus)
 }
