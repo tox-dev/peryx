@@ -468,109 +468,132 @@ fn fleet_install(index_url: &str, scratch: &Path, workers: usize) -> anyhow::Res
     Ok(start.elapsed().as_secs_f64())
 }
 
-/// The request workload: a swarm of resolvers fetching project pages against each warm server.
+/// The request workload: find the peak sustainable request throughput of each warm server.
+///
+/// Rather than latency at one fixed arrival rate, this ramps concurrency until throughput stops
+/// climbing (or the server starts erroring) and reports the highest rate it retired — the honest
+/// "how much can it push" number. Each server saturates at its own concurrency, so a fragile one
+/// reports the ceiling it holds rather than the collapse a heavier pool would force on it.
+///
+/// `direct` is left out: pypi.org is a CDN over the open internet, so its ceiling measures the
+/// uplink, not a comparable server, and a throughput ramp has no business hammering a public index.
 ///
 /// # Errors
 /// Returns an error when a server cannot start or its pages cannot be warmed.
-pub async fn load(servers: &[Server], rates: &[f64], runs: usize, http: &reqwest::Client) -> anyhow::Result<()> {
-    // measured[server][rate] holds each window's rps/p95/p99 samples and the total requests answered.
-    let mut measured: Vec<Vec<RateResult>> = Vec::new();
-    let mut costs: Vec<Option<Cost>> = Vec::new();
-    for server in servers {
+pub async fn load(servers: &[Server], runs: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+    const MEASURE: Duration = Duration::from_secs(10);
+    let mut peaks: Vec<Vec<f64>> = vec![Vec::new(); servers.len()];
+    let mut mbps: Vec<Vec<f64>> = vec![Vec::new(); servers.len()];
+    let mut p95: Vec<Vec<f64>> = vec![Vec::new(); servers.len()];
+    let mut p99: Vec<Vec<f64>> = vec![Vec::new(); servers.len()];
+    let mut at: Vec<Option<f64>> = vec![None; servers.len()];
+    let mut answered: Vec<usize> = vec![0; servers.len()];
+    let mut costs: Vec<Option<Cost>> = vec![None; servers.len()];
+    for (index, server) in servers.iter().enumerate() {
+        if server.name == "direct" {
+            continue;
+        }
         let scratch = tempfile::tempdir()?;
         let state = scratch.path().join("state");
         std::fs::create_dir(&state)?;
         let active = server.start(&state, http).await?;
         warm_pages(&active.url, http).await?;
+        let connections = peak(&active.url).await;
+        #[expect(clippy::cast_precision_loss, reason = "connection counts are tiny")]
+        let connections_f64 = connections as f64;
+        at[index] = Some(connections_f64);
+        println!("[load] {}: peak at {connections} connections", server.name);
         let usage = Usage::watch(active.pid());
-        let mut per_rate = Vec::new();
-        for &rate in rates {
-            println!("[load] {}: {rate:.0} req/s target", server.name);
-            let mut result = RateResult::default();
-            for _ in 0..runs {
-                let window = swarm(&active.url, rate).await?;
-                result.rps.push(window.rps);
-                result.p95.push(window.p95);
-                result.p99.push(window.p99);
-                result.requests += window.requests;
-            }
-            per_rate.push(result);
+        for _ in 0..runs {
+            let window = saturate(&active.url, connections, MEASURE).await;
+            peaks[index].push(window.rps);
+            mbps[index].push(window.mbps);
+            p95[index].push(window.p95);
+            p99[index].push(window.p99);
+            answered[index] += window.requests;
         }
-        costs.push(usage.finish());
-        measured.push(per_rate);
+        costs[index] = usage.finish();
     }
-    let base = baseline(servers);
-    let mut rows = Vec::new();
-    for (index, &rate) in rates.iter().enumerate() {
-        let label = format!("{rate:.0} req/s target");
-        let column = |pick: fn(&RateResult) -> Vec<f64>| -> Vec<Option<Vec<f64>>> {
-            measured.iter().map(|server| Some(pick(&server[index]))).collect()
-        };
-        rows.push(row_samples(
-            &format!("{label}: achieved req/s"),
-            &column(|r| r.rps.clone()),
+    // direct runs no server, so velodex anchors both the ratios and the resource rows here.
+    let base = anchor(servers);
+    let samples = |column: &[Vec<f64>]| -> Vec<Option<Vec<f64>>> {
+        column
+            .iter()
+            .map(|values| (!values.is_empty()).then(|| values.clone()))
+            .collect()
+    };
+    let mut rows = vec![
+        row_samples(
+            "peak req/s",
+            &samples(&peaks),
             base,
             Metric::Rate("req/s"),
-            Absent::Failed,
-        ));
-        rows.push(row_samples(
-            &format!("{label}: p95 latency"),
-            &column(|r| r.p95.clone()),
+            Absent::NoServer,
+        ),
+        row_samples(
+            "data served",
+            &samples(&mbps),
+            base,
+            Metric::Rate("MB/s"),
+            Absent::NoServer,
+        ),
+        row_samples(
+            "p95 latency at peak",
+            &samples(&p95),
             base,
             Metric::Seconds,
-            Absent::Failed,
-        ));
-        rows.push(row_samples(
-            &format!("{label}: p99 latency"),
-            &column(|r| r.p99.clone()),
+            Absent::NoServer,
+        ),
+        row_samples(
+            "p99 latency at peak",
+            &samples(&p99),
             base,
             Metric::Seconds,
-            Absent::Failed,
-        ));
-    }
-    // Raw CPU seconds would reward doing nothing: the fast servers answer an order of magnitude
-    // more requests inside the fixed window, so the cost row normalizes per thousand answered.
-    let anchor = anchor(servers);
+            Absent::NoServer,
+        ),
+        row(
+            "connections at peak",
+            &at,
+            base,
+            Metric::Amount("conns"),
+            Absent::NoServer,
+        ),
+    ];
+    rows.extend(request_cost_rows(&costs, &answered, base));
+    publish(
+        "load",
+        table("peak sustainable request throughput", servers, base, rows),
+    )
+}
+
+/// The resource rows the request table ends with: CPU normalized per thousand requests answered (raw
+/// seconds would reward a server that redirects everything and does almost nothing) and the peak
+/// resident memory of the server's process tree.
+fn request_cost_rows(costs: &[Option<Cost>], answered: &[usize], base: usize) -> Vec<Row> {
     #[expect(clippy::cast_precision_loss, reason = "request counts fit f64 exactly here")]
     let per_thousand: Vec<Option<f64>> = costs
         .iter()
-        .zip(&measured)
-        .map(|(cost, rate_results)| {
-            let requests: usize = rate_results.iter().map(|result| result.requests).sum();
-            cost.map(|cost| cost.cpu_seconds / (requests as f64 / 1000.0))
+        .zip(answered)
+        .map(|(cost, &requests)| {
+            cost.filter(|_| requests > 0)
+                .map(|cost| cost.cpu_seconds / (requests as f64 / 1000.0))
         })
         .collect();
-    rows.push(row(
-        "server CPU per 1,000 requests",
-        &per_thousand,
-        anchor,
-        Metric::Seconds,
-        Absent::NoServer,
-    ));
     #[expect(clippy::cast_precision_loss, reason = "resident sizes fit f64 to the byte")]
     let rss: Vec<Option<f64>> = costs
         .iter()
         .map(|cost| cost.map(|cost| cost.peak_rss_bytes as f64 / 1e6))
         .collect();
-    rows.push(row(
-        "server peak memory",
-        &rss,
-        anchor,
-        Metric::Amount("MB"),
-        Absent::NoServer,
-    ));
-    publish(
-        "load",
-        table("simple-page requests under open-loop load", servers, base, rows),
-    )
-}
-
-/// One swarm window's outcome.
-struct Swarm {
-    rps: f64,
-    p95: f64,
-    p99: f64,
-    requests: usize,
+    vec![
+        row(
+            "server CPU per 1,000 requests",
+            &per_thousand,
+            base,
+            Metric::Seconds,
+            Absent::NoServer,
+        ),
+        row("server peak memory", &rss, base, Metric::Amount("MB"), Absent::NoServer),
+    ]
 }
 
 async fn warm_pages(index_url: &str, http: &reqwest::Client) -> anyhow::Result<()> {
@@ -584,53 +607,89 @@ async fn warm_pages(index_url: &str, http: &reqwest::Client) -> anyhow::Result<(
     Ok(())
 }
 
-/// One rate's windows: the per-run rps and latency percentiles, plus the total requests answered.
-#[derive(Default)]
-struct RateResult {
-    rps: Vec<f64>,
-    p95: Vec<f64>,
-    p99: Vec<f64>,
+/// One saturation window's outcome at a fixed concurrency.
+struct Window {
+    rps: f64,
+    mbps: f64,
+    p95: f64,
+    p99: f64,
     requests: usize,
+    errors: usize,
 }
 
-/// Drive an open-loop swarm at a constant target arrival rate for a fixed window, timing each
-/// request against its *intended* send time rather than the moment it left the client.
+/// The concurrency levels the ramp probes, in order. It rides through run-to-run noise and stops
+/// only when a server is plainly past its knee, so a fragile server settles at the ceiling it holds
+/// and a fast one climbs until the client itself becomes the bottleneck.
+const RAMP: &[usize] = &[1, 2, 4, 8, 16, 24, 32, 48, 64];
+
+/// Ramp concurrency and return the level that retired the most requests per second. A short probe
+/// window at each rung keeps the sweep quick; the caller then measures that point properly. The ramp
+/// keeps the best rung seen (not the last), so a single noisy dip cannot end it early — it stops only
+/// once the server starts erroring or throughput has collapsed to half its best.
+async fn peak(index_url: &str) -> usize {
+    const PROBE: Duration = Duration::from_secs(6);
+    let mut best_rps = 0.0;
+    let mut best = RAMP[0];
+    for &connections in RAMP {
+        let window = saturate(index_url, connections, PROBE).await;
+        if window.rps > best_rps {
+            best_rps = window.rps;
+            best = connections;
+        }
+        let total = window.requests + window.errors;
+        #[expect(clippy::cast_precision_loss, reason = "request counts fit f64 exactly here")]
+        let error_rate = if total == 0 {
+            1.0
+        } else {
+            window.errors as f64 / total as f64
+        };
+        if error_rate > 0.1 || window.rps < best_rps * 0.5 {
+            break;
+        }
+    }
+    best
+}
+
+/// Drive `connections` clients flat out against the index for a fixed window and report both how
+/// many requests per second the server retired and how many megabytes of page it delivered.
 ///
-/// A closed-loop swarm — each worker sending its next request only after the last one returns —
-/// lets a stalled server throttle the offered load, so the requests that would have piled up during
-/// the stall are never issued and the tail latency reads far lower than production would (Gil Tene's
-/// coordinated omission). Here a bounded pool of connections pulls from a fixed schedule; when the
-/// server cannot keep up, the requests fall behind their intended times and that queueing delay
-/// lands in the measured latency, which is what a client under steady arrivals actually feels.
-async fn swarm(index_url: &str, target_rps: f64) -> anyhow::Result<Swarm> {
-    const WINDOW: Duration = Duration::from_secs(15);
-    const CONNECTIONS: usize = 64;
+/// The client behaves the way uv and pip do — it keeps connections alive and follows redirects — so
+/// the numbers translate to what a real resolver sees against each server. That is what a redirecting
+/// server like pypiserver costs honestly: its page requests follow a 303 to pypi.org, so its data
+/// throughput is bounded by the upstream and the uplink rather than by a local store, while a server
+/// that caches the page serves it at local speed. Closed-loop by design (each client sends its next
+/// request the instant the last returns), since peak throughput asks how fast a server empties its
+/// queue under maximum push. Latency is the round-trip of successful requests; a per-request timeout
+/// and a whole-window cap keep a server that stalls or deadlocks from hanging the run.
+async fn saturate(index_url: &str, connections: usize, window: Duration) -> Window {
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
     let start = Instant::now();
-    let deadline = start + WINDOW;
+    let deadline = start + window;
     let next = Arc::new(AtomicU64::new(0));
+    // Each sample is (round-trip latency, bytes delivered) for one successful request; a failure
+    // records no sample, so the counts below credit only what the client actually received.
+    let samples: Arc<std::sync::Mutex<Vec<(f64, usize)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let attempts = Arc::new(AtomicU64::new(0));
     let mut tasks = tokio::task::JoinSet::new();
-    for _ in 0..CONNECTIONS {
+    for _ in 0..connections {
         let index_url = index_url.to_owned();
         let next = next.clone();
+        let samples = samples.clone();
+        let attempts = attempts.clone();
         tasks.spawn(async move {
-            let client = reqwest::Client::builder().build().expect("client builds");
-            let mut latencies = Vec::new();
-            loop {
+            let client = reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .expect("client builds");
+            while Instant::now() < deadline {
                 let issued = next.fetch_add(1, Ordering::Relaxed);
-                #[expect(clippy::cast_precision_loss, reason = "schedule index stays well under 2^53")]
-                let intended = start + Duration::from_secs_f64(issued as f64 / target_rps);
-                if intended >= deadline {
-                    break;
-                }
-                let now = Instant::now();
-                if now < intended {
-                    tokio::time::sleep(intended - now).await;
-                }
                 let target = format!(
                     "{index_url}{}/",
                     TOP_PACKAGES[usize::try_from(issued).unwrap_or(0) % 10]
                 );
-                let outcome = async {
+                let sent = Instant::now();
+                let served = async {
                     client
                         .get(&target)
                         .header("Accept", "*/*")
@@ -641,28 +700,47 @@ async fn swarm(index_url: &str, target_rps: f64) -> anyhow::Result<Swarm> {
                         .await
                 }
                 .await;
-                if outcome.is_ok() {
-                    latencies.push(intended.elapsed().as_secs_f64());
+                attempts.fetch_add(1, Ordering::Relaxed);
+                if let Ok(body) = served {
+                    samples
+                        .lock()
+                        .expect("samples lock")
+                        .push((sent.elapsed().as_secs_f64(), body.len()));
                 }
             }
-            latencies
         });
     }
-    let mut latencies = Vec::new();
-    while let Some(joined) = tasks.join_next().await {
-        latencies.extend(joined.expect("swarm connection never panics"));
-    }
-    if latencies.is_empty() {
-        bail!("the swarm completed no requests");
-    }
-    latencies.sort_unstable_by(f64::total_cmp);
-    #[expect(clippy::cast_precision_loss, reason = "request counts fit f64 exactly here")]
-    let rps = latencies.len() as f64 / WINDOW.as_secs_f64();
-    let quantile = |per_cent: usize| latencies[(latencies.len() * per_cent / 100).min(latencies.len() - 1)];
-    Ok(Swarm {
+    // A server can wedge a connection past its request timeout; cap the whole window so one that
+    // deadlocks reads as the low throughput and censored tail it earned instead of hanging the run.
+    let cap = window + REQUEST_TIMEOUT + Duration::from_secs(3);
+    let drain = async { while tasks.join_next().await.is_some() {} };
+    let _ = tokio::time::timeout(cap, drain).await;
+    tasks.abort_all();
+    let mut samples = std::mem::take(&mut *samples.lock().expect("samples lock"));
+    let successes = samples.len();
+    let bytes: usize = samples.iter().map(|&(_, len)| len).sum();
+    samples.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+    #[expect(clippy::cast_precision_loss, reason = "counts and byte totals fit f64 here")]
+    let (rps, mbps) = (
+        successes as f64 / window.as_secs_f64(),
+        bytes as f64 / 1e6 / window.as_secs_f64(),
+    );
+    let quantile = |per_cent: usize| {
+        samples
+            .get((samples.len() * per_cent / 100).min(samples.len().saturating_sub(1)))
+            .map_or(0.0, |&(latency, _)| latency)
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "attempt counts stay well under usize::MAX"
+    )]
+    let errors = (attempts.load(Ordering::Relaxed) as usize).saturating_sub(successes);
+    Window {
         rps,
+        mbps,
         p95: quantile(95),
         p99: quantile(99),
-        requests: latencies.len(),
-    })
+        requests: successes,
+        errors,
+    }
 }

@@ -1,3 +1,3 @@
 {%- set report = load_data(path="data/bench/report.toml") -%}
 {%- set m = report.meta | default(value=false) -%}
-{% if m %}<p class="bench-meta">Measured {{ m.date }} on {{ m.cpu }} ({{ m.logical_cores }} logical cores, {{ m.memory }}), {{ m.os }}, with {{ m.uv }} and {{ m.python }}. Each cell is five samples with the extremes dropped; the <span class="bench-spread">±</span> figure is the run-to-run coefficient of variation.</p>{% endif %}
+{% if m %}<p class="bench-meta">Measured {{ m.date }} on {{ m.cpu }} ({{ m.logical_cores }} logical cores, {{ m.memory }}), {{ m.os }}{% if m.connection %}, over {{ m.connection }}{% endif %}, with {{ m.uv }} and {{ m.python }}. Each cell is five samples with the extremes dropped; the <span class="bench-spread">±</span> figure is the run-to-run coefficient of variation.</p>{% endif %}

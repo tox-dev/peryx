@@ -20,8 +20,9 @@ env VIRTUAL_ENV=$PWD/fresh-venv UV_CACHE_DIR=$PWD/fresh-cache \
     uv pip install pandas polars
 ```
 
-Setup: velodex release build and the client on the same Apple Silicon laptop, roughly 700 Mbit/s to PyPI's CDN. Five
-runs per scenario; "cold" deletes velodex's data directory first, "warm" keeps it and only resets the client.
+Setup: velodex release build and the client on the same Apple Silicon laptop, on a 1 Gbit symmetric fiber connection in
+Los Angeles. Five runs per scenario; "cold" deletes velodex's data directory first, "warm" keeps it and only resets the
+client.
 
 | Scenario                    | Wall time   | What dominates                                     |
 | --------------------------- | ----------- | -------------------------------------------------- |
@@ -75,9 +76,9 @@ pypi.org yourself.
 
 The numbers come from a laptop on a home connection, not a controlled lab, so the absolute figures move with the network
 and thermal state. The ratios against **direct** are what to read: every server meets the same conditions in the same
-run, so the cells that lean on the upstream CDN (cold installs, transferring an uncached wheel) shift together and cancel
-in the ratio, while the cells served from velodex's own memory or disk (warm pages, hot wheels, the request swarm) stay
-put.
+run, so the cells that lean on the upstream CDN (cold installs, transferring an uncached wheel) shift together and
+cancel in the ratio, while the cells served from velodex's own memory or disk (warm pages, hot wheels, peak request
+throughput) stay put.
 
 The table covers every alternative that can be started hermetically from a published package: velodex, devpi, proxpi,
 pypiserver (whose upstream fallback is a redirect rather than a cache), and pypicloud (archived upstream; it still runs,
@@ -115,14 +116,29 @@ concludes the package does not exist.
 
 {{ bench(file="parallel-install") }}
 
-The request workload drives an open-loop swarm at a fixed target arrival rate — 100 then 1,000 requests a second —
-against each warm server, every client reading every byte of the ~480 KB page the way a resolver does. Open-loop is the
-important word: requests leave on a fixed schedule whether or not earlier ones have come back, and each request's latency
-is measured from its **intended** send time. A closed-loop swarm, where a client waits for its response before sending
-the next, lets a stalled server throttle the offered load so the requests that would have piled up are never issued and
-the tail reads far better than production — the coordinated-omission trap. Here a server that cannot keep up with the
-target rate shows its real queueing delay: the achieved rate falls below the target and p95/p99 climb. Percentiles come
-from pooling every request's latency, not from averaging per-window percentiles.
+The request workload measures the ceiling: how much traffic each warm server sustains under a real resolver. The client
+keeps connections alive and follows redirects, the way uv and pip do, so its numbers are the ones a resolver would see.
+It ramps concurrency, 1, 2, 4, 8, and on up to 64, and at each step pushes project-page requests as fast as the last
+returns, recording both the request rate and the megabytes of page delivered. A server's highest rate is its peak; the
+table shows that rate, the data served there, the p95/p99 latency, and the connection count it took. The ramp rides
+through run-to-run noise and stops only when a server starts erroring or its throughput collapses, so a fragile server
+settles at the load it holds rather than the crash a heavier pool would force. The connections-at-peak column reads how
+far each server scales before more connections stop paying off: velodex saturates the client at 16, while the slower
+servers need more open connections to reach a lower ceiling.
+
+velodex leads both rates, and by a wide margin: 2,459 requests a second and 1,076 MB of page delivered, against 901 and
+428 for the next server. It serves every page from its own store over the loopback, so neither number touches the
+network. pypiserver comes second only because it does no serving at all: it answers each request with a redirect to
+pypi.org, so the client fetches the page from PyPI's CDN, and its throughput is whatever the uplink allows. On this
+machine that is a 1 Gbit link, and its 428 MB/s of delivered pages fills that link once you unpack the gzip, the same
+wire limit velodex never meets. Its CPU per thousand requests, a rounding error next to velodex's, is the tell: it
+caches nothing, saves no bandwidth, and works only while PyPI is reachable and close. Point the same benchmark at a
+slower or more distant link and pypiserver's lead over devpi and pypicloud shrinks while velodex holds, because velodex
+runs at local speed and the redirect can only go as fast as the wire. The price velodex pays for serving real pages is real
+CPU and memory, more than a server that only forwards; the resource rows show it. devpi is the cautionary case: its peak
+lands at 48 connections, but that only means its best rate, a slow 68 a second at nearly a second of tail latency,
+happened there rather than lower. direct sits this one out: it is pypi.org itself, so its ceiling would just measure the
+uplink again. Ratios read against velodex, since direct is absent from this table.
 
 {{ bench(file="load") }}
 

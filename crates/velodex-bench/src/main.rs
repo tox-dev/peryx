@@ -9,8 +9,9 @@
 //!   eight-way parallel downloads of it hot.
 //! - **parallel installs**: ten venvs install polars at once with separate client caches, like ten
 //!   CI jobs hitting the same server, cold and warm.
-//! - **load**: request-level throughput, one user and a concurrent swarm, against each warm
-//!   server.
+//! - **load**: peak sustainable throughput, found by ramping concurrency against each warm server
+//!   until throughput tops out, reporting both request rate and megabytes of page served (direct is
+//!   excluded: pypi.org is a CDN, not a comparable server).
 //!
 //! Every table also reports what the server itself burned while its workload ran: CPU seconds and
 //! peak resident memory across the whole process tree. Results land in
@@ -46,7 +47,7 @@ enum Part {
     Throughput,
     /// The parallel-CI install workload.
     Parallel,
-    /// The request swarm workload.
+    /// The peak-throughput workload.
     Load,
 }
 
@@ -70,6 +71,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let _ = rustls::crypto::ring::default_provider().install_default();
+    scratch_on_a_roomy_volume();
     ensure_velodex_built()?;
     let servers: Vec<_> = servers::all()
         .into_iter()
@@ -89,9 +91,23 @@ async fn main() -> anyhow::Result<()> {
         workloads::fleet(&servers, cli.runs, &http).await?;
     }
     if runs(Part::Load) {
-        workloads::load(&servers, &[100.0, 1000.0], cli.runs, &http).await?;
+        workloads::load(&servers, cli.runs, &http).await?;
     }
     Ok(())
+}
+
+/// Point the harness's scratch at the repository's own volume unless the caller set `TMPDIR`. The
+/// fleet workload fans ten package caches out at once, and the system temp is often a small
+/// partition a run overflows. Every client cache the workloads create lives under a temp dir, so
+/// redirecting the temp root moves the heavy writes off the system partition with it.
+fn scratch_on_a_roomy_volume() {
+    if std::env::var_os("TMPDIR").is_some() {
+        return;
+    }
+    let scratch = repo_root().join("target").join("bench-scratch");
+    if std::fs::create_dir_all(&scratch).is_ok() {
+        let _ = tempfile::env::override_temp_dir(&scratch);
+    }
 }
 
 /// The run's machine and toolchain, so a reader can judge and reproduce the numbers: absolute
@@ -124,6 +140,10 @@ fn manifest() -> Vec<(&'static str, String)> {
         ("cpu", cpu),
         ("logical_cores", system.cpus().len().to_string()),
         ("memory", memory_gib),
+        // The uplink caps every server that reaches upstream, so it bounds the cold-install and
+        // redirect numbers directly; no probe reports it, so it is stated for the reference machine
+        // and wants editing when the suite runs elsewhere.
+        ("connection", "1 Gbit symmetric fiber, Los Angeles".to_owned()),
         ("uv", tool_version("uv", &["--version"])),
         ("python", tool_version("python3", &["--version"])),
         ("date", tool_version("date", &["-u", "+%Y-%m-%d"])),
