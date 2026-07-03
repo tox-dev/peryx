@@ -105,6 +105,12 @@ fn paths() -> PathsBuilder {
             PathItemBuilder::new().operation(HttpMethod::Post, upload()).build(),
         )
         .path(
+            "/{route}/+api",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, index_discovery())
+                .build(),
+        )
+        .path(
             "/{route}/inspect/{sha256}/{filename}",
             PathItemBuilder::new()
                 .operation(HttpMethod::Get, inspect_listing())
@@ -142,6 +148,10 @@ fn paths() -> PathsBuilder {
         .path(
             "/+status",
             PathItemBuilder::new().operation(HttpMethod::Get, status()).build(),
+        )
+        .path(
+            "/+api",
+            PathItemBuilder::new().operation(HttpMethod::Get, discovery()).build(),
         )
         .path(
             "/+stats",
@@ -202,11 +212,100 @@ fn json_response(description: &str, example: serde_json::Value) -> ResponseBuild
         .content(MIME_SIMPLE_JSON, ContentBuilder::new().example(Some(example)).build())
 }
 
+fn api_json_response(description: &str, example: serde_json::Value) -> ResponseBuilder {
+    ResponseBuilder::new()
+        .description(description)
+        .content("application/json", ContentBuilder::new().example(Some(example)).build())
+}
+
 fn text_response(description: &str, content_type: &str, example: &str) -> ResponseBuilder {
     ResponseBuilder::new().description(description).content(
         content_type,
         ContentBuilder::new().example(Some(json!(example))).build(),
     )
+}
+
+fn index_discovery() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("discovery")
+        .summary(Some("Discover one index"))
+        .description(Some(
+            "A compact index document with URLs and client configuration snippets. Snippets appear \
+             only when the request has enough host context to render absolute URLs.",
+        ))
+        .parameter(route_param())
+        .response(
+            "200",
+            api_json_response(
+                "The index discovery document",
+                json!({
+                    "version": "0.0.1",
+                    "index": {
+                        "name": "root/pypi",
+                        "route": "root/pypi",
+                        "kind": "overlay",
+                        "layers": ["local", "pypi"],
+                        "uploads": true,
+                        "upload_to": "local",
+                        "capabilities": {
+                            "simple_html": true,
+                            "simple_json": true,
+                            "simple_api_version": "1.1",
+                            "metadata_siblings": true,
+                            "uploads": true,
+                            "yanking": true,
+                            "volatile_deletes": true,
+                            "project_status": false,
+                            "provenance": false,
+                            "legacy_json": false
+                        },
+                        "urls": {
+                            "api": "http://127.0.0.1:4433/root/pypi/+api",
+                            "simple": "http://127.0.0.1:4433/root/pypi/simple/",
+                            "upload": "http://127.0.0.1:4433/root/pypi/",
+                            "status": "http://127.0.0.1:4433/+status",
+                            "web": "http://127.0.0.1:4433/browse?index=root%2Fpypi",
+                            "stats": "http://127.0.0.1:4433/stats?index=root%2Fpypi",
+                            "openapi": "http://127.0.0.1:4433/api-docs/openapi.json"
+                        },
+                        "client_configuration": {
+                            "pip.conf": "[global]\nindex-url = http://127.0.0.1:4433/root/pypi/simple/\n",
+                            "uv.toml": "publish-url = \"http://127.0.0.1:4433/root/pypi/\"\n\n[[index]]\nname = \"velodex\"\nurl = \"http://127.0.0.1:4433/root/pypi/simple/\"\ndefault = true\n\n[pip]\nindex-url = \"http://127.0.0.1:4433/root/pypi/simple/\"\n",
+                            ".pypirc": "[distutils]\nindex-servers =\n    velodex\n\n[velodex]\nrepository = http://127.0.0.1:4433/root/pypi/\nusername = __token__\npassword = <upload-token>\n"
+                        }
+                    }
+                }),
+            ),
+        )
+        .response("404", ResponseBuilder::new().description("No index at this route"))
+}
+
+fn discovery() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("discovery")
+        .summary(Some("Discover this server"))
+        .description(Some(
+            "A compact server document with global URLs and one discovery entry per configured \
+             index. It is built from configuration and request context, without reading package \
+             indexes.",
+        ))
+        .response(
+            "200",
+            api_json_response(
+                "The server discovery document",
+                json!({
+                    "version": "0.0.1",
+                    "urls": {
+                        "api": "http://127.0.0.1:4433/+api",
+                        "status": "http://127.0.0.1:4433/+status",
+                        "stats": "http://127.0.0.1:4433/+stats",
+                        "openapi": "http://127.0.0.1:4433/api-docs/openapi.json",
+                        "web": "http://127.0.0.1:4433/"
+                    },
+                    "indexes": []
+                }),
+            ),
+        )
 }
 
 fn project_list() -> OperationBuilder {
@@ -628,11 +727,12 @@ fn status() -> OperationBuilder {
                         "metadata_requests": 37,
                         "indexes": [
                             {"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [],
-                             "uploads": false, "upload_to": null},
+                             "uploads": false, "volatile_deletes": false, "upload_to": null},
                             {"name": "local", "route": "local", "kind": "local", "layers": [],
-                             "uploads": true, "upload_to": null},
+                             "uploads": true, "volatile_deletes": true, "upload_to": null},
                             {"name": "root/pypi", "route": "root/pypi", "kind": "overlay",
-                             "layers": ["local", "pypi"], "uploads": true, "upload_to": "local"}
+                             "layers": ["local", "pypi"], "uploads": true, "volatile_deletes": true,
+                             "upload_to": "local"}
                         ]
                     })))
                     .build(),

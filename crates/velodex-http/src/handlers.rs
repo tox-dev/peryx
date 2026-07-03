@@ -23,9 +23,10 @@ use velodex_core::pypi::{
 use velodex_storage::blob::Digest;
 
 use crate::cache::{self, CacheError, PageOutcome};
+use crate::discovery::{self, BaseUrl};
 use crate::metrics::Event;
 use crate::path_safety::{self, PathSafetyError};
-use crate::state::{AppState, Index, IndexKind};
+use crate::state::{AppState, Index, IndexKind, describe_index};
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
@@ -65,6 +66,10 @@ pub async fn dispatch_get(
         return not_found();
     };
     let index = state.index_at(position);
+    if matches!(rest, "+api" | "+api/") {
+        let base = BaseUrl::from_request(&headers, &uri);
+        return index_api(&state, position, base.as_ref());
+    }
     if rest == "simple/" {
         return index_response(cache::resolve_list(&state, index), negotiate(&headers));
     }
@@ -851,6 +856,20 @@ fn distribution_filename_error_message(err: &DistributionFilenameError) -> Strin
 pub async fn openapi_spec() -> Response {
     static SPEC: std::sync::LazyLock<String> = std::sync::LazyLock::new(crate::api::openapi_json);
     ([(header::CONTENT_TYPE, "application/json")], SPEC.as_str()).into_response()
+}
+
+/// `GET /+api` — API discovery and copyable client configuration for every configured index.
+pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri, headers: HeaderMap) -> Response {
+    let base = BaseUrl::from_request(&headers, &uri);
+    axum::Json(discovery::root_document(&state, base.as_ref())).into_response()
+}
+
+fn index_api(state: &AppState, position: usize, base: Option<&BaseUrl>) -> Response {
+    axum::Json(discovery::index_document(
+        describe_index(&state.indexes, position),
+        base,
+    ))
+    .into_response()
 }
 
 /// `GET /+status` — health, identity, counters, and the configured indexes. The web UI's live

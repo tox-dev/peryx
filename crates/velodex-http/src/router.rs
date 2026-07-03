@@ -17,6 +17,8 @@ use crate::state::AppState;
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api-docs/openapi.json", get(handlers::openapi_spec))
+        .route("/+api", get(handlers::api))
+        .route("/+api/", get(handlers::api))
         .route("/+status", get(handlers::status))
         .route("/+stats", get(handlers::stats))
         .route("/metrics", get(handlers::metrics))

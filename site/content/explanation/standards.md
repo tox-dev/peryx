@@ -15,15 +15,15 @@ index:
 
 {% mermaid() %}
 sequenceDiagram
-  participant P as pip / uv
-  participant I as index
-  P->>+I: GET /simple/requests/ (Accept: PEP 691 JSON)
-  I-->>-P: file list: names, URLs, sha256, yanked, core-metadata
-  P->>+I: GET …requests-2.32.5…whl.metadata (PEP 658)
-  I-->>-P: core metadata: dependencies, requires-python
-  Note over P: resolve; repeat metadata fetches<br/>for candidates as needed
-  P->>+I: GET …requests-2.32.5…whl
-  I-->>-P: the wheel; pip verifies its sha256
+participant P as pip / uv
+participant I as index
+P->>+I: GET /simple/requests/ (Accept: PEP 691 JSON)
+I-->>-P: file list: names, URLs, sha256, yanked, core-metadata
+P->>+I: GET …requests-2.32.5…whl.metadata (PEP 658)
+I-->>-P: core metadata: dependencies, requires-python
+Note over P: resolve; repeat metadata fetches<br/>for candidates as needed
+P->>+I: GET …requests-2.32.5…whl
+I-->>-P: the wheel; pip verifies its sha256
 {% end %}
 
 Every hop names a standard: the page format is PEP 503/691, its fields are PEP 700, the yank markers are PEP 592, the
@@ -58,6 +58,10 @@ Some upstreams implement only part of the stack; Artifactory and GitLab serve HT
 parses PEP 503 HTML as the fallback, and re-serves the modern formats downstream, so a client gets api-version 1.1 with
 PEP 700 fields regardless of what the upstream offered. Features the upstream cannot express (a missing `.metadata`
 sibling, absent sizes) degrade per file rather than per index.
+
+The discovery documents at `/+api` and `/{route}/+api` report only capabilities Velodex implements today. They
+advertise Simple HTML/JSON, api-version 1.1, and PEP 658 metadata siblings. `project_status`, `provenance`, and
+`legacy_json` are false until Velodex preserves Simple API 1.4 fields and serves the legacy JSON API.
 
 ## In practice
 

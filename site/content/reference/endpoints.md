@@ -8,22 +8,24 @@ Every configured index route serves the same surface; `{route}` below is the ind
 velodex resolves a request to the index with the longest matching route prefix. The [API explorer](@/reference/api.md)
 breaks each endpoint down with copyable example requests and responses.
 
-| Method and path                                    | Purpose                                             |
+| Method and path | Purpose |
 | -------------------------------------------------- | --------------------------------------------------- |
-| `GET /{route}/simple/`                             | Project list, JSON or HTML by `Accept`              |
-| `GET /{route}/simple/{project}/`                   | Project detail, merged across overlay layers        |
-| `GET /{route}/files/{sha256}/{filename}`           | Artifact download, cached content-addressed         |
-| `GET /{route}/files/{sha256}/{filename}.metadata`  | [PEP 658](https://peps.python.org/pep-0658/) core-metadata sibling |
-| `POST /{route}/`                                   | Upload ([legacy API](https://docs.pypi.org/api/upload/), used by twine and `uv publish`) |
-| `GET /{route}/inspect/{sha256}/{filename}`         | Archive member listing (JSON)                       |
-| `GET /{route}/inspect/{sha256}/{filename}/{member}`| One archive member's content                        |
-| `PUT /{route}/{project}/[{version}/]yank`          | Yank files ([PEP 592](https://peps.python.org/pep-0592/)); mirror files get an override |
-| `DELETE /{route}/{project}/[{version}/]yank`       | Un-yank                                             |
-| `DELETE /{route}/{project}/[{version}/]`           | Delete uploads (volatile only); hide mirror files   |
-| `PUT /{route}/{project}/[{version}/]restore`       | Restore hidden mirror files                         |
-| `GET /+status`                                     | JSON health: version, counters, index descriptions  |
-| `GET /+stats`                                      | Usage counters, drillable to project and file level |
-| `GET /metrics`                                     | [Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/) text exposition |
+| `GET /{route}/simple/` | Project list, JSON or HTML by `Accept` |
+| `GET /{route}/simple/{project}/` | Project detail, merged across overlay layers |
+| `GET /{route}/files/{sha256}/{filename}` | Artifact download, cached content-addressed |
+| `GET /{route}/files/{sha256}/{filename}.metadata` | [PEP 658](https://peps.python.org/pep-0658/) core-metadata sibling |
+| `POST /{route}/` | Upload ([legacy API](https://docs.pypi.org/api/upload/), used by twine and `uv publish`) |
+| `GET /{route}/+api` | Index discovery: absolute URLs, capabilities, and redacted client config |
+| `GET /{route}/inspect/{sha256}/{filename}` | Archive member listing (JSON) |
+| `GET /{route}/inspect/{sha256}/{filename}/{member}`| One archive member's content |
+| `PUT /{route}/{project}/[{version}/]yank` | Yank files ([PEP 592](https://peps.python.org/pep-0592/)); mirror files get an override |
+| `DELETE /{route}/{project}/[{version}/]yank` | Un-yank |
+| `DELETE /{route}/{project}/[{version}/]` | Delete uploads (volatile only); hide mirror files |
+| `PUT /{route}/{project}/[{version}/]restore` | Restore hidden mirror files |
+| `GET /+api` | Server discovery: global URLs plus every configured index |
+| `GET /+status` | JSON health: version, counters, index descriptions |
+| `GET /+stats` | Usage counters, drillable to project and file level |
+| `GET /metrics` | [Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/) text exposition |
 
 The web UI lives outside the index namespace: `GET /` (dashboard), `GET /browse` (package browser), `GET /stats` (usage
 drill-down), and `GET /pkg/*` (the wasm bundle that hydrates the pages).
@@ -36,6 +38,21 @@ Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+
 `meta.api-version` 1.1, which includes the [PEP 700](https://peps.python.org/pep-0700/) `versions`, `size`, and
 `upload-time` fields.
 
+## Discovery
+
+`GET /+api` returns a compact JSON document for the server and every configured index. `GET /{route}/+api` returns the
+same shape for one index. Velodex builds these documents from request headers and runtime index configuration; it does
+not scan package pages or storage.
+
+When the request carries an origin (`Host`, or `X-Forwarded-Host` plus `X-Forwarded-Proto` behind a proxy), URL fields
+are absolute and `client_configuration` includes copyable `pip.conf`, `uv.toml`, and `.pypirc` text. The `.pypirc`
+snippet uses `__token__` as the username and `<upload-token>` as the password, and Velodex never returns the configured
+upload token. Read-only indexes omit upload URLs and `.pypirc`.
+
+Capability flags describe the current route only. `uploads`, `yanking`, and `volatile_deletes` follow the configured
+local upload target; Simple HTML/JSON and PEP 658 metadata siblings are true for all indexes. `project_status`,
+`provenance`, and `legacy_json` stay false until those protocol surfaces exist.
+
 ## Authentication
 
 `POST`, `PUT`, and `DELETE` require `Authorization: Basic` where the password is the target local index's
@@ -43,12 +60,12 @@ Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+
 
 | Status | Meaning |
 | ------ | ------- |
-| `200`  | Accepted; removal responses state how many files were affected |
-| `400`  | Malformed upload: wrong `:action`, missing field, bad distribution file, digest mismatch, metadata mismatch, duplicate filename with different bytes |
-| `401`  | Missing or wrong token |
-| `403`  | Uploads disabled (no token configured) or index not volatile |
-| `404`  | Unknown route, project, or nothing matched |
-| `405`  | The route's index does not accept writes |
+| `200` | Accepted; removal responses state how many files were affected |
+| `400` | Malformed upload: wrong `:action`, missing field, bad distribution file, digest mismatch, metadata mismatch, duplicate filename with different bytes |
+| `401` | Missing or wrong token |
+| `403` | Uploads disabled (no token configured) or index not volatile |
+| `404` | Unknown route, project, or nothing matched |
+| `405` | The route's index does not accept writes |
 
 Uploads accept wheels and `.tar.gz` sdists. The server validates the filename, form `name` and `version`, `filetype`,
 archive contents, and core metadata before the artifact becomes visible. Wheel validation requires normalized

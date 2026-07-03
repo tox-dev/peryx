@@ -19,6 +19,35 @@
     }
   ],
   "paths": {
+    "/+api": {
+      "get": {
+        "tags": [
+          "discovery"
+        ],
+        "summary": "Discover this server",
+        "description": "A compact server document with global URLs and one discovery entry per configured index. It is built from configuration and request context, without reading package indexes.",
+        "responses": {
+          "200": {
+            "description": "The server discovery document",
+            "content": {
+              "application/json": {
+                "example": {
+                  "indexes": [],
+                  "urls": {
+                    "api": "http://127.0.0.1:4433/+api",
+                    "openapi": "http://127.0.0.1:4433/api-docs/openapi.json",
+                    "stats": "http://127.0.0.1:4433/+stats",
+                    "status": "http://127.0.0.1:4433/+status",
+                    "web": "http://127.0.0.1:4433/"
+                  },
+                  "version": "0.0.1"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/+stats": {
       "get": {
         "tags": [
@@ -87,7 +116,8 @@
                       "name": "pypi",
                       "route": "pypi",
                       "upload_to": null,
-                      "uploads": false
+                      "uploads": false,
+                      "volatile_deletes": false
                     },
                     {
                       "kind": "local",
@@ -95,7 +125,8 @@
                       "name": "local",
                       "route": "local",
                       "upload_to": null,
-                      "uploads": true
+                      "uploads": true,
+                      "volatile_deletes": true
                     },
                     {
                       "kind": "overlay",
@@ -106,7 +137,8 @@
                       "name": "root/pypi",
                       "route": "root/pypi",
                       "upload_to": "local",
-                      "uploads": true
+                      "uploads": true,
+                      "volatile_deletes": true
                     }
                   ],
                   "metadata_requests": 37,
@@ -219,6 +251,76 @@
             "uploadToken": []
           }
         ]
+      }
+    },
+    "/{route}/+api": {
+      "get": {
+        "tags": [
+          "discovery"
+        ],
+        "summary": "Discover one index",
+        "description": "A compact index document with URLs and client configuration snippets. Snippets appear only when the request has enough host context to render absolute URLs.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "description": "The index route, for example `root/pypi`",
+            "required": true,
+            "example": "root/pypi"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The index discovery document",
+            "content": {
+              "application/json": {
+                "example": {
+                  "index": {
+                    "capabilities": {
+                      "legacy_json": false,
+                      "metadata_siblings": true,
+                      "project_status": false,
+                      "provenance": false,
+                      "simple_api_version": "1.1",
+                      "simple_html": true,
+                      "simple_json": true,
+                      "uploads": true,
+                      "volatile_deletes": true,
+                      "yanking": true
+                    },
+                    "client_configuration": {
+                      ".pypirc": "[distutils]\nindex-servers =\n    velodex\n\n[velodex]\nrepository = http://127.0.0.1:4433/root/pypi/\nusername = __token__\npassword = <upload-token>\n",
+                      "pip.conf": "[global]\nindex-url = http://127.0.0.1:4433/root/pypi/simple/\n",
+                      "uv.toml": "publish-url = \"http://127.0.0.1:4433/root/pypi/\"\n\n[[index]]\nname = \"velodex\"\nurl = \"http://127.0.0.1:4433/root/pypi/simple/\"\ndefault = true\n\n[pip]\nindex-url = \"http://127.0.0.1:4433/root/pypi/simple/\"\n"
+                    },
+                    "kind": "overlay",
+                    "layers": [
+                      "local",
+                      "pypi"
+                    ],
+                    "name": "root/pypi",
+                    "route": "root/pypi",
+                    "upload_to": "local",
+                    "uploads": true,
+                    "urls": {
+                      "api": "http://127.0.0.1:4433/root/pypi/+api",
+                      "openapi": "http://127.0.0.1:4433/api-docs/openapi.json",
+                      "simple": "http://127.0.0.1:4433/root/pypi/simple/",
+                      "stats": "http://127.0.0.1:4433/stats?index=root%2Fpypi",
+                      "status": "http://127.0.0.1:4433/+status",
+                      "upload": "http://127.0.0.1:4433/root/pypi/",
+                      "web": "http://127.0.0.1:4433/browse?index=root%2Fpypi"
+                    }
+                  },
+                  "version": "0.0.1"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No index at this route"
+          }
+        }
       }
     },
     "/{route}/files/{sha256}/{filename}": {

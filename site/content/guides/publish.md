@@ -67,6 +67,14 @@ password = <secret>
 
 `twine upload -r velodex dist/*` then works without flags.
 
+`GET /root/pypi/+api` returns the same `.pypirc` shape when the request reaches Velodex with the public `Host` header.
+The discovery document keeps the password as `<upload-token>`; replace it with the local index token before publishing.
+For offline setup, print the same snippet from the config file:
+
+```shell
+velodex config-snippet --base-url http://127.0.0.1:4433 --index root/pypi .pypirc
+```
+
 ## Upload failures
 
 Validation failures return `400` with the field or archive check that failed. Common causes:

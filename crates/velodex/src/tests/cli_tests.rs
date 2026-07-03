@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use clap::Parser as _;
+use velodex_http::discovery::SnippetKind;
 
-use crate::cli::{Cli, Command, RuntimeArgs};
+use crate::cli::{Cli, Command, RuntimeArgs, SnippetFormat};
 use crate::config::{LogFormat, LogSink};
 
 fn parse(args: &[&str]) -> Cli {
@@ -12,6 +13,7 @@ fn parse(args: &[&str]) -> Cli {
 fn runtime(cli: Cli) -> RuntimeArgs {
     match cli.command {
         Command::Serve(args) | Command::Init(args) => args,
+        Command::ConfigSnippet(_) => panic!("no runtime args on config-snippet"),
         other @ Command::Openapi => panic!("no runtime args on {other:?}"),
     }
 }
@@ -96,4 +98,33 @@ fn test_openapi_takes_no_runtime_flags() {
     let cli = parse(&["velodex", "openapi"]);
     assert!(matches!(cli.command, Command::Openapi));
     assert!(Cli::try_parse_from(["velodex", "openapi", "--port", "1"]).is_err());
+}
+
+#[test]
+fn test_parse_config_snippet() {
+    let cli = parse(&[
+        "velodex",
+        "config-snippet",
+        "--config",
+        "velodex.toml",
+        "--base-url",
+        "https://packages.example",
+        "--index",
+        "root/pypi",
+        ".pypirc",
+    ]);
+    let Command::ConfigSnippet(args) = cli.command else {
+        panic!("expected config-snippet");
+    };
+    assert_eq!(args.config, Some(PathBuf::from("velodex.toml")));
+    assert_eq!(args.base_url, "https://packages.example");
+    assert_eq!(args.index, "root/pypi");
+    assert_eq!(args.format, SnippetFormat::Pypirc);
+}
+
+#[test]
+fn test_snippet_format_maps_to_discovery_kind() {
+    assert_eq!(SnippetKind::from(SnippetFormat::PipConf), SnippetKind::PipConf);
+    assert_eq!(SnippetKind::from(SnippetFormat::UvToml), SnippetKind::UvToml);
+    assert_eq!(SnippetKind::from(SnippetFormat::Pypirc), SnippetKind::Pypirc);
 }

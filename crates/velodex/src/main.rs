@@ -11,7 +11,7 @@ use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{Layer, Registry};
 
-use velodex::cli::Cli;
+use velodex::cli::{Cli, ConfigSnippetArgs};
 use velodex::config::{self, Config, LogConfig, LogFormat, LogSink};
 use velodex::{app, logging};
 
@@ -23,11 +23,16 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync>;
 
 fn resolve_config(args: &velodex::cli::RuntimeArgs) -> anyhow::Result<Config> {
-    let mut cfg = Config::default();
-    if let Some(path) = &args.config {
-        cfg = cfg.apply(config::from_file(path.clone())?)?;
-    }
+    let mut cfg = resolve_config_file(args.config.as_deref())?;
     cfg = cfg.apply(args.overlay())?;
+    Ok(cfg)
+}
+
+fn resolve_config_file(path: Option<&Path>) -> anyhow::Result<Config> {
+    let mut cfg = Config::default();
+    if let Some(path) = path {
+        cfg = cfg.apply(config::from_file(path.to_path_buf())?)?;
+    }
     Ok(cfg)
 }
 
@@ -133,6 +138,15 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     })
 }
 
+fn print_config_snippet(args: &ConfigSnippetArgs) -> anyhow::Result<()> {
+    let config = resolve_config_file(args.config.as_deref())?;
+    print!(
+        "{}",
+        app::config_snippet(&config, &args.index, &args.base_url, args.format.into())?
+    );
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         velodex::cli::Command::Serve(args) => {
@@ -147,6 +161,7 @@ fn main() -> anyhow::Result<()> {
             let _guard = install_logging(&config.log)?;
             app::init(&config)
         }
+        velodex::cli::Command::ConfigSnippet(args) => print_config_snippet(&args),
         velodex::cli::Command::Openapi => {
             print!("{}", velodex_http::api::openapi_json());
             Ok(())

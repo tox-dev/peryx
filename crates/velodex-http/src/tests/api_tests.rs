@@ -10,12 +10,14 @@ fn test_openapi_document_covers_every_endpoint() {
         "/{route}/files/{sha256}/{filename}",
         "/{route}/files/{sha256}/{filename}.metadata",
         "/{route}/",
+        "/{route}/+api",
         "/{route}/inspect/{sha256}/{filename}",
         "/{route}/inspect/{sha256}/{filename}/{member}",
         "/{route}/{project}/{version}/yank",
         "/{route}/{project}/{version}/restore",
         "/{route}/{project}/{version}/",
         "/{route}/{project}/",
+        "/+api",
         "/+status",
         "/+stats",
         "/metrics",
@@ -23,7 +25,7 @@ fn test_openapi_document_covers_every_endpoint() {
     ] {
         assert!(paths.contains_key(path), "missing path {path}");
     }
-    assert_eq!(paths.len(), 15);
+    assert_eq!(paths.len(), 17);
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
 }
 

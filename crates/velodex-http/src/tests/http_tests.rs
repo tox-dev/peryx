@@ -86,6 +86,20 @@ pub(super) async fn get(state: &Arc<AppState>, uri: &str, accept: Option<&str>) 
     (status, headers, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+async fn get_with_headers(state: &Arc<AppState>, uri: &str, extra_headers: &[(&str, &str)]) -> (StatusCode, String) {
+    let mut builder = Request::builder().uri(uri).method("GET");
+    for (name, value) in extra_headers {
+        builder = builder.header(*name, *value);
+    }
+    let response = router(state.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 async fn get_bytes(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (StatusCode, HeaderMap, Vec<u8>) {
     let mut builder = Request::builder().uri(uri).method("GET");
     if let Some(accept) = accept {
@@ -195,6 +209,92 @@ async fn test_mirror_detail_from_html_only_upstream() {
 async fn test_unknown_route_is_not_found() {
     let h = harness().await;
     let (status, ..) = get(&h.state, "/nope/simple/flask/", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_discovery_document_uses_request_origin_and_redacts_token() {
+    let h = harness().await;
+    let (status, body) = get_with_headers(
+        &h.state,
+        "/+api",
+        &[
+            ("host", "internal.local"),
+            ("x-forwarded-host", "packages.example"),
+            ("x-forwarded-proto", "https"),
+        ],
+    )
+    .await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let indexes = json["indexes"].as_array().unwrap();
+    let overlay = indexes.iter().find(|index| index["route"] == "root/pypi").unwrap();
+    let mirror = indexes.iter().find(|index| index["route"] == "pypi").unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["urls"],
+        serde_json::json!({
+            "api": "https://packages.example/+api",
+            "status": "https://packages.example/+status",
+            "stats": "https://packages.example/+stats",
+            "openapi": "https://packages.example/api-docs/openapi.json",
+            "web": "https://packages.example/"
+        })
+    );
+    assert_eq!(
+        overlay["urls"],
+        serde_json::json!({
+            "api": "https://packages.example/root/pypi/+api",
+            "simple": "https://packages.example/root/pypi/simple/",
+            "upload": "https://packages.example/root/pypi/",
+            "status": "https://packages.example/+status",
+            "web": "https://packages.example/browse?index=root%2Fpypi",
+            "stats": "https://packages.example/stats?index=root%2Fpypi",
+            "openapi": "https://packages.example/api-docs/openapi.json"
+        })
+    );
+    assert_eq!(
+        overlay["capabilities"],
+        serde_json::json!({
+            "simple_html": true,
+            "simple_json": true,
+            "simple_api_version": "1.1",
+            "metadata_siblings": true,
+            "uploads": true,
+            "yanking": true,
+            "volatile_deletes": true,
+            "project_status": false,
+            "provenance": false,
+            "legacy_json": false
+        })
+    );
+    assert_eq!(mirror["urls"].get("upload"), None);
+    assert_eq!(mirror["client_configuration"].get(".pypirc"), None);
+    assert_eq!(mirror["capabilities"]["uploads"], false);
+    assert_eq!(mirror["capabilities"]["yanking"], false);
+    assert_eq!(mirror["capabilities"]["volatile_deletes"], false);
+    assert!(body.contains("\"uv.toml\""));
+    assert!(body.contains("password = <upload-token>"));
+    assert!(!body.contains("s3cret"));
+}
+
+#[tokio::test]
+async fn test_index_discovery_route_accepts_trailing_slash() {
+    let h = harness().await;
+    let (status, body) = get_with_headers(&h.state, "/root/pypi/+api/", &[("host", "127.0.0.1:4433")]).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["index"]["route"], "root/pypi");
+    assert_eq!(
+        json["index"]["urls"]["simple"],
+        "http://127.0.0.1:4433/root/pypi/simple/"
+    );
+}
+
+#[tokio::test]
+async fn test_index_discovery_unknown_route_is_not_found() {
+    let h = harness().await;
+    let (status, ..) = get(&h.state, "/missing/+api", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 

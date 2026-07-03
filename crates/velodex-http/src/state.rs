@@ -154,45 +154,69 @@ impl AppState {
         self.epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Describe every configured index for presentation: kind name, overlay layer names, and
-    /// whether uploads are enabled. Shared by `/+status` and the web UI.
+    /// Describe every configured index for presentation: kind name, overlay layer names, upload
+    /// access, and delete policy. Shared by `/+status` and the web UI.
     #[must_use]
     pub fn describe_indexes(&self) -> Vec<IndexDescription> {
-        self.indexes
-            .iter()
-            .map(|index| {
-                let (kind, layers, uploads, upload_to) = match &index.kind {
-                    IndexKind::Mirror(_) => ("mirror", Vec::new(), false, None),
-                    IndexKind::Local { upload_token, .. } => ("local", Vec::new(), upload_token.is_some(), None),
-                    IndexKind::Overlay { layers, upload } => {
-                        let names = layers.iter().map(|&pos| self.index_at(pos).name.clone()).collect();
-                        let uploads = upload.is_some_and(|pos| {
-                            matches!(
-                                &self.index_at(pos).kind,
-                                IndexKind::Local {
-                                    upload_token: Some(_),
-                                    ..
-                                }
-                            )
-                        });
-                        let upload_to = upload.map(|pos| self.index_at(pos).name.clone());
-                        ("overlay", names, uploads, upload_to)
-                    }
-                };
-                IndexDescription {
-                    name: index.name.clone(),
-                    route: index.route.clone(),
-                    kind,
-                    layers,
-                    uploads,
-                    upload_to,
-                }
-            })
-            .collect()
+        describe_indexes(&self.indexes)
     }
 }
 
-/// A configured index as presented to humans: on the dashboard and in `/+status`.
+/// Describe every runtime index without touching storage or upstream state.
+#[must_use]
+pub fn describe_indexes(indexes: &[Index]) -> Vec<IndexDescription> {
+    (0..indexes.len())
+        .map(|position| describe_index(indexes, position))
+        .collect()
+}
+
+pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
+    let index = &indexes[position];
+    let (kind, layers, uploads, volatile_deletes, upload_to) = match &index.kind {
+        IndexKind::Mirror(_) => ("mirror", Vec::new(), false, false, None),
+        IndexKind::Local { upload_token, volatile } => (
+            "local",
+            Vec::new(),
+            upload_token.is_some(),
+            upload_token.is_some() && *volatile,
+            None,
+        ),
+        IndexKind::Overlay { layers, upload } => {
+            let names = layers.iter().map(|&pos| indexes[pos].name.clone()).collect();
+            let uploads = upload.is_some_and(|pos| {
+                matches!(
+                    &indexes[pos].kind,
+                    IndexKind::Local {
+                        upload_token: Some(_),
+                        ..
+                    }
+                )
+            });
+            let volatile_deletes = upload.is_some_and(|pos| {
+                matches!(
+                    &indexes[pos].kind,
+                    IndexKind::Local {
+                        upload_token: Some(_),
+                        volatile: true,
+                    }
+                )
+            });
+            let upload_to = upload.map(|pos| indexes[pos].name.clone());
+            ("overlay", names, uploads, volatile_deletes, upload_to)
+        }
+    };
+    IndexDescription {
+        name: index.name.clone(),
+        route: index.route.clone(),
+        kind,
+        layers,
+        uploads,
+        volatile_deletes,
+        upload_to,
+    }
+}
+
+/// A configured index as presented to humans: on the dashboard, in `/+status`, and in discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexDescription {
     pub name: String,
@@ -200,6 +224,7 @@ pub struct IndexDescription {
     pub kind: &'static str,
     pub layers: Vec<String>,
     pub uploads: bool,
+    pub volatile_deletes: bool,
     /// For an overlay: the layer uploads land in, whether or not a token currently enables them.
     pub upload_to: Option<String>,
 }

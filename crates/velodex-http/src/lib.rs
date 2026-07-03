@@ -4,6 +4,7 @@
 pub mod api;
 pub mod archive;
 pub mod cache;
+pub mod discovery;
 pub mod handlers;
 pub mod metrics;
 pub mod path_safety;
@@ -13,7 +14,7 @@ pub mod stream;
 pub mod upload;
 
 pub use router::router;
-pub use state::{AppState, Index, IndexDescription, IndexKind};
+pub use state::{AppState, Index, IndexDescription, IndexKind, describe_indexes};
 
 #[cfg(test)]
 mod tests;
