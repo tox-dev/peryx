@@ -177,8 +177,11 @@ fn format_seconds(seconds: f64) -> String {
         format!("{}m {:04.1}s", (seconds / 60.0) as u64, seconds % 60.0)
     } else if seconds >= 1.0 {
         format!("{seconds:.1} s")
-    } else {
+    } else if seconds >= 0.0005 {
         format!("{:.0} ms", seconds * 1000.0)
+    } else {
+        // Sub-half-millisecond work is real work: never print a bare zero.
+        "<1 ms".to_owned()
     }
 }
 
@@ -204,6 +207,19 @@ fn thousands(value: f64) -> String {
 /// Where the report lives: zola loads it relative to the site root.
 pub fn report_path() -> PathBuf {
     repo_root().join("site").join("data").join("bench").join("report.toml")
+}
+
+/// Mean with both extremes dropped: one bad sample on either side cannot move the figure.
+///
+/// # Panics
+/// Never in practice: every measurement loop collects at least one sample.
+pub fn robust_mean(samples: &mut [f64]) -> f64 {
+    assert!(!samples.is_empty(), "a measurement always produces samples");
+    samples.sort_unstable_by(f64::total_cmp);
+    let trim = usize::from(samples.len() >= 3);
+    let kept = &samples[trim..samples.len() - trim];
+    #[expect(clippy::cast_precision_loss, reason = "sample counts are single digits")]
+    return kept.iter().sum::<f64>() / kept.len() as f64;
 }
 
 /// The repository checkout root.

@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+          submodules: true # --all-targets builds the benchmark, whose fixtures are a submodule
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings

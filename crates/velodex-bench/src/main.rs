@@ -53,8 +53,8 @@ enum Part {
 /// Benchmark velodex against direct `PyPI` and competing index servers.
 #[derive(Parser)]
 struct Cli {
-    /// Measurements per install cell; the best is kept.
-    #[arg(long, default_value_t = 1)]
+    /// Samples per cell: extremes are dropped and the rest averaged.
+    #[arg(long, default_value_t = 5)]
     runs: usize,
 
     /// Leave out parts of the suite; repeat for several.
@@ -82,13 +82,13 @@ async fn main() -> anyhow::Result<()> {
         workloads::installs(&servers, clients, cli.runs, &http).await?;
     }
     if runs(Part::Throughput) {
-        workloads::throughput(&servers, &http).await?;
+        workloads::throughput(&servers, cli.runs, &http).await?;
     }
     if runs(Part::Parallel) {
-        workloads::fleet(&servers, &http).await?;
+        workloads::fleet(&servers, cli.runs, &http).await?;
     }
     if runs(Part::Load) {
-        workloads::load(&servers, &[1, 32], &http).await?;
+        workloads::load(&servers, &[1, 32], cli.runs, &http).await?;
     }
     Ok(())
 }

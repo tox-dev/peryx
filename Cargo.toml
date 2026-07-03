@@ -50,6 +50,9 @@ pep440_rs = "0.7"
 tl = "0.7"
 toml = "1.1"
 insta = "1"
+# CodSpeed's drop-in criterion replacement: a no-op locally, instrumented in CI. Keyed `criterion`
+# so benchmark code writes plain `use criterion::...`.
+criterion = { package = "codspeed-criterion-compat", version = "5.0", default-features = false }
 thiserror = "2.0"
 anyhow = "1.0"
 tracing = "0.1"

@@ -1,0 +1,44 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codspeed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Run serving benchmarks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC auth with CodSpeed; no token secret needed on a public repo
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          submodules: true # the benchmark fixtures live in the velodex-data submodule
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: cargo-codspeed
+      # The serving benchmarks drive a real velodex instance end to end; the wall-clock six-server
+      # comparison in the same crate cannot run under the simulation instrument.
+      - run: cargo codspeed build -p velodex-bench
+      - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
+        env:
+          # GitHub runs jobs on Intel (AVX-512) or AMD (no AVX-512) CPUs, and glibc dispatches a
+          # different SIMD memcpy/memmove per CPU, so Callgrind counts different instructions for
+          # identical code. Pin the baseline (non-SIMD) paths so the instruction count reproduces
+          # run to run; the gate counts instructions, not wall time, so the slower path is free.
+          GLIBC_TUNABLES: "glibc.cpu.hwcaps=-AVX512F,-AVX512VL,-AVX512BW,-AVX512DQ,-AVX512CD,-AVX2,-AVX,-ERMS,-FSRM"
+        with:
+          mode: simulation
+          run: cargo codspeed run

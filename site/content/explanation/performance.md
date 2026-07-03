@@ -63,9 +63,16 @@ effects compound:
 The tables below come from a [benchmark harness](https://github.com/tox-dev/velodex/tree/main/crates/velodex-bench) the
 repository carries as a Rust crate: it builds velodex, starts every competitor from its published package, times the
 same workload through each with a native HTTP client, samples each server's process tree while its workload runs, and
-writes one TOML report these tables render from. Cells tint from best-in-row green to worst-in-row red; the ratio in
+writes one TOML report these tables render from. Every cell is five samples with the high and low dropped and the rest
+averaged, so one slow run cannot move it. Cells tint from best-in-row green to worst-in-row red; the ratio in
 parentheses compares against **direct**, the no-proxy baseline, so each server's cell reads as the overhead (or win) it
 adds over talking to pypi.org yourself.
+
+The numbers come from a laptop on a home connection, not a controlled lab, so the absolute figures move with the network
+and thermal state. The ratios against **direct** are what to read: every server meets the same conditions in the same
+run, so the cells that lean on the upstream CDN (cold installs, transferring an uncached wheel) shift together and cancel
+in the ratio, while the cells served from velodex's own memory or disk (warm pages, hot wheels, the request swarm) stay
+put.
 
 The table covers every alternative that can be started hermetically from a published package: velodex, devpi, proxpi,
 pypiserver (whose upstream fallback is a redirect rather than a cache), and pypicloud (archived upstream; it still runs,
@@ -105,14 +112,22 @@ concludes the package does not exist.
 
 The request workload drives a swarm against each warm server: one user, then 32, each a client that fetches project
 pages and reads every byte of the body, the way a resolver does. The pages average ~480 KB, so this row prices full page
-transfers, not header round-trips.
+transfers, not header round-trips. p95 and p99 come from pooling every request's latency and reading the percentile off
+the pool, not from averaging per-window percentiles. The swarm is closed-loop — each client waits for its response
+before sending the next — so these percentiles are bounded by the client count and read optimistically against a
+production tail; treat them as a same-conditions comparison between servers, not as absolute latency you would see under
+open-arrival load.
 
 {{ bench(file="load") }}
 
-Every table ends with two resource rows: the CPU seconds and peak resident memory of the server's whole process tree
-while its workload ran, compared against velodex (direct runs no server, so it cannot anchor them). Speed alone hides a
-trade: proxpi's hot-transfer lead comes from holding wheels in memory at three to five times velodex's footprint, and
-pypiserver's near-zero CPU reflects that it redirects file downloads to PyPI instead of serving them.
+Every table ends with resource rows: the CPU and peak resident memory of the server's whole process tree while its
+workload ran, anchored to velodex (direct runs no server, so it cannot anchor them). The request table divides CPU by
+requests answered, because a server that redirects everything spends almost nothing while doing almost nothing — raw
+seconds would reward that. Peak memory is sampled resident size every 200 ms, which counts pages shared across a process
+tree once per process and can miss a spike between samples; read it as an order-of-magnitude comparison, not a
+byte-exact one. Speed alone hides a trade either way: proxpi's hot-transfer lead comes from holding wheels in memory at
+several times velodex's footprint, and pypiserver's tiny CPU reflects that it redirects downloads to PyPI instead of
+serving them.
 
 Every server is measured the same way, on the same machine, in the same run, and one command reproduces all five tables:
 
