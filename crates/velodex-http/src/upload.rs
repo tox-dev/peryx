@@ -10,8 +10,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use velodex_core::pypi::{
-    CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Yanked, is_valid_name,
-    normalize_name, parse_distribution_filename, parse_metadata, parse_version, parse_version_specifiers,
+    CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
+    is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
+    parse_version_specifiers,
 };
 use velodex_storage::blob::{Digest, StagedBlob};
 
@@ -214,6 +215,9 @@ pub fn prepare(
         upload_time: Some(upload_time),
         yanked: Yanked::No,
         core_metadata: CoreMetadata::Absent,
+        dist_info_metadata: CoreMetadata::Absent,
+        gpg_sig: None,
+        provenance: Provenance::Absent,
     };
     Ok(PreparedUpload {
         normalized,

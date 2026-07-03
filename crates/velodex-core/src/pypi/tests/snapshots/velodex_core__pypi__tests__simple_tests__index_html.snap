@@ -5,7 +5,7 @@ expression: render_index_html(&sample_list())
 <!DOCTYPE html>
 <html>
   <head>
-    <meta name="pypi:repository-version" content="1.1">
+    <meta name="pypi:repository-version" content="1.4">
     <title>Simple index</title>
   </head>
   <body>

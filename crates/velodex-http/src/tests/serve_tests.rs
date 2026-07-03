@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
+use velodex_core::pypi::SimpleError;
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::UpstreamClient;
@@ -33,6 +34,28 @@ async fn mount_json_page(server: &MockServer, body: &str) {
         )
         .mount(server)
         .await;
+}
+
+fn split_project_upstream(first: Vec<u8>, rest: Vec<u8>) -> (String, std::sync::mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buffer = [0u8; 1024];
+        let _ = socket.read(&mut buffer);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/vnd.pypi.simple.v1+json\r\ncontent-length: {}\r\n\r\n",
+            first.len() + rest.len()
+        );
+        socket.write_all(header.as_bytes()).unwrap();
+        socket.write_all(&first).unwrap();
+        socket.flush().unwrap();
+        released.recv().unwrap();
+        socket.write_all(&rest).unwrap();
+    });
+    (format!("http://{addr}/simple/"), release)
 }
 
 #[tokio::test]
@@ -176,6 +199,12 @@ async fn test_file_whose_source_is_not_a_mirror_is_not_found() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+#[test]
+fn test_cache_error_preserves_simple_api_version_errors() {
+    let err = cache::CacheError::from(SimpleError::InvalidApiVersion("1".to_owned()));
+    assert!(matches!(err, cache::CacheError::Simple(SimpleError::InvalidApiVersion(version)) if version == "1"));
+}
+
 #[tokio::test]
 async fn test_inspect_fetches_an_uncached_file_from_upstream() {
     let h = harness().await;
@@ -301,7 +330,14 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
     let server = MockServer::start().await;
     let digest = Digest::of(b"wheel");
     let file_url = format!("{}/files/flask.whl", server.uri());
-    mount_json_page(&server, &detail_json(digest.as_str(), &file_url)).await;
+    let page = format!(
+        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"archived\",\
+         \"project-status-reason\":\"read only\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
+        digest = digest.as_str(),
+    );
+    mount_json_page(&server, &page).await;
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, &format!("{}/simple/", server.uri()), |client| {
         vec![
@@ -328,6 +364,8 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
     let (status, _, body) = get(&state, "/both/simple/flask/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(digest.as_str()));
+    assert!(body.contains(r#""project-status":"archived""#));
+    assert!(body.contains(r#""project-status-reason":"read only""#));
 }
 
 #[tokio::test]
@@ -433,6 +471,72 @@ fn matches_name(outcome: &PageOutcome) -> &'static str {
         PageOutcome::NotFound => "NotFound",
         PageOutcome::Fallback => "Fallback",
     }
+}
+
+#[tokio::test]
+async fn test_small_json_page_without_meta_completes_during_preflight() {
+    let h = harness().await;
+    mount_json_page(&h.server, r#"{"name":"flask"}"#).await;
+    let outcome = cache::stream_detail(h.state.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
+    let bytes = match outcome {
+        PageOutcome::Ready(bytes) => bytes,
+        outcome => panic!("expected a ready outcome, got {}", matches_name(&outcome)),
+    };
+    assert_eq!(bytes, Bytes::from_static(br#"{"name":"flask"}"#));
+    assert!(h.state.meta.get_index("pypi/flask").unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_json_meta_preflight_streams_remainder() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    let page = format!(
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
+        digest = digest.as_str(),
+    );
+    mount_json_page(&h.server, &page).await;
+    let body = stream_outcome(&h.state)
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .fold(Vec::new(), |mut body, chunk| {
+            body.extend_from_slice(&chunk);
+            body
+        });
+    assert!(String::from_utf8(body).unwrap().contains(digest.as_str()));
+}
+
+#[tokio::test]
+async fn test_json_meta_preflight_streams_without_remainder() {
+    let (upstream, release) = split_project_upstream(br#"{"meta":{"api-version":"1.4"}"#.to_vec(), br"}".to_vec());
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, &upstream, |client| {
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            kind: IndexKind::Mirror(client),
+        }]
+    });
+    let outcome = cache::stream_detail(state, 0, "flask".to_owned()).await.unwrap();
+    release.send(()).unwrap();
+    let PageOutcome::Streaming(stream) = outcome else {
+        panic!("expected a streaming outcome, got {}", matches_name(&outcome));
+    };
+    let body = stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .fold(Vec::new(), |mut body, chunk| {
+            body.extend_from_slice(&chunk);
+            body
+        });
+    assert_eq!(String::from_utf8(body).unwrap(), r#"{"meta":{"api-version":"1.4"}}"#);
 }
 
 #[tokio::test]

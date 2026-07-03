@@ -617,7 +617,7 @@
               "application/vnd.pypi.simple.v1+json": {
                 "example": {
                   "meta": {
-                    "api-version": "1.1"
+                    "api-version": "1.4"
                   },
                   "projects": [
                     {
@@ -678,18 +678,25 @@
                       "core-metadata": {
                         "sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
                       },
+                      "dist-info-metadata": {
+                        "sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+                      },
                       "filename": "velodexpkg-1.0-py3-none-any.whl",
+                      "gpg-sig": false,
                       "hashes": {
                         "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
                       },
+                      "provenance": "https://example.test/provenance/velodexpkg-1.0-py3-none-any.whl",
                       "requires-python": ">=3.8",
                       "size": 1832,
+                      "upload-time": "2026-01-01T00:00:00Z",
                       "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
                       "yanked": false
                     }
                   ],
                   "meta": {
-                    "api-version": "1.1"
+                    "api-version": "1.4",
+                    "project-status": "active"
                   },
                   "name": "velodexpkg",
                   "versions": [

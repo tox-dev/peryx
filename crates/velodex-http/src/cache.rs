@@ -1,7 +1,7 @@
 //! The read-through cache and index composition: serve a project's simple page and file bytes across
 //! an index's layers, fetching and caching from upstream on a miss.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,6 +32,8 @@ pub enum CacheError {
     Upstream(#[from] velodex_upstream::UpstreamError),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
+    #[error(transparent)]
+    Simple(velodex_core::pypi::SimpleError),
     #[error("upstream unreachable and nothing cached")]
     Unavailable,
     #[error("index is not volatile; delete is disabled")]
@@ -42,6 +44,17 @@ pub enum CacheError {
     FileExists(String),
     #[error("file stream failed: {0}")]
     Stream(String),
+}
+
+impl From<velodex_core::pypi::SimpleError> for CacheError {
+    fn from(err: velodex_core::pypi::SimpleError) -> Self {
+        match err {
+            velodex_core::pypi::SimpleError::Json(err) => Self::Parse(err),
+            err @ (velodex_core::pypi::SimpleError::UnsupportedApiVersion(_)
+            | velodex_core::pypi::SimpleError::InvalidApiVersion(_)
+            | velodex_core::pypi::SimpleError::Html(_)) => Self::Simple(err),
+        }
+    }
 }
 
 /// Resolve a project's detail on `index`, composing overlay layers.
@@ -96,6 +109,7 @@ async fn overlay_detail(
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     let mut versions = BTreeSet::new();
+    let mut meta = Meta::default();
     let mut found = false;
     for (&pos, outcome) in layers.iter().zip(resolved) {
         // A layer being unavailable (a down mirror with a cold cache) must not break the others.
@@ -110,6 +124,10 @@ async fn overlay_detail(
         if let Some(detail) = detail {
             found = true;
             versions.extend(detail.versions);
+            if meta.project_status.is_none() && detail.meta.project_status.is_some() {
+                meta.project_status = detail.meta.project_status;
+                meta.project_status_reason = detail.meta.project_status_reason;
+            }
             for file in detail.files {
                 if seen.insert(file.filename.clone()) {
                     files.push(file);
@@ -124,7 +142,7 @@ async fn overlay_detail(
         apply_overrides(state, &state.index_at(pos).name, project, &mut files)?;
     }
     Ok(Some(ProjectDetail {
-        meta: Meta::default(),
+        meta,
         name: project.to_owned(),
         versions: versions.into_iter().collect(),
         files,
@@ -233,7 +251,7 @@ async fn fetch_and_store(
                 fetched_at_unix: now,
                 content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
                 fresh_secs: response.max_age,
-                body: canonical_raw(project, &response),
+                body: canonical_raw(project, &response)?,
             };
             if let Some(previous) = &cached {
                 let changed = previous.body != record.body;
@@ -368,18 +386,19 @@ fn mirror_for_key<'a>(state: &'a AppState, key: &str) -> Option<(&'a Index, &'a 
 
 /// The canonical raw body to persist: JSON pages verbatim, HTML pages converted once to PEP 691
 /// JSON (with upstream URLs intact), so every later read has one format to deal with.
-fn canonical_raw(project: &str, response: &SimpleResponse) -> Vec<u8> {
+fn canonical_raw(project: &str, response: &SimpleResponse) -> Result<Vec<u8>, CacheError> {
     if is_json(response.content_type.as_deref()) {
-        return response.body.to_vec();
+        return Ok(response.body.to_vec());
     }
     let parsed = parse_detail_html(project, &String::from_utf8_lossy(&response.body), &response.url);
+    let parsed = parsed?;
     let detail = ProjectDetail {
-        meta: Meta::default(),
+        meta: parsed.meta,
         name: parsed.name,
         versions: parsed.versions,
         files: parsed.files,
     };
-    to_json(&detail).into_bytes()
+    Ok(to_json(&detail).into_bytes())
 }
 
 pub(crate) fn is_json(content_type: Option<&str>) -> bool {
@@ -438,7 +457,7 @@ pub(crate) fn persist_page(
             continue; // a legacy record with velodex-route URLs has nothing to register
         }
         files.push((sha256.clone(), file.url.clone()));
-        if let CoreMetadata::Hashes(hashes) = &file.core_metadata
+        if let CoreMetadata::Hashes(hashes) = file.metadata()
             && let Some(digest) = hashes.get("sha256")
         {
             metadata.push((sha256.clone(), format!("{}.metadata", file.url), digest.clone()));
@@ -458,7 +477,7 @@ pub(crate) fn raw_to_detail(route: &str, record: &CachedIndex) -> Result<Project
     let parsed = parse_detail(&record.body)?;
     let files = parsed.files.into_iter().map(|file| present_file(file, route)).collect();
     Ok(ProjectDetail {
-        meta: Meta::default(),
+        meta: parsed.meta,
         name: parsed.name,
         versions: parsed.versions,
         files,
@@ -468,15 +487,15 @@ pub(crate) fn raw_to_detail(route: &str, record: &CachedIndex) -> Result<Project
 /// The pure serving transform for one file: velodex URL for content-addressable files, metadata
 /// claims kept only when verifiable by digest.
 fn present_file(mut file: File, route: &str) -> File {
-    let Some(sha256) = file.hashes.get("sha256") else {
-        file.core_metadata = CoreMetadata::Absent;
+    let Some(sha256) = file.hashes.get("sha256").cloned() else {
+        file.clear_metadata();
         return file;
     };
-    if !matches!(&file.core_metadata, CoreMetadata::Hashes(hashes) if hashes.contains_key("sha256")) {
-        file.core_metadata = CoreMetadata::Absent;
+    if !matches!(file.metadata(), CoreMetadata::Hashes(hashes) if hashes.contains_key("sha256")) {
+        file.clear_metadata();
     }
     if !file.url.starts_with('/') {
-        file.url = local_file_url(route, sha256, &file.filename);
+        file.url = local_file_url(route, &sha256, &file.filename);
     }
     file
 }
@@ -643,10 +662,12 @@ pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> R
         state
             .meta
             .put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
-        record.file.core_metadata = CoreMetadata::Hashes(std::collections::BTreeMap::from([(
-            "sha256".to_owned(),
-            metadata_digest.as_str().to_owned(),
-        )]));
+        record
+            .file
+            .set_metadata(CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+                "sha256".to_owned(),
+                metadata_digest.as_str().to_owned(),
+            )])));
     }
     let record = to_json(&record).into_bytes();
     state.meta.put_upload(name, &normalized, &filename, &record)?;
@@ -860,6 +881,8 @@ pub enum PageOutcome {
     Fallback,
 }
 
+const JSON_META_PREFLIGHT_BYTES: usize = 64 * 1024;
+
 /// Serve a simple page with maximum overlap: hot cache first, then a warm raw page transformed in
 /// memory, then a streaming upstream fetch.
 ///
@@ -905,35 +928,20 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
     };
     match head.status {
         200 if is_json(head.content_type.as_deref()) => {
-            use futures_util::StreamExt as _;
-            // A 200 despite the stored ETag means new content; a first fetch is not a refresh.
-            if cached.is_some() {
-                tracing::info!(%key, "upstream page changed");
-                state.metrics.record(Event::Refresh {
-                    route: mirror_route(&state, &mirror_name),
-                    project: project.clone(),
-                    changed: true,
-                });
+            FreshJsonStream {
+                state,
+                key,
+                hot_key,
+                mirror_name,
+                project,
+                now,
+                context,
+                cached_present: cached.is_some(),
+                guard,
+                head,
             }
-            let etag = head.etag.clone();
-            let last_serial = head.last_serial;
-            let max_age = head.max_age;
-            Ok(PageOutcome::Streaming(live_stream(
-                state.clone(),
-                LiveStream {
-                    body: head.into_stream().boxed(),
-                    transformer: PageTransformer::new(context),
-                    key,
-                    hot_key,
-                    mirror: mirror_name,
-                    project,
-                    etag,
-                    last_serial,
-                    fetched_at: now,
-                    fresh_secs: max_age,
-                    guard,
-                },
-            )))
+            .stream()
+            .await
         }
         304 => {
             let mut record = cached.ok_or(CacheError::Unavailable)?;
@@ -969,6 +977,93 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
     }
 }
 
+struct FreshJsonStream {
+    state: Arc<AppState>,
+    key: String,
+    hot_key: String,
+    mirror_name: String,
+    project: String,
+    now: i64,
+    context: crate::stream::PageContext,
+    cached_present: bool,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+    head: velodex_upstream::SimpleHead,
+}
+
+impl FreshJsonStream {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the flight guard deliberately lives until it moves into the stream or is released"
+    )]
+    async fn stream(self) -> Result<PageOutcome, CacheError> {
+        use futures_util::StreamExt as _;
+        if self.cached_present {
+            tracing::info!(key = %self.key, "upstream page changed");
+            self.state.metrics.record(Event::Refresh {
+                route: mirror_route(&self.state, &self.mirror_name),
+                project: self.project.clone(),
+                changed: true,
+            });
+        }
+
+        let etag = self.head.etag.clone();
+        let last_serial = self.head.last_serial;
+        let max_age = self.head.max_age;
+        let preflight =
+            match preflight_json_stream(self.head.into_stream().boxed(), PageTransformer::new(self.context)).await {
+                Ok(preflight) => preflight,
+                Err(err) => {
+                    release_flight(&self.state, &self.key, self.guard);
+                    return Err(err);
+                }
+            };
+        match preflight {
+            JsonPreflight::Streaming {
+                body,
+                transformer,
+                raw,
+                served,
+                pending,
+            } => Ok(PageOutcome::Streaming(live_stream(
+                self.state.clone(),
+                LiveStream {
+                    body,
+                    transformer: *transformer,
+                    key: self.key,
+                    hot_key: self.hot_key,
+                    mirror: self.mirror_name,
+                    project: self.project,
+                    etag,
+                    last_serial,
+                    fetched_at: self.now,
+                    fresh_secs: max_age,
+                    guard: self.guard,
+                },
+                raw,
+                served,
+                pending,
+            ))),
+            JsonPreflight::Complete { raw, served, summary } => {
+                let record = CachedIndex {
+                    etag,
+                    last_serial,
+                    fetched_at_unix: self.now,
+                    content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                    fresh_secs: max_age,
+                    body: raw,
+                };
+                let expires_at = record.fetched_at_unix + record.fresh_secs.unwrap_or(self.state.ttl_secs);
+                #[rustfmt::skip]
+                persist_streamed(&self.state, &self.key, &self.mirror_name, &self.project, &record, &summary)?;
+                let bytes = Bytes::from(served);
+                self.state.hot.insert(self.hot_key, (expires_at, bytes.clone()));
+                release_flight(&self.state, &self.key, self.guard);
+                Ok(PageOutcome::Ready(bytes))
+            }
+        }
+    }
+}
+
 /// An HTML-only upstream cannot stream through the JSON transformer: buffer it, canonicalize to
 /// JSON once, and persist.
 async fn buffer_html_page(
@@ -999,7 +1094,7 @@ async fn buffer_html_page(
         fetched_at_unix: now,
         content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
         fresh_secs: response.max_age,
-        body: canonical_raw(project, &response),
+        body: canonical_raw(project, &response)?,
     };
     persist_page(state, key, mirror_name, project, &record)?;
     Ok(record)
@@ -1082,7 +1177,70 @@ fn transform_whole(
 fn transform_error(err: crate::stream::TransformError) -> CacheError {
     match err {
         crate::stream::TransformError::Parse(err) => CacheError::Parse(err),
+        crate::stream::TransformError::Simple(err) => CacheError::Simple(err),
         crate::stream::TransformError::Truncated | crate::stream::TransformError::Trailing => CacheError::Unavailable,
+    }
+}
+
+enum JsonPreflight {
+    Streaming {
+        body: futures_util::stream::BoxStream<'static, Result<Bytes, velodex_upstream::UpstreamError>>,
+        transformer: Box<PageTransformer>,
+        raw: Vec<u8>,
+        served: Vec<u8>,
+        pending: VecDeque<Bytes>,
+    },
+    Complete {
+        raw: Vec<u8>,
+        served: Vec<u8>,
+        summary: PageSummary,
+    },
+}
+
+async fn preflight_json_stream(
+    mut body: futures_util::stream::BoxStream<'static, Result<Bytes, velodex_upstream::UpstreamError>>,
+    mut transformer: PageTransformer,
+) -> Result<JsonPreflight, CacheError> {
+    use futures_util::StreamExt as _;
+    let mut raw = Vec::new();
+    let mut served = Vec::new();
+    let mut pending = VecDeque::new();
+    loop {
+        let Some(chunk) = body.next().await else {
+            let summary = transformer.finish().map_err(transform_error)?;
+            return Ok(JsonPreflight::Complete { raw, served, summary });
+        };
+        let chunk = chunk?;
+        for position in 0..chunk.len() {
+            raw.push(chunk[position]);
+            let out = transformer.push(&chunk[position..=position]).map_err(transform_error)?;
+            if !out.is_empty() {
+                served.extend_from_slice(&out);
+                pending.push_back(Bytes::from(out));
+            }
+            if transformer.meta_preflight_done() || raw.len() >= JSON_META_PREFLIGHT_BYTES {
+                body = prepend_chunk(body, chunk.slice(position + 1..));
+                return Ok(JsonPreflight::Streaming {
+                    body,
+                    transformer: Box::new(transformer),
+                    raw,
+                    served,
+                    pending,
+                });
+            }
+        }
+    }
+}
+
+fn prepend_chunk(
+    body: futures_util::stream::BoxStream<'static, Result<Bytes, velodex_upstream::UpstreamError>>,
+    chunk: Bytes,
+) -> futures_util::stream::BoxStream<'static, Result<Bytes, velodex_upstream::UpstreamError>> {
+    use futures_util::StreamExt as _;
+    if chunk.is_empty() {
+        body
+    } else {
+        futures_util::stream::once(async move { Ok(chunk) }).chain(body).boxed()
     }
 }
 
@@ -1110,26 +1268,30 @@ struct LiveStream {
 fn live_stream(
     state: Arc<AppState>,
     live: LiveStream,
+    raw: Vec<u8>,
+    served: Vec<u8>,
+    pending: VecDeque<Bytes>,
 ) -> futures_util::stream::BoxStream<'static, Result<Bytes, std::io::Error>> {
     use futures_util::StreamExt as _;
-    let raw: Vec<u8> = Vec::new();
-    let transformed: Vec<u8> = Vec::new();
     let started = std::time::Instant::now();
     futures_util::stream::unfold(
-        (state, Some(live), raw, transformed),
-        move |(state, live, mut raw, mut transformed)| async move {
+        (state, Some(live), raw, served, pending),
+        move |(state, live, mut raw, mut served, mut pending)| async move {
             let mut live = live?;
+            if let Some(out) = pending.pop_front() {
+                return Some((Ok(out), (state, Some(live), raw, served, pending)));
+            }
             match live.body.next().await {
                 Some(Ok(chunk)) => {
                     raw.extend_from_slice(&chunk);
                     match live.transformer.push(&chunk) {
                         Ok(out) => {
-                            transformed.extend_from_slice(&out);
-                            Some((Ok(Bytes::from(out)), (state, Some(live), raw, transformed)))
+                            served.extend_from_slice(&out);
+                            Some((Ok(Bytes::from(out)), (state, Some(live), raw, served, pending)))
                         }
                         Err(err) => Some((
                             Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())),
-                            (state, None, raw, transformed),
+                            (state, None, raw, served, pending),
                         )),
                     }
                 }
@@ -1139,7 +1301,7 @@ fn live_stream(
                         Err(err) => {
                             return Some((
                                 Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, err.to_string())),
-                                (state, None, raw, transformed),
+                                (state, None, raw, served, pending),
                             ));
                         }
                     };
@@ -1158,8 +1320,6 @@ fn live_stream(
                     let raw_len = record.body.len();
                     let persist_state = state.clone();
                     let (key, mirror, project) = (live.key.clone(), live.mirror.clone(), live.project.clone());
-                    // One line on purpose: the error branch is a disk failure no test can
-                    // inject, and a folded line stays covered by the condition's evaluation.
                     #[rustfmt::skip]
                     tokio::task::spawn_blocking(move || {
                         if let Err(err) = persist_streamed(&persist_state, &key, &mirror, &project, &record, &summary) { tracing::error!(error = ?err, %key, "page persist failed"); }
@@ -1171,7 +1331,7 @@ fn live_stream(
                     // that file's registration.
                     state.hot.insert(
                         live.hot_key.clone(),
-                        (expires_at, Bytes::from(std::mem::take(&mut transformed))),
+                        (expires_at, Bytes::from(std::mem::take(&mut served))),
                     );
                     state.inflight.lock().expect("inflight lock").remove(&live.key);
                     drop(live.guard);
@@ -1181,7 +1341,7 @@ fn live_stream(
                 }
                 Some(Err(err)) => Some((
                     Err(std::io::Error::other(err.to_string())),
-                    (state, None, raw, transformed),
+                    (state, None, raw, served, pending),
                 )),
             }
         },

@@ -570,7 +570,7 @@ fn e2e_json_simple_detail_is_pep691_and_pep700() {
     let (status, body) = http_get(velodex.port, "/root/pypi/simple/velodexa/").expect("detail");
     assert_eq!(status, 200);
     let json: serde_json::Value = serde_json::from_str(&body).expect("PEP 691 JSON");
-    assert_eq!(json["meta"]["api-version"], "1.1");
+    assert_eq!(json["meta"]["api-version"], "1.4");
     let file = &json["files"][0];
     assert!(
         file["url"]

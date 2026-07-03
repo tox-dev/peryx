@@ -48,6 +48,7 @@ repos:
     rev: v2.4.2
     hooks:
       - id: codespell
+        args: ["--ignore-words-list=ser"]
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: v1.25.2
     hooks:
