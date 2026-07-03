@@ -274,7 +274,9 @@ fn file_download() -> OperationBuilder {
         .summary(Some("Download an artifact"))
         .description(Some(
             "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the \
-             sha256, caches it, and serves it. Responses are immutable (`Cache-Control: max-age=31536000`).",
+             sha256, caches it, and serves it. The `{filename}` segment is display context and must \
+             be percent-encoded as one path segment. Responses are immutable \
+             (`Cache-Control: max-age=31536000`).",
         ))
         .parameter(route_param())
         .parameter(sha256_param())
@@ -287,7 +289,8 @@ fn file_download() -> OperationBuilder {
         )
         .response(
             "400",
-            ResponseBuilder::new().description("The digest is not 64 hex characters"),
+            ResponseBuilder::new()
+                .description("The digest is not 64 lowercase hex, or the filename is not a safe path segment"),
         )
         .response(
             "404",
@@ -341,6 +344,10 @@ fn filename_param(example: &str) -> ParameterBuilder {
         .name("filename")
         .parameter_in(ParameterIn::Path)
         .required(Required::True)
+        .description(Some(
+            "The display filename, percent-encoded as one path segment. Separators, traversal, and \
+             control characters are rejected.",
+        ))
         .example(Some(json!(example)))
 }
 
@@ -375,7 +382,14 @@ fn upload() -> OperationBuilder {
                 .build(),
         ))
         .response("200", text_response("Stored", "text/plain", "upload accepted"))
-        .response("400", text_response("Rejected", "text/plain", "sha256 digest mismatch"))
+        .response(
+            "400",
+            text_response(
+                "Rejected",
+                "text/plain",
+                "invalid filename \"../pkg.whl\": filenames must be relative path segments without separators, traversal, or control characters",
+            ),
+        )
         .response("401", ResponseBuilder::new().description("Missing or wrong token"))
         .response(
             "403",
@@ -413,11 +427,19 @@ fn inspect_listing() -> OperationBuilder {
         .summary(Some("List archive members"))
         .description(Some(
             "The file members of a cached wheel, zip, or gzipped tarball, for browsing a \
-             distribution's contents without downloading it.",
+             distribution's contents without downloading it. Pass `member` as a query parameter to \
+             read one member without ambiguity around slashes in member names.",
         ))
         .parameter(route_param())
         .parameter(sha256_param())
         .parameter(filename_param("velodexpkg-1.0-py3-none-any.whl"))
+        .parameter(
+            ParameterBuilder::new()
+                .name("member")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("Optional archive member path to read inline"))
+                .example(Some(json!("velodexpkg-1.0.dist-info/METADATA"))),
+        )
         .response(
             "200",
             ResponseBuilder::new().description("The archive listing").content(
@@ -432,6 +454,10 @@ fn inspect_listing() -> OperationBuilder {
                     })))
                     .build(),
             ),
+        )
+        .response(
+            "400",
+            ResponseBuilder::new().description("Bad digest or unsafe filename"),
         )
         .response(
             "404",

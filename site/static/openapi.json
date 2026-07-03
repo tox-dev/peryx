@@ -198,7 +198,7 @@
             "description": "Rejected",
             "content": {
               "text/plain": {
-                "example": "sha256 digest mismatch"
+                "example": "invalid filename \"../pkg.whl\": filenames must be relative path segments without separators, traversal, or control characters"
               }
             }
           },
@@ -225,7 +225,7 @@
           "files"
         ],
         "summary": "Download an artifact",
-        "description": "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the sha256, caches it, and serves it. Responses are immutable (`Cache-Control: max-age=31536000`).",
+        "description": "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the sha256, caches it, and serves it. The `{filename}` segment is display context and must be percent-encoded as one path segment. Responses are immutable (`Cache-Control: max-age=31536000`).",
         "parameters": [
           {
             "name": "route",
@@ -244,6 +244,7 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl"
           }
@@ -256,7 +257,7 @@
             }
           },
           "400": {
-            "description": "The digest is not 64 hex characters"
+            "description": "The digest is not 64 lowercase hex, or the filename is not a safe path segment"
           },
           "404": {
             "description": "No file with this digest is known"
@@ -292,6 +293,7 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl.metadata"
           }
@@ -317,7 +319,7 @@
           "files"
         ],
         "summary": "List archive members",
-        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it.",
+        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it. Pass `member` as a query parameter to read one member without ambiguity around slashes in member names.",
         "parameters": [
           {
             "name": "route",
@@ -336,8 +338,16 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl"
+          },
+          {
+            "name": "member",
+            "in": "query",
+            "description": "Optional archive member path to read inline",
+            "required": false,
+            "example": "velodexpkg-1.0.dist-info/METADATA"
           }
         ],
         "responses": {
@@ -360,6 +370,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad digest or unsafe filename"
           },
           "404": {
             "description": "No file with this digest is known"
@@ -398,6 +411,7 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl"
           },

@@ -90,6 +90,11 @@ For artifacts, the tee hashes into a temp file that is verified and atomically r
 client already has its bytes. A digest mismatch still forwards (pip and uv verify hashes themselves) but is never
 cached, and shows up as `rejected` in the [usage counters](@/reference/endpoints.md).
 
+File URLs put the sha256 in the path because it is the real storage key. The filename is kept for installer behavior,
+browser save names, and operator logs, but velodex treats it as one percent-encoded path segment and rejects decoded
+separators, traversal, and control characters. Archive inspection uses the same rule for the distribution filename
+and passes member paths in a query parameter so member names can contain `/` without becoming route structure.
+
 Three more decisions keep the cold path at wire speed:
 
 - **Single-flight.** Resolvers fire many requests for the same project concurrently. Concurrent misses for one

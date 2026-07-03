@@ -71,6 +71,22 @@ fn test_prepare_builds_content_addressed_record() {
 }
 
 #[test]
+fn test_prepare_encodes_filename_in_local_url() {
+    let mut form = full_form();
+    form.filename = Some("Flask 1.0#x?.whl".to_owned());
+
+    let prepared = prepare(form, "root/local").unwrap();
+
+    assert_eq!(
+        prepared.record.file.url,
+        format!(
+            "/root/local/files/{}/Flask%201.0%23x%3F.whl",
+            Digest::of(b"wheel-bytes").as_str()
+        )
+    );
+}
+
+#[test]
 fn test_prepare_accepts_matching_declared_digest() {
     let mut form = full_form();
     form.sha256_digest = Some(Digest::of(b"wheel-bytes").as_str().to_owned());
@@ -89,6 +105,26 @@ fn test_prepare_rejects_digest_mismatch() {
     let mut form = full_form();
     form.sha256_digest = Some("00".repeat(32));
     assert_eq!(prepare(form, "root/local").unwrap_err(), UploadError::DigestMismatch);
+}
+
+#[test]
+fn test_prepare_rejects_path_filenames() {
+    for filename in [
+        "",
+        ".",
+        "..",
+        "../pkg.whl",
+        "pkg/name.whl",
+        "pkg\\name.whl",
+        "pkg\u{7}.whl",
+    ] {
+        let mut form = full_form();
+        form.filename = Some(filename.to_owned());
+        assert_eq!(
+            prepare(form, "root/local").unwrap_err(),
+            UploadError::InvalidFilename(filename.to_owned())
+        );
+    }
 }
 
 #[test]

@@ -114,15 +114,14 @@ pub async fn project(route: &str, project: &str) -> Option<(UiProject, Option<Co
     let detail = cache::resolve_detail(&app, index, &normalized, route).await.ok()??;
     let value = serde_json::from_str(&to_json(&detail)).ok()?;
     let ui = UiProject::from_detail(&value);
-    let mut doc = None;
-    if let Some(file) = ui.files.iter().rev().find(|file| file.has_metadata) {
-        let digest = file.url.split('/').nth_back(1).and_then(Digest::from_hex);
-        if let Some(digest) = digest
-            && let Ok(bytes) = cache::metadata_bytes(&app, &digest).await
-        {
-            doc = Some(parse_metadata(&String::from_utf8_lossy(&bytes)));
-        }
-    }
+    let doc = if let Some(file) = ui.files.iter().rev().find(|file| file.has_metadata)
+        && let Some(digest) = Digest::from_hex(&file.sha256)
+        && let Ok(bytes) = cache::metadata_bytes(&app, &digest).await
+    {
+        Some(parse_metadata(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
     Some((ui, doc))
 }
 

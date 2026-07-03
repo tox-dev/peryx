@@ -15,6 +15,7 @@ use velodex_storage::meta::CachedIndex;
 use velodex_upstream::{SimpleResponse, UpstreamClient};
 
 use crate::metrics::Event;
+use crate::path_safety::local_file_url;
 use crate::state::{AppState, Index, IndexKind};
 use crate::stream::{PageSummary, PageTransformer};
 use crate::upload::{PreparedUpload, Uploaded};
@@ -470,7 +471,7 @@ fn present_file(mut file: File, route: &str) -> File {
         file.core_metadata = CoreMetadata::Absent;
     }
     if !file.url.starts_with('/') {
-        file.url = format!("/{route}/files/{sha256}/{}", file.filename);
+        file.url = local_file_url(route, sha256, &file.filename);
     }
     file
 }
@@ -501,7 +502,7 @@ fn local_detail(state: &AppState, name: &str, project: &str) -> Result<Option<Pr
 fn rewrite_urls(detail: &mut ProjectDetail, route: &str) {
     for file in &mut detail.files {
         if let Some(sha256) = file.hashes.get("sha256") {
-            file.url = format!("/{route}/files/{sha256}/{}", file.filename);
+            file.url = local_file_url(route, sha256, &file.filename);
         }
     }
 }
