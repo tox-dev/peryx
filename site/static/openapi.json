@@ -285,7 +285,7 @@
             "description": "Missing or wrong token"
           },
           "403": {
-            "description": "Uploads disabled: the local index has no `upload_token`"
+            "description": "Uploads disabled: the local index has no `upload_token`, or project status rejects uploads"
           },
           "405": {
             "description": "The route's index has no writable local layer"
@@ -324,9 +324,9 @@
                     "capabilities": {
                       "legacy_json": false,
                       "metadata_siblings": true,
-                      "project_status": false,
-                      "provenance": false,
-                      "simple_api_version": "1.1",
+                      "project_status": true,
+                      "provenance": true,
+                      "simple_api_version": "1.4",
                       "simple_html": true,
                       "simple_json": true,
                       "uploads": true,
@@ -408,6 +408,9 @@
           "400": {
             "description": "The digest is not 64 lowercase hex, or the filename is not a safe path segment"
           },
+          "403": {
+            "description": "Project status does not allow downloads"
+          },
           "404": {
             "description": "No file with this digest is known"
           },
@@ -455,6 +458,9 @@
                 "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\nRequires-Python: >=3.8\n"
               }
             }
+          },
+          "403": {
+            "description": "Project status does not allow downloads"
           },
           "404": {
             "description": "The artifact has no known metadata sibling"
@@ -940,7 +946,7 @@
           "publish"
         ],
         "summary": "Yank files",
-        "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only mirror get a reversible override on the overlay's local layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
+        "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only mirror get a reversible override on the overlay's local layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project. Add `?reason=...` to preserve a resolver-visible reason.",
         "parameters": [
           {
             "name": "route",
@@ -962,6 +968,13 @@
             "description": "One release version",
             "required": true,
             "example": "1.2.0"
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "description": "Optional PEP 592 yank reason preserved in Simple API output",
+            "required": false,
+            "example": "build metadata is incorrect"
           }
         ],
         "responses": {

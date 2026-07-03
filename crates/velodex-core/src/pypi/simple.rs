@@ -26,6 +26,8 @@ pub enum SimpleError {
     UnsupportedApiVersion(String),
     /// The upstream advertised a malformed Simple API version.
     InvalidApiVersion(String),
+    /// The upstream advertised an unknown project status marker.
+    InvalidProjectStatus(String),
 }
 
 impl fmt::Display for SimpleError {
@@ -43,6 +45,9 @@ impl fmt::Display for SimpleError {
                     "invalid upstream Simple API version {version:?}; expected Major.Minor"
                 )
             }
+            Self::InvalidProjectStatus(status) => {
+                write!(f, "invalid upstream project status marker {status:?}")
+            }
         }
     }
 }
@@ -52,7 +57,7 @@ impl std::error::Error for SimpleError {
         match self {
             Self::Json(err) => Some(err),
             Self::Html(err) => Some(err),
-            Self::UnsupportedApiVersion(_) | Self::InvalidApiVersion(_) => None,
+            Self::UnsupportedApiVersion(_) | Self::InvalidApiVersion(_) | Self::InvalidProjectStatus(_) => None,
         }
     }
 }
@@ -101,11 +106,22 @@ impl Meta {
         project_status_reason: Option<String>,
     ) -> Result<Self, SimpleError> {
         validate_api_version(api_version)?;
+        if let Some(status) = project_status.as_deref() {
+            validate_project_status(status)?;
+        }
         Ok(Self {
             api_version: API_VERSION,
             project_status,
             project_status_reason,
         })
+    }
+
+    #[must_use]
+    pub fn status(&self) -> ProjectStatus {
+        self.project_status
+            .as_deref()
+            .and_then(ProjectStatus::from_marker)
+            .unwrap_or(ProjectStatus::Active)
     }
 }
 
@@ -146,6 +162,54 @@ fn validate_api_version(version: Option<&str>) -> Result<(), SimpleError> {
         .parse::<u64>()
         .map_err(|_| SimpleError::InvalidApiVersion(version.to_owned()))?;
     Ok(())
+}
+
+fn validate_project_status(status: &str) -> Result<(), SimpleError> {
+    ProjectStatus::from_marker(status)
+        .map(|_| ())
+        .ok_or_else(|| SimpleError::InvalidProjectStatus(status.to_owned()))
+}
+
+/// The standardized project status markers and their serving policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectStatus {
+    Active,
+    Archived,
+    Quarantined,
+    Deprecated,
+}
+
+impl ProjectStatus {
+    #[must_use]
+    pub fn from_marker(status: &str) -> Option<Self> {
+        match status {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            "quarantined" => Some(Self::Quarantined),
+            "deprecated" => Some(Self::Deprecated),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+            Self::Quarantined => "quarantined",
+            Self::Deprecated => "deprecated",
+        }
+    }
+
+    #[must_use]
+    pub const fn allows_uploads(self) -> bool {
+        matches!(self, Self::Active | Self::Deprecated)
+    }
+
+    #[must_use]
+    pub const fn offers_downloads(self) -> bool {
+        !matches!(self, Self::Quarantined)
+    }
 }
 
 /// Whether a file is yanked (PEP 592): not yanked, yanked, or yanked with a reason.

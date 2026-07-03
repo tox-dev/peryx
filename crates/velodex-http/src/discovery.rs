@@ -229,13 +229,13 @@ where
     json!({
         "simple_html": true,
         "simple_json": true,
-        "simple_api_version": "1.1",
+        "simple_api_version": velodex_core::pypi::API_VERSION,
         "metadata_siblings": true,
         "uploads": capabilities.writes,
         "yanking": capabilities.writes,
         "volatile_deletes": capabilities.volatile_deletes,
-        "project_status": false,
-        "provenance": false,
+        "project_status": true,
+        "provenance": true,
         "legacy_json": false,
     })
     .serialize(serializer)

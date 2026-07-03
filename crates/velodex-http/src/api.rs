@@ -250,13 +250,13 @@ fn index_discovery() -> OperationBuilder {
                         "capabilities": {
                             "simple_html": true,
                             "simple_json": true,
-                            "simple_api_version": "1.1",
+                            "simple_api_version": velodex_core::pypi::API_VERSION,
                             "metadata_siblings": true,
                             "uploads": true,
                             "yanking": true,
                             "volatile_deletes": true,
-                            "project_status": false,
-                            "provenance": false,
+                            "project_status": true,
+                            "provenance": true,
                             "legacy_json": false
                         },
                         "urls": {
@@ -400,6 +400,10 @@ fn file_download() -> OperationBuilder {
             ResponseBuilder::new().description("No file with this digest is known"),
         )
         .response(
+            "403",
+            ResponseBuilder::new().description("Project status does not allow downloads"),
+        )
+        .response(
             "502",
             ResponseBuilder::new().description("The source mirror failed or the bytes did not match the digest"),
         )
@@ -429,6 +433,10 @@ fn metadata_download() -> OperationBuilder {
         .response(
             "404",
             ResponseBuilder::new().description("The artifact has no known metadata sibling"),
+        )
+        .response(
+            "403",
+            ResponseBuilder::new().description("Project status does not allow downloads"),
         )
 }
 
@@ -502,7 +510,9 @@ fn upload() -> OperationBuilder {
         .response("401", ResponseBuilder::new().description("Missing or wrong token"))
         .response(
             "403",
-            ResponseBuilder::new().description("Uploads disabled: the local index has no `upload_token`"),
+            ResponseBuilder::new().description(
+                "Uploads disabled: the local index has no `upload_token`, or project status rejects uploads",
+            ),
         )
         .response(
             "405",
@@ -516,8 +526,16 @@ fn yank() -> OperationBuilder {
         "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still \
          succeed. Uploaded files get their record updated; files served from a read-only mirror get \
          a reversible override on the overlay's local layer, so upstream releases can be yanked too. \
-         Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project.",
+         Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project. Add \
+         `?reason=...` to preserve a resolver-visible reason.",
         "affected 1 file(s)",
+    )
+    .parameter(
+        ParameterBuilder::new()
+            .name("reason")
+            .parameter_in(ParameterIn::Query)
+            .description(Some("Optional PEP 592 yank reason preserved in Simple API output"))
+            .example(Some(json!("build metadata is incorrect"))),
     )
 }
 

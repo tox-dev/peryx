@@ -425,22 +425,34 @@ fn test_open_existing_requires_database_file() {
 #[test]
 fn test_count_and_delete_project_cache_purge() {
     let (_dir, store) = store();
-    store.put_index("pypi/flask", &record()).unwrap();
-    store.put_project("pypi", "flask", "Flask").unwrap();
-    store
-        .put_file_url("a".repeat(64).as_str(), "https://files.example/flask.whl", "pypi")
-        .unwrap();
-    store
-        .put_metadata(
-            "b".repeat(64).as_str(),
-            "https://files.example/flask.whl.metadata",
-            "c".repeat(64).as_str(),
-            "pypi",
-        )
-        .unwrap();
-
     let file_digests = vec!["a".repeat(64)];
     let metadata_digests = vec!["b".repeat(64)];
+    store
+        .put_mirror_page(
+            "pypi/flask",
+            &record(),
+            "pypi",
+            "flask",
+            "Flask",
+            "pypi",
+            Some("archived"),
+            Some("read only"),
+            &[(file_digests[0].clone(), "https://files.example/flask.whl".to_owned())],
+            &[(
+                metadata_digests[0].clone(),
+                "https://files.example/flask.whl.metadata".to_owned(),
+                "c".repeat(64),
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        store.get_project_status("pypi", "flask").unwrap().unwrap(),
+        crate::meta::ProjectStatusRecord {
+            status: Some("archived".to_owned()),
+            reason: Some("read only".to_owned()),
+        }
+    );
+
     assert_eq!(
         store
             .count_project_cache_purge("pypi", "flask", &file_digests, &metadata_digests)
@@ -448,6 +460,7 @@ fn test_count_and_delete_project_cache_purge() {
         crate::meta::ProjectCachePurgeCounts {
             index_pages: 1,
             project_records: 1,
+            project_status_records: 1,
             file_url_records: 1,
             metadata_records: 1,
         }
@@ -459,6 +472,7 @@ fn test_count_and_delete_project_cache_purge() {
         crate::meta::ProjectCachePurgeCounts {
             index_pages: 1,
             project_records: 1,
+            project_status_records: 1,
             file_url_records: 1,
             metadata_records: 1,
         }
@@ -466,5 +480,6 @@ fn test_count_and_delete_project_cache_purge() {
     assert!(store.get_index("pypi/flask").unwrap().is_none());
     assert!(store.get_file_url("a".repeat(64).as_str()).unwrap().is_none());
     assert!(store.get_metadata("b".repeat(64).as_str()).unwrap().is_none());
+    assert!(store.get_project_status("pypi", "flask").unwrap().is_none());
     assert!(store.list_projects("pypi").unwrap().is_empty());
 }

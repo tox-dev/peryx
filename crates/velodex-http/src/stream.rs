@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use velodex_core::pypi::{CoreMetadata, File, parse_meta, to_json};
+use velodex_core::pypi::{CoreMetadata, File, Yanked, parse_meta, to_json};
 
 use crate::path_safety::local_file_url;
 
@@ -25,7 +25,7 @@ pub struct PageContext {
     /// Filenames to drop: shadowed by a local file or hidden by an override.
     pub skip: HashSet<String>,
     /// Filenames forced to the yanked state by an override.
-    pub yanked: HashSet<String>,
+    pub yanked: HashMap<String, Yanked>,
 }
 
 /// A file's upstream source recorded while transforming, persisted later in one batch.
@@ -43,6 +43,8 @@ pub struct PageSummary {
     pub registrations: Vec<Registration>,
     /// The page's top-level display name, when it carried one.
     pub name: Option<String>,
+    pub project_status: Option<String>,
+    pub project_status_reason: Option<String>,
 }
 
 /// The transformer's lexer state, kept across chunk boundaries.
@@ -80,6 +82,8 @@ pub struct PageTransformer {
     name: Vec<u8>,
     /// The top-level `meta` object has been checked.
     meta_seen: bool,
+    project_status: Option<String>,
+    project_status_reason: Option<String>,
     /// Preflight reached page content before seeing `meta`.
     meta_search_done: bool,
     /// The document root has closed; anything but whitespace afterwards is malformed.
@@ -128,6 +132,8 @@ impl PageTransformer {
             array_depth: 0,
             emitted_in_array: false,
             registrations: Vec::new(),
+            project_status: None,
+            project_status_reason: None,
         }
     }
 
@@ -164,6 +170,8 @@ impl PageTransformer {
         Ok(PageSummary {
             registrations: self.registrations,
             name: String::from_utf8(self.name).ok().filter(|name| !name.is_empty()),
+            project_status: self.project_status,
+            project_status_reason: self.project_status_reason,
         })
     }
 
@@ -396,6 +404,9 @@ impl PageTransformer {
 
     /// Locally uploaded files open the array, ahead of anything upstream.
     fn emit_local_files(&mut self, out: &mut Vec<u8>) {
+        if self.project_is_quarantined() {
+            return;
+        }
         for file in &self.context.local_files {
             if self.emitted_in_array {
                 out.push(b',');
@@ -408,11 +419,14 @@ impl PageTransformer {
     /// Rewrite one captured upstream file object and emit it, unless it is shadowed or hidden.
     fn emit_file(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let mut file: File = serde_json::from_slice(&self.capture)?;
+        if self.project_is_quarantined() {
+            return Ok(());
+        }
         if self.context.skip.contains(&file.filename) {
             return Ok(());
         }
-        if self.context.yanked.contains(&file.filename) {
-            file.yanked = velodex_core::pypi::Yanked::Yes;
+        if let Some(yanked) = self.context.yanked.get(&file.filename) {
+            file.yanked = yanked.clone();
         }
         if file.url.starts_with('/') {
             // A legacy cached record already carries velodex-route URLs; serve it as-is.
@@ -456,7 +470,10 @@ impl PageTransformer {
 
     /// Rewrite the upstream meta object to velodex's advertised API version.
     fn emit_meta(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
-        out.extend_from_slice(to_json(&parse_meta(&self.capture)?).as_bytes());
+        let meta = parse_meta(&self.capture)?;
+        self.project_status.clone_from(&meta.project_status);
+        self.project_status_reason.clone_from(&meta.project_status_reason);
+        out.extend_from_slice(to_json(&meta).as_bytes());
         self.meta_seen = true;
         Ok(())
     }
@@ -471,6 +488,10 @@ impl PageTransformer {
         let versions: Vec<String> = merged.into_iter().collect();
         out.extend_from_slice(to_json(&versions).as_bytes());
         Ok(())
+    }
+
+    fn project_is_quarantined(&self) -> bool {
+        self.project_status.as_deref() == Some("quarantined")
     }
 }
 
@@ -493,14 +514,14 @@ pub fn page_context<S: std::hash::BuildHasher>(
     overrides: &HashMap<String, String, S>,
 ) -> PageContext {
     let mut skip: HashSet<String> = local_files.iter().map(|file| file.filename.clone()).collect();
-    let mut yanked = HashSet::new();
+    let mut yanked = HashMap::new();
     for (filename, kind) in overrides {
         match kind.as_str() {
             "hidden" => {
                 skip.insert(filename.clone());
             }
-            "yanked" => {
-                yanked.insert(filename.clone());
+            _ if let Some(marker) = yanked_override(kind) => {
+                yanked.insert(filename.clone(), marker);
             }
             _ => {}
         }
@@ -512,4 +533,25 @@ pub fn page_context<S: std::hash::BuildHasher>(
         skip,
         yanked,
     }
+}
+
+pub(crate) fn hidden_override(value: &str) -> bool {
+    value == "hidden"
+}
+
+pub(crate) fn yanked_override(value: &str) -> Option<Yanked> {
+    if value == "yanked" {
+        return Some(Yanked::Yes);
+    }
+    let record = serde_json::from_str::<StoredYankOverride>(value).ok()?;
+    (record.kind == "yanked").then_some(match record.reason {
+        Some(reason) if !reason.is_empty() => Yanked::Reason(reason),
+        _ => Yanked::Yes,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct StoredYankOverride {
+    kind: String,
+    reason: Option<String>,
 }

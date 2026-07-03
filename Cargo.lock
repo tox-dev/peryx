@@ -3989,6 +3989,7 @@ dependencies = [
  "http",
  "http-body-util",
  "moka",
+ "redb",
  "serde",
  "serde_json",
  "sha2 0.11.0",

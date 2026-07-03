@@ -111,7 +111,11 @@ fn test_injects_local_files_and_shadows_upstream() {
 fn test_hidden_and_yank_overrides() {
     let overrides = HashMap::from([
         ("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned()),
-        ("demo-2.0-py3-none-any.whl".to_owned(), "yanked".to_owned()),
+        (
+            "demo-2.0-py3-none-any.whl".to_owned(),
+            r#"{"kind":"yanked","reason":"bad build"}"#.to_owned(),
+        ),
+        ("demo-2.0.tar.gz".to_owned(), "yanked".to_owned()),
     ]);
     let context = page_context("root/pypi", Vec::new(), Vec::new(), &overrides);
     let (out, _) = transform(&upstream_page(), context, 2);
@@ -122,7 +126,44 @@ fn test_hidden_and_yank_overrides() {
         .iter()
         .find(|file| file.filename == "demo-2.0-py3-none-any.whl")
         .unwrap();
-    assert_eq!(yanked.yanked, Yanked::Yes);
+    assert_eq!(yanked.yanked, Yanked::Reason("bad build".to_owned()));
+    let legacy_yanked = detail
+        .files
+        .iter()
+        .find(|file| file.filename == "demo-2.0.tar.gz")
+        .unwrap();
+    assert_eq!(legacy_yanked.yanked, Yanked::Yes);
+}
+
+#[test]
+fn test_empty_reason_yank_override_yanks_without_reason() {
+    let overrides = HashMap::from([(
+        "demo-2.0.tar.gz".to_owned(),
+        r#"{"kind":"yanked","reason":""}"#.to_owned(),
+    )]);
+    let context = page_context("root/pypi", Vec::new(), Vec::new(), &overrides);
+    let (out, _) = transform(&upstream_page(), context, 2);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    let file = detail
+        .files
+        .iter()
+        .find(|file| file.filename == "demo-2.0.tar.gz")
+        .unwrap();
+    assert_eq!(file.yanked, Yanked::Yes);
+}
+
+#[test]
+fn test_quarantined_project_streams_without_files() {
+    let page = r#"{"meta":{"api-version":"1.4","project-status":"quarantined",
+        "project-status-reason":"malware"},"name":"demo","versions":["1.0"],"files":[
+        {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+         "hashes":{"sha256":"aa11"}}
+    ]}"#;
+    let (out, registrations) = transform(page, plain_context(), 5);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.meta.status(), velodex_core::pypi::ProjectStatus::Quarantined);
+    assert!(detail.files.is_empty());
+    assert!(registrations.is_empty());
 }
 
 #[test]
@@ -258,11 +299,18 @@ fn test_preserves_simple_api_fields_during_streaming() {
 
 #[test]
 fn test_meta_streaming_handles_escaped_and_nested_unknown_values() {
-    let page = r#"{"meta":{"api-version":"1.4","project-status":"arch\"ived",
+    let page = r#"{"meta":{"api-version":"1.4","project-status":"archived",
+        "project-status-reason":"read \"only\"",
         "extra":[{"ignored":"yes"}]},"name":"demo","files":[]}"#;
     let (out, _) = transform(page, plain_context(), 4096);
     let detail = parse_detail(out.as_bytes()).unwrap();
-    assert_eq!(detail.meta.project_status.as_deref(), Some("arch\"ived"));
+    assert_eq!(
+        (
+            detail.meta.project_status.as_deref(),
+            detail.meta.project_status_reason.as_deref(),
+        ),
+        (Some("archived"), Some("read \"only\""))
+    );
 }
 
 #[test]
