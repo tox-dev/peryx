@@ -4,9 +4,9 @@ description = "Design a topology in TOML: separate team indexes, one shared cach
 weight = 2
 +++
 
-In this tutorial you will replace the default configuration with a topology of your own: a shared pypi.org mirror,
-two team indexes with their own uploads, and one route where a private package shadows its public namesake. You
-will see exactly what each index kind contributes. It takes about fifteen minutes and builds on
+In this tutorial you will replace the default configuration with a topology of your own: a shared pypi.org mirror, two
+team indexes with their own uploads, and one route where a private package shadows its public namesake. You will see
+exactly what each index kind contributes. It takes about fifteen minutes and builds on
 [getting started](@/tutorials/getting-started.md).
 
 ## The goal
@@ -45,8 +45,11 @@ layers = ["web-local", "pypi"]
 ```
 
 Read it bottom-up: `data` and `web` are overlays, each serving its team's local index first and the shared mirror
-second. The mirror appears once, so both teams share one cache; the locals are separate, so teams cannot overwrite
-each other's uploads.
+second. The mirror appears once, so both teams share one cache; the locals are separate, so teams cannot overwrite each
+other's uploads.
+
+The overlay names also become their routes because this example does not set `route`. Use simple URL-safe names here:
+letters, digits, `-`, `.`, `_`, and `~` are accepted, and `/` creates nested routes such as `team/data`.
 
 Start it:
 
@@ -54,10 +57,9 @@ Start it:
 velodex serve --config velodex.toml
 ```
 
-The dashboard at `http://127.0.0.1:4433/` draws the topology you just wrote: two overlay cards, `data` and `web`,
-each showing its layer stack in resolution order, with the shared `pypi` mirror appearing inside both and the
-upload target marked. The building-block indexes have no cards of their own; they live inside the overlays that
-serve them.
+The dashboard at `http://127.0.0.1:4433/` draws the topology you just wrote: two overlay cards, `data` and `web`, each
+showing its layer stack in resolution order, with the shared `pypi` mirror appearing inside both and the upload target
+marked. The building-block indexes have no cards of their own; they live inside the overlays that serve them.
 
 ## Install through a team route
 
@@ -71,16 +73,16 @@ httpx again through `http://127.0.0.1:4433/web/simple/` and watch it come from d
 
 ## Publish a private package
 
-Build any small package (or reuse the one from [getting started](@/tutorials/getting-started.md)) and upload it to
-the `data` route:
+Build any small package (or reuse the one from [getting started](@/tutorials/getting-started.md)) and upload it to the
+`data` route:
 
 ```shell
 twine upload --repository-url http://127.0.0.1:4433/data/ -u __token__ -p data-secret dist/*
 ```
 
-The upload landed in `data-local` because that overlay lists it as its first local layer. The `web` route cannot
-see it; compare what the two routes serve for the name (the `data` route lists your file, the `web` route either
-knows nothing or serves only what pypi.org happens to have under that name):
+The upload landed in `data-local` because that overlay lists it as its first local layer. The `web` route cannot see it;
+compare what the two routes serve for the name (the `data` route lists your file, the `web` route either knows nothing
+or serves only what pypi.org happens to have under that name):
 
 ```shell
 curl -s http://127.0.0.1:4433/data/simple/mypkg/ | grep -c "mypkg-1.0.0"   # 1: your upload
@@ -89,18 +91,18 @@ curl -s http://127.0.0.1:4433/web/simple/mypkg/ | grep -c "mypkg-1.0.0"    # 0, 
 
 ## Watch shadowing defend the name
 
-Your package's name now resolves only to your upload on the `data` route. Prove it: ask for a project that exists
-both locally and upstream, and check where the files come from.
+Your package's name now resolves only to your upload on the `data` route. Prove it: ask for a project that exists both
+locally and upstream, and check where the files come from.
 
 ```shell
 curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     http://127.0.0.1:4433/data/simple/mypkg/ | python3 -m json.tool | grep url
 ```
 
-Every URL points back at velodex, and the versions listed are yours alone. If someone registers `mypkg` on
-pypi.org tomorrow with version `99.0`, nothing changes: the local layer answers first, and the mirror is never
-consulted for a name the local layer has. [The index model](@/explanation/indexes.md) explains why this ordering
-is the dependency-confusion defense.
+Every URL points back at velodex, and the versions listed are yours alone. If someone registers `mypkg` on pypi.org
+tomorrow with version `99.0`, nothing changes: the local layer answers first, and the mirror is never consulted for a
+name the local layer has. [The index model](@/explanation/indexes.md) explains why this ordering is the
+dependency-confusion defense.
 
 ## Where next
 

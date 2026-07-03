@@ -8,3 +8,4 @@
 //! beside it later without reworking the crates that depend on this one.
 
 pub mod pypi;
+pub mod url_encoding;

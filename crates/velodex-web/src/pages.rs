@@ -15,7 +15,10 @@ use velodex_core::pypi::CoreMetadataDoc;
 use crate::data::{load_member_chunk, load_members, load_project, load_projects, load_snapshot, load_stats};
 use crate::markdown::render_description;
 use crate::model::{UiCounters, UiFile, UiIndex, UiMember, UiMemberChunk, UiProject, UiSnapshot, UiStats};
-use crate::url::encode_component as url_encode;
+use crate::url::{
+    admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url, browse_archive_url,
+    browse_index_url, browse_project_url, simple_index_url, stats_index_url, stats_project_url,
+};
 
 /// The landing dashboard: identity, live counters, and the configured indexes with their usage.
 #[component]
@@ -114,9 +117,9 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
 /// bottom with the first file match winning.
 #[component]
 fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) -> impl IntoView {
-    let browse = format!("/browse?index={}", url_encode(&index.route));
-    let stats_href = format!("/stats?index={}", url_encode(&index.route));
-    let simple = format!("/{}/simple/", index.route);
+    let browse = browse_index_url(&index.route);
+    let stats_href = stats_index_url(&index.route);
+    let simple = simple_index_url(&index.route);
     let upload_to = index.upload_to.clone();
     let layers = index
         .layers
@@ -127,7 +130,7 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
             let kind = member
                 .as_ref()
                 .map_or_else(|| "?".to_owned(), |member| member.kind.clone());
-            let route = member.as_ref().map(|member| format!("/{}/simple/", member.route));
+            let route = member.as_ref().map(|member| simple_index_url(&member.route));
             let is_upload_target = upload_to.as_deref() == Some(name.as_str());
             view! {
                 <li class="layer">
@@ -168,9 +171,9 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
 
 #[component]
 fn IndexCard(index: UiIndex, counters: Option<UiCounters>) -> impl IntoView {
-    let browse = format!("/browse?index={}", url_encode(&index.route));
-    let stats_href = format!("/stats?index={}", url_encode(&index.route));
-    let simple = format!("/{}/simple/", index.route);
+    let browse = browse_index_url(&index.route);
+    let stats_href = stats_index_url(&index.route);
+    let simple = simple_index_url(&index.route);
     let layers = (!index.layers.is_empty()).then(|| {
         view! {
             <p class="layers">
@@ -308,8 +311,7 @@ fn ProjectList(route: String, names: Vec<String>, filter: ReadSignal<String>) ->
                     .iter()
                     .filter(|name| name.to_lowercase().contains(&needle))
                     .map(|name| {
-                        let href =
-                            format!("/browse?index={}&project={}", url_encode(&route), url_encode(name));
+                        let href = browse_project_url(&route, name);
                         view! { <li><a href=href>{name.clone()}</a></li> }
                     })
                     .collect_view()
@@ -334,7 +336,7 @@ fn ProjectView(route: String, project: String) -> impl IntoView {
     let (outcome, set_outcome) = signal(String::new());
     view! {
         <p class="breadcrumb">
-            <a href=format!("/browse?index={}", url_encode(&route))>{route.clone()}</a>
+            <a href=browse_index_url(&route)>{route.clone()}</a>
             " / "
             <span>{project}</span>
         </p>
@@ -371,7 +373,7 @@ fn ProjectBody(
 ) -> impl IntoView {
     let doc = doc.unwrap_or_default();
     let latest = ui.versions.last().cloned().unwrap_or_else(|| doc.version.clone());
-    let install = format!("uv pip install --index-url /{route}/simple/ {}", ui.name);
+    let install = format!("uv pip install --index-url {} {}", simple_index_url(&route), ui.name);
     let description = render_description(&doc);
     view! {
         <header class="project-head">
@@ -428,13 +430,7 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                     .into_iter()
                     .map(|file| {
                         let class = if file.yanked { "yanked" } else { "" };
-                        let inspect = format!(
-                            "/browse?index={}&project={}&sha256={}&file={}",
-                            url_encode(&route),
-                            url_encode(&project),
-                            url_encode(&file.sha256),
-                            url_encode(&file.filename)
-                        );
+                        let inspect = browse_archive_url(&route, &project, &file.sha256, &file.filename);
                         let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
                         view! {
                             <tr class=class>
@@ -484,10 +480,10 @@ fn ArchiveView(
     member: Option<String>,
     offset: u64,
 ) -> impl IntoView {
-    let back = format!("/browse?index={}&project={}", url_encode(&route), url_encode(&project));
+    let back = browse_project_url(&route, &project);
     view! {
         <p class="breadcrumb">
-            <a href=format!("/browse?index={}", url_encode(&route))>{route.clone()}</a>
+            <a href=browse_index_url(&route)>{route.clone()}</a>
             " / "
             <a href=back>{project.clone()}</a>
             " / "
@@ -510,7 +506,7 @@ fn ArchiveBreadcrumb(
     filename: String,
     containers: Vec<String>,
 ) -> impl IntoView {
-    let root = archive_listing_href(&route, &project, &sha256, &filename, &[]);
+    let root = browse_archive_listing_url(&route, &project, &sha256, &filename, &[]);
     let filename_view = if containers.is_empty() {
         view! { <span>{filename.clone()}</span> }.into_any()
     } else {
@@ -524,7 +520,7 @@ fn ArchiveBreadcrumb(
             .map(|(position, container)| {
                 let next = position + 1;
                 let prefix = containers[..next].to_vec();
-                let href = archive_listing_href(&route, &project, &sha256, &filename, &prefix);
+                let href = browse_archive_listing_url(&route, &project, &sha256, &filename, &prefix);
                 let container = container.clone();
                 if next == containers.len() {
                     view! { " / " <span>{container}</span> }.into_any()
@@ -660,10 +656,10 @@ fn ArchiveTreeNode(
             {if kind == "archive" {
                 let mut next_containers = containers;
                 next_containers.push(path);
-                let href = archive_listing_href(&route, &project, &sha256, &filename, &next_containers);
+                let href = browse_archive_listing_url(&route, &project, &sha256, &filename, &next_containers);
                 view! { <a class=class href=href>{name}</a> }.into_any()
             } else if previewable {
-                let href = archive_member_href(&route, &project, &sha256, &filename, &containers, &path, 0);
+                let href = browse_archive_member_url(&route, &project, &sha256, &filename, &containers, &path, 0);
                 view! { <a class=class href=href>{name}</a> }.into_any()
             } else {
                 view! { <span class=class>{name}</span> }.into_any()
@@ -774,7 +770,7 @@ fn MemberView(
             load_member_chunk(route, sha256, filename, containers, member, offset)
         },
     );
-    let back = archive_listing_href(&route, &project, &sha256, &filename, &containers);
+    let back = browse_archive_listing_url(&route, &project, &sha256, &filename, &containers);
     view! {
         <h1><code>{member.clone()}</code></h1>
         <p><a href=back>"back to archive"</a></p>
@@ -807,7 +803,7 @@ fn MemberChunk(
 ) -> impl IntoView {
     let next = chunk
         .next_offset
-        .map(|offset| archive_member_href(&route, &project, &sha256, &filename, &containers, &member, offset));
+        .map(|offset| browse_archive_member_url(&route, &project, &sha256, &filename, &containers, &member, offset));
     let end = chunk
         .next_offset
         .or(chunk.size)
@@ -819,44 +815,6 @@ fn MemberChunk(
         {range}
         <pre class="member-content"><code>{chunk.text}</code></pre>
         {next.map(|href| view! { <p><a class="button-link" href=href>"next chunk"</a></p> })}
-    }
-}
-
-fn archive_listing_href(route: &str, project: &str, sha256: &str, filename: &str, containers: &[String]) -> String {
-    let mut href = format!(
-        "/browse?index={}&project={}&sha256={}&file={}",
-        url_encode(route),
-        url_encode(project),
-        url_encode(sha256),
-        url_encode(filename)
-    );
-    append_container_query(&mut href, containers);
-    href
-}
-
-fn archive_member_href(
-    route: &str,
-    project: &str,
-    sha256: &str,
-    filename: &str,
-    containers: &[String],
-    member: &str,
-    offset: u64,
-) -> String {
-    let mut href = archive_listing_href(route, project, sha256, filename, containers);
-    href.push_str("&member=");
-    href.push_str(&url_encode(member));
-    if offset > 0 {
-        href.push_str("&offset=");
-        href.push_str(&offset.to_string());
-    }
-    href
-}
-
-fn append_container_query(href: &mut String, containers: &[String]) {
-    for container in containers {
-        href.push_str("&container=");
-        href.push_str(&url_encode(container));
     }
 }
 
@@ -942,8 +900,8 @@ fn AdminPanel(
     let rows = versions
         .into_iter()
         .map(|version| {
-            let yank_url = format!("/{route}/{project}/{version}/yank");
-            let delete_url = format!("/{route}/{project}/{version}/");
+            let yank_url = admin_version_url(&route, &project, &version, Some("yank"));
+            let delete_url = admin_version_url(&route, &project, &version, None);
             let unyank_url = yank_url.clone();
             view! {
                 <tr>
@@ -957,7 +915,7 @@ fn AdminPanel(
             }
         })
         .collect_view();
-    let delete_all = format!("/{route}/{project}/");
+    let delete_all = admin_project_url(&route, &project);
     view! {
         <details class="admin">
             <summary>"Manage uploads"</summary>
@@ -1048,7 +1006,7 @@ fn StatsView(route: Option<String>, project: Option<String>) -> impl IntoView {
             <p class="breadcrumb">
                 <a href="/stats">"usage"</a>
                 " / "
-                <a href=format!("/stats?index={}", url_encode(index))>{index.clone()}</a>
+                <a href=stats_index_url(index)>{index.clone()}</a>
                 " / "
                 <span>{name.clone()}</span>
             </p>
@@ -1085,16 +1043,8 @@ fn StatsBody(route: Option<String>, project: Option<String>, data: UiStats) -> i
     let empty = data.rows.is_empty();
     let (label, rows) = match (&route, &project) {
         (Some(_), Some(_)) => ("File", file_rows(data.rows)),
-        (Some(index), None) => (
-            "Project",
-            drill_rows(data.rows, |name| {
-                format!("/stats?index={}&project={}", url_encode(index), url_encode(name))
-            }),
-        ),
-        _ => (
-            "Index",
-            drill_rows(data.rows, |name| format!("/stats?index={}", url_encode(name))),
-        ),
+        (Some(index), None) => ("Project", drill_rows(data.rows, |name| stats_project_url(index, name))),
+        _ => ("Index", drill_rows(data.rows, stats_index_url)),
     };
     view! {
         <div class="stat-row">

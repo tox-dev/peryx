@@ -5,6 +5,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use zip::read::HasZipMetadata;
 
 /// Default amount of one archive member returned by the inspect endpoint.
 pub const DEFAULT_MEMBER_CHUNK: u64 = 256 * 1024;
@@ -473,6 +474,25 @@ fn read_zip_member(
 ) -> Result<MemberChunk, ArchiveError> {
     let member = safe_member_name(member)?;
     let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
+    if offset > 0 {
+        match archive.by_name_seek(&member) {
+            Ok(mut entry) => {
+                let size = {
+                    let metadata = entry.get_metadata();
+                    safe_member_name(&metadata.file_name)?;
+                    metadata.uncompressed_size
+                };
+                if offset > size {
+                    return Err(ArchiveError::InvalidRange { offset, size });
+                }
+                entry.seek(SeekFrom::Start(offset)).map_err(read_error)?;
+                return read_from_current(entry, size, offset, limit);
+            }
+            Err(zip::result::ZipError::UnsupportedArchive("Seekable compressed files are not yet supported")) => {}
+            Err(zip::result::ZipError::FileNotFound) => return Err(ArchiveError::MemberNotFound),
+            Err(err) => return Err(read_error(err)),
+        }
+    }
     let Ok(entry) = archive.by_name(&member) else {
         return Err(ArchiveError::MemberNotFound);
     };
@@ -628,6 +648,10 @@ fn read_slice(mut reader: impl Read, size: u64, offset: u64, limit: u64) -> Resu
         return Err(ArchiveError::InvalidRange { offset, size });
     }
     std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink()).map_err(read_error)?;
+    read_from_current(reader, size, offset, limit)
+}
+
+fn read_from_current(reader: impl Read, size: u64, offset: u64, limit: u64) -> Result<MemberChunk, ArchiveError> {
     let remaining = size - offset;
     let count = remaining.min(limit);
     let mut bytes = Vec::with_capacity(usize::try_from(count).unwrap_or_default());

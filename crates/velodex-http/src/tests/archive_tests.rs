@@ -424,6 +424,22 @@ fn test_read_zip_member_chunk_reports_next_offset() {
 }
 
 #[test]
+fn test_read_stored_zip_member_chunk_at_offset() {
+    let archive = zip_with_file("pkg/mod.py", b"abcdef", zip::CompressionMethod::Stored);
+    let chunk = read_member_chunk("pkg-1.0-py3-none-any.whl", &archive, "pkg/mod.py", 2, 3).unwrap();
+    assert_eq!(chunk.bytes, b"cde");
+    assert_eq!(chunk.next_offset, Some(5));
+    assert!(matches!(
+        read_member_chunk("pkg-1.0-py3-none-any.whl", &archive, "pkg/mod.py", 7, 3),
+        Err(ArchiveError::InvalidRange { .. })
+    ));
+    assert!(matches!(
+        read_member_chunk("pkg-1.0-py3-none-any.whl", &archive, "pkg/missing.py", 1, 3),
+        Err(ArchiveError::MemberNotFound)
+    ));
+}
+
+#[test]
 fn test_read_zip_member_offset_beyond_size_is_rejected() {
     assert!(matches!(
         read_member_chunk(
@@ -475,6 +491,23 @@ fn test_read_zip_member_crc_mismatch_is_read_error() {
             "pkg/mod.py",
             1,
             DEFAULT_MEMBER_CHUNK,
+        ),
+        Err(ArchiveError::Read(_))
+    ));
+}
+
+#[test]
+fn test_read_stored_zip_member_seek_error_is_read_error() {
+    let mut archive = zip_with_file("pkg/mod.py", b"abcdef", zip::CompressionMethod::Stored);
+    archive[0] = 0;
+
+    assert!(matches!(
+        read_member_chunk(
+            "pkg-1.0-py3-none-any.whl",
+            &archive,
+            "pkg/mod.py",
+            1,
+            DEFAULT_MEMBER_CHUNK
         ),
         Err(ArchiveError::Read(_))
     ));
