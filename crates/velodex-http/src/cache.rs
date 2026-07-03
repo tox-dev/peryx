@@ -8,8 +8,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use velodex_core::pypi::file_matches_version;
 use velodex_core::pypi::{
-    CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Yanked, parse_detail, parse_detail_html,
-    to_json,
+    CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Yanked, parse_detail,
+    parse_detail_html, parse_distribution_filename, to_json,
 };
 use velodex_storage::blob::Digest;
 use velodex_storage::meta::CachedIndex;
@@ -54,6 +54,7 @@ impl From<velodex_core::pypi::SimpleError> for CacheError {
             velodex_core::pypi::SimpleError::Json(err) => Self::Parse(err),
             err @ (velodex_core::pypi::SimpleError::UnsupportedApiVersion(_)
             | velodex_core::pypi::SimpleError::InvalidApiVersion(_)
+            | velodex_core::pypi::SimpleError::InvalidProjectStatus(_)
             | velodex_core::pypi::SimpleError::Html(_)) => Self::Simple(err),
         }
     }
@@ -162,12 +163,14 @@ async fn overlay_detail(
     if let Some(pos) = upload {
         apply_overrides(state, &state.index_at(pos).name, project, &mut files)?;
     }
-    Ok(Some(ProjectDetail {
+    let mut detail = ProjectDetail {
         meta,
         name: project.to_owned(),
         versions: versions.into_iter().collect(),
         files,
-    }))
+    };
+    apply_project_status(&mut detail);
+    Ok(Some(detail))
 }
 
 /// Apply the `hidden`/`yanked` overrides stored on `local` to a merged file list.
@@ -177,10 +180,17 @@ fn apply_overrides(state: &AppState, local: &str, project: &str, files: &mut Vec
     if overrides.is_empty() {
         return Ok(());
     }
-    files.retain(|file| overrides.get(&file.filename).map(String::as_str) != Some("hidden"));
+    files.retain(|file| {
+        !overrides
+            .get(&file.filename)
+            .is_some_and(|kind| crate::stream::hidden_override(kind))
+    });
     for file in files {
-        if overrides.get(&file.filename).map(String::as_str) == Some("yanked") {
-            file.yanked = Yanked::Yes;
+        if let Some(yanked) = overrides
+            .get(&file.filename)
+            .and_then(|kind| crate::stream::yanked_override(kind))
+        {
+            file.yanked = yanked;
         }
     }
     Ok(())
@@ -479,13 +489,21 @@ fn persist_streamed(
     record: &CachedIndex,
     summary: &PageSummary,
 ) -> Result<(), CacheError> {
-    let files: Vec<(String, String)> = summary
-        .registrations
+    let registrations = if summary
+        .project_status
+        .as_deref()
+        .and_then(ProjectStatus::from_marker)
+        .is_some_and(|status| !status.offers_downloads())
+    {
+        &[]
+    } else {
+        summary.registrations.as_slice()
+    };
+    let files: Vec<(String, String)> = registrations
         .iter()
         .map(|registration| (registration.sha256.clone(), registration.url.clone()))
         .collect();
-    let metadata: Vec<(String, String, String)> = summary
-        .registrations
+    let metadata: Vec<(String, String, String)> = registrations
         .iter()
         .filter_map(|registration| {
             let (url, digest) = registration.metadata.as_ref()?;
@@ -495,7 +513,19 @@ fn persist_streamed(
     let display = summary.name.as_deref().unwrap_or(project);
     state
         .meta
-        .put_mirror_page(key, record, name, project, display, name, &files, &metadata)?;
+        .put_mirror_page(
+            key,
+            record,
+            name,
+            project,
+            display,
+            name,
+            summary.project_status.as_deref(),
+            summary.project_status_reason.as_deref(),
+            &files,
+            &metadata,
+        )
+        .map_err(CacheError::from)?;
     state.bump_epoch();
     Ok(())
 }
@@ -527,7 +557,19 @@ pub(crate) fn persist_page(
     let display = if parsed.name.is_empty() { project } else { &parsed.name };
     state
         .meta
-        .put_mirror_page(key, record, name, project, display, name, &files, &metadata)?;
+        .put_mirror_page(
+            key,
+            record,
+            name,
+            project,
+            display,
+            name,
+            parsed.meta.project_status.as_deref(),
+            parsed.meta.project_status_reason.as_deref(),
+            &files,
+            &metadata,
+        )
+        .map_err(CacheError::from)?;
     state.bump_epoch();
     Ok(())
 }
@@ -537,12 +579,20 @@ pub(crate) fn persist_page(
 pub(crate) fn raw_to_detail(route: &str, record: &CachedIndex) -> Result<ProjectDetail, CacheError> {
     let parsed = parse_detail(&record.body)?;
     let files = parsed.files.into_iter().map(|file| present_file(file, route)).collect();
-    Ok(ProjectDetail {
+    let mut detail = ProjectDetail {
         meta: parsed.meta,
         name: parsed.name,
         versions: parsed.versions,
         files,
-    })
+    };
+    apply_project_status(&mut detail);
+    Ok(detail)
+}
+
+fn apply_project_status(detail: &mut ProjectDetail) {
+    if !detail.meta.status().offers_downloads() {
+        detail.files.clear();
+    }
 }
 
 /// The pure serving transform for one file: velodex URL for content-addressable files, metadata
@@ -575,12 +625,14 @@ fn local_detail(state: &AppState, name: &str, project: &str) -> Result<Option<Pr
         versions.insert(uploaded.version);
         files.push(uploaded.file);
     }
-    Ok(Some(ProjectDetail {
+    let mut detail = ProjectDetail {
         meta: Meta::default(),
         name: project.to_owned(),
         versions: versions.into_iter().collect(),
         files,
-    }))
+    };
+    apply_project_status(&mut detail);
+    Ok(Some(detail))
 }
 
 /// Point every content-addressable file at velodex's own file route on `route`.
@@ -764,22 +816,16 @@ pub async fn set_yanked(
     local: &str,
     normalized: &str,
     version: Option<&str>,
-    yanked: bool,
+    yanked: Yanked,
 ) -> Result<usize, CacheError> {
     let uploaded = upload_filenames(state, local, normalized)?;
-    let mut changed = yank_uploads(
-        state,
-        local,
-        normalized,
-        version,
-        &if yanked { Yanked::Yes } else { Yanked::No },
-    )?;
+    let mut changed = yank_uploads(state, local, normalized, version, &yanked)?;
     for filename in served_filenames(state, index, normalized, version).await? {
         if uploaded.contains(&filename) {
             continue;
         }
-        if yanked {
-            state.meta.put_override(local, normalized, &filename, YANKED)?;
+        if let Some(value) = yank_override_value(&yanked)? {
+            state.meta.put_override(local, normalized, &filename, &value)?;
             changed += 1;
         } else if state.meta.delete_override(local, normalized, &filename)? {
             changed += 1;
@@ -789,6 +835,17 @@ pub async fn set_yanked(
         state.bump_epoch();
     }
     Ok(changed)
+}
+
+fn yank_override_value(yanked: &Yanked) -> Result<Option<String>, CacheError> {
+    Ok(match yanked {
+        Yanked::No => None,
+        Yanked::Yes => Some(YANKED.to_owned()),
+        Yanked::Reason(reason) => Some(serde_json::to_string(&serde_json::json!({
+            "kind": YANKED,
+            "reason": reason,
+        }))?),
+    })
 }
 
 /// Remove a project's files as served by `index`.
@@ -863,6 +920,58 @@ pub fn restore_files(
         state.bump_epoch();
     }
     Ok(restored)
+}
+
+/// Resolve the effective project status for upload policy checks. A missing project is active.
+///
+/// # Errors
+/// Returns [`CacheError`] on a store, parse, or upstream failure.
+pub async fn project_status(state: &AppState, index: &Index, normalized: &str) -> Result<ProjectStatus, CacheError> {
+    if matches!(index.kind, IndexKind::Local { .. }) {
+        return Ok(ProjectStatus::Active);
+    }
+    let Some(detail) = Box::pin(resolve_detail(state, index, normalized, &index.route)).await? else {
+        return Ok(ProjectStatus::Active);
+    };
+    Ok(detail.meta.status())
+}
+
+/// Check stored status metadata before serving a content-addressed file download.
+///
+/// # Errors
+/// Returns [`CacheError`] when the store cannot be read.
+pub fn download_status(state: &AppState, index: &Index, filename: &str) -> Result<ProjectStatus, CacheError> {
+    let artifact = filename.strip_suffix(".metadata").unwrap_or(filename);
+    let Ok(parsed) = parse_distribution_filename(artifact) else {
+        return Ok(ProjectStatus::Active);
+    };
+    stored_project_status(state, index, &parsed.normalized_name)
+}
+
+fn stored_project_status(state: &AppState, index: &Index, normalized: &str) -> Result<ProjectStatus, CacheError> {
+    match &index.kind {
+        IndexKind::Mirror(_) => status_for_index(state, &index.name, normalized),
+        IndexKind::Local { .. } => Ok(ProjectStatus::Active),
+        IndexKind::Overlay { layers, .. } => {
+            for &pos in layers {
+                let status = stored_project_status(state, state.index_at(pos), normalized)?;
+                if status != ProjectStatus::Active {
+                    return Ok(status);
+                }
+            }
+            Ok(ProjectStatus::Active)
+        }
+    }
+}
+
+fn status_for_index(state: &AppState, index: &str, normalized: &str) -> Result<ProjectStatus, CacheError> {
+    Ok(state
+        .meta
+        .get_project_status(index, normalized)?
+        .and_then(|record| record.status)
+        .as_deref()
+        .and_then(ProjectStatus::from_marker)
+        .unwrap_or(ProjectStatus::Active))
 }
 
 /// The filenames the serving index currently shows for a project, filtered to one version when

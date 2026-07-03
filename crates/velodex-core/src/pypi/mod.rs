@@ -15,8 +15,8 @@ pub use html::parse_detail_html;
 pub use metadata::{CoreMetadataDoc, parse_metadata};
 pub use name::{PackageName, file_matches_version, is_valid_name, normalize_name};
 pub use simple::{
-    API_VERSION, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, Provenance,
-    SimpleError, Yanked, parse_detail, parse_meta, render_detail_html, render_index_html, to_json,
+    API_VERSION, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus,
+    Provenance, SimpleError, Yanked, parse_detail, parse_meta, render_detail_html, render_index_html, to_json,
 };
 pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc};
 

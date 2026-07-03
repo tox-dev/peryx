@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -82,6 +83,14 @@ pub(super) async fn harness() -> Harness {
     harness_with(true, true).await
 }
 
+fn put_raw_project_status(path: &Path, key: &str, value: &[u8]) {
+    let db = redb::Database::create(path).unwrap();
+    let table: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("project_status");
+    let txn = db.begin_write().unwrap();
+    txn.open_table(table).unwrap().insert(key, value).unwrap();
+    txn.commit().unwrap();
+}
+
 pub(super) async fn get(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (StatusCode, HeaderMap, String) {
     let (status, headers, bytes) = get_bytes(state, uri, accept).await;
     (status, headers, String::from_utf8_lossy(&bytes).into_owned())
@@ -153,6 +162,27 @@ async fn mount_detail(server: &MockServer, digest: &str, file_url: &str, etag: O
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .respond_with(response)
+        .mount(server)
+        .await;
+}
+
+async fn mount_status_detail(
+    server: &MockServer,
+    project: &str,
+    status: &str,
+    reason: &str,
+    digest: &str,
+    file_url: &str,
+) {
+    let body = format!(
+        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"{status}\",\
+         \"project-status-reason\":\"{reason}\"}},\"name\":\"{project}\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"{project}-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}"
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/simple/{project}/")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.into_bytes(), "application/vnd.pypi.simple.v1+json"))
         .mount(server)
         .await;
 }
@@ -377,13 +407,13 @@ async fn test_discovery_document_uses_request_origin_and_redacts_token() {
         serde_json::json!({
             "simple_html": true,
             "simple_json": true,
-            "simple_api_version": "1.1",
+            "simple_api_version": "1.4",
             "metadata_siblings": true,
             "uploads": true,
             "yanking": true,
             "volatile_deletes": true,
-            "project_status": false,
-            "provenance": false,
+            "project_status": true,
+            "provenance": true,
             "legacy_json": false
         })
     );
@@ -561,6 +591,69 @@ async fn test_file_download_fetches_verifies_and_caches() {
     let (status2, _, body2) = get(&h.state, &uri, None).await; // second from blob cache
     assert_eq!(status2, StatusCode::OK);
     assert_eq!(body2, body);
+}
+
+#[tokio::test]
+async fn test_quarantined_project_hides_files_and_blocks_downloads() {
+    let h = harness().await;
+    let wheel = b"wheelcontent";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, Some("\"active\"")).await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    mount_status_detail(&h.server, "flask", "quarantined", "malware", digest.as_str(), &file_url).await;
+    h.clock.store(5000, Ordering::Relaxed);
+
+    let (status, _, detail) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["meta"]["project-status"], "quarantined");
+    assert!(detail["files"].as_array().unwrap().is_empty());
+
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body,
+        "project for file \"flask-1.0-py3-none-any.whl\" is quarantined; downloads are disabled"
+    );
+
+    let overlay_uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &overlay_uri, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body,
+        "project for file \"flask-1.0-py3-none-any.whl\" is quarantined; downloads are disabled"
+    );
+}
+
+#[tokio::test]
+async fn test_file_download_status_store_error_is_server_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("velodex.redb");
+    MetaStore::open(&db_path).unwrap();
+    put_raw_project_status(&db_path, "pypi/flask", b"not json");
+    let meta = MetaStore::open(&db_path).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    let indexes = vec![Index {
+        name: "pypi".to_owned(),
+        route: "pypi".to_owned(),
+        kind: IndexKind::Mirror(upstream),
+    }];
+    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+
+    let uri = format!(
+        "/pypi/files/{}/flask-1.0-py3-none-any.whl",
+        Digest::of(b"wheel").as_str()
+    );
+    let (status, _, body) = get(&state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("file download on index \"pypi\""));
+    assert!(body.contains("metadata store error"));
 }
 
 #[tokio::test]
@@ -1413,6 +1506,50 @@ async fn test_upload_with_declared_digest_and_extra_field() {
 }
 
 #[tokio::test]
+async fn test_upload_rejects_archived_and_quarantined_projects() {
+    for status in ["archived", "quarantined"] {
+        let h = harness().await;
+        let digest = Digest::of(b"upstream");
+        let file_url = format!("{}/files/velodexpkg.whl", h.server.uri());
+        mount_status_detail(&h.server, "velodexpkg", status, "policy", digest.as_str(), &file_url).await;
+
+        let (content_type, body) = multipart_body(
+            &upload_fields(),
+            Some(("velodexpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+        );
+        let (code, body) =
+            post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await;
+
+        assert_eq!(code, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body,
+            format!("project \"velodexpkg\" is {status}; uploads are disabled")
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_upload_allows_deprecated_project() {
+    let h = harness().await;
+    let digest = Digest::of(b"upstream");
+    let file_url = format!("{}/files/velodexpkg.whl", h.server.uri());
+    mount_status_detail(
+        &h.server,
+        "velodexpkg",
+        "deprecated",
+        "use another package",
+        digest.as_str(),
+        &file_url,
+    )
+    .await;
+
+    assert_eq!(
+        upload_velodexpkg(&h.state, "/root/pypi/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
 async fn test_upload_storage_failure_is_server_error() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("blobs"), b"not a directory").unwrap();
@@ -1455,13 +1592,19 @@ async fn test_yank_and_unyank_and_delete() {
     let h = harness().await;
     upload_velodexpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
 
-    // Yank the version, then the file is served with a yank marker.
+    // Yank the version, then the file is served with the recorded reason.
     assert_eq!(
-        request(&h.state, "PUT", "/root/pypi/velodexpkg/1.0/yank", Some(&upload_auth())).await,
+        request(
+            &h.state,
+            "PUT",
+            "/root/pypi/velodexpkg/1.0/yank?ignored=1&reason=bad+build",
+            Some(&upload_auth())
+        )
+        .await,
         StatusCode::OK
     );
     let (_, _, yanked) = get(&h.state, "/root/pypi/simple/velodexpkg/", Some("application/json")).await;
-    assert!(yanked.contains("\"yanked\":true"));
+    assert!(yanked.contains("\"yanked\":\"bad build\""));
 
     // Un-yank via DELETE .../yank.
     assert_eq!(
@@ -2026,20 +2169,31 @@ async fn test_yank_upstream_file_via_overlay() {
     let digest = Digest::of(b"wheel");
     mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
 
-    let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
+    let status = request(
+        &h.state,
+        "PUT",
+        "/root/pypi/flask/1.0/yank?reason=bad+build",
+        Some(&upload_auth()),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // The overlay page carries the marker; the mirror's own route stays untouched.
     let (_, _, merged) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
-    assert!(merged.contains("\"yanked\":true"));
+    assert!(merged.contains("\"yanked\":\"bad build\""));
     let (_, _, mirror) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
-    assert!(!mirror.contains("\"yanked\":true"));
+    assert!(!mirror.contains("\"yanked\":\"bad build\""));
 
     // Un-yank clears the override.
     let status = request(&h.state, "DELETE", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::OK);
     let (_, _, cleared) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
     assert!(!cleared.contains("\"yanked\":true"));
+
+    let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, yanked) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(yanked.contains("\"yanked\":true"));
 }
 
 #[tokio::test]

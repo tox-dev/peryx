@@ -17,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use velodex_core::pypi::{
-    DistributionFilenameError, ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html,
-    to_json,
+    DistributionFilenameError, ProjectDetail, ProjectList, ProjectStatus, Yanked, normalize_name, render_detail_html,
+    render_index_html, to_json,
 };
 use velodex_storage::blob::Digest;
 
@@ -109,7 +109,7 @@ pub async fn dispatch_get(
         return detail_response(detail, negotiate(&headers), &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
-        return file_route(&state, index.route.clone(), file).await;
+        return file_route(&state, index, file).await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
         return inspect_route(state.clone(), index.route.clone(), target, uri.query()).await;
@@ -298,7 +298,8 @@ fn archive_error(err: &crate::archive::ArchiveError, filename: &str, member: Opt
     (status, format!("{target}: {err}")).into_response()
 }
 
-async fn file_route(state: &Arc<AppState>, route: String, file: &str) -> Response {
+async fn file_route(state: &Arc<AppState>, index: &Index, file: &str) -> Response {
+    let route = index.route.clone();
     let Some((sha256, raw_filename)) = file.split_once('/') else {
         return not_found();
     };
@@ -310,6 +311,22 @@ async fn file_route(state: &Arc<AppState>, route: String, file: &str) -> Respons
         Ok(filename) => filename,
         Err(err) => return path_error_response(&err),
     };
+    match cache::download_status(state, index, &filename) {
+        Ok(status) if !status.offers_downloads() => {
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "project for file {filename:?} is {}; downloads are disabled",
+                    status.marker()
+                ),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(err) => {
+            return cache_error_response(&err, CacheContext::file(&route, digest.as_str(), &filename));
+        }
+    }
     if filename.ends_with(".metadata") {
         state.metadata_requests.fetch_add(1, Ordering::Relaxed);
         let digest_hex = digest.as_str().to_owned();
@@ -448,36 +465,69 @@ async fn accept_upload(
     let version = prepared.record.version.clone();
     let filename = prepared.filename.clone();
     let digest = prepared.digest.as_str().to_owned();
-    match cache::store_upload(state, &local.name, prepared) {
+    let audit = UploadAudit {
+        headers,
+        actor,
+        route: &index.route,
+        local: &local.name,
+        project: &project,
+        version: &version,
+        filename: &filename,
+        digest: &digest,
+    };
+    if let Some(block) = upload_status_response(
+        cache::project_status(state, index, &project).await,
+        &index.route,
+        &project,
+    ) {
+        emit_upload_status_event(&audit, &block);
+        return block.response;
+    }
+    upload_store_response(state, &audit, cache::store_upload(state, &local.name, prepared))
+}
+
+struct UploadAudit<'a> {
+    headers: &'a HeaderMap,
+    actor: Option<&'a str>,
+    route: &'a str,
+    local: &'a str,
+    project: &'a str,
+    version: &'a str,
+    filename: &'a str,
+    digest: &'a str,
+}
+
+fn upload_store_response(state: &AppState, audit: &UploadAudit<'_>, result: Result<bool, CacheError>) -> Response {
+    match result {
         Ok(stored) => {
             if stored {
                 state.metrics.record(Event::Upload {
-                    route: index.route.clone(),
-                    project: project.clone(),
+                    route: audit.route.to_owned(),
+                    project: audit.project.to_owned(),
                 });
             }
             security_upload_event(
-                headers,
-                actor,
-                &index.route,
-                Some(&local.name),
+                audit.headers,
+                audit.actor,
+                audit.route,
+                Some(audit.local),
                 if stored { "success" } else { "noop" },
             )
-            .project(Some(&project))
-            .version(Some(&version))
-            .filename(Some(&filename))
-            .digest(Some(&digest))
+            .project(Some(audit.project))
+            .version(Some(audit.version))
+            .filename(Some(audit.filename))
+            .digest(Some(audit.digest))
             .count(usize::from(stored))
             .reason((!stored).then_some("same content already stored"))
             .emit();
             (StatusCode::OK, "upload accepted").into_response()
         }
         Err(CacheError::FileExists(filename)) => {
-            security_upload_event(headers, actor, &index.route, Some(&local.name), "denied")
-                .project(Some(&project))
-                .version(Some(&version))
+            security_upload_event(audit.headers, audit.actor, audit.route, Some(audit.local), "denied")
+                .project(Some(audit.project))
+                .version(Some(audit.version))
                 .filename(Some(&filename))
-                .digest(Some(&digest))
+                .digest(Some(audit.digest))
                 .reason(Some("file exists with different content"))
                 .emit();
             (
@@ -488,15 +538,57 @@ async fn accept_upload(
         }
         Err(err) => {
             let reason = err.user_message();
-            security_upload_event(headers, actor, &index.route, Some(&local.name), "failure")
-                .project(Some(&project))
-                .version(Some(&version))
-                .filename(Some(&filename))
-                .digest(Some(&digest))
+            security_upload_event(audit.headers, audit.actor, audit.route, Some(audit.local), "failure")
+                .project(Some(audit.project))
+                .version(Some(audit.version))
+                .filename(Some(audit.filename))
+                .digest(Some(audit.digest))
                 .reason(Some(&reason))
                 .emit();
             tracing::error!(error = ?err, "upload store failed");
-            cache_error_response(&err, CacheContext::upload(&index.route, &project))
+            cache_error_response(&err, CacheContext::upload(audit.route, audit.project))
+        }
+    }
+}
+
+fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) {
+    security_upload_event(audit.headers, audit.actor, audit.route, Some(audit.local), block.result)
+        .project(Some(audit.project))
+        .version(Some(audit.version))
+        .filename(Some(audit.filename))
+        .digest(Some(audit.digest))
+        .reason(Some(&block.reason))
+        .emit();
+}
+
+struct UploadStatusBlock {
+    response: Response,
+    result: &'static str,
+    reason: String,
+}
+
+fn upload_status_response(
+    result: Result<ProjectStatus, CacheError>,
+    index: &str,
+    project: &str,
+) -> Option<UploadStatusBlock> {
+    match result {
+        Ok(status) if status.allows_uploads() => None,
+        Ok(status) => {
+            let reason = format!("project {project:?} is {}; uploads are disabled", status.marker());
+            Some(UploadStatusBlock {
+                response: (StatusCode::FORBIDDEN, reason.clone()).into_response(),
+                result: "denied",
+                reason,
+            })
+        }
+        Err(err) => {
+            let reason = err.user_message();
+            Some(UploadStatusBlock {
+                response: cache_error_response(&err, CacheContext::upload(index, project)),
+                result: "failure",
+                reason,
+            })
         }
     }
 }
@@ -516,11 +608,12 @@ pub async fn dispatch_put(
         Err(response) => return response,
     };
     if let Some(spec) = strip_action_segment(spec, "yank") {
+        let yanked = yank_marker(uri.query());
         let (project, version) = match parse_project_version(spec) {
             Ok(parsed) => parsed,
             Err(response) => return response,
         };
-        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), true).await;
+        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), yanked).await;
         security_mutation_event(
             MutationAudit {
                 headers: &headers,
@@ -577,7 +670,7 @@ pub async fn dispatch_delete(
             Ok(parsed) => parsed,
             Err(response) => return response,
         };
-        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), false).await;
+        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), Yanked::No).await;
         security_mutation_event(
             MutationAudit {
                 headers: &headers,
@@ -757,6 +850,22 @@ fn parse_project_version(spec: &str) -> Result<(String, Option<String>), Respons
         path_safety::validate_path_segment("version", version).map_err(|err| path_error_response(&err))?;
     }
     Ok((normalize_name(&project), version))
+}
+
+fn yank_marker(query: Option<&str>) -> Yanked {
+    let Some(query) = query else {
+        return Yanked::Yes;
+    };
+    let mut reason = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if key != "reason" {
+            continue;
+        }
+        reason = Some(value.into_owned());
+    }
+    reason
+        .filter(|reason| !reason.is_empty())
+        .map_or(Yanked::Yes, Yanked::Reason)
 }
 
 /// Map a project-list result to a negotiated response. Sync so every arm is directly testable.
@@ -1425,6 +1534,20 @@ mod tests {
             cache_error_status(&CacheError::NotVolatile, &context),
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[test]
+    fn test_upload_status_response_maps_policy_and_store_errors() {
+        assert!(upload_status_response(Ok(ProjectStatus::Active), "root/pypi", "flask").is_none());
+        let archived = upload_status_response(Ok(ProjectStatus::Archived), "root/pypi", "flask").unwrap();
+        assert_eq!(archived.response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(archived.result, "denied");
+        assert_eq!(archived.reason, "project \"flask\" is archived; uploads are disabled");
+
+        let failure = upload_status_response(Err(CacheError::Meta(meta_error())), "root/pypi", "flask").unwrap();
+        assert_eq!(failure.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(failure.result, "failure");
+        assert!(failure.reason.contains("metadata store error"));
     }
 
     fn meta_error() -> MetaError {

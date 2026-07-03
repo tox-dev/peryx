@@ -17,6 +17,7 @@ const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("simple_index")
 const FILE: TableDefinition<&str, &str> = TableDefinition::new("file_url");
 const METADATA: TableDefinition<&str, &str> = TableDefinition::new("metadata");
 const PROJECTS: TableDefinition<&str, &str> = TableDefinition::new("projects");
+const PROJECT_STATUS: TableDefinition<&str, &[u8]> = TableDefinition::new("project_status");
 const UPLOAD: TableDefinition<&str, &[u8]> = TableDefinition::new("uploads");
 const OVERRIDE: TableDefinition<&str, &str> = TableDefinition::new("overrides");
 const SERIAL_KEY: &str = "serial";
@@ -55,11 +56,19 @@ pub struct CachedIndexPage {
     pub summary: CachedIndexSummary,
 }
 
+/// One project's explicit Simple API status marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectStatusRecord {
+    pub status: Option<String>,
+    pub reason: Option<String>,
+}
+
 /// Counts of metadata rows a project-cache purge plans or deletes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProjectCachePurgeCounts {
     pub index_pages: usize,
     pub project_records: usize,
+    pub project_status_records: usize,
     pub file_url_records: usize,
     pub metadata_records: usize,
 }
@@ -255,6 +264,7 @@ impl MetaStore {
             txn.open_table(FILE)?;
             txn.open_table(METADATA)?;
             txn.open_table(PROJECTS)?;
+            txn.open_table(PROJECT_STATUS)?;
             txn.open_table(UPLOAD)?;
             txn.open_table(OVERRIDE)?;
         }
@@ -321,6 +331,8 @@ impl MetaStore {
         normalized: &str,
         display: &str,
         source: &str,
+        project_status: Option<&str>,
+        project_status_reason: Option<&str>,
         files: &[(String, String)],
         metadata: &[(String, String, String)],
     ) -> Result<(), MetaError> {
@@ -337,6 +349,19 @@ impl MetaStore {
             table.insert(key, bytes.as_slice())?;
             let mut table = txn.open_table(PROJECTS)?;
             table.insert(project_key.as_str(), display)?;
+            let mut table = txn.open_table(PROJECT_STATUS)?;
+            match (project_status, project_status_reason) {
+                (None, None) => {
+                    table.remove(project_key.as_str())?;
+                }
+                (status, reason) => {
+                    let record = serde_json::to_vec(&ProjectStatusRecord {
+                        status: status.map(str::to_owned),
+                        reason: reason.map(str::to_owned),
+                    })?;
+                    table.insert(project_key.as_str(), record.as_slice())?;
+                }
+            }
             let mut table = txn.open_table(FILE)?;
             for (sha256, url) in files {
                 let value = format!(
@@ -357,6 +382,20 @@ impl MetaStore {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    /// Fetch one project's explicit status marker, if a cached upstream page provided one.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails or the stored record cannot be decoded.
+    pub fn get_project_status(&self, index: &str, normalized: &str) -> Result<Option<ProjectStatusRecord>, MetaError> {
+        let key = format!("{index}/{normalized}");
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(PROJECT_STATUS)?;
+        Ok(table
+            .get(key.as_str())?
+            .map(|value| serde_json::from_slice(value.value()))
+            .transpose()?)
     }
 
     /// Store a cached index record under `key` (for example `root/pypi/flask`).
@@ -625,6 +664,7 @@ impl MetaStore {
         let txn = self.db.begin_read()?;
         let index_pages = usize::from(txn.open_table(INDEX)?.get(key.as_str())?.is_some());
         let project_records = usize::from(txn.open_table(PROJECTS)?.get(key.as_str())?.is_some());
+        let project_status_records = usize::from(txn.open_table(PROJECT_STATUS)?.get(key.as_str())?.is_some());
         let file_table = txn.open_table(FILE)?;
         let mut file_url_records = 0;
         for digest in file_digests {
@@ -638,6 +678,7 @@ impl MetaStore {
         Ok(ProjectCachePurgeCounts {
             index_pages,
             project_records,
+            project_status_records,
             file_url_records,
             metadata_records,
         })
@@ -665,6 +706,10 @@ impl MetaStore {
                 let mut table = txn.open_table(PROJECTS)?;
                 usize::from(table.remove(key.as_str())?.is_some())
             };
+            let project_status_records = {
+                let mut table = txn.open_table(PROJECT_STATUS)?;
+                usize::from(table.remove(key.as_str())?.is_some())
+            };
             let file_url_records = {
                 let mut table = txn.open_table(FILE)?;
                 let mut removed = 0;
@@ -684,6 +729,7 @@ impl MetaStore {
             ProjectCachePurgeCounts {
                 index_pages,
                 project_records,
+                project_status_records,
                 file_url_records,
                 metadata_records,
             }
