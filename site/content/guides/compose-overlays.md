@@ -5,8 +5,8 @@ weight = 4
 +++
 
 An overlay lists other indexes as `layers` and serves them under one route. Resolution is first-match per filename:
-velodex walks the layers in order and keeps the first occurrence of each file, so a file in an earlier layer shadows
-the same filename in a later one. Versions union across layers.
+velodex walks the layers in order and keeps the first occurrence of each file, so a file in an earlier layer shadows the
+same filename in a later one. Versions union across layers.
 
 ## A private layer over each mirror
 
@@ -35,8 +35,12 @@ name = "oss"
 layers = ["team-local", "pypi"]
 ```
 
-Clients using `/team/dev/simple/` see the team's uploads in front of the corporate mirror; clients using
-`/oss/simple/` see the same uploads in front of pypi.org. One local store can back any number of overlays.
+Clients using `/team/dev/simple/` see the team's uploads in front of the corporate mirror; clients using `/oss/simple/`
+see the same uploads in front of pypi.org. One local store can back any number of overlays.
+
+Choose routes as stable URL prefixes. Segments may contain ASCII letters, digits, `-`, `.`, `_`, and `~`; separate
+nested routes with `/`. Velodex validates routes once at startup so request routing can stay a fast prefix lookup, and
+it rejects routes that collide with built-in endpoints such as `browse`, `stats`, `+stats`, and `+status`.
 
 ## Chaining
 
@@ -53,15 +57,14 @@ upload = "staging-local"
 
 ## Where uploads land
 
-`upload` names the local layer that receives POSTs to the overlay's route. Omit it and velodex picks the overlay's
-first local layer; an overlay of only mirrors rejects uploads with `405`.
+`upload` names the local layer that receives POSTs to the overlay's route. Omit it and velodex picks the overlay's first
+local layer; an overlay of only mirrors rejects uploads with `405`.
 
 ## Failure behavior
 
 A layer that cannot answer (a down mirror with a cold cache) is skipped with a warning rather than failing the whole
 page, so your local packages stay installable during an upstream outage. A mirror with a warm cache serves its cached
 copy instead.
-
 
 ## Related
 

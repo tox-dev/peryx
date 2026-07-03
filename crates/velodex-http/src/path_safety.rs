@@ -1,3 +1,4 @@
+use velodex_core::url_encoding::{push_component, push_path};
 use velodex_storage::blob::Digest;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -8,28 +9,30 @@ pub enum PathSafetyError {
         "invalid filename {0:?}: filenames must be relative path segments without separators, traversal, or control characters"
     )]
     InvalidFilename(String),
+    #[error(
+        "invalid {kind} {value:?}: path parameters must be non-empty segments without separators, traversal, or control characters"
+    )]
+    InvalidPathSegment { kind: &'static str, value: String },
+    #[error("invalid route {0:?}: routes must be non-empty unreserved path segments separated by '/'")]
+    InvalidRoute(String),
+    #[error("invalid route {0:?}: the first route segment is reserved by velodex")]
+    ReservedRoute(String),
     #[error("invalid percent-encoded path segment {0:?}")]
     InvalidEncoding(String),
 }
 
-#[must_use]
-pub fn local_file_url(route: &str, sha256: &str, filename: &str) -> String {
-    format!("/{route}/files/{sha256}/{}", encode_path_segment(filename))
-}
+const RESERVED_ROUTE_PREFIXES: &[&str] = &["+stats", "+status", "api-docs", "browse", "metrics", "pkg", "stats"];
 
 #[must_use]
-pub fn encode_path_segment(segment: &str) -> String {
-    let mut out = String::with_capacity(segment.len());
-    for byte in segment.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(byte as char),
-            other => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
+pub fn local_file_url(route: &str, sha256: &str, filename: &str) -> String {
+    let mut url = String::with_capacity(route.len() + sha256.len() + filename.len() + 9);
+    url.push('/');
+    push_path(&mut url, route);
+    url.push_str("/files/");
+    url.push_str(sha256);
+    url.push('/');
+    push_component(&mut url, filename);
+    url
 }
 
 /// Decode a percent-encoded route segment.
@@ -58,6 +61,29 @@ pub fn parse_digest(hex: &str) -> Result<Digest, PathSafetyError> {
     Digest::from_hex(hex).ok_or_else(|| PathSafetyError::InvalidDigest(hex.to_owned()))
 }
 
+/// Validate an index route as a raw URL path prefix.
+///
+/// # Errors
+/// Returns [`PathSafetyError::InvalidRoute`] for empty, traversal, encoded, or control-containing
+/// routes, and [`PathSafetyError::ReservedRoute`] for prefixes owned by Velodex itself.
+pub fn validate_route(route: &str) -> Result<(), PathSafetyError> {
+    if route.is_empty() || route.starts_with('/') || route.ends_with('/') || route.contains("//") {
+        return Err(PathSafetyError::InvalidRoute(route.to_owned()));
+    }
+    let (first, rest) = route
+        .split_once('/')
+        .map_or((route, None), |(first, rest)| (first, Some(rest)));
+    if RESERVED_ROUTE_PREFIXES.contains(&first) {
+        return Err(PathSafetyError::ReservedRoute(route.to_owned()));
+    }
+    if !valid_route_segment(first)
+        || rest.is_some_and(|rest| rest.split('/').any(|segment| !valid_route_segment(segment)))
+    {
+        return Err(PathSafetyError::InvalidRoute(route.to_owned()));
+    }
+    Ok(())
+}
+
 /// Validate a display filename as one safe path segment.
 ///
 /// # Errors
@@ -75,6 +101,37 @@ pub fn validate_filename(filename: &str) -> Result<(), PathSafetyError> {
     } else {
         Ok(())
     }
+}
+
+/// Validate a decoded route parameter as one path segment.
+///
+/// # Errors
+/// Returns [`PathSafetyError::InvalidPathSegment`] for empty values, traversal segments,
+/// separators, or control characters.
+pub fn validate_path_segment(kind: &'static str, value: &str) -> Result<(), PathSafetyError> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.chars().any(char::is_control)
+    {
+        Err(PathSafetyError::InvalidPathSegment {
+            kind,
+            value: value.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_route_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
 }
 
 fn hex_byte(hex: &[u8]) -> Option<u8> {
@@ -115,8 +172,8 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PathSafetyError, decode_path, decode_path_segment, encode_path_segment, local_file_url, parse_digest,
-        validate_filename,
+        PathSafetyError, decode_path, decode_path_segment, local_file_url, parse_digest, validate_filename,
+        validate_path_segment, validate_route,
     };
 
     #[test]
@@ -125,7 +182,6 @@ mod tests {
             local_file_url("root/pypi", "aa", "pkg 1.0#x?.whl"),
             "/root/pypi/files/aa/pkg%201.0%23x%3F.whl"
         );
-        assert_eq!(encode_path_segment("pkg/name.whl"), "pkg%2Fname.whl");
     }
 
     #[test]
@@ -139,6 +195,14 @@ mod tests {
         assert_eq!(
             decode_path_segment("pkg%xx"),
             Err(PathSafetyError::InvalidEncoding("pkg%xx".to_owned()))
+        );
+        assert_eq!(
+            decode_path_segment("pkg%0x"),
+            Err(PathSafetyError::InvalidEncoding("pkg%0x".to_owned()))
+        );
+        assert_eq!(
+            decode_path_segment("pkg%ff"),
+            Err(PathSafetyError::InvalidEncoding("pkg%ff".to_owned()))
         );
     }
 
@@ -159,6 +223,34 @@ mod tests {
     }
 
     #[test]
+    fn test_route_validation_accepts_nested_unreserved_routes() {
+        assert_eq!(validate_route("root/pypi-1.0_~"), Ok(()));
+    }
+
+    #[test]
+    fn test_route_validation_rejects_unsafe_or_reserved_routes() {
+        for route in [
+            "",
+            "/pypi",
+            "pypi/",
+            "root//pypi",
+            ".",
+            "root/..",
+            "root/pypi mirror",
+            "root/%70ypi",
+        ] {
+            assert_eq!(
+                validate_route(route),
+                Err(PathSafetyError::InvalidRoute(route.to_owned()))
+            );
+        }
+        assert_eq!(
+            validate_route("browse/private"),
+            Err(PathSafetyError::ReservedRoute("browse/private".to_owned()))
+        );
+    }
+
+    #[test]
     fn test_filename_validation_rejects_path_inputs() {
         for filename in [
             "",
@@ -172,5 +264,17 @@ mod tests {
             assert!(validate_filename(filename).is_err(), "{filename:?}");
         }
         assert!(validate_filename("pkg 1.0#x?.whl").is_ok());
+    }
+
+    #[test]
+    fn test_path_segment_validation_rejects_decoded_separators() {
+        assert_eq!(validate_path_segment("version", "1.0+local"), Ok(()));
+        assert_eq!(
+            validate_path_segment("version", "1.0/local"),
+            Err(PathSafetyError::InvalidPathSegment {
+                kind: "version",
+                value: "1.0/local".to_owned()
+            })
+        );
     }
 }

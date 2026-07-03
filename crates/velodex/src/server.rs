@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use axum::Router;
-use velodex_http::{AppState, Index, IndexKind, router};
+use velodex_http::{AppState, Index, IndexKind, path_safety, router};
 use velodex_storage::blob::BlobStore;
 use velodex_storage::meta::MetaStore;
 use velodex_upstream::{Auth, UpstreamClient};
@@ -53,6 +53,7 @@ pub(crate) fn build_indexes(configs: &[IndexConfig]) -> anyhow::Result<Vec<Index
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
+        path_safety::validate_route(&index.route).with_context(|| format!("invalid index route {}", index.route))?;
         if positions.insert(index.name.as_str(), pos).is_some() {
             bail!("duplicate index name {}", index.name);
         }

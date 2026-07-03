@@ -387,20 +387,27 @@ pub async fn dispatch_post(
 /// `PUT .../restore` clears the hidden marker a DELETE left on read-only upstream files.
 pub async fn dispatch_put(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let (index, local, spec) = match removal_target(&state, &path, &headers) {
+    let path = uri.path().trim_start_matches('/');
+    let (index, local, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
     };
-    if let Some(spec) = spec.strip_suffix("yank") {
-        let (project, version) = parse_project_version(spec);
+    if let Some(spec) = strip_action_segment(spec, "yank") {
+        let (project, version) = match parse_project_version(spec) {
+            Ok(parsed) => parsed,
+            Err(response) => return response,
+        };
         return count_response(cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), true).await);
     }
-    if let Some(spec) = spec.strip_suffix("restore") {
-        let (project, version) = parse_project_version(spec);
+    if let Some(spec) = strip_action_segment(spec, "restore") {
+        let (project, version) = match parse_project_version(spec) {
+            Ok(parsed) => parsed,
+            Err(response) => return response,
+        };
         return count_response(cache::restore_files(&state, &local.name, &project, version.as_deref()));
     }
     not_found()
@@ -410,21 +417,28 @@ pub async fn dispatch_put(
 /// indexes only), read-only upstream files are hidden reversibly. A `.../yank` suffix un-yanks.
 pub async fn dispatch_delete(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let (index, local, spec) = match removal_target(&state, &path, &headers) {
+    let path = uri.path().trim_start_matches('/');
+    let (index, local, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
     };
-    if let Some(spec) = spec.strip_suffix("yank") {
-        let (project, version) = parse_project_version(spec);
+    if let Some(spec) = strip_action_segment(spec, "yank") {
+        let (project, version) = match parse_project_version(spec) {
+            Ok(parsed) => parsed,
+            Err(response) => return response,
+        };
         return count_response(
             cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), false).await,
         );
     }
-    let (project, version) = parse_project_version(spec);
+    let (project, version) = match parse_project_version(spec) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
     let volatile = is_volatile(local);
     count_response(cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await)
 }
@@ -477,15 +491,32 @@ fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
-fn parse_project_version(spec: &str) -> (String, Option<String>) {
+fn strip_action_segment<'a>(spec: &'a str, action: &str) -> Option<&'a str> {
+    let spec = spec.trim_end_matches('/');
+    let base = spec.strip_suffix(action)?;
+    (base.is_empty() || base.ends_with('/')).then_some(base)
+}
+
+fn parse_project_version(spec: &str) -> Result<(String, Option<String>), Response> {
     let trimmed = spec.trim_matches('/');
     let mut parts = trimmed.splitn(2, '/');
-    let project = normalize_name(parts.next().unwrap_or_default());
+    let project = parts
+        .next()
+        .map(path_safety::decode_path_segment)
+        .transpose()
+        .map_err(|err| path_error_response(&err))?
+        .unwrap_or_default();
+    path_safety::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
     let version = parts
         .next()
-        .map(|version| version.trim_matches('/').to_owned())
+        .map(|version| path_safety::decode_path(version.trim_matches('/')))
+        .transpose()
+        .map_err(|err| path_error_response(&err))?
         .filter(|version| !version.is_empty());
-    (project, version)
+    if let Some(version) = &version {
+        path_safety::validate_path_segment("version", version).map_err(|err| path_error_response(&err))?;
+    }
+    Ok((normalize_name(&project), version))
 }
 
 /// Map a project-list result to a negotiated response. Sync so every arm is directly testable.

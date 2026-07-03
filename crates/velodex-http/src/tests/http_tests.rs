@@ -778,6 +778,57 @@ async fn test_delete_specific_version() {
 }
 
 #[tokio::test]
+async fn test_admin_routes_decode_safe_project_and_version_segments() {
+    let h = harness().await;
+    upload_version(&h.state, "/local/", "1.0+local", b"PKlocal").await;
+    assert_eq!(
+        request(
+            &h.state,
+            "DELETE",
+            "/local/velodexpkg/1.0%2Blocal/",
+            Some(&upload_auth())
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (status, ..) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_admin_routes_reject_decoded_separators() {
+    let h = harness().await;
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/velo%2Fdexpkg/", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/velodexpkg/1.0%2Fbad/", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/velo%xxdexpkg/", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/velodexpkg/1.0%xxbad/", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&h.state, "PUT", "/local/velo%2Fdexpkg/yank", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&h.state, "PUT", "/local/velo%2Fdexpkg/restore", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&h.state, "DELETE", "/local/velo%2Fdexpkg/yank", Some(&upload_auth())).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
 async fn test_delete_nonexistent_is_not_found() {
     let h = harness().await;
     assert_eq!(
@@ -820,6 +871,15 @@ async fn test_put_without_yank_suffix_is_not_found() {
     let h = harness().await;
     assert_eq!(
         request(&h.state, "PUT", "/local/velodexpkg/1.0/", Some(&upload_auth())).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn test_put_suffix_inside_segment_is_not_an_action() {
+    let h = harness().await;
+    assert_eq!(
+        request(&h.state, "PUT", "/local/velodexpkg/1.0/notyank", Some(&upload_auth())).await,
         StatusCode::NOT_FOUND
     );
 }

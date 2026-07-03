@@ -116,6 +116,22 @@ fn test_build_indexes_rejects_duplicate_route() {
 }
 
 #[test]
+fn test_build_indexes_rejects_unsafe_route() {
+    let mut index = local("safe");
+    index.route = "root/../pypi".to_owned();
+    let err = build_indexes(&[index]).unwrap_err();
+    assert!(err.to_string().contains("invalid index route root/../pypi"));
+}
+
+#[test]
+fn test_build_indexes_rejects_reserved_route() {
+    let mut index = local("safe");
+    index.route = "browse/private".to_owned();
+    let err = build_indexes(&[index]).unwrap_err();
+    assert!(err.to_string().contains("invalid index route browse/private"));
+}
+
+#[test]
 fn test_build_indexes_rejects_unknown_layer() {
     let err = build_indexes(&[local("x"), overlay(&["ghost"], None)]).unwrap_err();
     assert!(err.to_string().contains("unknown index ghost"));

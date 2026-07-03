@@ -9,7 +9,7 @@ use velodex_core::pypi::CoreMetadataDoc;
 
 use crate::model::{UiMember, UiMemberChunk, UiProject, UiSnapshot};
 #[cfg(feature = "hydrate")]
-use crate::url::{encode_component, encode_path};
+use crate::url::{inspect_url, simple_index_url, simple_project_url, stats_api_url};
 
 /// The dashboard snapshot.
 pub async fn load_snapshot() -> UiSnapshot {
@@ -41,7 +41,7 @@ pub async fn load_projects(route: String) -> Vec<String> {
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_json(&format!("/{route}/simple/"))
+            fetch_json(&simple_index_url(&route))
                 .await
                 .map_or_else(Vec::new, |value| crate::model::projects_from_list(&value))
         })
@@ -64,7 +64,7 @@ pub async fn load_project(route: String, project: String) -> Option<(UiProject, 
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            let value = fetch_json(&format!("/{route}/simple/{project}/")).await?;
+            let value = fetch_json(&simple_project_url(&route, &project)).await?;
             let ui = UiProject::from_detail(&value);
             let doc = match ui.files.iter().rev().find(|file| file.has_metadata) {
                 Some(file) => fetch_text(&format!("{}.metadata", file.url))
@@ -192,39 +192,6 @@ pub async fn load_member_chunk(
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-fn inspect_url(
-    route: &str,
-    sha256: &str,
-    filename: &str,
-    containers: &[String],
-    member: Option<&str>,
-    offset: u64,
-) -> String {
-    let mut url = format!(
-        "/{}/inspect/{}/{}",
-        encode_path(route),
-        encode_component(sha256),
-        encode_component(filename)
-    );
-    let mut separator = "?";
-    for container in containers {
-        url.push_str(separator);
-        url.push_str("container=");
-        url.push_str(&encode_component(container));
-        separator = "&";
-    }
-    if let Some(member) = member {
-        url.push_str(separator);
-        url.push_str("member=");
-        url.push_str(&encode_component(member));
-        url.push('&');
-        url.push_str("offset=");
-        url.push_str(&offset.to_string());
-    }
-    url
-}
-
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 async fn fetch_member_chunk(url: &str) -> Option<UiMemberChunk> {
     let response = gloo_net::http::Request::get(url).send().await.ok()?;
     if !response.ok() {
@@ -272,16 +239,11 @@ pub async fn load_stats(index: Option<String>, project: Option<String>) -> crate
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            let mut url = "/+stats".to_owned();
-            if let Some(route) = &index {
-                url.push_str(&format!("?index={route}"));
-                if let Some(name) = &project {
-                    url.push_str(&format!("&project={name}"));
-                }
-            }
-            fetch_json(&url).await.map_or_else(Default::default, |value| {
-                parse_stats(&value, index.as_deref(), project.as_deref())
-            })
+            fetch_json(&stats_api_url(index.as_deref(), project.as_deref()))
+                .await
+                .map_or_else(Default::default, |value| {
+                    parse_stats(&value, index.as_deref(), project.as_deref())
+                })
         })
         .await
     }
