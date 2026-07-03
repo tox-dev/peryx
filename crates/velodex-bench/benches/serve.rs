@@ -36,9 +36,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Real PEP 691 pages captured from pypi.org, for the discovery benchmarks.
 const PAGES: &[(&str, &str)] = &[
-    ("flask", include_str!("fixtures/flask.json")),
-    ("requests", include_str!("fixtures/requests.json")),
-    ("numpy", include_str!("fixtures/numpy.json")),
+    ("flask", include_str!("fixtures/pages/flask.json")),
+    ("requests", include_str!("fixtures/pages/requests.json")),
+    ("numpy", include_str!("fixtures/pages/numpy.json")),
 ];
 
 /// A committed real wheel as `(filename, bytes)`, and a named set of them to install.
@@ -52,8 +52,13 @@ macro_rules! wheel {
     };
 }
 
-/// A single modern package (turbohtml) for the one-wheel install.
+/// A single modern package (turbohtml) for the small one-wheel install.
 const TURBOHTML: &[Wheel] = &[wheel!("turbohtml-0.4.0-cp315-cp315t-win_amd64.whl")];
+
+/// One large binary wheel (numpy, ~16 MB) for the big single-package install.
+const NUMPY: &[Wheel] = &[wheel!(
+    "numpy-2.5.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+)];
 
 /// Flask and its whole dependency set — seven real wheels a resolver downloads together, for the
 /// concurrent multi-wheel install.
@@ -236,7 +241,7 @@ fn install_bytes(wheels: &[Wheel]) -> u64 {
 /// through the router under a concurrent download.
 fn bench_install_warm(c: &mut Criterion) {
     let rt = runtime();
-    let cases: &[Case] = &[("turbohtml", TURBOHTML), ("flask", FLASK_SET)];
+    let cases: &[Case] = &[("turbohtml", TURBOHTML), ("numpy", NUMPY), ("flask", FLASK_SET)];
     let mut group = c.benchmark_group("install_warm");
     for &(project, wheels) in cases {
         let (server, routes) = rt.block_on(wheel_upstream(project, wheels));
@@ -258,7 +263,7 @@ fn bench_install_warm(c: &mut Criterion) {
 /// persists every wheel — the full first-contact install path, including concurrent blob streaming.
 fn bench_install_cold(c: &mut Criterion) {
     let rt = runtime();
-    let cases: &[Case] = &[("turbohtml", TURBOHTML), ("flask", FLASK_SET)];
+    let cases: &[Case] = &[("turbohtml", TURBOHTML), ("numpy", NUMPY), ("flask", FLASK_SET)];
     let mut group = c.benchmark_group("install_cold");
     for &(project, wheels) in cases {
         let (server, routes) = rt.block_on(wheel_upstream(project, wheels));
