@@ -61,6 +61,20 @@ fn test_rewrites_urls_and_registers_sources() {
 }
 
 #[test]
+fn test_rewrites_egg_urls_without_advertising_metadata() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[{
+        "filename":"demo-1.0.egg","url":"https://up/demo-1.0.egg",
+        "hashes":{"sha256":"aa11"},"core-metadata":{"sha256":"bb22"},"yanked":false
+    }]}"#;
+    let (out, registrations) = transform(page, plain_context(), 7);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.files[0].url, "/root/pypi/files/aa11/demo-1.0.egg");
+    assert_eq!(detail.files[0].core_metadata, CoreMetadata::Absent);
+    assert_eq!(detail.files[0].dist_info_metadata, CoreMetadata::Absent);
+    assert_eq!(registrations[0].metadata, None);
+}
+
+#[test]
 fn test_injects_local_files_and_shadows_upstream() {
     let local = File {
         filename: "demo-2.0-py3-none-any.whl".to_owned(),

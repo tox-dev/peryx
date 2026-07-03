@@ -424,11 +424,15 @@ impl PageTransformer {
             return Ok(());
         }
         if let Some(sha256) = file.hashes.get("sha256").cloned() {
-            let metadata = match file.metadata() {
-                CoreMetadata::Hashes(hashes) => hashes
-                    .get("sha256")
-                    .map(|digest| (format!("{}.metadata", file.url), digest.clone())),
-                CoreMetadata::Absent | CoreMetadata::Available => None,
+            let metadata = if supports_metadata_sibling(&file.filename) {
+                match file.metadata() {
+                    CoreMetadata::Hashes(hashes) => hashes
+                        .get("sha256")
+                        .map(|digest| (format!("{}.metadata", file.url), digest.clone())),
+                    CoreMetadata::Absent | CoreMetadata::Available => None,
+                }
+            } else {
+                None
             };
             if metadata.is_none() {
                 file.clear_metadata();
@@ -468,6 +472,15 @@ impl PageTransformer {
         out.extend_from_slice(to_json(&versions).as_bytes());
         Ok(())
     }
+}
+
+fn supports_metadata_sibling(filename: &str) -> bool {
+    std::path::Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("whl"))
+        || filename
+            .get(filename.len().saturating_sub(7)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
 }
 
 /// Build a [`PageContext`] from the overlay pieces: local files shadow upstream filenames, hidden

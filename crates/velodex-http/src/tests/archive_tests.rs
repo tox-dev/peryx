@@ -47,6 +47,19 @@ fn tar_gz_with_file(path: &str, bytes: &[u8]) -> Vec<u8> {
     tarball
 }
 
+fn tar_with_file(path: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut tarball = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tarball);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        builder.append_data(&mut header, path, bytes).unwrap();
+        builder.finish().unwrap();
+    }
+    tarball
+}
+
 fn tar_gz_with_directory_and_file(path: &str, bytes: &[u8]) -> Vec<u8> {
     let mut tarball = Vec::new();
     {
@@ -526,10 +539,29 @@ fn test_read_member_unsupported_type() {
 #[test]
 fn test_list_members_unsupported_type() {
     assert!(matches!(
-        list_members("file.egg", b"data"),
+        list_members("file.tar.bz2", b"data"),
         Err(ArchiveError::Unsupported)
     ));
     assert_eq!(MemberKind::Unknown.as_str(), "unknown");
+}
+
+#[test]
+fn test_zipped_egg_lists_pkg_info_without_metadata_sibling() {
+    let egg = zip_with_file(
+        "EGG-INFO/PKG-INFO",
+        b"Metadata-Version: 1.2\nName: pkg\nVersion: 1.0\n",
+        zip::CompressionMethod::Stored,
+    );
+    assert_eq!(
+        list_members("pkg-1.0.egg", &egg).unwrap(),
+        vec![Member {
+            path: "EGG-INFO/PKG-INFO".to_owned(),
+            size: 45,
+            kind: MemberKind::Text,
+            previewable: true,
+        }]
+    );
+    assert!(wheel_metadata("pkg-1.0.egg", &egg).is_none());
 }
 
 #[test]
@@ -593,6 +625,51 @@ fn test_list_members_classifies_previewable_archives_and_binary_files() {
             },
         ]
     );
+}
+
+#[test]
+fn test_plain_tar_and_tgz_are_inspectable() {
+    let tar = tar_with_file("pkg-1.0/mod.py", b"x = 1\n");
+    assert_eq!(
+        list_members("pkg-1.0.tar", &tar).unwrap(),
+        vec![Member {
+            path: "pkg-1.0/mod.py".to_owned(),
+            size: 6,
+            kind: MemberKind::Text,
+            previewable: true,
+        }]
+    );
+    assert_eq!(read_member("pkg-1.0.tar", &tar, "pkg-1.0/mod.py").unwrap(), b"x = 1\n");
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&tar).unwrap();
+    file.flush().unwrap();
+    assert_eq!(
+        list_members_path("pkg-1.0.tar", file.path()).unwrap(),
+        vec![Member {
+            path: "pkg-1.0/mod.py".to_owned(),
+            size: 6,
+            kind: MemberKind::Text,
+            previewable: true,
+        }]
+    );
+    assert_eq!(
+        read_member_chunk_path("pkg-1.0.tar", file.path(), "pkg-1.0/mod.py", 0, DEFAULT_MEMBER_CHUNK)
+            .unwrap()
+            .bytes,
+        b"x = 1\n"
+    );
+
+    let tgz = tar_gz_with_file("pkg-1.0/mod.py", b"x = 1\n");
+    assert_eq!(
+        list_members("pkg-1.0.tgz", &tgz).unwrap(),
+        vec![Member {
+            path: "pkg-1.0/mod.py".to_owned(),
+            size: 6,
+            kind: MemberKind::Text,
+            previewable: true,
+        }]
+    );
+    assert_eq!(read_member("pkg-1.0.tgz", &tgz, "pkg-1.0/mod.py").unwrap(), b"x = 1\n");
 }
 
 #[test]
@@ -695,6 +772,18 @@ fn test_nested_tar_streams_member_to_temp_archive() {
             .map(|member| member.path.as_str()),
         Some("pkg/mod.py")
     );
+
+    let plain_tar = tar_with_file("pkg-1.0/vendor/inner.zip", &inner);
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&plain_tar).unwrap();
+    file.flush().unwrap();
+    assert_eq!(
+        list_members_nested_path("pkg-1.0.tar", file.path(), &["pkg-1.0/vendor/inner.zip".to_owned()])
+            .unwrap()
+            .first()
+            .map(|member| member.path.as_str()),
+        Some("pkg/mod.py")
+    );
 }
 
 #[test]
@@ -717,7 +806,7 @@ fn test_nested_archive_limits_reject_depth_unsafe_paths_and_unsupported_containe
         Err(ArchiveError::UnsupportedNestedArchive(path)) if path == "inner.txt"
     ));
     assert!(matches!(
-        list_members_nested_path("outer.egg", file.path(), &["inner.zip".to_owned()]),
+        list_members_nested_path("outer.tar.bz2", file.path(), &["inner.zip".to_owned()]),
         Err(ArchiveError::Unsupported)
     ));
 }

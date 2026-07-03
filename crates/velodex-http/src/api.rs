@@ -535,9 +535,10 @@ fn inspect_listing() -> OperationBuilder {
         .tag("files")
         .summary(Some("List archive members"))
         .description(Some(
-            "The file members of a cached wheel, zip, or gzipped tarball. Nested archives are not \
-             expanded unless the request names them with repeated `container` query parameters. \
-             Pass `member` to read one bounded text chunk.",
+            "The file members of a cached wheel, zip, zipped egg, plain tarball, or gzip tarball \
+             (`.tar.gz` and `.tgz`). Nested archives are not expanded unless the request names \
+             them with repeated `container` query parameters. Pass `member` to read one bounded \
+             text chunk.",
         ))
         .parameter(route_param())
         .parameter(sha256_param())

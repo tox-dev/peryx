@@ -77,7 +77,7 @@ pub struct MemberChunk {
 /// An error while reading an archive.
 #[derive(Debug, thiserror::Error)]
 pub enum ArchiveError {
-    #[error("unsupported archive type; accepted formats are .whl, .zip, and .tar.gz")]
+    #[error("unsupported archive type; accepted formats are .whl, .zip, .egg, .tar, .tar.gz, and .tgz")]
     Unsupported,
     #[error("nested archive member {0:?} is not a supported archive")]
     UnsupportedNestedArchive(String),
@@ -103,8 +103,7 @@ pub enum ArchiveError {
     Read(String),
 }
 
-/// List the file members of a distribution archive: a wheel or zip (`.whl`, `.zip`) or a gzipped
-/// tarball (`.tar.gz`).
+/// List the file members of a distribution archive: a wheel, zip, zipped egg, or tar archive.
 ///
 /// # Errors
 /// Returns [`ArchiveError::Unsupported`] for other filename extensions and
@@ -112,8 +111,10 @@ pub enum ArchiveError {
 pub fn list_members(filename: &str, bytes: &[u8]) -> Result<Vec<Member>, ArchiveError> {
     if is_zip(filename) {
         list_zip(Cursor::new(bytes))
-    } else if is_tar_gz(filename) {
+    } else if is_tar(filename) {
         list_tar(Cursor::new(bytes))
+    } else if is_tar_gz(filename) {
+        list_tar(flate2::read::GzDecoder::new(Cursor::new(bytes)))
     } else {
         Err(ArchiveError::Unsupported)
     }
@@ -165,8 +166,10 @@ pub fn read_member_chunk(
 ) -> Result<MemberChunk, ArchiveError> {
     if is_zip(filename) {
         read_zip_member(Cursor::new(bytes), member, offset, limit)
-    } else if is_tar_gz(filename) {
+    } else if is_tar(filename) {
         read_tar_member(Cursor::new(bytes), member, offset, limit)
+    } else if is_tar_gz(filename) {
+        read_tar_member(flate2::read::GzDecoder::new(Cursor::new(bytes)), member, offset, limit)
     } else {
         Err(ArchiveError::Unsupported)
     }
@@ -256,8 +259,10 @@ fn nested_archive_source(
 ) -> Result<ArchiveSource, ArchiveError> {
     if is_zip(filename) {
         nested_zip_source(source, member, temps)
+    } else if is_tar(filename) {
+        nested_tar_source(source.open()?, member, temps)
     } else if is_tar_gz(filename) {
-        nested_tar_source(source, member, temps)
+        nested_tar_source(flate2::read::GzDecoder::new(source.open()?), member, temps)
     } else {
         Err(ArchiveError::Unsupported)
     }
@@ -288,11 +293,11 @@ fn nested_zip_source(
 }
 
 fn nested_tar_source(
-    source: &ArchiveSource,
+    reader: impl Read,
     member: &str,
     temps: &mut Vec<tempfile::TempPath>,
 ) -> Result<ArchiveSource, ArchiveError> {
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(source.open()?));
+    let mut archive = tar::Archive::new(reader);
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
         if !entry.header().entry_type().is_file() {
@@ -413,15 +418,24 @@ impl Seek for FileRangeReader {
 }
 
 fn is_zip(filename: &str) -> bool {
+    std::path::Path::new(filename).extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("whl") || ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("egg")
+    })
+}
+
+fn is_tar(filename: &str) -> bool {
     std::path::Path::new(filename)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("whl") || ext.eq_ignore_ascii_case("zip"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
 }
 
 fn is_tar_gz(filename: &str) -> bool {
     filename
         .get(filename.len().saturating_sub(7)..)
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
+        || filename
+            .get(filename.len().saturating_sub(4)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tgz"))
 }
 
 fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
@@ -432,14 +446,16 @@ fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'
 }
 
 fn is_supported_archive(filename: &str) -> bool {
-    is_zip(filename) || is_tar_gz(filename)
+    is_zip(filename) || is_tar(filename) || is_tar_gz(filename)
 }
 
 fn list_members_source(filename: &str, source: &ArchiveSource) -> Result<Vec<Member>, ArchiveError> {
     if is_zip(filename) {
         list_zip(source.open()?)
-    } else if is_tar_gz(filename) {
+    } else if is_tar(filename) {
         list_tar(source.open()?)
+    } else if is_tar_gz(filename) {
+        list_tar(flate2::read::GzDecoder::new(source.open()?))
     } else {
         Err(ArchiveError::Unsupported)
     }
@@ -455,8 +471,10 @@ fn read_member_chunk_source(
     let member = safe_member_name(member)?;
     if is_zip(filename) {
         read_zip_member(source.open()?, &member, offset, limit)
-    } else if is_tar_gz(filename) {
+    } else if is_tar(filename) {
         read_tar_member(source.open()?, &member, offset, limit)
+    } else if is_tar_gz(filename) {
+        read_tar_member(flate2::read::GzDecoder::new(source.open()?), &member, offset, limit)
     } else {
         Err(ArchiveError::Unsupported)
     }
@@ -525,7 +543,7 @@ fn read_zip_member(
 }
 
 fn list_tar(reader: impl Read) -> Result<Vec<Member>, ArchiveError> {
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
+    let mut archive = tar::Archive::new(reader);
     let mut members = Vec::new();
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
@@ -541,7 +559,7 @@ fn list_tar(reader: impl Read) -> Result<Vec<Member>, ArchiveError> {
 
 fn read_tar_member(reader: impl Read, member: &str, offset: u64, limit: u64) -> Result<MemberChunk, ArchiveError> {
     let member = safe_member_name(member)?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
+    let mut archive = tar::Archive::new(reader);
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
         if !entry.header().entry_type().is_file() {
