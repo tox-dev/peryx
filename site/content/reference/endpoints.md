@@ -76,6 +76,11 @@ top-level directory, `pyproject.toml`, and `PKG-INFO`; unsafe tar members and Me
 entries are rejected. Wheel uploads serve `METADATA` as the PEP 658/714 `.metadata` sibling. Sdist uploads serve the
 verified `PKG-INFO` the same way.
 
+Archive inspection is broader than uploads. It can list and preview cached wheels, zips, zipped eggs, `.tar`, `.tar.gz`,
+and `.tgz` archives, including supported archives nested inside them. Other legacy compressed tar formats stay
+download-only until velodex adds decoders for them. Mirrored eggs remain downloadable when upstream lists them with a
+sha256 hash, but they do not get PEP 658 metadata.
+
 ## Status and usage
 
 `GET /+status` returns version, serial, request counters, configured index descriptions, mirror status, and redacted

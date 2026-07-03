@@ -122,7 +122,7 @@ async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8]) {
+fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8]) -> Digest {
     let digest = Digest::of(content);
     state.blobs.write_verified(content, &digest).unwrap();
     let uploaded = Uploaded {
@@ -146,6 +146,7 @@ fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8
         .put_upload("local", "veloxdemo", filename, &to_json(&uploaded).into_bytes())
         .unwrap();
     state.meta.put_project("local", "veloxdemo", "veloxdemo").unwrap();
+    digest
 }
 
 #[tokio::test]
@@ -260,14 +261,43 @@ async fn test_ui_project_page_missing_project() {
 }
 
 #[tokio::test]
-async fn test_ui_project_page_hides_contents_for_unsupported_files() {
+async fn test_ui_project_page_shows_contents_for_zipped_eggs() {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&ui_config(&dir)).unwrap();
-    put_legacy_file(&state, "veloxdemo-1.0.0.egg", b"legacy egg");
+    let mut egg = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut egg));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("EGG-INFO/PKG-INFO", options).unwrap();
+        zip.write_all(b"Metadata-Version: 1.2\nName: veloxdemo\nVersion: 1.0.0\n")
+            .unwrap();
+        zip.finish().unwrap();
+    }
+    let digest = put_legacy_file(&state, "veloxdemo-1.0.0.egg", &egg);
     let router = router_for(state);
     let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("veloxdemo-1.0.0.egg"));
+    assert!(body.contains("class=\"inspect\""));
+
+    let url = format!(
+        "/browse?index=local&project=veloxdemo&sha256={}&file=veloxdemo-1.0.0.egg",
+        digest.as_str()
+    );
+    let (status, body) = get(&router, &url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("EGG-INFO/PKG-INFO"));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_hides_contents_for_unsupported_legacy_tar() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_legacy_file(&state, "veloxdemo-1.0.0.tar.bz2", b"legacy tarball");
+    let router = router_for(state);
+    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo-1.0.0.tar.bz2"));
     assert!(!body.contains("class=\"inspect\""));
 }
 

@@ -766,11 +766,17 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
 
 fn supports_archive_browser(filename: &str) -> bool {
     let path = std::path::Path::new(filename);
-    path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("whl") || ext.eq_ignore_ascii_case("zip"))
+    path.extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("whl")
+            || ext.eq_ignore_ascii_case("zip")
+            || ext.eq_ignore_ascii_case("egg")
+            || ext.eq_ignore_ascii_case("tar")
+    }) || filename
+        .get(filename.len().saturating_sub(7)..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
         || filename
-            .get(filename.len().saturating_sub(7)..)
-            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
+            .get(filename.len().saturating_sub(4)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tgz"))
 }
 
 /// The archive browser: member listing of one distribution, or one member's content.

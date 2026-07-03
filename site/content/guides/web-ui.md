@@ -37,11 +37,12 @@ project links, grouped classifiers, and a file table with sizes, upload dates, s
 
 {{ screen(name="project", alt="A project page: description and files on the left, metadata panel on the right") }}
 
-Inspectable wheels, zips, and `.tar.gz` sdists get a `contents` link. It opens the archive browser: members with their
-sizes, and member text in bounded chunks for large generated files. Unsupported formats still show as downloadable
-files, but do not get a broken archive link. The browser URL stores the file's sha256, display filename, selected
-member, and chunk offset as separate query parameters. That keeps links stable for filenames and member paths containing
-spaces, slashes, `#`, or `?`.
+Inspectable wheels, zips, zipped eggs, `.tar`, `.tar.gz`, and `.tgz` archives get a `contents` link. It opens the
+archive browser: members with their sizes, and member text in bounded chunks for large generated files. Other legacy
+compressed tar formats such as `.tar.bz2`, `.tbz`, `.tar.xz`, `.txz`, `.tlz`, `.tar.lz`, `.tar.lzma`, and `.tar.zst`
+still show as downloadable files, but do not get a broken archive link. The browser URL stores the file's sha256,
+display filename, selected member, and chunk offset as separate query parameters. That keeps links stable for filenames
+and member paths containing spaces, slashes, `#`, or `?`.
 
 ## Managing uploads
 
