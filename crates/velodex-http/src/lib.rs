@@ -9,6 +9,7 @@ pub mod handlers;
 pub mod metrics;
 pub mod path_safety;
 pub mod router;
+pub mod security;
 pub mod state;
 pub mod stream;
 pub mod upload;

@@ -6,6 +6,7 @@ use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::{detail_json, get, harness};
+use super::{LogCapture, field};
 use crate::cache::refresh_stale_pages;
 
 async fn mount_page(server: &MockServer, body: String, template: ResponseTemplate) {
@@ -64,6 +65,115 @@ async fn test_refresh_sweep_detects_changed_page() {
     h.server.reset().await;
     let (_, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     assert!(body.contains(new_digest.as_str()));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_refresh_sweep_logs_mirror_sync_event() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel-v1");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_page(
+        &h.server,
+        detail_json(digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    let new_digest = Digest::of(b"wheel-v2");
+    mount_page(
+        &h.server,
+        detail_json(new_digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(refresh_stale_pages(&h.state).await.unwrap().changed, 1);
+
+    drop(guard);
+    let events = logs.security_events();
+    let sync = events
+        .iter()
+        .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("success"))
+        .unwrap();
+    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "project"), Some("flask"));
+    assert_eq!(sync["fields"]["changed"], true);
+    assert_eq!(sync["fields"]["count"], 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_refresh_sweep_logs_mirror_sync_not_found() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel-v1");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_page(
+        &h.server,
+        detail_json(digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    mount_page(&h.server, "{}".to_owned(), ResponseTemplate::new(404)).await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(refresh_stale_pages(&h.state).await.unwrap().checked, 1);
+
+    drop(guard);
+    let events = logs.security_events();
+    let sync = events
+        .iter()
+        .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("noop"))
+        .unwrap();
+    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "project"), Some("flask"));
+    assert_eq!(field(sync, "reason"), Some("project not found upstream"));
+    assert_eq!(sync["fields"]["changed"], false);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_refresh_sweep_logs_mirror_sync_failure() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel-v1");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_page(
+        &h.server,
+        detail_json(digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    mount_page(&h.server, "invalid".to_owned(), ResponseTemplate::new(200)).await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    let err = refresh_stale_pages(&h.state).await.unwrap_err();
+
+    drop(guard);
+    assert!(
+        err.user_message()
+            .starts_with("simple API document could not be parsed")
+    );
+    let events = logs.security_events();
+    let sync = events
+        .iter()
+        .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("failure"))
+        .unwrap();
+    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "project"), Some("flask"));
+    assert!(field(sync, "reason").is_some_and(|reason| reason.starts_with("simple API document could not be parsed")));
+    assert_eq!(sync["fields"]["changed"], false);
 }
 
 #[tokio::test]

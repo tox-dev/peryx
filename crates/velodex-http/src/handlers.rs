@@ -379,46 +379,122 @@ pub async fn dispatch_post(
     multipart: Multipart,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
+    let actor = crate::security::actor(&headers);
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
     };
     if !rest.is_empty() {
+        security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
+            .reason(Some("upload path must target an index root"))
+            .emit();
         return not_found();
     }
     let Some(local) = upload_target(&state, index) else {
+        security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
+            .reason(Some("index does not accept uploads"))
+            .emit();
         return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
     };
     if let Err(response) = authorize(local, &headers) {
         return response;
     }
+    accept_upload(&state, index, local, &headers, actor.as_deref(), multipart).await
+}
+
+async fn accept_upload(
+    state: &Arc<AppState>,
+    index: &Index,
+    local: &Index,
+    headers: &HeaderMap,
+    actor: Option<&str>,
+    multipart: Multipart,
+) -> Response {
     let (form, staged) = match collect_form(multipart, &state.blobs).await {
         Ok(form) => form,
-        Err(response) => return response,
+        Err(response) => {
+            security_upload_event(headers, actor, &index.route, Some(&local.name), "failure")
+                .reason(Some("multipart body rejected"))
+                .emit();
+            return response;
+        }
     };
     let Some(staged) = staged else {
-        return upload_error_response(&UploadError::Missing("content"));
+        let err = UploadError::Missing("content");
+        let (_, reason) = upload_error_message(&err);
+        security_upload_event(headers, actor, &index.route, Some(&local.name), "denied")
+            .project(form.name.as_deref().map(normalize_name).as_deref())
+            .version(form.version.as_deref())
+            .reason(Some(&reason))
+            .emit();
+        return upload_error_response(&err);
     };
+    let form_project = form.name.as_deref().map(normalize_name);
+    let form_version = form.version.clone();
+    let form_filename = form.filename.clone();
     let prepared = match upload::prepare(form, staged, &index.route, (state.clock)()) {
         Ok(prepared) => prepared,
-        Err(err) => return upload_error_response(&err),
+        Err(err) => {
+            let (_, reason) = upload_error_message(&err);
+            security_upload_event(headers, actor, &index.route, Some(&local.name), "denied")
+                .project(form_project.as_deref())
+                .version(form_version.as_deref())
+                .filename(form_filename.as_deref())
+                .reason(Some(&reason))
+                .emit();
+            return upload_error_response(&err);
+        }
     };
     let project = prepared.normalized.clone();
-    match cache::store_upload(&state, &local.name, prepared) {
+    let version = prepared.record.version.clone();
+    let filename = prepared.filename.clone();
+    let digest = prepared.digest.as_str().to_owned();
+    match cache::store_upload(state, &local.name, prepared) {
         Ok(stored) => {
             if stored {
                 state.metrics.record(Event::Upload {
                     route: index.route.clone(),
-                    project,
+                    project: project.clone(),
                 });
             }
+            security_upload_event(
+                headers,
+                actor,
+                &index.route,
+                Some(&local.name),
+                if stored { "success" } else { "noop" },
+            )
+            .project(Some(&project))
+            .version(Some(&version))
+            .filename(Some(&filename))
+            .digest(Some(&digest))
+            .count(usize::from(stored))
+            .reason((!stored).then_some("same content already stored"))
+            .emit();
             (StatusCode::OK, "upload accepted").into_response()
         }
-        Err(CacheError::FileExists(filename)) => (
-            StatusCode::BAD_REQUEST,
-            format!("File already exists: {filename:?} has different content; use a different filename"),
-        )
-            .into_response(),
+        Err(CacheError::FileExists(filename)) => {
+            security_upload_event(headers, actor, &index.route, Some(&local.name), "denied")
+                .project(Some(&project))
+                .version(Some(&version))
+                .filename(Some(&filename))
+                .digest(Some(&digest))
+                .reason(Some("file exists with different content"))
+                .emit();
+            (
+                StatusCode::BAD_REQUEST,
+                format!("File already exists: {filename:?} has different content; use a different filename"),
+            )
+                .into_response()
+        }
         Err(err) => {
+            let reason = err.user_message();
+            security_upload_event(headers, actor, &index.route, Some(&local.name), "failure")
+                .project(Some(&project))
+                .version(Some(&version))
+                .filename(Some(&filename))
+                .digest(Some(&digest))
+                .reason(Some(&reason))
+                .emit();
             tracing::error!(error = ?err, "upload store failed");
             cache_error_response(&err, CacheContext::upload(&index.route, &project))
         }
@@ -434,6 +510,7 @@ pub async fn dispatch_put(
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
+    let actor = crate::security::actor(&headers);
     let (index, local, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
@@ -443,14 +520,40 @@ pub async fn dispatch_put(
             Ok(parsed) => parsed,
             Err(response) => return response,
         };
-        return count_response(cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), true).await);
+        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), true).await;
+        security_mutation_event(
+            MutationAudit {
+                headers: &headers,
+                action: "yank",
+                actor: actor.as_deref(),
+                repository: &index.route,
+                local_repository: &local.name,
+                project: &project,
+                version: version.as_deref(),
+            },
+            &result,
+        );
+        return count_response(result);
     }
     if let Some(spec) = strip_action_segment(spec, "restore") {
         let (project, version) = match parse_project_version(spec) {
             Ok(parsed) => parsed,
             Err(response) => return response,
         };
-        return count_response(cache::restore_files(&state, &local.name, &project, version.as_deref()));
+        let result = cache::restore_files(&state, &local.name, &project, version.as_deref());
+        security_mutation_event(
+            MutationAudit {
+                headers: &headers,
+                action: "restore",
+                actor: actor.as_deref(),
+                repository: &index.route,
+                local_repository: &local.name,
+                project: &project,
+                version: version.as_deref(),
+            },
+            &result,
+        );
+        return count_response(result);
     }
     not_found()
 }
@@ -464,6 +567,7 @@ pub async fn dispatch_delete(
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
+    let actor = crate::security::actor(&headers);
     let (index, local, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
@@ -473,16 +577,40 @@ pub async fn dispatch_delete(
             Ok(parsed) => parsed,
             Err(response) => return response,
         };
-        return count_response(
-            cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), false).await,
+        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), false).await;
+        security_mutation_event(
+            MutationAudit {
+                headers: &headers,
+                action: "unyank",
+                actor: actor.as_deref(),
+                repository: &index.route,
+                local_repository: &local.name,
+                project: &project,
+                version: version.as_deref(),
+            },
+            &result,
         );
+        return count_response(result);
     }
     let (project, version) = match parse_project_version(spec) {
         Ok(parsed) => parsed,
         Err(response) => return response,
     };
     let volatile = is_volatile(local);
-    count_response(cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await)
+    let result = cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await;
+    security_mutation_event(
+        MutationAudit {
+            headers: &headers,
+            action: "delete",
+            actor: actor.as_deref(),
+            repository: &index.route,
+            local_repository: &local.name,
+            project: &project,
+            version: version.as_deref(),
+        },
+        &result,
+    );
+    count_response(result)
 }
 
 /// Resolve the writable local index for a mutation request and authorize it, returning the serving
@@ -517,13 +645,17 @@ fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
     let IndexKind::Local { upload_token, .. } = &local.kind else {
         return Err(not_found());
     };
+    let actor = crate::security::actor(headers);
     let Some(token) = upload_token.as_deref() else {
+        security_token_event(headers, actor.as_deref(), &local.name, "denied", "uploads are disabled");
         return Err((StatusCode::FORBIDDEN, "uploads are disabled").into_response());
     };
     let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
     if upload::authorized(auth, token) {
+        security_token_event(headers, actor.as_deref(), &local.name, "success", "");
         Ok(())
     } else {
+        security_token_event(headers, actor.as_deref(), &local.name, "denied", "invalid upload token");
         Err((
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"velodex\"")],
@@ -531,6 +663,72 @@ fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
         )
             .into_response())
     }
+}
+
+fn security_upload_event<'a>(
+    headers: &'a HeaderMap,
+    actor: Option<&'a str>,
+    repository: &'a str,
+    local_repository: Option<&'a str>,
+    result: &'static str,
+) -> crate::security::Event<'a> {
+    let event = crate::security::Event::new("upload", result)
+        .actor(actor)
+        .repository(repository)
+        .request(headers);
+    if let Some(local_repository) = local_repository {
+        event.local_repository(local_repository)
+    } else {
+        event
+    }
+}
+
+fn security_token_event(
+    headers: &HeaderMap,
+    actor: Option<&str>,
+    repository: &str,
+    result: &'static str,
+    reason: &str,
+) {
+    let event = crate::security::Event::new("token_use", result)
+        .actor(actor)
+        .repository(repository)
+        .request(headers);
+    if reason.is_empty() {
+        event.emit();
+    } else {
+        event.reason(Some(reason)).emit();
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MutationAudit<'a> {
+    headers: &'a HeaderMap,
+    action: &'static str,
+    actor: Option<&'a str>,
+    repository: &'a str,
+    local_repository: &'a str,
+    project: &'a str,
+    version: Option<&'a str>,
+}
+
+fn security_mutation_event(audit: MutationAudit<'_>, result: &Result<usize, CacheError>) {
+    let (security_result, count, reason) = match result {
+        Ok(0) => ("noop", 0, Some("nothing matched".to_owned())),
+        Ok(count) => ("success", *count, None),
+        Err(CacheError::NotVolatile) => ("denied", 0, Some(CacheError::NotVolatile.user_message())),
+        Err(err) => ("failure", 0, Some(err.user_message())),
+    };
+    crate::security::Event::new(audit.action, security_result)
+        .actor(audit.actor)
+        .repository(audit.repository)
+        .local_repository(audit.local_repository)
+        .project(Some(audit.project))
+        .version(audit.version)
+        .count(count)
+        .reason(reason.as_deref())
+        .request(audit.headers)
+        .emit();
 }
 
 fn strip_action_segment<'a>(spec: &'a str, action: &str) -> Option<&'a str> {
@@ -903,108 +1101,92 @@ fn storage_reject(err: impl std::fmt::Display) -> Response {
 }
 
 fn upload_error_response(err: &UploadError) -> Response {
+    upload_error_message(err).into_response()
+}
+
+fn upload_error_message(err: &UploadError) -> (StatusCode, String) {
     match err {
-        UploadError::NotFileUpload => (StatusCode::BAD_REQUEST, "unsupported :action").into_response(),
-        UploadError::Missing(field) => {
-            (StatusCode::BAD_REQUEST, format!("missing required field: {field}")).into_response()
-        }
+        UploadError::NotFileUpload => (StatusCode::BAD_REQUEST, "unsupported :action".to_owned()),
+        UploadError::Missing(field) => (StatusCode::BAD_REQUEST, format!("missing required field: {field}")),
         UploadError::InvalidName(name) => (
             StatusCode::BAD_REQUEST,
             format!(
                 "invalid project name {name:?}: names must start and end with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'"
             ),
-        )
-            .into_response(),
+        ),
         UploadError::InvalidVersion(version) => (
             StatusCode::BAD_REQUEST,
             format!("invalid version {version:?}: expected a PEP 440 version"),
-        )
-            .into_response(),
+        ),
         UploadError::InvalidFilename(filename) => (
             StatusCode::BAD_REQUEST,
             format!(
                 "invalid filename {filename:?}: filenames must be relative path segments without separators, traversal, or control characters"
             ),
-        )
-            .into_response(),
+        ),
         UploadError::InvalidDistributionFilename { filename, error } => (
             StatusCode::BAD_REQUEST,
             format!(
                 "invalid distribution filename {filename:?}: {}",
                 distribution_filename_error_message(error)
             ),
-        )
-            .into_response(),
+        ),
         UploadError::FiletypeMismatch { expected, actual } => (
             StatusCode::BAD_REQUEST,
             format!("filetype {actual:?} does not match filename; expected {expected:?}"),
-        )
-            .into_response(),
+        ),
         UploadError::FilenameNameMismatch { filename, form } => (
             StatusCode::BAD_REQUEST,
             format!("filename project {filename:?} does not match upload name {form:?}"),
-        )
-            .into_response(),
+        ),
         UploadError::FilenameVersionMismatch { filename, form } => (
             StatusCode::BAD_REQUEST,
             format!("filename version {filename:?} does not match upload version {form:?}"),
-        )
-            .into_response(),
-        UploadError::DigestMismatch(field) => {
-            (StatusCode::BAD_REQUEST, format!("{field} mismatch")).into_response()
-        }
+        ),
+        UploadError::DigestMismatch(field) => (StatusCode::BAD_REQUEST, format!("{field} mismatch")),
         UploadError::Md5Only => (
             StatusCode::BAD_REQUEST,
-            "md5_digest is not accepted without a sha256_digest or blake2_256_digest",
-        )
-            .into_response(),
+            "md5_digest is not accepted without a sha256_digest or blake2_256_digest".to_owned(),
+        ),
         UploadError::InvalidDigest { field, value } => (
             StatusCode::BAD_REQUEST,
             format!("{field} value {value:?} is not lowercase hex with the expected length"),
-        )
-            .into_response(),
+        ),
         UploadError::InvalidRequiresPython(value) => (
             StatusCode::BAD_REQUEST,
             format!("invalid Requires-Python value {value:?}: expected PEP 440 version specifiers"),
-        )
-            .into_response(),
+        ),
         UploadError::InvalidContent(message) => (
             StatusCode::BAD_REQUEST,
             format!("uploaded content does not match the filename format: {message}"),
-        )
-            .into_response(),
-        UploadError::InvalidMetadataUtf8 => {
-            (StatusCode::BAD_REQUEST, "artifact metadata is not valid UTF-8").into_response()
-        }
+        ),
+        UploadError::InvalidMetadataUtf8 => (
+            StatusCode::BAD_REQUEST,
+            "artifact metadata is not valid UTF-8".to_owned(),
+        ),
         UploadError::MetadataNameMismatch { metadata, form } => (
             StatusCode::BAD_REQUEST,
             format!("metadata Name {metadata:?} does not match upload name {form:?}"),
-        )
-            .into_response(),
+        ),
         UploadError::MetadataVersionMismatch { metadata, form } => (
             StatusCode::BAD_REQUEST,
             format!("metadata Version {metadata:?} does not match upload version {form:?}"),
-        )
-            .into_response(),
-        UploadError::MetadataFieldMismatch {
-            field,
-            metadata,
-            form,
-        } => metadata_field_mismatch_response(field, metadata, form),
+        ),
+        UploadError::MetadataFieldMismatch { field, metadata, form } => {
+            upload_metadata_field_mismatch_message(field, metadata, form)
+        }
         UploadError::InvalidUploadTime => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "configured clock produced an invalid upload timestamp",
-        )
-            .into_response(),
+            "configured clock produced an invalid upload timestamp".to_owned(),
+        ),
     }
 }
 
-fn metadata_field_mismatch_response(field: &str, metadata: &str, form: &str) -> Response {
+fn upload_metadata_field_mismatch_message(field: &str, metadata: &str, form: &str) -> (StatusCode, String) {
     (
         StatusCode::BAD_REQUEST,
         format!("metadata {field} {metadata:?} does not match upload value {form:?}"),
     )
-        .into_response()
 }
 
 fn distribution_filename_error_message(err: &DistributionFilenameError) -> String {

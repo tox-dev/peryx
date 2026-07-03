@@ -393,13 +393,40 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
         };
         summary.checked += 1;
         let before = state.meta.get_index(&key)?.map(|record| record.body);
-        if let Some(record) = fetch_and_store(state, &key, &index.name, &project, client).await?
-            && before.as_ref() != Some(&record.body)
-        {
-            summary.changed += 1;
+        let result = fetch_and_store(state, &key, &index.name, &project, client).await;
+        match &result {
+            Ok(Some(record)) => {
+                let changed = before.as_ref() != Some(&record.body);
+                if changed {
+                    summary.changed += 1;
+                }
+                log_mirror_sync(&index.route, &project, "success", changed, None);
+            }
+            Ok(None) => log_mirror_sync(
+                &index.route,
+                &project,
+                "noop",
+                false,
+                Some("project not found upstream"),
+            ),
+            Err(err) => {
+                let reason = err.user_message();
+                log_mirror_sync(&index.route, &project, "failure", false, Some(&reason));
+            }
         }
+        result?;
     }
     Ok(summary)
+}
+
+fn log_mirror_sync(repository: &str, project: &str, result: &'static str, changed: bool, reason: Option<&str>) {
+    crate::security::Event::new("mirror_sync", result)
+        .repository(repository)
+        .project(Some(project))
+        .changed(changed)
+        .count(1)
+        .reason(reason)
+        .emit();
 }
 
 /// Map a cache key (`{mirror name}/{project}`) back to its mirror and client; the longest matching

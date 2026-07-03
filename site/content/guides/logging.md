@@ -36,6 +36,37 @@ file = "/var/log/velodex/velodex.log"
 
 velodex validates the combination at startup and refuses, for example, a `file` sink without a path.
 
+## Security Events
+
+Repository actions emit structured records on the `velodex::security` target. Use JSON output when downstream tooling
+needs to filter by actor, action, target, or result.
+
+```shell
+velodex serve --log-format json --log-sink file --log-file /var/log/velodex/events.log
+```
+
+Each record sets `security_event=true` and `event=repository_action`. Velodex also writes `action`, `result`, `actor`,
+`repository`, `local_repository`, `project`, `version`, `filename`, `digest`, `count`, `changed`, `reason`,
+`request_id`, and `user_agent`. Missing values use empty strings or zero values. Velodex leaves credentials, bearer
+tokens, Basic auth passwords, and URL secrets out of these records.
+
+The current action names are `token_use`, `upload`, `yank`, `unyank`, `delete`, `restore`, and `mirror_sync`. Results
+are `success`, `denied`, `failure`, or `noop`.
+
+Plain-file queries:
+
+```shell
+grep '"security_event":true' /var/log/velodex/events.log
+grep '"action":"delete"' /var/log/velodex/events.log | grep '"result":"denied"'
+```
+
+JSON queries:
+
+```shell
+jq 'select(.fields.security_event == true and .fields.action == "upload")' /var/log/velodex/events.log
+jq 'select(.fields.security_event == true and .fields.actor == "__token__")' /var/log/velodex/events.log
+```
+
 ## Related
 
 - Every logging flag and TOML key: [configuration](@/reference/configuration.md)
