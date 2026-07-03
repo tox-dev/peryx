@@ -51,6 +51,14 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
     }
 }
 
+fn empty_ui_config(dir: &tempfile::TempDir) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: Vec::new(),
+        ..Config::default()
+    }
+}
+
 async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
     let response = router
         .clone()
@@ -152,6 +160,54 @@ async fn test_ui_dashboard_renders_indexes_and_counters() {
     assert!(body.contains("uploads land here"));
     assert!(body.contains("resolves top to bottom"));
     assert!(body.contains("/pkg/velodex_web.js"));
+}
+
+#[tokio::test]
+async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    let (status, body) = get(&router, "/admin/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Admin status"));
+    assert!(body.contains("read-only"));
+    assert!(body.contains("root/pypi"));
+    assert!(body.contains("/root/pypi/simple/"));
+    assert!(body.contains("/browse?index=local"));
+    assert!(body.contains("Usage and health"));
+    assert!(body.contains("Recent uploads"));
+    assert!(body.contains("No uploads recorded yet."));
+    assert!(body.contains("token configured"));
+    assert!(body.contains("redacted"));
+    assert!(body.contains("http://127.0.0.1:9/simple/"));
+    assert!(body.contains("upload-enabled"));
+    assert!(!body.contains("s3cret"));
+    assert!(!body.contains("type=\"password\""));
+    assert!(!body.contains("delete whole project"));
+}
+
+#[tokio::test]
+async fn test_ui_admin_status_empty_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&empty_ui_config(&dir)).unwrap();
+    let (status, body) = get(&router, "/admin/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("No indexes configured."));
+    assert!(body.contains("No usage recorded yet."));
+    assert!(body.contains("No uploads recorded yet."));
+}
+
+#[tokio::test]
+async fn test_ui_admin_status_lists_counts_and_recent_uploads() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    upload_fixture(&router).await;
+    let (status, body) = get(&router, "/admin/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("uploads"));
+    assert!(body.contains("veloxdemo"));
+    assert!(body.contains("veloxdemo-1.0.0-py3-none-any.whl"));
+    assert!(body.contains("1.2 kB"));
+    assert!(!body.contains("A demonstration package"));
 }
 
 #[tokio::test]

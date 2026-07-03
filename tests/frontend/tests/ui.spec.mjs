@@ -24,6 +24,22 @@ test("dashboard shows identity, counters, and the topology", async ({ page }) =>
   await expect(overlay.locator(".layer-hint")).toContainText("first file match wins");
 });
 
+test("admin status is read-only and tolerates failed stats fetches", async ({ page }) => {
+  await page.route("**/+stats**", (route) => route.fulfill({ status: 503, body: "{}" }));
+  await goto(page, "/");
+  await page.locator(".nav-links a", { hasText: "Status" }).click();
+
+  await expect(page).toHaveURL(/\/admin\/status$/);
+  await expect(page.locator(".ops-title")).toContainText("read-only");
+  await expect(page.locator(".ops-table").first()).toContainText("root/pypi");
+  await expect(page.locator(".ops-table").first()).toContainText("redacted");
+  await expect(page.locator(".ops-table", { hasText: "veloxdemo-1.0.0" })).toBeVisible();
+  await expect(page.locator(".ops-table").first()).not.toContainText(TOKEN);
+  await expect(page.locator(".dim", { hasText: "No usage recorded yet." })).toBeVisible();
+  await expect(page.locator(".token")).toHaveCount(0);
+  await expect(page.locator(".admin-table")).toHaveCount(0);
+});
+
 test("theme toggle switches and survives a reload", async ({ page }) => {
   await goto(page, "/");
   await page.locator(".theme-toggle").click();

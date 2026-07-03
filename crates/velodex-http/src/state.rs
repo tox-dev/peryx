@@ -205,6 +205,23 @@ pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescrip
             ("overlay", names, uploads, volatile_deletes, upload_to)
         }
     };
+    let (upstream, local) = match &index.kind {
+        IndexKind::Mirror(client) => (
+            Some(UpstreamDescription {
+                url: client.redacted_base_url(),
+                auth: client.auth_status().as_str(),
+            }),
+            None,
+        ),
+        IndexKind::Local { upload_token, volatile } => (
+            None,
+            Some(LocalDescription {
+                volatile: *volatile,
+                upload_token: SecretDescription::new(upload_token.is_some()),
+            }),
+        ),
+        IndexKind::Overlay { .. } => (None, None),
+    };
     IndexDescription {
         name: index.name.clone(),
         route: index.route.clone(),
@@ -213,6 +230,8 @@ pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescrip
         uploads,
         volatile_deletes,
         upload_to,
+        upstream,
+        local,
     }
 }
 
@@ -227,6 +246,39 @@ pub struct IndexDescription {
     pub volatile_deletes: bool,
     /// For an overlay: the layer uploads land in, whether or not a token currently enables them.
     pub upload_to: Option<String>,
+    pub upstream: Option<UpstreamDescription>,
+    pub local: Option<LocalDescription>,
+}
+
+/// Mirror status data that excludes credential material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamDescription {
+    pub url: String,
+    pub auth: &'static str,
+}
+
+/// Local-store status data that excludes upload-token values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDescription {
+    pub volatile: bool,
+    pub upload_token: SecretDescription,
+}
+
+/// Redacted secret metadata for status surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretDescription {
+    pub configured: bool,
+    pub redacted: Option<&'static str>,
+}
+
+impl SecretDescription {
+    #[must_use]
+    pub fn new(configured: bool) -> Self {
+        Self {
+            configured,
+            redacted: configured.then_some("<redacted>"),
+        }
+    }
 }
 
 /// The part of `path` after `route`, requiring a segment boundary so `team/dev` does not match

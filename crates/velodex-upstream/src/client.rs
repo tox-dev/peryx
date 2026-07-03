@@ -78,6 +78,25 @@ pub enum Auth {
     Bearer(String),
 }
 
+/// Redacted authentication shape for status surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthStatus {
+    None,
+    Basic,
+    Bearer,
+}
+
+impl AuthStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Basic => "basic",
+            Self::Bearer => "bearer",
+        }
+    }
+}
+
 /// A client for one upstream index, rooted at its `/simple/` base URL.
 #[derive(Debug, Clone)]
 pub struct UpstreamClient {
@@ -210,6 +229,27 @@ impl UpstreamClient {
     pub async fn fetch_bytes(&self, url: &str) -> Result<Bytes, UpstreamError> {
         let response = self.authenticate(self.http.get(url)).send().await?;
         Ok(response.bytes().await?)
+    }
+
+    /// The upstream base URL with user info, query, and fragment removed for status pages.
+    #[must_use]
+    pub fn redacted_base_url(&self) -> String {
+        let mut url = self.base.clone();
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        url.to_string()
+    }
+
+    /// The authentication scheme without credential material.
+    #[must_use]
+    pub const fn auth_status(&self) -> AuthStatus {
+        match &self.auth {
+            Auth::None => AuthStatus::None,
+            Auth::Basic { .. } => AuthStatus::Basic,
+            Auth::Bearer(_) => AuthStatus::Bearer,
+        }
     }
 }
 

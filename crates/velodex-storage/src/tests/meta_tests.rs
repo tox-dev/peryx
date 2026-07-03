@@ -128,6 +128,61 @@ fn test_put_and_list_upload_entries() {
 }
 
 #[test]
+fn test_summarize_indexes_counts_projects_and_recent_uploads() {
+    let (_dir, store) = store();
+    store.put_project("local", "flask", "Flask").unwrap();
+    store.put_project("root/local", "django", "Django").unwrap();
+    store
+        .put_upload(
+            "local",
+            "flask",
+            "flask-1.0.whl",
+            br#"{"version":"1.0","file":{"filename":"flask-1.0.whl","upload-time":"2026-01-01T00:00:00Z","size":10}}"#,
+        )
+        .unwrap();
+    store
+        .put_upload(
+            "root/local",
+            "django",
+            "django-4.0.whl",
+            br#"{"version":"4.0","file":{"filename":"django-4.0.whl","upload-time":"2026-02-01T00:00:00Z","size":20}}"#,
+        )
+        .unwrap();
+    store
+        .put_upload(
+            "root/local",
+            "django",
+            "django-4.1.whl",
+            br#"{"version":"4.1","file":{"filename":"django-4.1.whl","upload-time":"2026-02-01T00:00:00Z","size":21}}"#,
+        )
+        .unwrap();
+    store
+        .put_upload(
+            "root/local",
+            "django",
+            "django-3.2.whl",
+            br#"{"version":"3.2","file":{"filename":"django-3.2.whl","upload-time":"2025-12-01T00:00:00Z","size":15}}"#,
+        )
+        .unwrap();
+    store
+        .put_upload("foreign", "flask", "ignored.whl", br#"{"version":"1.0"}"#)
+        .unwrap();
+
+    let indexes = vec!["local".to_owned(), "root/local".to_owned()];
+    let summary = store.summarize_indexes(&indexes, 1).unwrap();
+
+    assert_eq!(summary["local"].project_count, 1);
+    assert_eq!(summary["local"].upload_count, 1);
+    assert_eq!(summary["root/local"].project_count, 1);
+    assert_eq!(summary["root/local"].upload_count, 3);
+    assert_eq!(summary["root/local"].recent_uploads[0].filename, "django-4.0.whl");
+
+    let summary = store.summarize_indexes(&indexes, 0).unwrap();
+    assert_eq!(summary["root/local"].upload_count, 3);
+    assert!(summary["root/local"].recent_uploads.is_empty());
+}
+
+#[test]
 fn test_put_upload_overwrites_same_filename() {
     let (_dir, store) = store();
     store

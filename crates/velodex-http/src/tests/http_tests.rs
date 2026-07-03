@@ -13,7 +13,7 @@ use tower::ServiceExt as _;
 use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
-use velodex_upstream::UpstreamClient;
+use velodex_upstream::{Auth, UpstreamClient};
 use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1434,6 +1434,63 @@ async fn test_status_lists_routes() {
     );
     assert!(body.contains("root/pypi"));
     assert!(body.contains(env!("CARGO_PKG_VERSION")));
+    assert!(body.contains(&h.server.uri()));
+    assert!(!body.contains("\"project_count\""));
+    assert!(!body.contains("\"upload_count\""));
+    assert!(!body.contains("\"recent_uploads\""));
+    assert!(!body.contains("s3cret"));
+}
+
+#[tokio::test]
+async fn test_status_admin_details_include_bounded_summaries() {
+    let h = harness().await;
+    assert_eq!(
+        upload_velodexpkg(&h.state, "/root/pypi/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+    let (status, _, body) = get(&h.state, "/+status?details=admin", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"project_count\""));
+    assert!(body.contains("\"upload_count\""));
+    assert!(body.contains("\"recent_uploads\""));
+    assert!(body.contains("velodexpkg-1.0-py3-none-any.whl"));
+}
+
+#[tokio::test]
+async fn test_status_redacts_upstream_and_upload_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let indexes = vec![
+        Index {
+            name: "private".to_owned(),
+            route: "private".to_owned(),
+            kind: IndexKind::Mirror(
+                UpstreamClient::with_auth(
+                    "https://user:pass@example.invalid/simple/?token=url-secret#frag",
+                    Auth::Bearer("bearer-secret".to_owned()),
+                )
+                .unwrap(),
+            ),
+        },
+        Index {
+            name: "local".to_owned(),
+            route: "local".to_owned(),
+            kind: IndexKind::Local {
+                upload_token: Some("upload-secret".to_owned()),
+                volatile: false,
+            },
+        },
+    ];
+    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let (status, _, body) = get(&state, "/+status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("https://example.invalid/simple/"));
+    assert!(body.contains("\"kind\":\"bearer\""));
+    assert!(body.contains("<redacted>"));
+    for secret in ["user", "pass", "url-secret", "bearer-secret", "upload-secret"] {
+        assert!(!body.contains(secret));
+    }
 }
 
 #[tokio::test]

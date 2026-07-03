@@ -10,13 +10,28 @@ fn test_snapshot_from_status_roundtrip() {
         "serial": 7,
         "requests": 12,
         "metadata_requests": 3,
-        "indexes": [{"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [], "uploads": false}],
+        "indexes": [{
+            "name": "pypi",
+            "route": "pypi",
+            "kind": "mirror",
+            "layers": [],
+            "uploads": false,
+            "upstream": {"url": "https://pypi.org/simple/", "auth": {"kind": "none"}, "status": "configured"},
+            "project_count": 2,
+            "upload_count": 0,
+            "recent_uploads": [],
+        }],
     });
     let snapshot = UiSnapshot::from_status(&value);
     assert_eq!(snapshot.version, "0.0.1");
     assert_eq!(snapshot.serial, 7);
     assert_eq!(snapshot.indexes.len(), 1);
     assert_eq!(snapshot.indexes[0].kind, "mirror");
+    assert_eq!(snapshot.indexes[0].project_count, 2);
+    assert_eq!(
+        snapshot.indexes[0].upstream.as_ref().unwrap().url,
+        "https://pypi.org/simple/"
+    );
 }
 
 #[test]

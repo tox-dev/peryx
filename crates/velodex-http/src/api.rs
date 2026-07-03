@@ -713,8 +713,18 @@ fn status() -> OperationBuilder {
         .tag("operations")
         .summary(Some("Health and identity"))
         .description(Some(
-            "Version, counters, and the configured indexes; the web UI's live dashboard refreshes from this.",
+            "Version, counters, and the configured indexes. Add `?details=admin` for bounded metadata \
+             summaries used by the read-only admin status page.",
         ))
+        .parameter(
+            ParameterBuilder::new()
+                .name("details")
+                .parameter_in(ParameterIn::Query)
+                .description(Some(
+                    "Use `admin` to include observed project counts, uploaded file counts, and recent uploads.",
+                ))
+                .example(Some(json!("admin"))),
+        )
         .response(
             "200",
             ResponseBuilder::new().description("The status document").content(
@@ -727,12 +737,20 @@ fn status() -> OperationBuilder {
                         "metadata_requests": 37,
                         "indexes": [
                             {"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [],
-                             "uploads": false, "volatile_deletes": false, "upload_to": null},
+                             "uploads": false, "volatile_deletes": false, "upload_to": null,
+                             "upstream": {"url": "https://pypi.org/simple/", "auth": {"kind": "none", "redacted": null}, "status": "configured"},
+                             "local": null, "project_count": 128, "upload_count": 0, "recent_uploads": []},
                             {"name": "local", "route": "local", "kind": "local", "layers": [],
-                             "uploads": true, "volatile_deletes": true, "upload_to": null},
+                             "uploads": true, "volatile_deletes": true, "upload_to": null, "upstream": null,
+                             "local": {"volatile": true, "upload_token": {"configured": true, "redacted": "<redacted>"}},
+                             "project_count": 2, "upload_count": 4,
+                             "recent_uploads": [{"project": "velodexpkg", "filename": "velodexpkg-1.0-py3-none-any.whl",
+                                                "version": "1.0", "uploaded_at": "2026-01-01T00:00:00Z", "size": 1832}]},
                             {"name": "root/pypi", "route": "root/pypi", "kind": "overlay",
                              "layers": ["local", "pypi"], "uploads": true, "volatile_deletes": true,
-                             "upload_to": "local"}
+                             "upload_to": "local",
+                             "upstream": null, "local": null, "project_count": 0, "upload_count": 0,
+                             "recent_uploads": []}
                         ]
                     })))
                     .build(),

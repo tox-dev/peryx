@@ -30,7 +30,7 @@ pub mod ssr;
 pub mod style;
 pub mod url;
 
-use pages::{Browse, Dashboard, Stats};
+use pages::{AdminStatus, Browse, Dashboard, Stats};
 
 /// The HTML document shell used by server rendering: head, hydration scripts, and the app.
 #[must_use]
@@ -68,6 +68,7 @@ pub fn App() -> impl IntoView {
             <main>
                 <Routes fallback=|| view! { <p class="dim">"not found"</p> }>
                     <Route path=path!("/") view=Dashboard />
+                    <Route path=path!("/admin/status") view=AdminStatus />
                     <Route path=path!("/browse") view=Browse />
                     <Route path=path!("/stats") view=Stats />
                 </Routes>
@@ -87,6 +88,7 @@ fn Header() -> impl IntoView {
                 </a>
                 <div class="nav-links">
                     <a href="/">"Dashboard"</a>
+                    <a href="/admin/status">"Status"</a>
                     <a href="https://velodex.readthedocs.io/" rel="external">"Docs"</a>
                     <a href="https://github.com/tox-dev/velodex" rel="external">"GitHub"</a>
                     <ThemeToggle />

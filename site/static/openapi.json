@@ -102,7 +102,16 @@
           "operations"
         ],
         "summary": "Health and identity",
-        "description": "Version, counters, and the configured indexes; the web UI's live dashboard refreshes from this.",
+        "description": "Version, counters, and the configured indexes. Add `?details=admin` for bounded metadata summaries used by the read-only admin status page.",
+        "parameters": [
+          {
+            "name": "details",
+            "in": "query",
+            "description": "Use `admin` to include observed project counts, uploaded file counts, and recent uploads.",
+            "required": false,
+            "example": "admin"
+          }
+        ],
         "responses": {
           "200": {
             "description": "The status document",
@@ -113,19 +122,50 @@
                     {
                       "kind": "mirror",
                       "layers": [],
+                      "local": null,
                       "name": "pypi",
+                      "project_count": 128,
+                      "recent_uploads": [],
                       "route": "pypi",
+                      "upload_count": 0,
                       "upload_to": null,
                       "uploads": false,
+                      "upstream": {
+                        "auth": {
+                          "kind": "none",
+                          "redacted": null
+                        },
+                        "status": "configured",
+                        "url": "https://pypi.org/simple/"
+                      },
                       "volatile_deletes": false
                     },
                     {
                       "kind": "local",
                       "layers": [],
+                      "local": {
+                        "upload_token": {
+                          "configured": true,
+                          "redacted": "<redacted>"
+                        },
+                        "volatile": true
+                      },
                       "name": "local",
+                      "project_count": 2,
+                      "recent_uploads": [
+                        {
+                          "filename": "velodexpkg-1.0-py3-none-any.whl",
+                          "project": "velodexpkg",
+                          "size": 1832,
+                          "uploaded_at": "2026-01-01T00:00:00Z",
+                          "version": "1.0"
+                        }
+                      ],
                       "route": "local",
+                      "upload_count": 4,
                       "upload_to": null,
                       "uploads": true,
+                      "upstream": null,
                       "volatile_deletes": true
                     },
                     {
@@ -134,10 +174,15 @@
                         "local",
                         "pypi"
                       ],
+                      "local": null,
                       "name": "root/pypi",
+                      "project_count": 0,
+                      "recent_uploads": [],
                       "route": "root/pypi",
+                      "upload_count": 0,
                       "upload_to": "local",
                       "uploads": true,
+                      "upstream": null,
                       "volatile_deletes": true
                     }
                   ],

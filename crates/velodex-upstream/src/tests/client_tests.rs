@@ -125,6 +125,21 @@ async fn test_fetch_with_basic_auth() {
     assert_eq!(client.fetch_project("flask", None).await.unwrap().status, 200);
 }
 
+#[test]
+fn test_auth_status_redacts_basic_credentials_and_url_secrets() {
+    let client = UpstreamClient::with_auth(
+        "https://user:pass@example.invalid/simple/?token=secret#frag",
+        Auth::Basic {
+            username: "__token__".to_owned(),
+            password: "secret".to_owned(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(client.auth_status().as_str(), "basic");
+    assert_eq!(client.redacted_base_url(), "https://example.invalid/simple/");
+}
+
 #[tokio::test]
 async fn test_fetch_with_bearer_auth() {
     let server = MockServer::start().await;

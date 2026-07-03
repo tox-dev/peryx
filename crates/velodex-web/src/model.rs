@@ -28,6 +28,38 @@ pub struct UiIndex {
     pub uploads: bool,
     /// For an overlay: the layer uploads land in.
     pub upload_to: Option<String>,
+    pub upstream: Option<UiUpstream>,
+    pub local: Option<UiLocal>,
+    pub project_count: u64,
+    pub upload_count: u64,
+    pub recent_uploads: Vec<UiRecentUpload>,
+}
+
+/// Mirror status data with credential material redacted by the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiUpstream {
+    pub url: String,
+    pub auth_kind: String,
+    pub auth_redacted: Option<String>,
+    pub status: String,
+}
+
+/// Local status data with upload-token values redacted by the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiLocal {
+    pub volatile: bool,
+    pub token_configured: bool,
+    pub token_redacted: Option<String>,
+}
+
+/// One recent upload summary from `/+status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiRecentUpload {
+    pub project: String,
+    pub filename: String,
+    pub version: String,
+    pub uploaded_at: Option<String>,
+    pub size: Option<u64>,
 }
 
 impl UiSnapshot {
@@ -50,6 +82,22 @@ impl UiSnapshot {
                     .collect(),
                 uploads: index["uploads"].as_bool().unwrap_or(false),
                 upload_to: index["upload_to"].as_str().map(str::to_owned),
+                upstream: upstream_from_status(index),
+                local: local_from_status(index),
+                project_count: u64_at(index, "project_count"),
+                upload_count: u64_at(index, "upload_count"),
+                recent_uploads: index["recent_uploads"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|upload| UiRecentUpload {
+                        project: string_at(upload, "project"),
+                        filename: string_at(upload, "filename"),
+                        version: string_at(upload, "version"),
+                        uploaded_at: upload["uploaded_at"].as_str().map(str::to_owned),
+                        size: upload["size"].as_u64(),
+                    })
+                    .collect(),
             })
             .collect();
         Self {
@@ -60,6 +108,25 @@ impl UiSnapshot {
             indexes,
         }
     }
+}
+
+fn upstream_from_status(index: &serde_json::Value) -> Option<UiUpstream> {
+    let upstream = index["upstream"].as_object()?;
+    Some(UiUpstream {
+        url: upstream["url"].as_str().unwrap_or_default().to_owned(),
+        auth_kind: upstream["auth"]["kind"].as_str().unwrap_or("none").to_owned(),
+        auth_redacted: upstream["auth"]["redacted"].as_str().map(str::to_owned),
+        status: upstream["status"].as_str().unwrap_or("configured").to_owned(),
+    })
+}
+
+fn local_from_status(index: &serde_json::Value) -> Option<UiLocal> {
+    let local = index["local"].as_object()?;
+    Some(UiLocal {
+        volatile: local["volatile"].as_bool().unwrap_or(false),
+        token_configured: local["upload_token"]["configured"].as_bool().unwrap_or(false),
+        token_redacted: local["upload_token"]["redacted"].as_str().map(str::to_owned),
+    })
 }
 
 /// A project page: the files of one project on one index.

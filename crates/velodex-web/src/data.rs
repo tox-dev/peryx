@@ -32,6 +32,27 @@ pub async fn load_snapshot() -> UiSnapshot {
     }
 }
 
+/// The admin status snapshot, including bounded metadata summaries.
+pub async fn load_admin_snapshot() -> UiSnapshot {
+    #[cfg(feature = "ssr")]
+    {
+        crate::ssr::admin_snapshot()
+    }
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+    {
+        send_wrapper::SendWrapper::new(async {
+            fetch_json("/+status?details=admin")
+                .await
+                .map_or_else(UiSnapshot::default, |value| UiSnapshot::from_status(&value))
+        })
+        .await
+    }
+    #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
+    {
+        UiSnapshot::default()
+    }
+}
+
 /// The project names of the index at `route`.
 pub async fn load_projects(route: String) -> Vec<String> {
     #[cfg(feature = "ssr")]

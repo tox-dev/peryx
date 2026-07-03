@@ -27,8 +27,9 @@ breaks each endpoint down with copyable example requests and responses.
 | `GET /+stats` | Usage counters, drillable to project and file level |
 | `GET /metrics` | [Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/) text exposition |
 
-The web UI lives outside the index namespace: `GET /` (dashboard), `GET /browse` (package browser), `GET /stats` (usage
-drill-down), and `GET /pkg/*` (the wasm bundle that hydrates the pages).
+The web UI lives outside the index namespace: `GET /` (dashboard), `GET /admin/status` (read-only operational status),
+`GET /browse` (package browser), `GET /stats` (usage drill-down), and `GET /pkg/*` (the wasm bundle that hydrates the
+pages).
 
 ## Content negotiation
 
@@ -72,7 +73,15 @@ archive contents, and core metadata before the artifact becomes visible. Wheel v
 `.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD` files, WHEEL tag/build consistency, RECORD hashes, and matching
 RECORD sizes when present. Wheel uploads get a PEP 658 `.metadata` sibling; sdist metadata remains part of the archive.
 
-## Usage statistics
+## Status and usage
+
+`GET /+status` returns version, serial, request counters, configured index descriptions, mirror status, and redacted
+token metadata. It includes sanitized upstream URLs with user info, query strings, and fragments removed. It does not
+include upload-token values, upstream usernames, passwords, bearer tokens, URL query secrets, or URL fragments.
+
+Add `?details=admin` for the read-only admin status page. That shape also includes observed project counts, uploaded
+file counts, and capped recent uploads. The summary scans metadata keys once and does not fetch upstreams or read cached
+artifact bytes.
 
 `GET /+stats` returns JSON counters aggregated off the request path, at three depths:
 

@@ -11,7 +11,7 @@ use velodex_core::pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_jso
 use velodex_http::{AppState, cache};
 use velodex_storage::blob::Digest;
 
-use crate::model::{UiIndex, UiMember, UiMemberChunk, UiProject, UiSnapshot};
+use crate::model::{UiIndex, UiLocal, UiMember, UiMemberChunk, UiProject, UiRecentUpload, UiSnapshot, UiUpstream};
 use crate::{App, shell};
 
 /// The router state: leptos options plus the velodex application state.
@@ -73,17 +73,62 @@ fn leptos_options() -> LeptosOptions {
 /// The dashboard snapshot, read from `AppState`.
 #[must_use]
 pub fn snapshot() -> UiSnapshot {
+    snapshot_with_summaries(None)
+}
+
+/// The richer admin status snapshot.
+#[must_use]
+pub fn admin_snapshot() -> UiSnapshot {
+    snapshot_with_summaries(Some(5))
+}
+
+fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
     let app = expect_context::<Arc<AppState>>();
+    let summaries = recent_limit.map(|limit| {
+        let index_names = app.indexes.iter().map(|index| index.name.clone()).collect::<Vec<_>>();
+        app.meta.summarize_indexes(&index_names, limit).unwrap_or_default()
+    });
     let indexes = app
         .describe_indexes()
         .into_iter()
-        .map(|index| UiIndex {
-            name: index.name,
-            route: index.route,
-            kind: index.kind.to_owned(),
-            layers: index.layers,
-            uploads: index.uploads,
-            upload_to: index.upload_to,
+        .map(|index| {
+            let summary = summaries
+                .as_ref()
+                .and_then(|summaries| summaries.get(&index.name))
+                .cloned()
+                .unwrap_or_default();
+            UiIndex {
+                name: index.name,
+                route: index.route,
+                kind: index.kind.to_owned(),
+                layers: index.layers,
+                uploads: index.uploads,
+                upload_to: index.upload_to,
+                upstream: index.upstream.map(|upstream| UiUpstream {
+                    url: upstream.url,
+                    auth_kind: upstream.auth.to_owned(),
+                    auth_redacted: (upstream.auth != "none").then(|| "<redacted>".to_owned()),
+                    status: "configured".to_owned(),
+                }),
+                local: index.local.map(|local| UiLocal {
+                    volatile: local.volatile,
+                    token_configured: local.upload_token.configured,
+                    token_redacted: local.upload_token.redacted.map(str::to_owned),
+                }),
+                project_count: summary.project_count,
+                upload_count: summary.upload_count,
+                recent_uploads: summary
+                    .recent_uploads
+                    .into_iter()
+                    .map(|upload| UiRecentUpload {
+                        project: upload.project,
+                        filename: upload.filename,
+                        version: upload.version,
+                        uploaded_at: upload.uploaded_at,
+                        size: upload.size,
+                    })
+                    .collect(),
+            }
         })
         .collect();
     UiSnapshot {

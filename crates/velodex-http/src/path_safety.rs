@@ -21,7 +21,9 @@ pub enum PathSafetyError {
     InvalidEncoding(String),
 }
 
-const RESERVED_ROUTE_PREFIXES: &[&str] = &["+stats", "+status", "api-docs", "browse", "metrics", "pkg", "stats"];
+const RESERVED_ROUTE_PREFIXES: &[&str] = &[
+    "+stats", "+status", "admin", "api-docs", "browse", "metrics", "pkg", "stats",
+];
 
 #[must_use]
 pub fn local_file_url(route: &str, sha256: &str, filename: &str) -> String {
@@ -247,6 +249,10 @@ mod tests {
         assert_eq!(
             validate_route("browse/private"),
             Err(PathSafetyError::ReservedRoute("browse/private".to_owned()))
+        );
+        assert_eq!(
+            validate_route("admin/status"),
+            Err(PathSafetyError::ReservedRoute("admin/status".to_owned()))
         );
     }
 

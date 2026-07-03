@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Multipart, OriginalUri, Path, State};
+use axum::extract::{Multipart, OriginalUri, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use blake2::Blake2bVar;
@@ -35,6 +35,7 @@ const MEMBER_SIZE_HEADER: &str = "x-velodex-member-size";
 const MEMBER_OFFSET_HEADER: &str = "x-velodex-member-offset";
 const MEMBER_NEXT_OFFSET_HEADER: &str = "x-velodex-next-offset";
 const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
+const STATUS_RECENT_UPLOADS: usize = 5;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Format {
@@ -872,22 +873,81 @@ fn index_api(state: &AppState, position: usize, base: Option<&BaseUrl>) -> Respo
     .into_response()
 }
 
+/// The `/+status` detail selector.
+#[derive(Debug, serde::Deserialize)]
+pub struct StatusQuery {
+    details: Option<String>,
+}
+
 /// `GET /+status` — health, identity, counters, and the configured indexes. The web UI's live
 /// dashboard refreshes from this document.
-pub async fn status(State(state): State<Arc<AppState>>) -> Response {
+pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<StatusQuery>) -> Response {
     let serial = state.meta.current_serial().unwrap_or(0);
+    let summaries = (query.details.as_deref() == Some("admin")).then(|| {
+        let index_names = state.indexes.iter().map(|index| index.name.clone()).collect::<Vec<_>>();
+        state
+            .meta
+            .summarize_indexes(&index_names, STATUS_RECENT_UPLOADS)
+            .unwrap_or_default()
+    });
     let indexes: Vec<serde_json::Value> = state
         .describe_indexes()
         .into_iter()
         .map(|index| {
-            serde_json::json!({
-                "name": index.name,
-                "route": index.route,
-                "kind": index.kind,
-                "layers": index.layers,
-                "uploads": index.uploads,
-                "upload_to": index.upload_to,
-            })
+            let mut object = serde_json::Map::from_iter([
+                ("name".to_owned(), serde_json::json!(index.name)),
+                ("route".to_owned(), serde_json::json!(index.route)),
+                ("kind".to_owned(), serde_json::json!(index.kind)),
+                ("layers".to_owned(), serde_json::json!(index.layers)),
+                ("uploads".to_owned(), serde_json::json!(index.uploads)),
+                ("volatile_deletes".to_owned(), serde_json::json!(index.volatile_deletes)),
+                ("upload_to".to_owned(), serde_json::json!(index.upload_to)),
+                (
+                    "upstream".to_owned(),
+                    serde_json::json!(index.upstream.map(|upstream| serde_json::json!({
+                        "url": upstream.url,
+                        "auth": {
+                            "kind": upstream.auth,
+                            "redacted": (upstream.auth != "none").then_some("<redacted>"),
+                        },
+                        "status": "configured",
+                    }))),
+                ),
+                (
+                    "local".to_owned(),
+                    serde_json::json!(index.local.map(|local| serde_json::json!({
+                        "volatile": local.volatile,
+                        "upload_token": {
+                            "configured": local.upload_token.configured,
+                            "redacted": local.upload_token.redacted,
+                        },
+                    }))),
+                ),
+            ]);
+            if let Some(summaries) = &summaries {
+                let summary = summaries.get(&index.name).cloned().unwrap_or_default();
+                object.insert("project_count".to_owned(), serde_json::json!(summary.project_count));
+                object.insert("upload_count".to_owned(), serde_json::json!(summary.upload_count));
+                object.insert(
+                    "recent_uploads".to_owned(),
+                    serde_json::json!(
+                        summary
+                            .recent_uploads
+                            .into_iter()
+                            .map(|upload| {
+                                serde_json::json!({
+                                    "project": upload.project,
+                                    "filename": upload.filename,
+                                    "version": upload.version,
+                                    "uploaded_at": upload.uploaded_at,
+                                    "size": upload.size,
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    ),
+                );
+            }
+            serde_json::Value::Object(object)
         })
         .collect();
     axum::Json(serde_json::json!({

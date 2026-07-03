@@ -1,6 +1,6 @@
 +++
 title = "Use the web UI"
-description = "Browse indexes, read package pages, inspect archive contents, and manage uploads from the browser."
+description = "Browse indexes, read package pages, inspect status, and inspect archive contents from the browser."
 weight = 7
 +++
 
@@ -17,6 +17,17 @@ downloads, and bytes. The counters refresh every few seconds.
 
 Each card's `usage` link opens the drill-down described in [monitoring](@/guides/monitor.md): index totals, a
 per-project table, and per-file download counts.
+
+## Admin status
+
+`/admin/status` reads `GET /+status?details=admin` and top-level `GET /+stats`. It shows configured repositories,
+routes, overlay member order, upload targets by name, observed project counts, uploaded file counts, recent uploads,
+mirror URLs, redacted authentication state, and cache-health counters. It also links to the JSON status, JSON stats,
+Prometheus metrics, Simple API, browse, and usage pages.
+
+The admin status document scans metadata keys once to count observed projects and uploaded files, then keeps only a
+capped recent-upload list per index. It does not fetch upstreams, read package detail pages, read artifacts, or expose
+upload tokens, upstream passwords, bearer tokens, URL user info, URL queries, or URL fragments.
 
 ## Browsing packages
 
@@ -47,4 +58,5 @@ server-side; filtering, live counters, and the admin buttons need it.
 ## Related
 
 - The endpoints the UI reads: [HTTP endpoints](@/reference/endpoints.md)
+- Operational counters and status data: [monitoring](@/guides/monitor.md)
 - How the UI is built and tested: [architecture](@/explanation/architecture.md)

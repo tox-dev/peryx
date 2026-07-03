@@ -4,8 +4,8 @@ description = "Read the usage counters, drill down to files, watch for upstream 
 weight = 8
 +++
 
-velodex counts everything it serves, off the request path. Three surfaces show the same numbers: the dashboard, the
-`/+stats` JSON endpoint, and Prometheus `/metrics`.
+velodex counts everything it serves, off the request path. Four surfaces show the same numbers: the dashboard, the
+admin status page, the `/+stats` JSON endpoint, and Prometheus `/metrics`.
 
 ## Drill down from the dashboard
 
@@ -28,19 +28,25 @@ curl -s 'http://127.0.0.1:4433/+stats?index=root/pypi&project=numpy' | jq .files
 Counters live in memory and reset on restart; for durable time series, scrape `/metrics`, which exposes the same set per
 index (`velodex_index_downloads_total{index="root/pypi"}` and friends) alongside the global request counters.
 
+## Check operational status
+
+`/admin/status` combines `GET /+status?details=admin` with top-level `GET /+stats`. It shows the configured index
+topology next to the same cache-health counters listed below, plus observed project counts, upload counts, recent
+uploads, mirror URLs, and redacted token/authentication state. The page does not fetch upstreams or read artifacts while
+it renders.
+
 ## What the cache-health counters mean
 
-| Counter           | Signal                                                                      |
+| Counter | Signal |
 | ----------------- | --------------------------------------------------------------------------- |
-| `refreshes`       | Revalidations against upstream, on demand or from the background sweep       |
-| `changed`         | Revalidations that found new upstream content; also logged at `info`         |
-| `stale_served`    | Pages served from cache because upstream was down; rising means an outage    |
-| `upstream_errors` | Upstream failures with nothing cached to fall back to; clients saw an error  |
-| `rejected`        | Downloads whose bytes did not match the advertised digest; never cached      |
+| `refreshes` | Revalidations against upstream, on demand or from the background sweep |
+| `changed` | Revalidations that found new upstream content; also logged at `info` |
+| `stale_served` | Pages served from cache because upstream was down; rising means an outage |
+| `upstream_errors` | Upstream failures with nothing cached to fall back to; clients saw an error |
+| `rejected` | Downloads whose bytes did not match the advertised digest; never cached |
 
 A steady `refreshes` with zero `changed` is the normal idle state. `rejected` above zero deserves attention: either the
 upstream served corrupt bytes or something rewrote them in transit.
-
 
 ## Related
 

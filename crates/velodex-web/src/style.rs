@@ -55,6 +55,21 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .page h1 { letter-spacing: -0.02em; margin-top: 0; }
 .page h2 { margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
 .dim { color: var(--text-soft); }
+.ops-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.ops-title h1 { margin: 0 0.4rem 0 0; }
+.ops-title a code { color: inherit; }
+.table-scroll { overflow-x: auto; }
+.ops-table { margin-top: 0.8rem; }
+.table-scroll .ops-table { min-width: 72rem; }
+.ops-table th { white-space: nowrap; }
+.ops-table td { vertical-align: top; }
+.ops-stack { list-style: none; margin: 0; padding: 0; }
+.ops-stack li { display: flex; align-items: center; gap: 0.4rem; min-height: 1.6rem; }
+.ops-stack li + li { margin-top: 0.2rem; }
+.ops-detail { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0; color: var(--text-soft); }
+.badge.upload-enabled { color: #34c496; border-color: #34c496; }
+.badge.upload-disabled { color: var(--text-soft); border-color: var(--border); }
+.badge.status-configured { color: #34c496; border-color: #34c496; }
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; }
 .stat {
   border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.2rem; background: var(--bg-soft);
