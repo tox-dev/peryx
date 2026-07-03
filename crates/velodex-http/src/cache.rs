@@ -21,7 +21,7 @@ use crate::path_safety::local_file_url;
 use crate::rate_limit::UpstreamPermit;
 use crate::state::{AppState, Index, IndexKind};
 use crate::stream::{PageSummary, PageTransformer, Registration};
-use crate::upload::{PreparedUpload, Uploaded};
+use crate::upload::{self, PreparedUpload, Uploaded};
 
 const NEGATIVE_TTL_SECS: i64 = 30;
 
@@ -62,6 +62,17 @@ impl From<velodex_core::pypi::SimpleError> for CacheError {
             | velodex_core::pypi::SimpleError::InvalidApiVersion(_)
             | velodex_core::pypi::SimpleError::InvalidProjectStatus(_)
             | velodex_core::pypi::SimpleError::Html(_)) => Self::Simple(err),
+        }
+    }
+}
+
+impl From<upload::UploadStoreError> for CacheError {
+    fn from(err: upload::UploadStoreError) -> Self {
+        match err {
+            upload::UploadStoreError::Meta(err) => Self::Meta(err),
+            upload::UploadStoreError::Blob(err) => Self::Blob(err),
+            upload::UploadStoreError::Parse(err) => Self::Parse(err),
+            upload::UploadStoreError::FileExists(filename) => Self::FileExists(filename),
         }
     }
 }
@@ -1135,42 +1146,11 @@ fn metadata_negative_key(artifact_digest: &Digest) -> String {
 /// # Errors
 /// Returns [`CacheError`] if a blob write, store write, or encode fails.
 pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
-    let PreparedUpload {
-        normalized,
-        display_name,
-        filename,
-        digest: content_digest,
-        content,
-        metadata,
-        record,
-    } = prepared;
-    if let Some(existing) = state.meta.get_upload(name, &normalized, &filename)? {
-        let uploaded: Uploaded = serde_json::from_slice(&existing)?;
-        if uploaded
-            .file
-            .hashes
-            .get("sha256")
-            .is_some_and(|hash| hash == content_digest.as_str())
-        {
-            state.blobs.commit_staged(content)?;
-            return Ok(false);
-        }
-        return Err(CacheError::FileExists(filename));
+    let stored = upload::store_prepared(&state.meta, &state.blobs, name, prepared)?;
+    if stored {
+        state.bump_epoch();
     }
-    state.blobs.commit_staged(content)?;
-    let mut record = record;
-    let metadata_digest = state.blobs.write(&metadata)?;
-    state
-        .meta
-        .put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
-    let hashes = std::collections::BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
-    record.file.set_metadata(CoreMetadata::Hashes(hashes));
-    let record = to_json(&record).into_bytes();
-    state.meta.put_upload(name, &normalized, &filename, &record)?;
-    state.meta.put_project(name, &normalized, &display_name)?;
-    state.meta.next_serial()?;
-    state.bump_epoch();
-    Ok(true)
+    Ok(stored)
 }
 
 /// The two reversible override kinds for files served from read-only layers.
@@ -2313,6 +2293,17 @@ mod tests {
             CacheError::Archive(crate::archive::ArchiveError::Unsupported).user_message(),
             "unsupported archive type; accepted formats are .whl, .zip, .egg, .tar, .tar.gz, and .tgz"
         );
+    }
+
+    #[test]
+    fn test_cache_error_maps_upload_store_errors() {
+        let err = upload::UploadStoreError::Meta(velodex_storage::meta::MetaError::Decode(
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+        ));
+        assert!(matches!(CacheError::from(err), CacheError::Meta(_)));
+
+        let err = upload::UploadStoreError::Blob(velodex_storage::blob::BlobError::NotFound("sha256:abc".to_owned()));
+        assert!(matches!(CacheError::from(err), CacheError::Blob(_)));
     }
 
     #[test]

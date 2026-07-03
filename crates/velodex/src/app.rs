@@ -489,7 +489,7 @@ fn preserved_refs(stores: &CacheStores, target_key: &str) -> anyhow::Result<Cach
     Ok(refs)
 }
 
-fn referenced_blob_digests(meta: &MetaStore) -> anyhow::Result<BTreeSet<String>> {
+pub(crate) fn referenced_blob_digests(meta: &MetaStore) -> anyhow::Result<BTreeSet<String>> {
     let mut digests = BTreeSet::new();
     meta.scan_file_urls(|digest, value| {
         if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {

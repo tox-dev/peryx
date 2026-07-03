@@ -39,16 +39,23 @@ uv pip install --dry-run -r requirements.txt   # resolve pulls pages and metadat
 uv pip install -r requirements.txt             # download pulls the wheels
 ```
 
-Everything the installs touched (pages, PEP 658 metadata, wheels) now sits under `./velodex-data`. Copy that directory
-to the isolated network (it is plain files; `tar` and `rsync` both work) and serve it there:
+The installs leave pages, PEP 658 metadata, and wheels under `./velodex-data`. Create a backup, verify it, carry the
+backup directory across the gap, and restore it on the isolated side:
 
 ```shell
+# connected side
+velodex backup create --data-dir ./velodex-data ./velodex-backup
+velodex backup verify ./velodex-backup
+
+# isolated side
+velodex restore ./velodex-backup --data-dir ./velodex-data
 velodex serve --data-dir ./velodex-data
 ```
 
-Artifacts serve straight from the store. Cached pages past their freshness window serve stale when the upstream is
-unreachable, which on an air-gapped network is the permanent state, so the index keeps answering with what was carried
-over. Repeat the warm-and-carry cycle whenever the requirement set changes.
+The backup includes the metadata store, a config snapshot, and only the blob files referenced by metadata records.
+Artifacts serve straight from the restored store. Cached pages past their freshness window serve stale when the upstream
+is unreachable, which on an air-gapped network is the permanent state, so the index keeps answering with what was
+carried over. Repeat the warm-and-carry cycle whenever the requirement set changes.
 
 Resolve against a lock file (`uv.lock`, `requirements.txt` with hashes) on the connected side, so the isolated side asks
 only for things the carry-over contains.

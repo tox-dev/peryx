@@ -46,6 +46,13 @@ pub enum Command {
     /// Inspect and maintain the on-disk cache.
     #[command(subcommand)]
     Cache(CacheCommand),
+    /// Create and verify offline backups.
+    #[command(subcommand)]
+    Backup(BackupCommand),
+    /// Restore an offline backup into a data directory.
+    Restore(RestoreArgs),
+    /// Import local wheels and sdists into a hosted repository.
+    ImportDir(ImportDirArgs),
     /// Print the `OpenAPI` description of the HTTP API as JSON.
     Openapi,
     /// Manage this velodex installation.
@@ -87,11 +94,75 @@ impl CacheCommand {
     }
 }
 
+/// Offline backup commands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum BackupCommand {
+    /// Create a full backup directory.
+    Create(BackupCreateArgs),
+    /// Verify a backup directory.
+    Verify(BackupVerifyArgs),
+}
+
+impl BackupCommand {
+    #[must_use]
+    pub const fn runtime_args(&self) -> Option<&RuntimeArgs> {
+        match self {
+            Self::Create(args) => Some(&args.runtime),
+            Self::Verify(_) => None,
+        }
+    }
+}
+
 /// Runtime configuration flags for cache commands.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct CacheRuntimeArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
+}
+
+/// Options for backup creation.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct BackupCreateArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Backup directory to create.
+    pub path: PathBuf,
+}
+
+/// Options for backup verification.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct BackupVerifyArgs {
+    /// Backup directory to verify.
+    pub path: PathBuf,
+}
+
+/// Options for restore.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct RestoreArgs {
+    /// Backup directory to restore from.
+    pub path: PathBuf,
+
+    /// Data directory to write.
+    #[arg(long)]
+    pub data_dir: PathBuf,
+
+    /// Replace a non-empty target data directory.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Options for directory import.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ImportDirArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Hosted repository name or route.
+    pub repo: String,
+
+    /// Directory containing wheel or sdist files.
+    pub dir: PathBuf,
 }
 
 /// Filters for `velodex cache list`.

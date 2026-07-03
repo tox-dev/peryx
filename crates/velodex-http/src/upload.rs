@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use velodex_core::pypi::{
     CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
     is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
-    parse_version_specifiers,
+    parse_version_specifiers, to_json,
 };
-use velodex_storage::blob::{Digest, StagedBlob};
+use velodex_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
+use velodex_storage::meta::{MetaError, MetaStore};
 
 use crate::path_safety::{local_file_url, validate_filename};
 
@@ -135,6 +136,19 @@ pub struct PreparedUpload {
     pub record: Uploaded,
 }
 
+/// An error while committing a validated upload to storage.
+#[derive(Debug, thiserror::Error)]
+pub enum UploadStoreError {
+    #[error(transparent)]
+    Meta(#[from] MetaError),
+    #[error(transparent)]
+    Blob(#[from] BlobError),
+    #[error(transparent)]
+    Parse(#[from] serde_json::Error),
+    #[error("file already exists with different content: {0}")]
+    FileExists(String),
+}
+
 /// Validate a parsed upload form and turn it into a stored-file record addressed by the content's
 /// sha256, with its download URL pointing at velodex's own file route on `index`.
 ///
@@ -227,6 +241,51 @@ pub fn prepare(
         metadata,
         record: Uploaded { version, file },
     })
+}
+
+/// Persist a validated upload into a local store. Returns `false` when the same file and digest are
+/// already present.
+///
+/// # Errors
+/// Returns [`UploadStoreError`] if a blob write, metadata write, or existing-record decode fails.
+pub fn store_prepared(
+    meta: &MetaStore,
+    blobs: &BlobStore,
+    name: &str,
+    prepared: PreparedUpload,
+) -> Result<bool, UploadStoreError> {
+    let PreparedUpload {
+        normalized,
+        display_name,
+        filename,
+        digest: content_digest,
+        content,
+        metadata,
+        record,
+    } = prepared;
+    if let Some(existing) = meta.get_upload(name, &normalized, &filename)? {
+        let uploaded: Uploaded = serde_json::from_slice(&existing)?;
+        if uploaded
+            .file
+            .hashes
+            .get("sha256")
+            .is_some_and(|hash| hash == content_digest.as_str())
+        {
+            blobs.commit_staged(content)?;
+            return Ok(false);
+        }
+        return Err(UploadStoreError::FileExists(filename));
+    }
+    blobs.commit_staged(content)?;
+    let mut record = record;
+    let metadata_digest = blobs.write(&metadata)?;
+    meta.put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
+    let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
+    record.file.set_metadata(CoreMetadata::Hashes(hashes));
+    meta.put_upload(name, &normalized, &filename, &to_json(&record).into_bytes())?;
+    meta.put_project(name, &normalized, &display_name)?;
+    meta.next_serial()?;
+    Ok(true)
 }
 
 fn parse_filename(filename: &str) -> Result<DistributionFilename, UploadError> {

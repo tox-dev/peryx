@@ -7,6 +7,7 @@ pub mod app;
 pub mod cli;
 pub mod config;
 pub mod logging;
+pub mod operator;
 pub mod server;
 
 #[cfg(test)]

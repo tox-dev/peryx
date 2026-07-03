@@ -16,6 +16,9 @@ velodex <COMMAND>
 | `init`           | Create the data directory and its stores, then exit                                   |
 | `config-snippet` | Print `pip.conf`, `uv.toml`, or `.pypirc` for one configured index                    |
 | `cache`          | Inspect, validate, and clean the on-disk cache                                        |
+| `backup`         | Create and verify offline backups                                                     |
+| `restore`        | Restore an offline backup into a data directory                                       |
+| `import-dir`     | Import local wheels and sdists into a hosted repository                               |
 | `openapi`        | Print the OpenAPI description of the HTTP API as JSON                                 |
 | `self update`    | Replace the binary with the newest release (installer-managed builds only; see below) |
 
@@ -92,6 +95,58 @@ blob hashes. It prints `ok` when it finds no problem; otherwise it prints one ro
 `cache purge orphaned-blobs` after a project purge to reclaim unreferenced blobs.
 
 Purge commands dry-run by default. Add `--yes` to delete the planned rows or blob files.
+
+## `backup`
+
+`backup create` reads the same config and `--data-dir` flags as `serve`.
+
+```shell
+velodex backup create --data-dir /var/lib/velodex /backups/velodex-2026-07-03
+velodex backup verify /backups/velodex-2026-07-03
+```
+
+`backup create` writes a directory containing `manifest.json`, `config.toml`, `metadata/velodex.redb`, `blobs.tsv`, and
+the referenced files under `blobs/sha256/...`. It copies only blob digests referenced by metadata records and streams
+file copies with hash checks. It refuses an existing non-empty backup directory.
+
+`config.toml` is an effective config snapshot. Treat the backup directory as sensitive when the config contains upload
+tokens or upstream credentials.
+
+`backup verify` rehashes the config snapshot, blob index, and each blob. It also opens the copied metadata store and
+checks that every referenced digest appears in `blobs.tsv`. It prints `ok` on success; on failure it prints `problem`
+rows and exits non-zero.
+
+## `restore`
+
+```shell
+velodex restore /backups/velodex-2026-07-03 --data-dir /var/lib/velodex
+velodex restore /backups/velodex-2026-07-03 --data-dir /var/lib/velodex --force
+```
+
+`restore` verifies the backup before writing. It refuses a non-empty target data directory unless `--force` is passed.
+With `--force`, it replaces the target directory, then writes `velodex.redb`, `config.toml`, and the referenced blobs.
+It warns when the config snapshot in the backup names a different `data_dir` than the restore target.
+
+## `import-dir`
+
+```shell
+velodex import-dir root/pypi ./dist --data-dir /var/lib/velodex
+velodex import-dir local ./dist --config velodex.toml
+```
+
+The repository argument may be a local index name, a local route, or an overlay route with a local upload target.
+`import-dir` walks the directory tree, validates `.whl` and `.tar.gz` files through the same archive and metadata checks
+used for uploads, and stores accepted artifacts in the hosted repository. Unsupported files are skipped; invalid
+distribution files are rejected.
+
+Output is tab-separated:
+
+```text
+status  filename  project  version  reason
+```
+
+The `status` field is `imported`, `skipped`, or `rejected`. Each row includes the file name and reason, followed by a
+summary row with imported, skipped, and rejected counts.
 
 ## `self update`
 

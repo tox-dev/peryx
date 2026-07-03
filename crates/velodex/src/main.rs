@@ -13,7 +13,7 @@ use tracing_subscriber::{Layer, Registry};
 
 use velodex::cli::{Cli, ConfigSnippetArgs};
 use velodex::config::{self, Config, LogConfig, LogFormat, LogSink};
-use velodex::{app, logging};
+use velodex::{app, logging, operator};
 
 // Requests alternate small JSON pages with wheel-sized streams; mimalloc keeps the
 // allocation-heavy transform path off the system allocator's locks.
@@ -172,6 +172,20 @@ fn main() -> anyhow::Result<()> {
         velodex::cli::Command::Cache(command) => {
             let config = resolve_config(command.runtime_args())?;
             app::cache(&config, &command, &mut std::io::stdout())
+        }
+        velodex::cli::Command::Backup(command) => match command {
+            velodex::cli::BackupCommand::Create(args) => {
+                let config = resolve_config(&args.runtime)?;
+                operator::backup_create(&config, &args.path, &mut std::io::stdout())
+            }
+            velodex::cli::BackupCommand::Verify(args) => operator::backup_verify(&args.path, &mut std::io::stdout()),
+        },
+        velodex::cli::Command::Restore(args) => {
+            operator::restore(&args.path, &args.data_dir, args.force, &mut std::io::stdout())
+        }
+        velodex::cli::Command::ImportDir(args) => {
+            let config = resolve_config(&args.runtime)?;
+            operator::import_dir(&config, &args.repo, &args.dir, &mut std::io::stdout())
         }
         velodex::cli::Command::Openapi => {
             print!("{}", velodex_http::api::openapi_json());

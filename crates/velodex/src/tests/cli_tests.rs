@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser as _;
 use velodex_http::discovery::SnippetKind;
 
-use crate::cli::{CacheCommand, CachePurgeCommand, Cli, Command, RuntimeArgs, SnippetFormat};
+use crate::cli::{BackupCommand, CacheCommand, CachePurgeCommand, Cli, Command, RuntimeArgs, SnippetFormat};
 use crate::config::{LogFormat, LogSink};
 
 fn parse(args: &[&str]) -> Cli {
@@ -15,6 +15,9 @@ fn runtime(cli: Cli) -> RuntimeArgs {
         Command::Serve(args) | Command::Init(args) => args,
         Command::ConfigSnippet(_) => panic!("no runtime args on config-snippet"),
         Command::Cache(_) => panic!("cache commands carry nested runtime args"),
+        Command::Backup(_) => panic!("backup commands carry nested runtime args"),
+        Command::Restore(_) => panic!("restore takes explicit data-dir args"),
+        Command::ImportDir(_) => panic!("import-dir carries nested runtime args"),
         other @ Command::Openapi => panic!("no runtime args on {other:?}"),
     }
 }
@@ -222,6 +225,69 @@ fn test_cache_commands_expose_runtime_args() {
         panic!("expected orphaned blob purge");
     };
     assert_eq!(blobs.runtime_args().data_dir, Some(PathBuf::from("/blobs")));
+}
+
+#[test]
+fn test_parse_backup_commands() {
+    let create = parse(&["velodex", "backup", "create", "--data-dir", "/d", "/backups/velodex"]);
+    let Command::Backup(BackupCommand::Create(args)) = create.command else {
+        panic!("expected backup create");
+    };
+    assert_eq!(args.runtime.data_dir, Some(PathBuf::from("/d")));
+    assert_eq!(args.path, PathBuf::from("/backups/velodex"));
+
+    let verify = parse(&["velodex", "backup", "verify", "/backups/velodex"]);
+    let Command::Backup(BackupCommand::Verify(args)) = verify.command else {
+        panic!("expected backup verify");
+    };
+    assert_eq!(args.path, PathBuf::from("/backups/velodex"));
+}
+
+#[test]
+fn test_backup_runtime_args_only_apply_to_create() {
+    let create = parse(&["velodex", "backup", "create", "--data-dir", "/d", "/backup"]);
+    let Command::Backup(create) = create.command else {
+        panic!("expected backup create");
+    };
+    assert_eq!(
+        create.runtime_args().and_then(|args| args.data_dir.clone()),
+        Some(PathBuf::from("/d"))
+    );
+
+    let verify = parse(&["velodex", "backup", "verify", "/backup"]);
+    let Command::Backup(verify) = verify.command else {
+        panic!("expected backup verify");
+    };
+    assert!(verify.runtime_args().is_none());
+}
+
+#[test]
+fn test_parse_restore() {
+    let cli = parse(&[
+        "velodex",
+        "restore",
+        "/backups/velodex",
+        "--data-dir",
+        "/var/lib/velodex",
+        "--force",
+    ]);
+    let Command::Restore(args) = cli.command else {
+        panic!("expected restore");
+    };
+    assert_eq!(args.path, PathBuf::from("/backups/velodex"));
+    assert_eq!(args.data_dir, PathBuf::from("/var/lib/velodex"));
+    assert!(args.force);
+}
+
+#[test]
+fn test_parse_import_dir() {
+    let cli = parse(&["velodex", "import-dir", "--data-dir", "/d", "root/pypi", "/packages"]);
+    let Command::ImportDir(args) = cli.command else {
+        panic!("expected import-dir");
+    };
+    assert_eq!(args.runtime.data_dir, Some(PathBuf::from("/d")));
+    assert_eq!(args.repo, "root/pypi");
+    assert_eq!(args.dir, PathBuf::from("/packages"));
 }
 
 #[test]
