@@ -144,12 +144,21 @@ isolation, which fits an index server's read-heavy traffic without an external d
 encoding (a small JSON header line, then the raw body bytes), so a multi-megabyte page is not re-encoded as JSON numbers
 and header-only scans (the freshness sweep) skip the body.
 
+The cache CLI uses the same store boundaries. Listing and size reporting walk redb tables row by row and summarize
+framed page records without copying page bodies. Project purge deletes one page row, the project-display row, and only
+the file URL or PEP 658 rows whose digests no other cached page or upload references. Velodex checks shared digest
+references before deletion, so a purge for one project does not break another project that shares a file digest.
+
 ## The artifact store
 
 Artifacts live in a content-addressed store keyed by sha256, fanned out two hex levels deep (`sha256/ab/cd/<digest>`).
 Writes go to a temp file, fsync, then an atomic rename, so a crash cannot leave a partial blob visible; the path is the
 digest, so anything present is by construction correct. One wheel uploaded to two indexes, or cached from two mirrors,
 occupies disk once.
+
+Cache validation streams each blob through sha256 and compares the result to the digest in the path. Orphaned-blob purge
+first builds a set of digest references from metadata rows, then walks the blob tree one file at a time. It reads blob
+contents only when `cache fsck` asks for hash validation.
 
 Uploads use the same staged path as downloads: the multipart `content` field streams into a temp blob while sha256 and
 blake2b-256 are computed. Validation reads the archive back from that staged file, so a large wheel is not buffered in

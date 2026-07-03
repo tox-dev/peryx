@@ -5,6 +5,8 @@
 //! serial counter and cache records get snapshot-isolated reads without a global lock.
 
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::path::Path;
 
 use redb::{Database, ReadableDatabase as _, ReadableTable as _, TableDefinition};
@@ -33,6 +35,33 @@ pub struct CachedIndex {
     #[serde(default)]
     pub fresh_secs: Option<i64>,
     pub body: Vec<u8>,
+}
+
+/// A cached simple-index record summary that does not copy the page body for framed records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedIndexSummary {
+    pub fetched_at_unix: i64,
+    pub fresh_secs: Option<i64>,
+    pub body_bytes: u64,
+    pub record_bytes: u64,
+    pub last_serial: Option<u64>,
+    pub content_type: Option<String>,
+}
+
+/// A cached simple-index record keyed by its metadata table key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedIndexPage {
+    pub key: String,
+    pub summary: CachedIndexSummary,
+}
+
+/// Counts of metadata rows a project-cache purge plans or deletes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectCachePurgeCounts {
+    pub index_pages: usize,
+    pub project_records: usize,
+    pub file_url_records: usize,
+    pub metadata_records: usize,
 }
 
 /// Marks the framed record encoding: a JSON header line, then the raw body bytes.
@@ -100,12 +129,35 @@ impl CachedIndex {
     /// # Errors
     /// Returns the serde error when `bytes` is not a valid encoding.
     fn decode_freshness(bytes: &[u8]) -> Result<(i64, Option<i64>), serde_json::Error> {
-        if let Some((header, _)) = Self::split_framed(bytes) {
+        let summary = Self::summary(bytes)?;
+        Ok((summary.fetched_at_unix, summary.fresh_secs))
+    }
+
+    /// Decode cache-inspection metadata, skipping the body copy for framed records.
+    ///
+    /// # Errors
+    /// Returns the serde error when `bytes` is not a valid encoding.
+    pub fn summary(bytes: &[u8]) -> Result<CachedIndexSummary, serde_json::Error> {
+        if let Some((header, body)) = Self::split_framed(bytes) {
             let header: RecordHeader = serde_json::from_slice(header)?;
-            return Ok((header.fetched_at_unix, header.fresh_secs));
+            return Ok(CachedIndexSummary {
+                fetched_at_unix: header.fetched_at_unix,
+                fresh_secs: header.fresh_secs,
+                body_bytes: body.len() as u64,
+                record_bytes: bytes.len() as u64,
+                last_serial: header.last_serial,
+                content_type: header.content_type,
+            });
         }
         let record: Self = serde_json::from_slice(bytes)?;
-        Ok((record.fetched_at_unix, record.fresh_secs))
+        Ok(CachedIndexSummary {
+            fetched_at_unix: record.fetched_at_unix,
+            fresh_secs: record.fresh_secs,
+            body_bytes: record.body.len() as u64,
+            record_bytes: bytes.len() as u64,
+            last_serial: record.last_serial,
+            content_type: record.content_type,
+        })
     }
 
     /// Split a framed record into its header line and body, or `None` for legacy records.
@@ -131,6 +183,37 @@ pub enum MetaError {
     Commit(#[from] redb::CommitError),
     #[error(transparent)]
     Decode(#[from] serde_json::Error),
+}
+
+/// A metadata scan error: either the store failed or the visitor rejected one row.
+#[derive(Debug)]
+pub enum MetaScanError<E> {
+    Store(MetaError),
+    Visit(E),
+}
+
+impl<E> From<MetaError> for MetaScanError<E> {
+    fn from(err: MetaError) -> Self {
+        Self::Store(err)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for MetaScanError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Store(err) => err.fmt(formatter),
+            Self::Visit(err) => err.fmt(formatter),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for MetaScanError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Store(err) => Some(err),
+            Self::Visit(err) => Some(err),
+        }
+    }
 }
 
 /// The metadata store.
@@ -177,6 +260,16 @@ impl MetaStore {
         }
         txn.commit()?;
         Ok(Self { db })
+    }
+
+    /// Open an existing database without creating files or tables.
+    ///
+    /// # Errors
+    /// Returns a store error if the database cannot be opened.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, MetaError> {
+        Ok(Self {
+            db: Database::open(path)?,
+        })
     }
 
     /// The current serial (0 before any write).
@@ -301,16 +394,139 @@ impl MetaStore {
     /// # Errors
     /// Returns a store error if the read fails or a stored record cannot be decoded.
     pub fn list_index_pages(&self) -> Result<Vec<(String, i64, Option<i64>)>, MetaError> {
+        let mut pages = Vec::new();
         let txn = self.db.begin_read()?;
         let table = txn.open_table(INDEX)?;
-        table
-            .iter()?
-            .map(|entry| {
-                let (key, value) = entry?;
-                let (fetched_at, fresh_secs) = CachedIndex::decode_freshness(value.value())?;
-                Ok((key.value().to_owned(), fetched_at, fresh_secs))
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let (fetched_at, fresh_secs) = CachedIndex::decode_freshness(value.value())?;
+            pages.push((key.value().to_owned(), fetched_at, fresh_secs));
+        }
+        Ok(pages)
+    }
+
+    /// Visit cached simple-index page summaries without collecting the table.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails, a record cannot be decoded, or the visitor
+    /// returns an error.
+    pub fn scan_index_pages<E>(
+        &self,
+        mut visit: impl FnMut(CachedIndexPage) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(INDEX).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(CachedIndexPage {
+                key: key.value().to_owned(),
+                summary: CachedIndex::summary(value.value()).map_err(MetaError::from)?,
             })
-            .collect()
+            .map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Visit raw cached simple-index records.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    pub fn scan_index_records<E>(
+        &self,
+        mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(INDEX).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Visit raw file URL records, keyed by artifact digest.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    pub fn scan_file_urls<E>(
+        &self,
+        mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(FILE).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Visit raw PEP 658 metadata records, keyed by wheel digest.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    pub fn scan_metadata_records<E>(
+        &self,
+        mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(METADATA).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Visit raw project-display records.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    pub fn scan_project_records<E>(
+        &self,
+        mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(PROJECTS).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Visit raw upload records.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    pub fn scan_upload_records<E>(
+        &self,
+        mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(UPLOAD).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Visit raw override records.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    pub fn scan_override_records<E>(
+        &self,
+        mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), MetaScanError<E>> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(OVERRIDE).map_err(MetaError::from)?;
+        for entry in table.iter().map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
+        }
+        Ok(())
     }
 
     /// Record the upstream URL a blob digest can be fetched from, and the name of the mirror it came
@@ -392,6 +608,88 @@ impl MetaStore {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    /// Count the rows a project-cache purge would remove.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn count_project_cache_purge(
+        &self,
+        index: &str,
+        normalized: &str,
+        file_digests: &[String],
+        metadata_digests: &[String],
+    ) -> Result<ProjectCachePurgeCounts, MetaError> {
+        let key = format!("{index}/{normalized}");
+        let txn = self.db.begin_read()?;
+        let index_pages = usize::from(txn.open_table(INDEX)?.get(key.as_str())?.is_some());
+        let project_records = usize::from(txn.open_table(PROJECTS)?.get(key.as_str())?.is_some());
+        let file_table = txn.open_table(FILE)?;
+        let mut file_url_records = 0;
+        for digest in file_digests {
+            file_url_records += usize::from(file_table.get(digest.as_str())?.is_some());
+        }
+        let metadata_table = txn.open_table(METADATA)?;
+        let mut metadata_records = 0;
+        for digest in metadata_digests {
+            metadata_records += usize::from(metadata_table.get(digest.as_str())?.is_some());
+        }
+        Ok(ProjectCachePurgeCounts {
+            index_pages,
+            project_records,
+            file_url_records,
+            metadata_records,
+        })
+    }
+
+    /// Delete cached metadata rows for one project.
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    pub fn delete_project_cache(
+        &self,
+        index: &str,
+        normalized: &str,
+        file_digests: &[String],
+        metadata_digests: &[String],
+    ) -> Result<ProjectCachePurgeCounts, MetaError> {
+        let key = format!("{index}/{normalized}");
+        let txn = self.db.begin_write()?;
+        let counts = {
+            let index_pages = {
+                let mut table = txn.open_table(INDEX)?;
+                usize::from(table.remove(key.as_str())?.is_some())
+            };
+            let project_records = {
+                let mut table = txn.open_table(PROJECTS)?;
+                usize::from(table.remove(key.as_str())?.is_some())
+            };
+            let file_url_records = {
+                let mut table = txn.open_table(FILE)?;
+                let mut removed = 0;
+                for digest in file_digests {
+                    removed += usize::from(table.remove(digest.as_str())?.is_some());
+                }
+                removed
+            };
+            let metadata_records = {
+                let mut table = txn.open_table(METADATA)?;
+                let mut removed = 0;
+                for digest in metadata_digests {
+                    removed += usize::from(table.remove(digest.as_str())?.is_some());
+                }
+                removed
+            };
+            ProjectCachePurgeCounts {
+                index_pages,
+                project_records,
+                file_url_records,
+                metadata_records,
+            }
+        };
+        txn.commit()?;
+        Ok(counts)
     }
 
     /// Store an uploaded file's serialized record on a private index, keyed by
