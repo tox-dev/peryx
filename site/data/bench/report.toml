@@ -30,66 +30,66 @@ url = "https://pypicloud.readthedocs.io/"
 name = "cold cache"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.12x"
-text = "20.7 s"
+ratio = "1.09x"
+text = "23.9 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
 ratio = "1.00x"
-text = "18.4 s"
+text = "21.9 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.43x"
-text = "26.4 s"
+ratio = "1.48x"
+text = "32.4 s"
 tint = "par"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.47x"
-text = "27.1 s"
+ratio = "1.58x"
+text = "34.6 s"
 tint = "par"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.04x"
-text = "19.2 s"
+ratio = "1.00x"
+text = "21.8 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.28x"
-text = "23.6 s"
-tint = "faster"
+ratio = "1.44x"
+text = "31.5 s"
+tint = "par"
 
 [[tables.install-pip.rows]]
 name = "warm cache"
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.94x"
-text = "17.2 s"
+ratio = "0.83x"
+text = "17.9 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
 ratio = "1.00x"
-text = "18.3 s"
+text = "21.7 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.96x"
-text = "17.6 s"
+ratio = "0.88x"
+text = "19.1 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.09x"
-text = "20.0 s"
+ratio = "1.12x"
+text = "24.3 s"
+tint = "par"
+
+[[tables.install-pip.rows.cells]]
+ratio = "1.03x"
+text = "22.4 s"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.02x"
-text = "18.8 s"
-tint = "faster"
-
-[[tables.install-pip.rows.cells]]
-ratio = "0.85x"
-text = "15.6 s"
+ratio = "0.76x"
+text = "16.4 s"
 tint = "faster"
 
 [[tables.install-pip.rows]]
@@ -97,8 +97,8 @@ name = "server CPU"
 
 [[tables.install-pip.rows.cells]]
 ratio = "1.00x"
-text = "1.2 s"
-tint = "slow"
+text = "1.5 s"
+tint = "mild"
 
 [[tables.install-pip.rows.cells]]
 ratio = "n/a"
@@ -106,23 +106,23 @@ text = "no server"
 tint = "none"
 
 [[tables.install-pip.rows.cells]]
-ratio = "9.63x"
-text = "11.5 s"
+ratio = "14.10x"
+text = "20.5 s"
 tint = "worst"
 
 [[tables.install-pip.rows.cells]]
-ratio = "2.52x"
-text = "3.0 s"
+ratio = "2.57x"
+text = "3.7 s"
 tint = "veryslow"
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.02x"
-text = "21 ms"
+ratio = "0.08x"
+text = "118 ms"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.63x"
-text = "1.9 s"
+ratio = "2.65x"
+text = "3.9 s"
 tint = "veryslow"
 
 [[tables.install-pip.rows]]
@@ -130,7 +130,7 @@ name = "server peak memory"
 
 [[tables.install-pip.rows.cells]]
 ratio = "1.00x"
-text = "325 MB"
+text = "336 MB"
 tint = "slow"
 
 [[tables.install-pip.rows.cells]]
@@ -139,23 +139,23 @@ text = "no server"
 tint = "none"
 
 [[tables.install-pip.rows.cells]]
-ratio = "3.66x"
-text = "1,188 MB"
+ratio = "3.12x"
+text = "1,047 MB"
 tint = "worst"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.81x"
-text = "587 MB"
+ratio = "1.72x"
+text = "577 MB"
 tint = "veryslow"
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.22x"
-text = "71 MB"
+ratio = "0.20x"
+text = "68 MB"
 tint = "faster"
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.16x"
-text = "378 MB"
+ratio = "0.89x"
+text = "300 MB"
 tint = "slow"
 
 [tables.install-uv]
@@ -190,66 +190,66 @@ url = "https://pypicloud.readthedocs.io/"
 name = "cold cache"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.14x"
-text = "3.8 s"
+ratio = "1.34x"
+text = "5.9 s"
 tint = "faster"
 
 [[tables.install-uv.rows.cells]]
 ratio = "1.00x"
-text = "3.3 s"
+text = "4.4 s"
 tint = "faster"
 
 [[tables.install-uv.rows.cells]]
-ratio = "4.12x"
-text = "13.8 s"
-tint = "veryslow"
+ratio = "3.78x"
+text = "16.7 s"
+tint = "slow"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.54x"
-text = "5.1 s"
+ratio = "1.58x"
+text = "7.0 s"
 tint = "par"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.08x"
-text = "3.6 s"
+ratio = "0.95x"
+text = "4.2 s"
 tint = "faster"
 
 [[tables.install-uv.rows.cells]]
-ratio = "2.99x"
-text = "10.0 s"
-tint = "slow"
+ratio = "2.62x"
+text = "11.6 s"
+tint = "mild"
 
 [[tables.install-uv.rows]]
 name = "warm cache"
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.83x"
-text = "2.7 s"
+ratio = "0.62x"
+text = "2.8 s"
 tint = "faster"
 
 [[tables.install-uv.rows.cells]]
 ratio = "1.00x"
-text = "3.2 s"
-tint = "faster"
+text = "4.5 s"
+tint = "par"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.86x"
-text = "6.0 s"
+ratio = "1.76x"
+text = "7.9 s"
 tint = "mild"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.14x"
-text = "3.7 s"
-tint = "faster"
+ratio = "0.99x"
+text = "4.5 s"
+tint = "par"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.14x"
-text = "3.7 s"
-tint = "faster"
+ratio = "0.98x"
+text = "4.5 s"
+tint = "par"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.36x"
-text = "4.4 s"
+ratio = "1.03x"
+text = "4.6 s"
 tint = "par"
 
 [[tables.install-uv.rows]]
@@ -257,8 +257,8 @@ name = "server CPU"
 
 [[tables.install-uv.rows.cells]]
 ratio = "1.00x"
-text = "1.0 s"
-tint = "slow"
+text = "1.5 s"
+tint = "mild"
 
 [[tables.install-uv.rows.cells]]
 ratio = "n/a"
@@ -266,23 +266,23 @@ text = "no server"
 tint = "none"
 
 [[tables.install-uv.rows.cells]]
-ratio = "14.52x"
-text = "15.2 s"
+ratio = "17.72x"
+text = "26.1 s"
 tint = "worst"
 
 [[tables.install-uv.rows.cells]]
-ratio = "2.52x"
-text = "2.6 s"
-tint = "veryslow"
+ratio = "2.53x"
+text = "3.7 s"
+tint = "slow"
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.03x"
-text = "29 ms"
+ratio = "0.07x"
+text = "107 ms"
 tint = "faster"
 
 [[tables.install-uv.rows.cells]]
-ratio = "3.16x"
-text = "3.3 s"
+ratio = "3.00x"
+text = "4.4 s"
 tint = "veryslow"
 
 [[tables.install-uv.rows]]
@@ -290,7 +290,7 @@ name = "server peak memory"
 
 [[tables.install-uv.rows.cells]]
 ratio = "1.00x"
-text = "537 MB"
+text = "598 MB"
 tint = "veryslow"
 
 [[tables.install-uv.rows.cells]]
@@ -299,23 +299,23 @@ text = "no server"
 tint = "none"
 
 [[tables.install-uv.rows.cells]]
-ratio = "2.21x"
-text = "1,190 MB"
+ratio = "1.58x"
+text = "947 MB"
 tint = "worst"
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.33x"
-text = "716 MB"
-tint = "veryslow"
+ratio = "1.10x"
+text = "658 MB"
+tint = "worst"
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.13x"
-text = "72 MB"
+ratio = "0.11x"
+text = "69 MB"
 tint = "faster"
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.75x"
-text = "402 MB"
+ratio = "0.65x"
+text = "389 MB"
 tint = "slow"
 
 [tables.load]
@@ -350,141 +350,207 @@ url = "https://pypicloud.readthedocs.io/"
 name = "1 user: requests/s"
 
 [[tables.load.rows.cells]]
-ratio = "2.95x"
-text = "681 req/s"
+ratio = "9.48x"
+text = "629 req/s"
 tint = "faster"
 
 [[tables.load.rows.cells]]
 ratio = "1.00x"
-text = "231 req/s"
-tint = "slow"
-
-[[tables.load.rows.cells]]
-ratio = "0.34x"
-text = "79 req/s"
+text = "66 req/s"
 tint = "worst"
 
 [[tables.load.rows.cells]]
-ratio = "0.47x"
-text = "109 req/s"
+ratio = "1.16x"
+text = "77 req/s"
 tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "1.54x"
+text = "102 req/s"
+tint = "veryslow"
 
 [[tables.load.rows.cells]]
 ratio = "0.93x"
-text = "216 req/s"
-tint = "slow"
+text = "62 req/s"
+tint = "worst"
 
 [[tables.load.rows.cells]]
-ratio = "0.92x"
-text = "212 req/s"
+ratio = "2.29x"
+text = "152 req/s"
 tint = "slow"
 
 [[tables.load.rows]]
 name = "1 user: p95 latency"
 
 [[tables.load.rows.cells]]
-ratio = "0.62x"
+ratio = "0.25x"
 text = "6 ms"
 tint = "faster"
 
 [[tables.load.rows.cells]]
 ratio = "1.00x"
-text = "9 ms"
-tint = "par"
+text = "24 ms"
+tint = "slow"
 
 [[tables.load.rows.cells]]
-ratio = "5.10x"
-text = "45 ms"
+ratio = "1.95x"
+text = "46 ms"
 tint = "worst"
 
 [[tables.load.rows.cells]]
-ratio = "3.96x"
-text = "35 ms"
+ratio = "1.56x"
+text = "37 ms"
 tint = "worst"
 
 [[tables.load.rows.cells]]
 ratio = "1.08x"
-text = "10 ms"
-tint = "par"
+text = "26 ms"
+tint = "veryslow"
 
 [[tables.load.rows.cells]]
-ratio = "1.65x"
-text = "15 ms"
+ratio = "1.19x"
+text = "28 ms"
+tint = "veryslow"
+
+[[tables.load.rows]]
+name = "1 user: p99 latency"
+
+[[tables.load.rows.cells]]
+ratio = "0.24x"
+text = "7 ms"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "31 ms"
 tint = "mild"
+
+[[tables.load.rows.cells]]
+ratio = "4.20x"
+text = "130 ms"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "1.48x"
+text = "46 ms"
+tint = "slow"
+
+[[tables.load.rows.cells]]
+ratio = "1.18x"
+text = "36 ms"
+tint = "slow"
+
+[[tables.load.rows.cells]]
+ratio = "1.31x"
+text = "40 ms"
+tint = "slow"
 
 [[tables.load.rows]]
 name = "32 users: requests/s"
 
 [[tables.load.rows.cells]]
-ratio = "3.32x"
-text = "2,987 req/s"
+ratio = "2.14x"
+text = "1,888 req/s"
 tint = "faster"
 
 [[tables.load.rows.cells]]
 ratio = "1.00x"
-text = "900 req/s"
+text = "883 req/s"
 tint = "par"
 
 [[tables.load.rows.cells]]
-ratio = "0.08x"
-text = "76 req/s"
+ratio = "0.06x"
+text = "54 req/s"
 tint = "worst"
 
 [[tables.load.rows.cells]]
-ratio = "0.48x"
-text = "437 req/s"
-tint = "slow"
+ratio = "0.45x"
+text = "401 req/s"
+tint = "mild"
 
 [[tables.load.rows.cells]]
-ratio = "1.00x"
-text = "904 req/s"
+ratio = "0.99x"
+text = "878 req/s"
 tint = "par"
 
 [[tables.load.rows.cells]]
-ratio = "0.24x"
-text = "214 req/s"
+ratio = "0.20x"
+text = "174 req/s"
 tint = "veryslow"
 
 [[tables.load.rows]]
 name = "32 users: p95 latency"
 
 [[tables.load.rows.cells]]
-ratio = "0.20x"
-text = "24 ms"
+ratio = "0.37x"
+text = "39 ms"
 tint = "faster"
 
 [[tables.load.rows.cells]]
 ratio = "1.00x"
-text = "121 ms"
-tint = "mild"
+text = "108 ms"
+tint = "par"
 
 [[tables.load.rows.cells]]
-ratio = "5.22x"
-text = "632 ms"
+ratio = "11.06x"
+text = "1.2 s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "1.11x"
+text = "120 ms"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "0.98x"
+text = "106 ms"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "3.09x"
+text = "334 ms"
+tint = "slow"
+
+[[tables.load.rows]]
+name = "32 users: p99 latency"
+
+[[tables.load.rows.cells]]
+ratio = "0.45x"
+text = "67 ms"
+tint = "faster"
+
+[[tables.load.rows.cells]]
+ratio = "1.00x"
+text = "149 ms"
+tint = "par"
+
+[[tables.load.rows.cells]]
+ratio = "11.47x"
+text = "1.7 s"
 tint = "worst"
 
 [[tables.load.rows.cells]]
 ratio = "0.92x"
-text = "112 ms"
-tint = "mild"
+text = "137 ms"
+tint = "par"
 
 [[tables.load.rows.cells]]
-ratio = "0.95x"
-text = "115 ms"
-tint = "mild"
+ratio = "1.07x"
+text = "159 ms"
+tint = "par"
 
 [[tables.load.rows.cells]]
-ratio = "2.16x"
-text = "262 ms"
-tint = "veryslow"
+ratio = "2.69x"
+text = "400 ms"
+tint = "slow"
 
 [[tables.load.rows]]
-name = "server CPU"
+name = "server CPU per 1,000 requests"
 
 [[tables.load.rows.cells]]
 ratio = "1.00x"
-text = "2m 49.4s"
-tint = "worst"
+text = "2.5 s"
+tint = "slow"
 
 [[tables.load.rows.cells]]
 ratio = "n/a"
@@ -492,31 +558,31 @@ text = "no server"
 tint = "none"
 
 [[tables.load.rows.cells]]
-ratio = "0.23x"
-text = "38.6 s"
-tint = "slow"
-
-[[tables.load.rows.cells]]
-ratio = "0.53x"
-text = "1m 30.2s"
+ratio = "6.44x"
+text = "16.1 s"
 tint = "worst"
 
 [[tables.load.rows.cells]]
-ratio = "0.02x"
-text = "3.5 s"
+ratio = "3.86x"
+text = "9.7 s"
+tint = "worst"
+
+[[tables.load.rows.cells]]
+ratio = "0.11x"
+text = "273 ms"
 tint = "faster"
 
 [[tables.load.rows.cells]]
-ratio = "0.22x"
-text = "38.0 s"
-tint = "slow"
+ratio = "2.42x"
+text = "6.0 s"
+tint = "veryslow"
 
 [[tables.load.rows]]
 name = "server peak memory"
 
 [[tables.load.rows.cells]]
 ratio = "1.00x"
-text = "324 MB"
+text = "335 MB"
 tint = "veryslow"
 
 [[tables.load.rows.cells]]
@@ -525,13 +591,13 @@ text = "no server"
 tint = "none"
 
 [[tables.load.rows.cells]]
-ratio = "1.89x"
-text = "614 MB"
+ratio = "1.82x"
+text = "609 MB"
 tint = "worst"
 
 [[tables.load.rows.cells]]
-ratio = "1.28x"
-text = "416 MB"
+ratio = "1.10x"
+text = "368 MB"
 tint = "veryslow"
 
 [[tables.load.rows.cells]]
@@ -540,8 +606,8 @@ text = "72 MB"
 tint = "faster"
 
 [[tables.load.rows.cells]]
-ratio = "0.75x"
-text = "244 MB"
+ratio = "0.73x"
+text = "245 MB"
 tint = "slow"
 
 [tables.parallel-install]
@@ -576,14 +642,14 @@ url = "https://pypicloud.readthedocs.io/"
 name = "cold cache: 10 parallel installs"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.33x"
-text = "1.6 s"
+ratio = "0.76x"
+text = "7.0 s"
 tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "1.00x"
-text = "4.8 s"
-tint = "slow"
+text = "9.2 s"
+tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "n/a"
@@ -591,32 +657,32 @@ text = "error"
 tint = "worst"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.94x"
-text = "4.5 s"
-tint = "slow"
+ratio = "1.35x"
+text = "12.4 s"
+tint = "par"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "1.78x"
-text = "8.6 s"
-tint = "veryslow"
+ratio = "1.07x"
+text = "9.8 s"
+tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "2.06x"
-text = "10.0 s"
-tint = "worst"
+ratio = "1.26x"
+text = "11.5 s"
+tint = "par"
 
 [[tables.parallel-install.rows]]
 name = "warm cache: 10 parallel installs"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.21x"
-text = "1.5 s"
+ratio = "0.89x"
+text = "7.8 s"
 tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "1.00x"
-text = "7.2 s"
-tint = "veryslow"
+text = "8.8 s"
+tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "n/a"
@@ -624,27 +690,27 @@ text = "error"
 tint = "worst"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.82x"
-text = "5.9 s"
-tint = "slow"
+ratio = "1.36x"
+text = "11.9 s"
+tint = "par"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "1.04x"
-text = "7.4 s"
-tint = "veryslow"
+ratio = "1.13x"
+text = "9.9 s"
+tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "1.23x"
-text = "8.8 s"
-tint = "worst"
+ratio = "1.08x"
+text = "9.4 s"
+tint = "faster"
 
 [[tables.parallel-install.rows]]
 name = "server CPU"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "1.00x"
-text = "545 ms"
-tint = "faster"
+text = "734 ms"
+tint = "mild"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "n/a"
@@ -652,31 +718,31 @@ text = "no server"
 tint = "none"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.00x"
-text = "0 ms"
+ratio = "10.74x"
+text = "7.9 s"
+tint = "worst"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "3.08x"
+text = "2.3 s"
+tint = "veryslow"
+
+[[tables.parallel-install.rows.cells]]
+ratio = "0.13x"
+text = "97 ms"
 tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "1.67x"
-text = "912 ms"
-tint = "faster"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "0.02x"
-text = "9 ms"
-tint = "faster"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "2.31x"
-text = "1.3 s"
-tint = "faster"
+ratio = "2.40x"
+text = "1.8 s"
+tint = "slow"
 
 [[tables.parallel-install.rows]]
 name = "server peak memory"
 
 [[tables.parallel-install.rows.cells]]
 ratio = "1.00x"
-text = "122 MB"
+text = "127 MB"
 tint = "par"
 
 [[tables.parallel-install.rows.cells]]
@@ -685,24 +751,24 @@ text = "no server"
 tint = "none"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "9.24x"
-text = "1,125 MB"
+ratio = "4.25x"
+text = "538 MB"
 tint = "worst"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "2.83x"
-text = "345 MB"
-tint = "slow"
+ratio = "2.51x"
+text = "318 MB"
+tint = "veryslow"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.59x"
-text = "72 MB"
+ratio = "0.54x"
+text = "68 MB"
 tint = "faster"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "2.46x"
-text = "300 MB"
-tint = "slow"
+ratio = "2.53x"
+text = "319 MB"
+tint = "veryslow"
 
 [tables.throughput]
 baseline = "direct"
@@ -736,29 +802,29 @@ url = "https://pypicloud.readthedocs.io/"
 name = "cold cache: 4 clients, one wheel"
 
 [[tables.throughput.rows.cells]]
-ratio = "0.26x"
-text = "794 ms"
+ratio = "0.12x"
+text = "1.0 s"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
 ratio = "1.00x"
-text = "3.1 s"
-tint = "slow"
-
-[[tables.throughput.rows.cells]]
-ratio = "1.00x"
-text = "3.1 s"
-tint = "slow"
-
-[[tables.throughput.rows.cells]]
-ratio = "1.99x"
-text = "6.1 s"
+text = "8.2 s"
 tint = "worst"
 
 [[tables.throughput.rows.cells]]
-ratio = "0.98x"
-text = "3.0 s"
+ratio = "0.46x"
+text = "3.7 s"
 tint = "slow"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.20x"
+text = "9.8 s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.11x"
+text = "9.1 s"
+tint = "worst"
 
 [[tables.throughput.rows.cells]]
 ratio = "n/a"
@@ -769,28 +835,28 @@ tint = "worst"
 name = "hot cache: single download"
 
 [[tables.throughput.rows.cells]]
-ratio = "52.97x"
-text = "6,166 MB/s"
+ratio = "126.39x"
+text = "5,157 MB/s"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
 ratio = "1.00x"
-text = "116 MB/s"
+text = "41 MB/s"
 tint = "worst"
 
 [[tables.throughput.rows.cells]]
-ratio = "24.15x"
-text = "2,811 MB/s"
-tint = "par"
-
-[[tables.throughput.rows.cells]]
-ratio = "68.13x"
-text = "7,931 MB/s"
+ratio = "80.41x"
+text = "3,281 MB/s"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
-ratio = "1.00x"
-text = "116 MB/s"
+ratio = "127.39x"
+text = "5,198 MB/s"
+tint = "faster"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.17x"
+text = "48 MB/s"
 tint = "worst"
 
 [[tables.throughput.rows.cells]]
@@ -802,28 +868,28 @@ tint = "worst"
 name = "hot cache: 8 parallel downloads"
 
 [[tables.throughput.rows.cells]]
-ratio = "81.56x"
-text = "9,527 MB/s"
+ratio = "211.52x"
+text = "8,858 MB/s"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
 ratio = "1.00x"
-text = "117 MB/s"
+text = "42 MB/s"
 tint = "worst"
 
 [[tables.throughput.rows.cells]]
-ratio = "29.24x"
-text = "3,415 MB/s"
+ratio = "88.16x"
+text = "3,692 MB/s"
 tint = "par"
 
 [[tables.throughput.rows.cells]]
-ratio = "104.63x"
-text = "12,222 MB/s"
+ratio = "219.81x"
+text = "9,205 MB/s"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
 ratio = "1.00x"
-text = "117 MB/s"
+text = "42 MB/s"
 tint = "worst"
 
 [[tables.throughput.rows.cells]]
@@ -836,8 +902,8 @@ name = "server CPU"
 
 [[tables.throughput.rows.cells]]
 ratio = "1.00x"
-text = "1.1 s"
-tint = "faster"
+text = "1.5 s"
+tint = "slow"
 
 [[tables.throughput.rows.cells]]
 ratio = "n/a"
@@ -845,31 +911,31 @@ text = "no server"
 tint = "none"
 
 [[tables.throughput.rows.cells]]
-ratio = "1.77x"
-text = "1.9 s"
+ratio = "6.55x"
+text = "9.9 s"
+tint = "worst"
+
+[[tables.throughput.rows.cells]]
+ratio = "1.02x"
+text = "1.6 s"
+tint = "slow"
+
+[[tables.throughput.rows.cells]]
+ratio = "0.06x"
+text = "86 ms"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
-ratio = "0.79x"
-text = "848 ms"
-tint = "faster"
-
-[[tables.throughput.rows.cells]]
-ratio = "0.00x"
-text = "0 ms"
-tint = "faster"
-
-[[tables.throughput.rows.cells]]
-ratio = "0.61x"
-text = "655 ms"
-tint = "faster"
+ratio = "0.83x"
+text = "1.3 s"
+tint = "slow"
 
 [[tables.throughput.rows]]
 name = "server peak memory"
 
 [[tables.throughput.rows.cells]]
 ratio = "1.00x"
-text = "54 MB"
+text = "59 MB"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
@@ -878,21 +944,21 @@ text = "no server"
 tint = "none"
 
 [[tables.throughput.rows.cells]]
-ratio = "12.97x"
+ratio = "11.86x"
 text = "706 MB"
 tint = "worst"
 
 [[tables.throughput.rows.cells]]
-ratio = "5.74x"
-text = "312 MB"
-tint = "veryslow"
+ratio = "5.15x"
+text = "307 MB"
+tint = "slow"
 
 [[tables.throughput.rows.cells]]
-ratio = "1.23x"
-text = "67 MB"
+ratio = "1.14x"
+text = "68 MB"
 tint = "faster"
 
 [[tables.throughput.rows.cells]]
-ratio = "5.28x"
-text = "287 MB"
+ratio = "4.40x"
+text = "262 MB"
 tint = "slow"

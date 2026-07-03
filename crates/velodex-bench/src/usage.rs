@@ -60,7 +60,8 @@ impl Usage {
 fn sample(root: Pid, peak_rss: &AtomicU64, cpu_millis: &AtomicU64, stop: &AtomicU64) {
     let mut system = System::new();
     let interval = Duration::from_millis(200);
-    while stop.load(Ordering::Relaxed) == 0 {
+    loop {
+        let stopping = stop.load(Ordering::Relaxed) != 0;
         system.refresh_processes(ProcessesToUpdate::All, true);
         let tree = tree_of(&system, root);
         let rss: u64 = tree
@@ -68,21 +69,18 @@ fn sample(root: Pid, peak_rss: &AtomicU64, cpu_millis: &AtomicU64, stop: &Atomic
             .filter_map(|pid| system.process(*pid))
             .map(sysinfo::Process::memory)
             .sum();
-        let usage: f64 = tree
+        // Exact lifetime CPU per process, summed over the tree: each tick is accurate to date,
+        // and the running maximum survives workers that exit between ticks with their time noted.
+        let cpu: u64 = tree
             .iter()
             .filter_map(|pid| system.process(*pid))
-            .map(|process| f64::from(process.cpu_usage()))
+            .map(sysinfo::Process::accumulated_cpu_time)
             .sum();
         peak_rss.fetch_max(rss, Ordering::Relaxed);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "usage percent over a 200ms tick is small and non-negative"
-        )]
-        cpu_millis.fetch_add(
-            (usage / 100.0 * interval.as_secs_f64() * 1000.0) as u64,
-            Ordering::Relaxed,
-        );
+        cpu_millis.fetch_max(cpu, Ordering::Relaxed);
+        if stopping {
+            return;
+        }
         std::thread::sleep(interval);
     }
 }
