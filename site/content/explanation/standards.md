@@ -41,8 +41,8 @@ and "parsed".
 | [PEP 658](https://peps.python.org/pep-0658/) / [PEP 714](https://peps.python.org/pep-0714/) | The `.metadata` sibling that lets resolvers skip wheel downloads; advertised, fetched, verified, and cached |
 | [PEP 740](https://peps.python.org/pep-0740/) | Provenance URLs on Simple API file entries; preserved when an upstream provides them |
 | [PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) | Version parsing, ordering, and `Requires-Python` validation |
-| [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; sdist filename handling |
-| [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/) | `METADATA` and `PKG-INFO` parsing for upload identity checks and PEP 658 siblings |
+| [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; modern `.tar.gz` sdist filename, root, and required-file checks |
+| [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/) | `METADATA` and `PKG-INFO` parsing for upload identity checks, PEP 658 siblings, and Metadata 2.4+ sdist license-file checks |
 | [Legacy upload API](https://docs.pypi.org/api/upload/) | The multipart upload protocol twine and `uv publish` speak |
 | [`.pypirc`](https://packaging.python.org/en/latest/specifications/pypirc/) | The `__token__` authentication convention for uploads and upstream mirrors |
 

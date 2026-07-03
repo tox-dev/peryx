@@ -57,6 +57,7 @@ fn full_form(filename: &str) -> UploadForm {
         blake2_256_digest: None,
         md5_digest: None,
         filename: Some(filename.to_owned()),
+        ..UploadForm::default()
     }
 }
 
@@ -88,8 +89,8 @@ fn test_prepare_builds_content_addressed_record() {
     );
     assert_eq!(prepared.record.file.core_metadata, CoreMetadata::Absent);
     assert_eq!(
-        prepared.metadata.as_deref(),
-        Some(b"Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n".as_slice())
+        prepared.metadata.as_slice(),
+        b"Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n"
     );
 }
 
@@ -115,7 +116,11 @@ fn test_prepare_accepts_valid_sdist() {
     let prepared = prepare(form, staged, "root/local", 1000).unwrap();
 
     assert_eq!(prepared.record.file.requires_python.as_deref(), Some(">=3.9"));
-    assert!(prepared.metadata.is_none());
+    assert!(
+        prepared
+            .metadata
+            .starts_with(b"Metadata-Version: 2.2\nName: Flask\nVersion: 1.0\n")
+    );
 }
 
 #[test]
@@ -288,6 +293,18 @@ fn test_prepare_rejects_archive_content_problems() {
             expected
         );
     }
+
+    let sdist = sdist_metadata("Other", "1.0", ">=3.9");
+    let (_dir, staged) = staged_upload(&sdist);
+    let mut form = full_form("Flask-1.0.tar.gz");
+    form.filetype = Some("sdist".to_owned());
+    assert_eq!(
+        prepare(form, staged, "root/local", 1000).unwrap_err(),
+        UploadError::MetadataNameMismatch {
+            metadata: "Other".to_owned(),
+            form: "flask".to_owned(),
+        }
+    );
 }
 
 #[test]
@@ -378,7 +395,7 @@ fn test_prepare_accepts_wheel_with_directory_entries() {
 
     let prepared = prepare(staged_form(&bytes), staged, "root/local", 1000).unwrap();
 
-    assert_eq!(prepared.metadata.as_deref(), Some(metadata.as_slice()));
+    assert_eq!(prepared.metadata.as_slice(), metadata);
 }
 
 #[test]
@@ -625,7 +642,7 @@ fn test_prepare_accepts_record_entry_without_size() {
 
     let prepared = prepare(staged_form(&bytes), staged, "root/local", 1000).unwrap();
 
-    assert_eq!(prepared.metadata.as_deref(), Some(entries[1].1));
+    assert_eq!(prepared.metadata.as_slice(), entries[1].1);
 }
 
 #[test]
@@ -727,7 +744,7 @@ fn test_prepare_accepts_record_self_size_and_stronger_hashes() {
 
     let prepared = prepare(staged_form(&bytes), staged, "root/local", 1000).unwrap();
 
-    assert_eq!(prepared.metadata.as_deref(), Some(metadata.as_slice()));
+    assert_eq!(prepared.metadata.as_slice(), metadata);
 }
 
 #[test]
@@ -851,6 +868,96 @@ fn test_prepare_rejects_metadata_mismatches() {
             expected
         );
     }
+}
+
+#[test]
+fn test_prepare_rejects_metadata_field_mismatches() {
+    for (configure, metadata, expected) in [
+        (
+            (|form: &mut UploadForm| form.metadata_version = Some("2.0".to_owned())) as fn(&mut UploadForm),
+            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n",
+            UploadError::MetadataFieldMismatch {
+                field: "Metadata-Version",
+                metadata: "2.1".to_owned(),
+                form: "2.0".to_owned(),
+            },
+        ),
+        (
+            |form| form.requires_python = Some(">=3.9".to_owned()),
+            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n",
+            UploadError::MetadataFieldMismatch {
+                field: "Requires-Python",
+                metadata: ">=3.8".to_owned(),
+                form: ">=3.9".to_owned(),
+            },
+        ),
+        (
+            |form| form.license_expression = Some("Apache-2.0".to_owned()),
+            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-Expression: MIT\n",
+            UploadError::MetadataFieldMismatch {
+                field: "License-Expression",
+                metadata: "MIT".to_owned(),
+                form: "Apache-2.0".to_owned(),
+            },
+        ),
+        (
+            |form| form.license_files.push("NOTICE".to_owned()),
+            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: LICENSE\n",
+            UploadError::MetadataFieldMismatch {
+                field: "License-File",
+                metadata: "LICENSE".to_owned(),
+                form: "NOTICE".to_owned(),
+            },
+        ),
+        (
+            |form| form.provides_extra.push("dev".to_owned()),
+            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nProvides-Extra: cli\n",
+            UploadError::MetadataFieldMismatch {
+                field: "Provides-Extra",
+                metadata: "cli".to_owned(),
+                form: "dev".to_owned(),
+            },
+        ),
+        (
+            |form| {
+                form.project_urls.push("Docs, https://example.test/docs".to_owned());
+                form.home_page = Some("https://example.test/home".to_owned());
+            },
+            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nProject-URL: Source, https://example.test/source\n",
+            UploadError::MetadataFieldMismatch {
+                field: "Project-URL",
+                metadata: "Source, https://example.test/source".to_owned(),
+                form: "Docs, https://example.test/docs; Homepage, https://example.test/home".to_owned(),
+            },
+        ),
+    ] {
+        let bytes = wheel_metadata_bytes(metadata.as_bytes());
+        let (_dir, staged) = staged_upload(&bytes);
+        let mut form = staged_form(&bytes);
+        configure(&mut form);
+
+        assert_eq!(prepare(form, staged, "root/local", 1000).unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn test_prepare_accepts_matching_metadata_form_fields() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense: MIT\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+    let mut form = staged_form(&bytes);
+    form.metadata_version = Some("2.1".to_owned());
+    form.license = Some("MIT".to_owned());
+    form.license_expression = Some("MIT".to_owned());
+    form.license_files.push("LICENSE".to_owned());
+    form.provides_extra.push("cli".to_owned());
+    form.project_urls.push("Source, https://example.test/source".to_owned());
+    form.home_page = Some("https://example.test/home".to_owned());
+
+    let prepared = prepare(form, staged, "root/local", 1000).unwrap();
+
+    assert_eq!(prepared.display_name, "Flask");
 }
 
 #[test]
@@ -1066,12 +1173,19 @@ fn sdist_metadata(name: &str, version: &str, requires_python: &str) -> Vec<u8> {
         let encoder = GzEncoder::new(&mut buf, Compression::default());
         let mut tar = tar::Builder::new(encoder);
         let content =
-            format!("Metadata-Version: 2.1\nName: {name}\nVersion: {version}\nRequires-Python: {requires_python}\n");
+            format!("Metadata-Version: 2.2\nName: {name}\nVersion: {version}\nRequires-Python: {requires_python}\n");
         let mut header = tar::Header::new_gnu();
         header.set_size(content.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
         tar.append_data(&mut header, "Flask-1.0/PKG-INFO", content.as_bytes())
+            .unwrap();
+        let pyproject = b"[build-system]\nrequires = []\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(pyproject.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "Flask-1.0/pyproject.toml", pyproject.as_slice())
             .unwrap();
         tar.finish().unwrap();
     }

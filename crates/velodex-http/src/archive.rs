@@ -30,6 +30,8 @@ pub const MAX_LISTED_ENTRIES: usize = 10_000;
 const MAX_WHEEL_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_WHEEL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_WHEEL_ENTRY_POINTS_BYTES: u64 = 1024 * 1024;
+const MAX_SDIST_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SDIST_ENTRIES: usize = 100_000;
 const SUPPORTED_WHEEL_MAJOR_VERSION: u64 = 1;
 
 /// One entry of an archive listing.
@@ -95,6 +97,8 @@ pub enum ArchiveError {
     BinaryMember(String),
     #[error("invalid wheel: {0}")]
     InvalidWheel(String),
+    #[error("invalid sdist: {0}")]
+    InvalidSdist(String),
     #[error("archive read failed: {0}")]
     Read(String),
 }
@@ -420,6 +424,13 @@ fn is_tar_gz(filename: &str) -> bool {
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
 }
 
+fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    let split = value.len().checked_sub(suffix.len())?;
+    value.as_bytes()[split..]
+        .eq_ignore_ascii_case(suffix.as_bytes())
+        .then_some(&value[..split])
+}
+
 fn is_supported_archive(filename: &str) -> bool {
     is_zip(filename) || is_tar_gz(filename)
 }
@@ -699,6 +710,10 @@ fn read_error(err: impl std::fmt::Display) -> ArchiveError {
 
 fn invalid_wheel(message: impl Into<String>) -> ArchiveError {
     ArchiveError::InvalidWheel(message.into())
+}
+
+fn invalid_sdist(message: impl Into<String>) -> ArchiveError {
+    ArchiveError::InvalidSdist(message.into())
 }
 
 /// Validate a wheel's required structure and return its exact `METADATA` bytes.
@@ -1203,30 +1218,258 @@ pub fn wheel_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>
     wheel_metadata_reader(filename, file)
 }
 
+/// Validate a PEP 625 `.tar.gz` sdist and return its exact `PKG-INFO` bytes.
+///
+/// # Errors
+/// Returns [`ArchiveError::InvalidSdist`] when required sdist structure or metadata is missing or
+/// inconsistent, and [`ArchiveError::Read`] when the staged file or tarball cannot be read.
+pub fn validate_sdist_path(filename: &str, path: &Path) -> Result<Vec<u8>, ArchiveError> {
+    let file = std::fs::File::open(path).map_err(read_error)?;
+    validate_sdist_reader(filename, file)
+}
+
 /// Extract an sdist's `PKG-INFO` document from a staged file without buffering the sdist.
 ///
 /// # Errors
-/// Returns [`ArchiveError::Read`] when the staged file or tarball cannot be read.
+/// Returns [`ArchiveError::InvalidSdist`] for invalid `.tar.gz` sdists and [`ArchiveError::Read`]
+/// when the staged file or tarball cannot be read.
 pub fn sdist_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>>, ArchiveError> {
     if !is_tar_gz(filename) {
         return Ok(None);
     }
-    let file = std::fs::File::open(path).map_err(read_error)?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    validate_sdist_path(filename, path).map(Some)
+}
+
+fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<Vec<u8>, ArchiveError> {
+    let root = expected_sdist_root(filename)?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
+    let mut members = SdistMembers::new(root);
     for entry in archive.entries().map_err(read_error)? {
         let mut entry = entry.map_err(read_error)?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
+        let entry_type = entry.header().entry_type();
         let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
-        let path = safe_member_name(&path)?;
-        if path == "PKG-INFO" || path.ends_with("/PKG-INFO") {
-            let mut bytes = Vec::with_capacity(entry.size().min(256 * 1024) as usize);
-            entry.read_to_end(&mut bytes).map_err(read_error)?;
-            return Ok(Some(bytes));
+        let path = if entry_type.is_dir() {
+            path.strip_suffix('/').unwrap_or(&path).to_owned()
+        } else {
+            path
+        };
+        let path = safe_tar_member_name(&path)?;
+        validate_sdist_member_path(&members.root, &path, entry_type)?;
+        validate_sdist_member_type(&path, entry_type)?;
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            let target = entry
+                .link_name()
+                .map_err(read_error)?
+                .ok_or_else(|| invalid_sdist(format!("link entry {path:?} is missing its target")))?
+                .to_string_lossy()
+                .into_owned();
+            validate_sdist_link(&members.root, &path, &target, entry_type)?;
+        }
+        if entry_type.is_file() {
+            let size = entry.size();
+            if path == members.pkg_info_path() {
+                let metadata = read_sdist_member_limited(&mut entry, &path, size, MAX_SDIST_METADATA_BYTES)?;
+                members.set_metadata(metadata)?;
+            }
+        }
+        members.record(path, entry_type)?;
+    }
+    members.finish()
+}
+
+#[derive(Debug)]
+struct SdistMembers {
+    root: String,
+    pyproject: bool,
+    metadata: Option<Vec<u8>>,
+    entries: usize,
+    paths: BTreeSet<String>,
+}
+
+impl SdistMembers {
+    const fn new(root: String) -> Self {
+        Self {
+            root,
+            pyproject: false,
+            metadata: None,
+            entries: 0,
+            paths: BTreeSet::new(),
         }
     }
-    Ok(None)
+
+    fn pkg_info_path(&self) -> String {
+        format!("{}/PKG-INFO", self.root)
+    }
+
+    fn pyproject_path(&self) -> String {
+        format!("{}/pyproject.toml", self.root)
+    }
+
+    fn set_metadata(&mut self, metadata: Vec<u8>) -> Result<(), ArchiveError> {
+        if self.metadata.replace(metadata).is_some() {
+            return Err(invalid_sdist(format!(
+                "multiple {} entries found",
+                self.pkg_info_path()
+            )));
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, path: String, entry_type: tar::EntryType) -> Result<(), ArchiveError> {
+        self.entries += 1;
+        if self.entries > MAX_SDIST_ENTRIES {
+            return Err(invalid_sdist(format!(
+                "archive has more than {MAX_SDIST_ENTRIES} entries"
+            )));
+        }
+        if entry_type.is_file() {
+            self.pyproject |= path == self.pyproject_path();
+        }
+        if entry_type.is_file() || entry_type.is_hard_link() || entry_type.is_symlink() {
+            self.paths.insert(path);
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<u8>, ArchiveError> {
+        if !self.pyproject {
+            return Err(invalid_sdist(format!("missing required {}/pyproject.toml", self.root)));
+        }
+        let metadata = self
+            .metadata
+            .ok_or_else(|| invalid_sdist(format!("missing required {}/PKG-INFO", self.root)))?;
+        let text = std::str::from_utf8(&metadata).map_err(|_| invalid_sdist("PKG-INFO is not valid UTF-8"))?;
+        let doc = velodex_core::pypi::parse_metadata(text);
+        let metadata_version_text = doc
+            .metadata_version
+            .as_deref()
+            .ok_or_else(|| invalid_sdist("PKG-INFO is missing Metadata-Version"))?;
+        let metadata_version = parse_metadata_version(metadata_version_text)?;
+        if !metadata_version_at_least(metadata_version, (2, 2)) {
+            return Err(invalid_sdist(format!(
+                "PKG-INFO Metadata-Version {metadata_version_text} is older than the required 2.2"
+            )));
+        }
+        if metadata_version_at_least(metadata_version, (2, 4)) {
+            for license_file in doc.license_files {
+                let license_file = safe_tar_member_name(&license_file)?;
+                let path = format!("{}/{}", self.root, license_file);
+                if !self.paths.contains(&path) {
+                    return Err(invalid_sdist(format!(
+                        "License-File {license_file:?} is missing from the sdist"
+                    )));
+                }
+            }
+        }
+        Ok(metadata)
+    }
+}
+
+fn expected_sdist_root(filename: &str) -> Result<String, ArchiveError> {
+    let parsed = parse_distribution_filename(filename)
+        .map_err(|err| invalid_sdist(format!("invalid sdist filename {filename:?}: {err:?}")))?;
+    if parsed.kind != DistributionKind::SdistTarGz {
+        return Err(invalid_sdist(format!("{filename:?} is not an sdist filename")));
+    }
+    let root = strip_ascii_suffix_ignore_case(filename, ".tar.gz")
+        .expect("parse_distribution_filename accepted only .tar.gz sdists");
+    safe_member_name(root)?;
+    Ok(root.to_owned())
+}
+
+fn validate_sdist_member_path(root: &str, path: &str, entry_type: tar::EntryType) -> Result<(), ArchiveError> {
+    if path == root && entry_type.is_dir() {
+        return Ok(());
+    }
+    let Some((top_level, _rest)) = path.split_once('/') else {
+        return Err(invalid_sdist(format!(
+            "archive entry {path:?} is outside required top-level directory {root:?}"
+        )));
+    };
+    if top_level != root {
+        return Err(invalid_sdist(format!(
+            "archive entry {path:?} is outside required top-level directory {root:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sdist_member_type(path: &str, entry_type: tar::EntryType) -> Result<(), ArchiveError> {
+    if entry_type.is_file() || entry_type.is_dir() || entry_type.is_hard_link() || entry_type.is_symlink() {
+        return Ok(());
+    }
+    Err(invalid_sdist(format!(
+        "unsupported tar entry {path:?} of type {:?}",
+        entry_type.as_byte() as char
+    )))
+}
+
+fn validate_sdist_link(root: &str, path: &str, target: &str, entry_type: tar::EntryType) -> Result<(), ArchiveError> {
+    let target = safe_tar_member_name(target)?;
+    let resolved = if entry_type.is_symlink() {
+        let (parent, _) = path
+            .rsplit_once('/')
+            .expect("sdist link paths are validated before link targets");
+        format!("{parent}/{target}")
+    } else {
+        target
+    };
+    if resolved == root || resolved.strip_prefix(root).is_some_and(|rest| rest.starts_with('/')) {
+        return Ok(());
+    }
+    Err(invalid_sdist(format!(
+        "tar link {path:?} points outside required top-level directory {root:?}"
+    )))
+}
+
+fn read_sdist_member_limited(
+    reader: &mut impl Read,
+    path: &str,
+    size: u64,
+    limit: u64,
+) -> Result<Vec<u8>, ArchiveError> {
+    if size > limit {
+        return Err(invalid_sdist(format!(
+            "{path} is {size} bytes, above the upload validation limit of {limit} bytes"
+        )));
+    }
+    let capacity = usize::try_from(size).expect("sdist validation limit fits usize");
+    let mut bytes = Vec::with_capacity(capacity);
+    reader.read_to_end(&mut bytes).map_err(read_error)?;
+    Ok(bytes)
+}
+
+fn safe_tar_member_name(path: &str) -> Result<String, ArchiveError> {
+    let path = safe_member_name(path)?;
+    if is_windows_absolute(&path) {
+        Err(ArchiveError::UnsafeMember(path))
+    } else {
+        Ok(path)
+    }
+}
+
+fn is_windows_absolute(path: &str) -> bool {
+    path.as_bytes()
+        .get(..2)
+        .is_some_and(|prefix| prefix[0].is_ascii_alphabetic() && prefix[1] == b':')
+}
+
+fn parse_metadata_version(value: &str) -> Result<(u64, u64), ArchiveError> {
+    let Some((major, minor)) = value.split_once('.') else {
+        return Err(invalid_sdist(format!("invalid Metadata-Version {value:?}")));
+    };
+    let parse = |part: &str| {
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid_sdist(format!("invalid Metadata-Version {value:?}")));
+        }
+        part.parse::<u64>()
+            .map_err(|_| invalid_sdist(format!("invalid Metadata-Version {value:?}")))
+    };
+    Ok((parse(major)?, parse(minor)?))
+}
+
+const fn metadata_version_at_least(actual: (u64, u64), required: (u64, u64)) -> bool {
+    actual.0 > required.0 || (actual.0 == required.0 && actual.1 >= required.1)
 }
 
 fn wheel_metadata_reader(filename: &str, reader: impl Read + Seek) -> Result<Option<Vec<u8>>, ArchiveError> {

@@ -122,7 +122,8 @@ zero), the configured `cache_ttl_secs` fallback of 300 seconds applies.
 
 {% mermaid() %}
 stateDiagram-v2
-[*] --> Fresh: first fetch
+state "First fetch" as Initial
+Initial --> Fresh
 Fresh --> Stale: lifetime lapses
 Stale --> Fresh: 304, nothing changed
 Stale --> Fresh: 200, new content
@@ -165,14 +166,19 @@ blake2b-256 are computed. Validation reads the archive back from that staged fil
 the HTTP handler. Wheel validation scans the ZIP directory, buffers capped `METADATA`, `WHEEL`, and `RECORD` files, and
 streams members through the RECORD hash checks instead of loading wheel payloads into memory.
 
+Sdist validation uses the same pattern. velodex streams the `.tar.gz` entries, rejects unsafe paths, unsafe links, and
+special files, and buffers only capped `PKG-INFO` content. Metadata 2.4+ `License-File` entries are checked against the
+member names seen during the scan; the archive is not unpacked.
+
 ## Why PEP 658 matters here
 
 Resolvers spend most of their network time learning dependencies. The [PEP 658/714](https://peps.python.org/pep-0658/)
-`.metadata` sibling lets pip and uv fetch a few kilobytes of core metadata instead of a multi-megabyte wheel per
+`.metadata` sibling lets pip and uv fetch a few kilobytes of core metadata instead of a multi-megabyte artifact per
 candidate. velodex advertises the sibling, fetches it from the upstream on first use, verifies it against the digest
-from the index page, and caches it like any blob. The `velodex_metadata_requests_total` metric counts these; the
-end-to-end tests assert on it to prove real clients take this path. Few third-party indexes serve PEP 658 yet, so
-fronting one with velodex can make resolution faster than the upstream itself once metadata is cached.
+from the index page, and caches it like any blob. For local uploads, velodex writes the sibling from verified wheel
+`METADATA` or sdist `PKG-INFO`. The `velodex_metadata_requests_total` metric counts these; the end-to-end tests assert
+on it to prove real clients take this path. Few third-party indexes serve PEP 658 yet, so fronting one with velodex can
+make resolution faster than the upstream itself once metadata is cached.
 
 ## Usage metrics
 

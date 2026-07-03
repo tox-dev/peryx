@@ -607,16 +607,16 @@ pub async fn file_path(
     Ok(state.blobs.path_for(&digest))
 }
 
-/// Resolve a wheel's PEP 658 metadata bytes: cached blob, or fetch the sibling from its source
+/// Resolve an artifact's PEP 658 metadata bytes: cached blob, or fetch the sibling from its source
 /// mirror, verify against the advertised digest, and cache.
 ///
 /// # Errors
-/// Returns [`CacheError::FileNotFound`] if the wheel has no known metadata sibling, or another error
-/// on a store or upstream failure.
-pub async fn metadata_bytes(state: &AppState, wheel_digest: &Digest) -> Result<Bytes, CacheError> {
+/// Returns [`CacheError::FileNotFound`] if the artifact has no known metadata sibling, or another
+/// error on a store or upstream failure.
+pub async fn metadata_bytes(state: &AppState, artifact_digest: &Digest) -> Result<Bytes, CacheError> {
     let (url, metadata_hex, source) = state
         .meta
-        .get_metadata(wheel_digest.as_str())?
+        .get_metadata(artifact_digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
     let metadata_digest = Digest::from_hex(&metadata_hex).ok_or(CacheError::FileNotFound)?;
     if state.blobs.exists(&metadata_digest) {
@@ -657,18 +657,12 @@ pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> R
     }
     state.blobs.commit_staged(content)?;
     let mut record = record;
-    if let Some(metadata) = metadata {
-        let metadata_digest = state.blobs.write(&metadata)?;
-        state
-            .meta
-            .put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
-        record
-            .file
-            .set_metadata(CoreMetadata::Hashes(std::collections::BTreeMap::from([(
-                "sha256".to_owned(),
-                metadata_digest.as_str().to_owned(),
-            )])));
-    }
+    let metadata_digest = state.blobs.write(&metadata)?;
+    state
+        .meta
+        .put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
+    let hashes = std::collections::BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
+    record.file.set_metadata(CoreMetadata::Hashes(hashes));
     let record = to_json(&record).into_bytes();
     state.meta.put_upload(name, &normalized, &filename, &record)?;
     state.meta.put_project(name, &normalized, &display_name)?;

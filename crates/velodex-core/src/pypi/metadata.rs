@@ -5,15 +5,19 @@
 /// project page. Unknown fields are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CoreMetadataDoc {
+    pub metadata_version: Option<String>,
     pub name: String,
     pub version: String,
     pub summary: Option<String>,
     pub requires_python: Option<String>,
     pub license: Option<String>,
+    pub license_expression: Option<String>,
+    pub license_files: Vec<String>,
     pub author: Option<String>,
     pub maintainer: Option<String>,
     pub keywords: Vec<String>,
     pub requires_dist: Vec<String>,
+    pub provides_extra: Vec<String>,
     pub classifiers: Vec<String>,
     /// `(label, url)` pairs from `Project-URL` headers.
     pub project_urls: Vec<(String, String)>,
@@ -34,11 +38,19 @@ pub fn parse_metadata(text: &str) -> CoreMetadataDoc {
         };
         let value = value.trim();
         match key.to_ascii_lowercase().as_str() {
+            "metadata-version" => doc.metadata_version = non_empty(value),
             "name" => value.clone_into(&mut doc.name),
             "version" => value.clone_into(&mut doc.version),
             "summary" => doc.summary = non_empty(value),
             "requires-python" => doc.requires_python = non_empty(value),
-            "license" | "license-expression" => doc.license = non_empty(value),
+            "license" => doc.license = non_empty(value),
+            "license-expression" => {
+                doc.license_expression = non_empty(value);
+                if doc.license.is_none() {
+                    doc.license = doc.license_expression.clone();
+                }
+            }
+            "license-file" => doc.license_files.push(value.to_owned()),
             "author" | "author-email" => doc.author = doc.author.or_else(|| non_empty(value)),
             "maintainer" | "maintainer-email" => doc.maintainer = doc.maintainer.or_else(|| non_empty(value)),
             "keywords" => {
@@ -49,6 +61,7 @@ pub fn parse_metadata(text: &str) -> CoreMetadataDoc {
                     .collect();
             }
             "requires-dist" => doc.requires_dist.push(value.to_owned()),
+            "provides-extra" => doc.provides_extra.push(value.to_owned()),
             "classifier" => doc.classifiers.push(value.to_owned()),
             "project-url" => {
                 let (label, url) = value.split_once(',').unwrap_or(("", value));

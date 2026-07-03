@@ -71,7 +71,10 @@ local upload target; Simple HTML/JSON and PEP 658 metadata siblings are true for
 Uploads accept wheels and `.tar.gz` sdists. The server validates the filename, form `name` and `version`, `filetype`,
 archive contents, and core metadata before the artifact becomes visible. Wheel validation requires normalized
 `.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD` files, WHEEL tag/build consistency, RECORD hashes, and matching
-RECORD sizes when present. Wheel uploads get a PEP 658 `.metadata` sibling; sdist metadata remains part of the archive.
+RECORD sizes when present. Sdist validation requires a PEP 625 `.tar.gz` filename, one safe `{name}-{version}/`
+top-level directory, `pyproject.toml`, and `PKG-INFO`; unsafe tar members and Metadata 2.4+ missing `License-File`
+entries are rejected. Wheel uploads serve `METADATA` as the PEP 658/714 `.metadata` sibling. Sdist uploads serve the
+verified `PKG-INFO` the same way.
 
 ## Status and usage
 
@@ -99,7 +102,7 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 `GET /metrics` exposes Prometheus counters:
 
 - `velodex_requests_total`: HTTP requests served.
-- `velodex_metadata_requests_total`: PEP 658 `.metadata` siblings served; a rising value proves clients resolve via the
-  metadata fast path rather than by downloading wheels.
+- `velodex_metadata_requests_total`: PEP 658/714 `.metadata` siblings served; a rising value proves clients resolve via
+  the metadata fast path rather than by downloading artifacts.
 - `velodex_index_*_total{index="<route>"}`: the `/+stats` counter set per index route (`pages`, `downloads`,
   `download_bytes`, `metadata`, `uploads`, `refreshes`, `pages_changed`, `stale_served`, `upstream_errors`, `rejected`).

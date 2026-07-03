@@ -49,9 +49,16 @@ pub fn authorized(header: Option<&str>, token: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct UploadForm {
     pub action: Option<String>,
+    pub metadata_version: Option<String>,
     pub name: Option<String>,
     pub version: Option<String>,
     pub requires_python: Option<String>,
+    pub license: Option<String>,
+    pub license_expression: Option<String>,
+    pub license_files: Vec<String>,
+    pub provides_extra: Vec<String>,
+    pub project_urls: Vec<String>,
+    pub home_page: Option<String>,
     pub filetype: Option<String>,
     pub sha256_digest: Option<String>,
     pub blake2_256_digest: Option<String>,
@@ -100,14 +107,18 @@ pub enum UploadError {
     InvalidRequiresPython(String),
     /// The archive could not be read as the format its filename claims.
     InvalidContent(String),
-    /// The artifact did not contain the metadata document needed to verify identity.
-    MissingMetadata(&'static str),
     /// The metadata document was not UTF-8.
     InvalidMetadataUtf8,
     /// The metadata project name does not match the upload form.
     MetadataNameMismatch { metadata: String, form: String },
     /// The metadata version does not match the upload form.
     MetadataVersionMismatch { metadata: String, form: String },
+    /// A metadata field does not match the upload form.
+    MetadataFieldMismatch {
+        field: &'static str,
+        metadata: String,
+        form: String,
+    },
     /// The upload time could not be represented as RFC 3339.
     InvalidUploadTime,
 }
@@ -120,7 +131,7 @@ pub struct PreparedUpload {
     pub filename: String,
     pub digest: Digest,
     pub content: StagedBlob,
-    pub metadata: Option<Vec<u8>>,
+    pub metadata: Vec<u8>,
     pub record: Uploaded,
 }
 
@@ -131,7 +142,7 @@ pub struct PreparedUpload {
 /// Returns [`UploadError`] if the action is wrong, a required field is missing, or a declared digest
 /// does not match the content, or the filename is not a safe URL path segment.
 pub fn prepare(
-    form: UploadForm,
+    mut form: UploadForm,
     staged: StagedUpload,
     index: &str,
     upload_time_unix: i64,
@@ -139,15 +150,15 @@ pub fn prepare(
     if form.action.as_deref() != Some("file_upload") {
         return Err(UploadError::NotFileUpload);
     }
-    let name = form.name.ok_or(UploadError::Missing("name"))?;
+    let name = form.name.take().ok_or(UploadError::Missing("name"))?;
     if !is_valid_name(&name) {
         return Err(UploadError::InvalidName(name));
     }
-    let version = form.version.ok_or(UploadError::Missing("version"))?;
+    let version = form.version.take().ok_or(UploadError::Missing("version"))?;
     let Some(parsed_version) = parse_version(&version) else {
         return Err(UploadError::InvalidVersion(version));
     };
-    let filename = form.filename.ok_or(UploadError::Missing("filename"))?;
+    let filename = form.filename.take().ok_or(UploadError::Missing("filename"))?;
     validate_filename(&filename).map_err(|_| UploadError::InvalidFilename(filename.clone()))?;
     let normalized = normalize_name(&name);
     let parsed = parse_filename(&filename)?;
@@ -163,7 +174,7 @@ pub fn prepare(
             form: version,
         });
     }
-    let filetype = form.filetype.ok_or(UploadError::Missing("filetype"))?;
+    let filetype = form.filetype.take().ok_or(UploadError::Missing("filetype"))?;
     if filetype != parsed.kind.upload_filetype() {
         return Err(UploadError::FiletypeMismatch {
             expected: parsed.kind.upload_filetype().to_owned(),
@@ -178,32 +189,20 @@ pub fn prepare(
         &staged.blake2_256,
     )?;
     let metadata = metadata_bytes(&parsed, &filename, staged.blob.path())?;
-    let metadata_doc = std::str::from_utf8(&metadata).map_err(|_| UploadError::InvalidMetadataUtf8)?;
-    let metadata_doc = parse_metadata(metadata_doc);
-    if normalize_name(&metadata_doc.name) != normalized || !is_valid_name(&metadata_doc.name) {
-        return Err(UploadError::MetadataNameMismatch {
-            metadata: metadata_doc.name,
-            form: normalized,
-        });
-    }
-    let Some(metadata_version) = parse_version(&metadata_doc.version) else {
-        return Err(UploadError::MetadataVersionMismatch {
-            metadata: metadata_doc.version,
-            form: parsed_version.to_string(),
-        });
-    };
-    if metadata_version != parsed_version {
-        return Err(UploadError::MetadataVersionMismatch {
-            metadata: metadata_version.to_string(),
-            form: parsed_version.to_string(),
-        });
-    }
-    let requires_python = form
+    let metadata_text = std::str::from_utf8(&metadata).map_err(|_| UploadError::InvalidMetadataUtf8)?;
+    let metadata_doc = parse_metadata(metadata_text);
+    let form_requires_python = form
         .requires_python
+        .clone()
         .filter(|requires_python| !requires_python.trim().is_empty())
-        .or(metadata_doc.requires_python)
         .map(validate_requires_python)
         .transpose()?;
+    validate_metadata_identity(&form, &metadata_doc, &normalized, &parsed_version)?;
+    let requires_python = metadata_doc
+        .requires_python
+        .map(validate_requires_python)
+        .transpose()?
+        .or(form_requires_python);
     let upload_time = upload_time(upload_time_unix)?;
     let digest = staged.blob.digest().clone();
     let file = File {
@@ -225,7 +224,7 @@ pub fn prepare(
         filename,
         digest,
         content: staged.blob,
-        metadata: (parsed.kind == DistributionKind::Wheel).then_some(metadata),
+        metadata,
         record: Uploaded { version, file },
     })
 }
@@ -291,10 +290,142 @@ fn metadata_bytes(
     match parsed.kind {
         DistributionKind::Wheel => crate::archive::validate_wheel_path(filename, path)
             .map_err(|err| UploadError::InvalidContent(err.to_string())),
-        DistributionKind::SdistTarGz => crate::archive::sdist_metadata_path(filename, path)
-            .map_err(|err| UploadError::InvalidContent(err.to_string()))?
-            .ok_or(UploadError::MissingMetadata("PKG-INFO")),
+        DistributionKind::SdistTarGz => crate::archive::validate_sdist_path(filename, path)
+            .map_err(|err| UploadError::InvalidContent(err.to_string())),
     }
+}
+
+fn validate_metadata_identity(
+    form: &UploadForm,
+    metadata: &velodex_core::pypi::CoreMetadataDoc,
+    normalized: &str,
+    parsed_version: &velodex_core::pypi::Version,
+) -> Result<(), UploadError> {
+    if normalize_name(&metadata.name) != normalized || !is_valid_name(&metadata.name) {
+        return Err(UploadError::MetadataNameMismatch {
+            metadata: metadata.name.clone(),
+            form: normalized.to_owned(),
+        });
+    }
+    let Some(metadata_version) = parse_version(&metadata.version) else {
+        return Err(UploadError::MetadataVersionMismatch {
+            metadata: metadata.version.clone(),
+            form: parsed_version.to_string(),
+        });
+    };
+    if &metadata_version != parsed_version {
+        return Err(UploadError::MetadataVersionMismatch {
+            metadata: metadata_version.to_string(),
+            form: parsed_version.to_string(),
+        });
+    }
+    compare_metadata_field(
+        "Metadata-Version",
+        form.metadata_version.as_deref(),
+        metadata.metadata_version.as_deref(),
+    )?;
+    compare_metadata_field(
+        "Requires-Python",
+        form.requires_python.as_deref(),
+        metadata.requires_python.as_deref(),
+    )?;
+    compare_metadata_field("License", form.license.as_deref(), metadata.license.as_deref())?;
+    compare_metadata_field(
+        "License-Expression",
+        form.license_expression.as_deref(),
+        metadata.license_expression.as_deref(),
+    )?;
+    compare_metadata_list("License-File", &form.license_files, &metadata.license_files)?;
+    compare_metadata_list("Provides-Extra", &form.provides_extra, &metadata.provides_extra)?;
+    compare_project_urls(form, &metadata.project_urls)
+}
+
+fn compare_metadata_field(field: &'static str, form: Option<&str>, metadata: Option<&str>) -> Result<(), UploadError> {
+    let Some(form) = form.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+    if metadata == Some(form) {
+        Ok(())
+    } else {
+        Err(UploadError::MetadataFieldMismatch {
+            field,
+            metadata: metadata.unwrap_or_default().to_owned(),
+            form: form.to_owned(),
+        })
+    }
+}
+
+fn compare_metadata_list(field: &'static str, form: &[String], metadata: &[String]) -> Result<(), UploadError> {
+    let form = sorted_non_empty(form);
+    if form.is_empty() {
+        return Ok(());
+    }
+    let metadata = sorted_non_empty(metadata);
+    if metadata == form {
+        Ok(())
+    } else {
+        Err(UploadError::MetadataFieldMismatch {
+            field,
+            metadata: metadata.join(", "),
+            form: form.join(", "),
+        })
+    }
+}
+
+fn compare_project_urls(form: &UploadForm, metadata: &[(String, String)]) -> Result<(), UploadError> {
+    let form_urls = upload_project_urls(form);
+    if form_urls.is_empty() {
+        return Ok(());
+    }
+    let mut metadata_urls: Vec<_> = metadata
+        .iter()
+        .map(|(label, url)| (label.clone(), url.clone()))
+        .collect();
+    metadata_urls.sort();
+    if metadata_urls == form_urls {
+        Ok(())
+    } else {
+        Err(UploadError::MetadataFieldMismatch {
+            field: "Project-URL",
+            metadata: metadata_urls
+                .into_iter()
+                .map(|(label, url)| format!("{label}, {url}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+            form: form_urls
+                .into_iter()
+                .map(|(label, url)| format!("{label}, {url}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        })
+    }
+}
+
+fn upload_project_urls(form: &UploadForm) -> Vec<(String, String)> {
+    let mut urls: Vec<_> = form
+        .project_urls
+        .iter()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            let (label, url) = value.split_once(',').unwrap_or(("", value));
+            (label.trim().to_owned(), url.trim().to_owned())
+        })
+        .collect();
+    if let Some(home_page) = form.home_page.as_deref().filter(|value| !value.trim().is_empty()) {
+        urls.push(("Homepage".to_owned(), home_page.to_owned()));
+    }
+    urls.sort();
+    urls
+}
+
+fn sorted_non_empty(values: &[String]) -> Vec<String> {
+    let mut values: Vec<_> = values
+        .iter()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .collect();
+    values.sort();
+    values
 }
 
 fn validate_requires_python(value: String) -> Result<String, UploadError> {

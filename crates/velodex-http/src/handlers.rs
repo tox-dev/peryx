@@ -282,9 +282,10 @@ fn archive_error(err: &crate::archive::ArchiveError, filename: &str, member: Opt
         }
         ArchiveError::MemberNotFound => StatusCode::NOT_FOUND,
         ArchiveError::InvalidRange { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
-        ArchiveError::UnsafeMember(_) | ArchiveError::InvalidWheel(_) | ArchiveError::Read(_) => {
-            StatusCode::UNPROCESSABLE_ENTITY
-        }
+        ArchiveError::UnsafeMember(_)
+        | ArchiveError::InvalidWheel(_)
+        | ArchiveError::InvalidSdist(_)
+        | ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
         ArchiveError::NestingTooDeep { .. } => StatusCode::BAD_REQUEST,
         ArchiveError::NestedArchiveTooLarge { .. } | ArchiveError::TooManyEntries(_) => StatusCode::PAYLOAD_TOO_LARGE,
     };
@@ -645,9 +646,16 @@ async fn collect_form(
 #[derive(Clone, Copy)]
 enum UploadTextField {
     Action,
+    MetadataVersion,
     Name,
     Version,
     RequiresPython,
+    License,
+    LicenseExpression,
+    LicenseFile,
+    ProvidesExtra,
+    ProjectUrl,
+    HomePage,
     Filetype,
     Sha256Digest,
     Blake2Digest,
@@ -657,9 +665,16 @@ enum UploadTextField {
 fn upload_text_field(name: &str) -> Option<UploadTextField> {
     match name {
         ":action" => Some(UploadTextField::Action),
+        "metadata_version" => Some(UploadTextField::MetadataVersion),
         "name" => Some(UploadTextField::Name),
         "version" => Some(UploadTextField::Version),
         "requires_python" => Some(UploadTextField::RequiresPython),
+        "license" => Some(UploadTextField::License),
+        "license_expression" => Some(UploadTextField::LicenseExpression),
+        "license_file" | "license_files" => Some(UploadTextField::LicenseFile),
+        "provides_extra" | "provides_extras" => Some(UploadTextField::ProvidesExtra),
+        "project_urls" => Some(UploadTextField::ProjectUrl),
+        "home_page" => Some(UploadTextField::HomePage),
         "filetype" => Some(UploadTextField::Filetype),
         "sha256_digest" => Some(UploadTextField::Sha256Digest),
         "blake2_256_digest" => Some(UploadTextField::Blake2Digest),
@@ -671,9 +686,16 @@ fn upload_text_field(name: &str) -> Option<UploadTextField> {
 fn set_upload_text_field(form: &mut UploadForm, field: UploadTextField, value: String) {
     match field {
         UploadTextField::Action => form.action = Some(value),
+        UploadTextField::MetadataVersion => form.metadata_version = Some(value),
         UploadTextField::Name => form.name = Some(value),
         UploadTextField::Version => form.version = Some(value),
         UploadTextField::RequiresPython => form.requires_python = Some(value),
+        UploadTextField::License => form.license = Some(value),
+        UploadTextField::LicenseExpression => form.license_expression = Some(value),
+        UploadTextField::LicenseFile => form.license_files.push(value),
+        UploadTextField::ProvidesExtra => form.provides_extra.push(value),
+        UploadTextField::ProjectUrl => form.project_urls.push(value),
+        UploadTextField::HomePage => form.home_page = Some(value),
         UploadTextField::Filetype => form.filetype = Some(value),
         UploadTextField::Sha256Digest => form.sha256_digest = Some(value),
         UploadTextField::Blake2Digest => form.blake2_256_digest = Some(value),
@@ -812,11 +834,6 @@ fn upload_error_response(err: &UploadError) -> Response {
             format!("uploaded content does not match the filename format: {message}"),
         )
             .into_response(),
-        UploadError::MissingMetadata(member) => (
-            StatusCode::BAD_REQUEST,
-            format!("uploaded artifact is missing required {member} metadata"),
-        )
-            .into_response(),
         UploadError::InvalidMetadataUtf8 => {
             (StatusCode::BAD_REQUEST, "artifact metadata is not valid UTF-8").into_response()
         }
@@ -830,12 +847,25 @@ fn upload_error_response(err: &UploadError) -> Response {
             format!("metadata Version {metadata:?} does not match upload version {form:?}"),
         )
             .into_response(),
+        UploadError::MetadataFieldMismatch {
+            field,
+            metadata,
+            form,
+        } => metadata_field_mismatch_response(field, metadata, form),
         UploadError::InvalidUploadTime => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "configured clock produced an invalid upload timestamp",
         )
             .into_response(),
     }
+}
+
+fn metadata_field_mismatch_response(field: &str, metadata: &str, form: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        format!("metadata {field} {metadata:?} does not match upload value {form:?}"),
+    )
+        .into_response()
 }
 
 fn distribution_filename_error_message(err: &DistributionFilenameError) -> String {

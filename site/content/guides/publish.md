@@ -41,14 +41,22 @@ Before publishing the staged blob, velodex validates the project name, PEP 440 v
 archive readability, and metadata identity. Wheel uploads must contain one normalized `{name}-{version}.dist-info/`
 directory with `METADATA`, `WHEEL`, and `RECORD`. The `WHEEL` tags and optional build field must match the filename, and
 `RECORD` must cover each archive file except `RECORD` and deprecated RECORD signatures with sha256-or-better hashes.
-When `RECORD` includes a size, the size must match the archive member. The filename, form fields, and `METADATA` or
-`PKG-INFO` `Name` and `Version` must agree. `Requires-Python`, when present in the form or metadata, must parse as
-Python version specifiers.
+When `RECORD` includes a size, the size must match the archive member.
+
+Modern sdists must be `.tar.gz` files whose filename follows PEP 625. The archive must contain one top-level
+`{name}-{version}/` directory with `pyproject.toml` and `PKG-INFO`. velodex rejects tar entries with absolute paths,
+traversal, unsafe links, special files, or device entries. For Metadata 2.4 and newer, every `License-File` header must
+name a file inside the sdist.
+
+The filename, form fields, and `METADATA` or `PKG-INFO` `Name` and `Version` must agree. `Metadata-Version`,
+`Requires-Python`, license fields, extras, and project URLs are compared when the upload form supplies them and the
+metadata model can represent them. `Requires-Python`, when present in the form or metadata, must parse as Python version
+specifiers.
 
 Accepted files are stored content-addressed and served from `/root/pypi/simple/<project>/` alongside the mirror's
-packages. Your file shadows an upstream file of the same name. For wheels, velodex extracts the `METADATA` document and
-serves it as the PEP 658 sibling, so resolvers get the fast path for your uploads too and the web UI can show the full
-package page.
+packages. Your file shadows an upstream file of the same name. For wheels, velodex extracts `METADATA`; for sdists, it
+extracts the verified `PKG-INFO`. Both are served as PEP 658/714 `.metadata` siblings, so resolvers get the fast path
+for your uploads and the web UI can show the full package page.
 
 ## In `.pypirc`
 
@@ -81,8 +89,9 @@ Validation failures return `400` with the field or archive check that failed. Co
 
 - The filename is not a wheel or `.tar.gz` sdist.
 - The filename's normalized project name or version does not match the form fields.
-- The archive is corrupt, lacks required wheel files, or has a bad `RECORD`.
+- The archive is corrupt, lacks required wheel or sdist files, has unsafe tar entries, or has a bad `RECORD`.
 - Core metadata names a different project or version.
+- A Metadata 2.4+ sdist lists a `License-File` that is missing from the archive.
 - A declared sha256 or blake2b-256 digest does not match the received bytes.
 - The same filename was already uploaded with different bytes.
 

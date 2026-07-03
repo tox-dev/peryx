@@ -410,9 +410,10 @@ fn metadata_download() -> OperationBuilder {
         .tag("files")
         .summary(Some("Download PEP 658 core metadata"))
         .description(Some(
-            "The `.metadata` sibling of a wheel: the wheel's core-metadata document, verified against \
-             the digest the index page advertised. pip and uv resolve through this instead of \
-             downloading whole wheels.",
+            "The `.metadata` sibling of an artifact: core metadata verified against the digest the \
+             index page advertised. Uploaded wheels serve `METADATA`; uploaded sdists serve the \
+             verified `PKG-INFO`. pip and uv resolve through this instead of downloading whole \
+             artifacts.",
         ))
         .parameter(route_param())
         .parameter(sha256_param())
@@ -427,7 +428,7 @@ fn metadata_download() -> OperationBuilder {
         )
         .response(
             "404",
-            ResponseBuilder::new().description("The wheel has no known metadata sibling"),
+            ResponseBuilder::new().description("The artifact has no known metadata sibling"),
         )
 }
 
@@ -463,8 +464,9 @@ fn upload() -> OperationBuilder {
              form's `content` part carries a wheel or modern `.tar.gz` sdist. velodex streams the \
              bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` \
              values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and \
-             core-metadata identity before the file lands in the index's local layer. The upload shadows \
-             any upstream file of the same name.",
+             sdist top-level structure before the file lands in the index's local layer. Uploaded \
+             wheels and sdists get PEP 658/714 `.metadata` siblings from verified core metadata. The \
+             upload shadows any upstream file of the same name.",
         ))
         .parameter(route_param())
         .security(SecurityRequirement::new("uploadToken", [""; 0]))

@@ -794,7 +794,7 @@ async fn test_upload_direct_to_local_route() {
 }
 
 #[tokio::test]
-async fn test_upload_sdist_is_accepted_without_metadata_sibling() {
+async fn test_upload_sdist_gains_metadata_sibling() {
     let h = harness().await;
     let sdist = fixture_sdist();
     let fields = vec![
@@ -810,13 +810,16 @@ async fn test_upload_sdist_is_accepted_without_metadata_sibling() {
     );
 
     let digest = Digest::of(&sdist);
-    let (status, _, _) = get(
+    let (_, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    assert!(detail.contains("\"core-metadata\":{\"sha256\""));
+    let (status, _, body) = get(
         &h.state,
         &format!("/local/files/{}/velodexpkg-1.0.tar.gz.metadata", digest.as_str()),
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("Metadata-Version: 2.2"));
 }
 
 #[tokio::test]
@@ -833,7 +836,7 @@ async fn test_upload_sdist_missing_pkg_info_is_bad_request() {
     let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body, "uploaded artifact is missing required PKG-INFO metadata");
+    assert!(body.contains("uploaded content does not match the filename format: invalid sdist: missing required"));
 }
 
 #[tokio::test]
@@ -1198,6 +1201,44 @@ async fn test_upload_content_validation_errors_include_actionable_body() {
         Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)),
         StatusCode::INTERNAL_SERVER_ERROR,
         "configured clock produced an invalid upload timestamp",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_upload_metadata_form_fields_are_validated() {
+    let h = harness().await;
+    let fields = vec![
+        (":action", "file_upload"),
+        ("metadata_version", "2.1"),
+        ("name", "velodexpkg"),
+        ("version", "1.0"),
+        ("requires_python", ">=3.8"),
+        ("license", "MIT"),
+        ("license_expression", "MIT"),
+        ("license_file", "LICENSE"),
+        ("provides_extra", "cli"),
+        ("project_urls", "Source, https://example.test/source"),
+        ("home_page", "https://example.test/home"),
+        ("filetype", "bdist_wheel"),
+    ];
+    let wheel = fixture_wheel_with_metadata(
+        b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense: MIT\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
+    );
+    let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
+    assert_eq!(
+        post_upload(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    let mut fields = fields;
+    fields[6] = ("license_expression", "Apache-2.0");
+    assert_upload_response(
+        &h,
+        &fields,
+        Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)),
+        StatusCode::BAD_REQUEST,
+        "metadata License-Expression \"MIT\" does not match upload value \"Apache-2.0\"",
     )
     .await;
 }
@@ -1941,12 +1982,19 @@ fn fixture_sdist() -> Vec<u8> {
     {
         let encoder = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
         let mut tar = tar::Builder::new(encoder);
-        let content = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
+        let content = b"Metadata-Version: 2.2\nName: velodexpkg\nVersion: 1.0\n";
         let mut header = tar::Header::new_gnu();
         header.set_size(content.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
         tar.append_data(&mut header, "velodexpkg-1.0/PKG-INFO", content.as_slice())
+            .unwrap();
+        let pyproject = b"[build-system]\nrequires = []\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(pyproject.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "velodexpkg-1.0/pyproject.toml", pyproject.as_slice())
             .unwrap();
         tar.finish().unwrap();
     }
@@ -1965,6 +2013,13 @@ fn fixture_sdist_without_pkg_info() -> Vec<u8> {
         header.set_cksum();
         tar.append_data(&mut header, "velodexpkg-1.0/module.py", content.as_slice())
             .unwrap();
+        let pyproject = b"[build-system]\nrequires = []\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(pyproject.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "velodexpkg-1.0/pyproject.toml", pyproject.as_slice())
+            .unwrap();
         tar.finish().unwrap();
     }
     buf
@@ -1978,7 +2033,9 @@ fn fixture_wheel_with_body(version: &str, body: &[u8]) -> Vec<u8> {
     fixture_wheel_with_body_and_metadata(
         version,
         body,
-        Some(format!("Metadata-Version: 2.1\nName: velodexpkg\nVersion: {version}\n").as_bytes()),
+        Some(
+            format!("Metadata-Version: 2.1\nName: velodexpkg\nVersion: {version}\nRequires-Python: >=3.8\n").as_bytes(),
+        ),
     )
 }
 

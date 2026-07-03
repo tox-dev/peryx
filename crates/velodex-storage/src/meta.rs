@@ -555,14 +555,14 @@ impl MetaStore {
         Ok(table.get(sha256)?.and_then(|value| split_pair(value.value())))
     }
 
-    /// Record the PEP 658 metadata sibling for a wheel: keyed by the wheel's digest, storing the
-    /// upstream `.metadata` URL and the metadata's own sha256 (for verify-on-fetch).
+    /// Record the PEP 658 metadata sibling for an artifact: keyed by the artifact's digest,
+    /// storing the upstream `.metadata` URL and the metadata's own sha256 (for verify-on-fetch).
     ///
     /// # Errors
     /// Returns a store error if the write or commit fails.
     pub fn put_metadata(
         &self,
-        wheel_sha256: &str,
+        artifact_sha256: &str,
         url: &str,
         metadata_sha256: &str,
         source: &str,
@@ -571,20 +571,20 @@ impl MetaStore {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(METADATA)?;
-            table.insert(wheel_sha256, value.as_str())?;
+            table.insert(artifact_sha256, value.as_str())?;
         }
         txn.commit()?;
         Ok(())
     }
 
-    /// Look up a wheel's metadata sibling: `(upstream url, metadata sha256, mirror name)`.
+    /// Look up an artifact's metadata sibling: `(upstream url, metadata sha256, mirror name)`.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
-    pub fn get_metadata(&self, wheel_sha256: &str) -> Result<Option<(String, String, String)>, MetaError> {
+    pub fn get_metadata(&self, artifact_sha256: &str) -> Result<Option<(String, String, String)>, MetaError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(METADATA)?;
-        Ok(table.get(wheel_sha256)?.and_then(|value| {
+        Ok(table.get(artifact_sha256)?.and_then(|value| {
             let mut parts = value.value().splitn(3, '\n');
             Some((
                 parts.next()?.to_owned(),
