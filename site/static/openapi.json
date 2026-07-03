@@ -160,7 +160,7 @@
           "publish"
         ],
         "summary": "Upload a distribution",
-        "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries the file; a declared `sha256_digest` is verified against the received bytes. The file lands in the index's local layer and shadows any upstream file of the same name.",
+        "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries a wheel or modern `.tar.gz` sdist. velodex streams the bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` values, then checks filename, archive, and core-metadata identity before the file lands in the index's local layer. The upload shadows any upstream file of the same name.",
         "parameters": [
           {
             "name": "route",
@@ -176,7 +176,9 @@
             "multipart/form-data": {
               "example": {
                 ":action": "file_upload",
+                "blake2_256_digest": "5c7d8a29df3e0c4c752c02bff90615dd08d1d1aa9e23738a1e50c27f0415f95d",
                 "content": "<the distribution file>",
+                "filetype": "bdist_wheel",
                 "name": "velodexpkg",
                 "requires_python": ">=3.8",
                 "sha256_digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
@@ -198,7 +200,7 @@
             "description": "Rejected",
             "content": {
               "text/plain": {
-                "example": "invalid filename \"../pkg.whl\": filenames must be relative path segments without separators, traversal, or control characters"
+                "example": "metadata Name \"other\" does not match upload name \"velodexpkg\""
               }
             }
           },

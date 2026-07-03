@@ -144,6 +144,15 @@ pub struct PendingBlob {
     file: std::io::BufWriter<std::fs::File>,
     path: tempfile::TempPath,
     hasher: Sha256,
+    len: u64,
+}
+
+/// A fully written temporary blob, ready to move into the content-addressed tree.
+#[derive(Debug)]
+pub struct StagedBlob {
+    path: tempfile::TempPath,
+    digest: Digest,
+    len: u64,
 }
 
 impl BlobStore {
@@ -159,7 +168,25 @@ impl BlobStore {
             file: std::io::BufWriter::with_capacity(1 << 20, file),
             path,
             hasher: Sha256::new(),
+            len: 0,
         })
+    }
+
+    /// Move a staged blob into the store.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] on a filesystem failure.
+    ///
+    /// # Panics
+    /// Never in practice: blob paths always sit inside the store root, so a parent exists.
+    pub fn commit_staged(&self, staged: StagedBlob) -> Result<(), BlobError> {
+        let dest = self.path_for(&staged.digest);
+        if dest.is_file() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dest.parent().expect("blob paths always have a parent"))?;
+        staged.path.persist(&dest).map_err(|err| BlobError::Io(err.error))?;
+        Ok(())
     }
 
     /// Finish a streamed write: verify the digest and move the blob into place.
@@ -171,19 +198,14 @@ impl BlobStore {
     /// # Panics
     /// Never in practice: blob paths always sit inside the store root, so a parent exists.
     pub fn commit(&self, pending: PendingBlob, expected: &Digest) -> Result<(), BlobError> {
-        let actual = Digest(to_hex(&pending.hasher.finalize()));
-        if &actual != expected {
+        let staged = pending.finish()?;
+        if staged.digest() != expected {
             return Err(BlobError::DigestMismatch {
                 expected: expected.as_str().to_owned(),
-                actual: actual.0,
+                actual: staged.digest().as_str().to_owned(),
             });
         }
-        let file = pending.file.into_inner().map_err(std::io::IntoInnerError::into_error)?;
-        file.sync_all()?;
-        let dest = self.path_for(expected);
-        std::fs::create_dir_all(dest.parent().expect("blob paths always have a parent"))?;
-        pending.path.persist(&dest).map_err(|err| BlobError::Io(err.error))?;
-        Ok(())
+        self.commit_staged(staged)
     }
 }
 
@@ -197,6 +219,7 @@ impl PendingBlob {
         // the incomplete blob instead of persisting it.
         self.file.write_all(chunk)?;
         self.hasher.update(chunk);
+        self.len += chunk.len() as u64;
         Ok(())
     }
 
@@ -213,5 +236,45 @@ impl PendingBlob {
     #[must_use]
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Finish writing and return the staged blob.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] if flushing or syncing the temporary file fails.
+    pub fn finish(self) -> Result<StagedBlob, BlobError> {
+        let file = self.file.into_inner().map_err(std::io::IntoInnerError::into_error)?;
+        file.sync_all()?;
+        Ok(StagedBlob {
+            path: self.path,
+            digest: Digest(to_hex(&self.hasher.finalize())),
+            len: self.len,
+        })
+    }
+}
+
+impl StagedBlob {
+    /// The staged file path.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// The staged file digest.
+    #[must_use]
+    pub const fn digest(&self) -> &Digest {
+        &self.digest
+    }
+
+    /// The staged byte length.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Whether the staged file has no bytes.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }

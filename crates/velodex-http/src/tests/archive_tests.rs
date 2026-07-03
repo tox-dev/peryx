@@ -3,7 +3,8 @@ use std::io::Write as _;
 use crate::archive::{
     ArchiveError, DEFAULT_MEMBER_CHUNK, MAX_CONTAINER_DEPTH, MAX_LISTED_ENTRIES, MAX_NESTED_ARCHIVE_SIZE, Member,
     MemberKind, list_members, list_members_nested_path, list_members_path, read_member, read_member_chunk,
-    read_member_chunk_path, read_text_member_chunk_nested_path,
+    read_member_chunk_path, read_text_member_chunk_nested_path, sdist_metadata_path, wheel_metadata,
+    wheel_metadata_path,
 };
 
 fn small_zip() -> Vec<u8> {
@@ -30,6 +31,102 @@ fn zip_with_file(path: &str, bytes: &[u8], compression: zip::CompressionMethod) 
         zip.finish().unwrap();
     }
     buf
+}
+
+fn tar_gz_with_file(path: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut tarball = Vec::new();
+    {
+        let encoder = flate2::write::GzEncoder::new(&mut tarball, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        builder.append_data(&mut header, path, bytes).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+    tarball
+}
+
+fn tar_gz_with_directory_and_file(path: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut tarball = Vec::new();
+    {
+        let encoder = flate2::write::GzEncoder::new(&mut tarball, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append_data(&mut header, "pkg-1.0", std::io::empty()).unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        builder.append_data(&mut header, path, bytes).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+    tarball
+}
+
+#[test]
+fn test_extracts_metadata_documents_without_buffering_archives() {
+    let wheel = zip_with_file(
+        "pkg-1.0.dist-info/METADATA",
+        b"Metadata-Version: 2.1\nName: pkg\n",
+        zip::CompressionMethod::Stored,
+    );
+    assert_eq!(
+        wheel_metadata("pkg-1.0-py3-none-any.whl", &wheel).as_deref(),
+        Some(b"Metadata-Version: 2.1\nName: pkg\n".as_slice())
+    );
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&wheel).unwrap();
+    file.flush().unwrap();
+    assert_eq!(
+        wheel_metadata_path("pkg-1.0-py3-none-any.whl", file.path())
+            .unwrap()
+            .as_deref(),
+        Some(b"Metadata-Version: 2.1\nName: pkg\n".as_slice())
+    );
+    assert!(wheel_metadata("pkg-1.0.zip", &wheel).is_none());
+
+    let mut wheel = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut wheel));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.add_directory("pkg-1.0.dist-info/", options).unwrap();
+        zip.start_file("pkg-1.0.dist-info/METADATA", options).unwrap();
+        zip.write_all(b"Metadata-Version: 2.1\nName: pkg\n").unwrap();
+        zip.finish().unwrap();
+    }
+    assert_eq!(
+        wheel_metadata("pkg-1.0-py3-none-any.whl", &wheel).as_deref(),
+        Some(b"Metadata-Version: 2.1\nName: pkg\n".as_slice())
+    );
+
+    let sdist = tar_gz_with_file("pkg-1.0/PKG-INFO", b"Metadata-Version: 2.1\nName: pkg\n");
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&sdist).unwrap();
+    file.flush().unwrap();
+    assert_eq!(
+        sdist_metadata_path("pkg-1.0.tar.gz", file.path()).unwrap().as_deref(),
+        Some(b"Metadata-Version: 2.1\nName: pkg\n".as_slice())
+    );
+    assert!(sdist_metadata_path("pkg-1.0.zip", file.path()).unwrap().is_none());
+
+    let sdist = tar_gz_with_directory_and_file("pkg-1.0/PKG-INFO", b"Metadata-Version: 2.1\nName: pkg\n");
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&sdist).unwrap();
+    file.flush().unwrap();
+    assert_eq!(
+        sdist_metadata_path("pkg-1.0.tar.gz", file.path()).unwrap().as_deref(),
+        Some(b"Metadata-Version: 2.1\nName: pkg\n".as_slice())
+    );
+
+    let sdist = tar_gz_with_file("pkg-1.0/module.py", b"x = 1\n");
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&sdist).unwrap();
+    file.flush().unwrap();
+    assert!(sdist_metadata_path("pkg-1.0.tar.gz", file.path()).unwrap().is_none());
 }
 
 #[test]

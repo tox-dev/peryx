@@ -38,6 +38,8 @@ pub enum CacheError {
     NotVolatile,
     #[error("no known source for this file")]
     FileNotFound,
+    #[error("file already exists: {0}")]
+    FileExists(String),
     #[error("file stream failed: {0}")]
     Stream(String),
 }
@@ -606,36 +608,52 @@ pub async fn metadata_bytes(state: &AppState, wheel_digest: &Digest) -> Result<B
     Ok(bytes)
 }
 
-/// Persist a prepared upload into the local store `name`: write the blob, record the file and its
-/// project, and bump the serial.
+/// Persist a prepared upload into the local store `name`: commit the staged blob, record the file
+/// and its project, and bump the serial. Returns `false` for a same-bytes duplicate.
 ///
 /// # Errors
 /// Returns [`CacheError`] if a blob write, store write, or encode fails.
-pub fn store_upload(state: &AppState, name: &str, prepared: &PreparedUpload) -> Result<(), CacheError> {
-    state.blobs.write_verified(&prepared.content, &prepared.digest)?;
-    let mut record = prepared.record.clone();
-    // A wheel's own METADATA becomes its PEP 658 sibling, as pypi.org serves for uploads. The
-    // sibling blob is stored outright, so `metadata_bytes` never needs an upstream URL for it.
-    if let Some(metadata) = crate::archive::wheel_metadata(&prepared.filename, &prepared.content) {
-        let digest = state.blobs.write(&metadata)?;
+pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
+    let PreparedUpload {
+        normalized,
+        display_name,
+        filename,
+        digest: content_digest,
+        content,
+        metadata,
+        record,
+    } = prepared;
+    if let Some(existing) = state.meta.get_upload(name, &normalized, &filename)? {
+        let uploaded: Uploaded = serde_json::from_slice(&existing)?;
+        if uploaded
+            .file
+            .hashes
+            .get("sha256")
+            .is_some_and(|hash| hash == content_digest.as_str())
+        {
+            state.blobs.commit_staged(content)?;
+            return Ok(false);
+        }
+        return Err(CacheError::FileExists(filename));
+    }
+    state.blobs.commit_staged(content)?;
+    let mut record = record;
+    if let Some(metadata) = metadata {
+        let metadata_digest = state.blobs.write(&metadata)?;
         state
             .meta
-            .put_metadata(prepared.digest.as_str(), "uploaded", digest.as_str(), name)?;
+            .put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
         record.file.core_metadata = CoreMetadata::Hashes(std::collections::BTreeMap::from([(
             "sha256".to_owned(),
-            digest.as_str().to_owned(),
+            metadata_digest.as_str().to_owned(),
         )]));
     }
     let record = to_json(&record).into_bytes();
-    state
-        .meta
-        .put_upload(name, &prepared.normalized, &prepared.filename, &record)?;
-    state
-        .meta
-        .put_project(name, &prepared.normalized, &prepared.display_name)?;
+    state.meta.put_upload(name, &normalized, &filename, &record)?;
+    state.meta.put_project(name, &normalized, &display_name)?;
     state.meta.next_serial()?;
     state.bump_epoch();
-    Ok(())
+    Ok(true)
 }
 
 /// The two reversible override kinds for files served from read-only layers.

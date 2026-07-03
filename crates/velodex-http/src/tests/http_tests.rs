@@ -8,14 +8,17 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
+use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::UpstreamClient;
 use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use crate::path_safety::local_file_url;
 use crate::router;
 use crate::state::{AppState, Index, IndexKind};
+use crate::upload::Uploaded;
 
 pub(super) struct Harness {
     _dir: tempfile::TempDir,
@@ -77,6 +80,11 @@ pub(super) async fn harness() -> Harness {
 }
 
 pub(super) async fn get(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (StatusCode, HeaderMap, String) {
+    let (status, headers, bytes) = get_bytes(state, uri, accept).await;
+    (status, headers, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn get_bytes(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (StatusCode, HeaderMap, Vec<u8>) {
     let mut builder = Request::builder().uri(uri).method("GET");
     if let Some(accept) = accept {
         builder = builder.header(header::ACCEPT, accept);
@@ -88,7 +96,7 @@ pub(super) async fn get(state: &Arc<AppState>, uri: &str, accept: Option<&str>) 
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, headers, String::from_utf8_lossy(&bytes).into_owned())
+    (status, headers, bytes.to_vec())
 }
 
 async fn request(state: &Arc<AppState>, verb: &str, uri: &str, auth: Option<&str>) -> StatusCode {
@@ -351,7 +359,7 @@ async fn test_file_download_rejects_encoded_path_filename() {
 #[tokio::test]
 async fn test_file_download_allows_literal_percent_filename() {
     let h = harness().await;
-    let digest = upload_wheel(&h.state, "velodexpkg%2F.whl", b"PKpercent").await;
+    let digest = put_local_file(&h.state, "velodexpkg%2F.whl", b"PKpercent", "1.0");
     let uri = format!("/local/files/{}/velodexpkg%252F.whl", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -424,11 +432,17 @@ fn upload_fields() -> Vec<(&'static str, &'static str)> {
         (":action", "file_upload"),
         ("name", "velodexpkg"),
         ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
         ("requires_python", ">=3.8"),
     ]
 }
 
 fn multipart_body(fields: &[(&str, &str)], content: Option<(&str, &[u8])>) -> (String, Vec<u8>) {
+    let contents = content.into_iter().collect::<Vec<_>>();
+    multipart_body_with_content_parts(fields, &contents)
+}
+
+fn multipart_body_with_content_parts(fields: &[(&str, &str)], contents: &[(&str, &[u8])]) -> (String, Vec<u8>) {
     let boundary = "velodextestboundary";
     let mut body = Vec::new();
     for (name, value) in fields {
@@ -436,7 +450,7 @@ fn multipart_body(fields: &[(&str, &str)], content: Option<(&str, &[u8])>) -> (S
             format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
         );
     }
-    if let Some((filename, bytes)) = content {
+    for (filename, bytes) in contents {
         body.extend_from_slice(
             format!(
                 "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; filename=\"{filename}\"\r\n\r\n"
@@ -487,6 +501,19 @@ async fn post_upload_response(
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+async fn assert_upload_response(
+    h: &Harness,
+    fields: &[(&str, &str)],
+    content: Option<(&str, &[u8])>,
+    expected_status: StatusCode,
+    expected_body: &str,
+) {
+    let (ct, body) = multipart_body(fields, content);
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await;
+    assert_eq!(status, expected_status);
+    assert_eq!(body, expected_body);
+}
+
 async fn upload_velodexpkg(state: &Arc<AppState>, uri: &str, wheel: &[u8]) -> StatusCode {
     let (ct, body) = multipart_body(&upload_fields(), Some(("velodexpkg-1.0-py3-none-any.whl", wheel)));
     post_upload(state, uri, Some(&upload_auth()), &ct, body).await
@@ -495,21 +522,21 @@ async fn upload_velodexpkg(state: &Arc<AppState>, uri: &str, wheel: &[u8]) -> St
 #[tokio::test]
 async fn test_upload_via_overlay_then_serve_and_download() {
     let h = harness().await;
-    let wheel = b"PKuploadedwheel";
-    assert_eq!(upload_velodexpkg(&h.state, "/root/pypi/", wheel).await, StatusCode::OK);
+    let wheel = fixture_wheel();
+    assert_eq!(upload_velodexpkg(&h.state, "/root/pypi/", &wheel).await, StatusCode::OK);
 
     // Served through the overlay, with the URL on the overlay route.
     let (ds, _, detail) = get(&h.state, "/root/pypi/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(ds, StatusCode::OK);
     assert!(detail.contains("velodexpkg-1.0-py3-none-any.whl"));
     assert!(detail.contains("\"1.0\""));
-    let digest = Digest::of(wheel);
+    let digest = Digest::of(&wheel);
     assert!(detail.contains(&format!("/root/pypi/files/{}/velodexpkg", digest.as_str())));
 
     let uri = format!("/root/pypi/files/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
-    let (fs, _, fbody) = get(&h.state, &uri, None).await;
+    let (fs, _, fbody) = get_bytes(&h.state, &uri, None).await;
     assert_eq!(fs, StatusCode::OK);
-    assert_eq!(fbody.as_bytes(), wheel);
+    assert_eq!(fbody, wheel);
 
     // The overlay's project list includes the uploaded project.
     let (ls, _, list) = get(&h.state, "/root/pypi/simple/", Some("application/json")).await;
@@ -547,7 +574,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
         },
     ];
     let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
-    upload_velodexpkg(&state, "/root/pypi/", b"x").await;
+    upload_velodexpkg(&state, "/root/pypi/", &fixture_wheel()).await;
     // The mirror layer is unreachable, but the local layer still serves the upload.
     let (status, _, detail) = get(&state, "/root/pypi/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
@@ -557,10 +584,88 @@ async fn test_overlay_tolerates_unavailable_layer() {
 #[tokio::test]
 async fn test_upload_direct_to_local_route() {
     let h = harness().await;
-    assert_eq!(upload_velodexpkg(&h.state, "/local/", b"bytes").await, StatusCode::OK);
+    assert_eq!(
+        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
     let (status, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(detail.contains("velodexpkg"));
+}
+
+#[tokio::test]
+async fn test_upload_sdist_is_accepted_without_metadata_sibling() {
+    let h = harness().await;
+    let sdist = fixture_sdist();
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "velodexpkg"),
+        ("version", "1.0"),
+        ("filetype", "sdist"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0.tar.gz", &sdist)));
+    assert_eq!(
+        post_upload(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    let digest = Digest::of(&sdist);
+    let (status, _, _) = get(
+        &h.state,
+        &format!("/local/files/{}/velodexpkg-1.0.tar.gz.metadata", digest.as_str()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_upload_same_file_is_idempotent() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    assert_eq!(upload_velodexpkg(&h.state, "/local/", &wheel).await, StatusCode::OK);
+    assert_eq!(upload_velodexpkg(&h.state, "/local/", &wheel).await, StatusCode::OK);
+
+    let (status, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["files"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_upload_same_filename_with_different_bytes_is_bad_request() {
+    let h = harness().await;
+    assert_eq!(
+        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+    let wheel = fixture_wheel_with_body("1.0", b"VALUE = 2\n");
+    let (ct, body) = multipart_body(&upload_fields(), Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
+
+    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &ct, body).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        "File already exists: \"velodexpkg-1.0-py3-none-any.whl\" has different content; use a different filename"
+    );
+}
+
+#[tokio::test]
+async fn test_upload_duplicate_content_field_is_bad_request() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let (content_type, body) = multipart_body_with_content_parts(
+        &upload_fields(),
+        &[
+            ("velodexpkg-1.0-py3-none-any.whl", &wheel),
+            ("velodexpkg-1.0-py3-none-any.whl", &wheel),
+        ],
+    );
+    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "bad upload: duplicate content field");
 }
 
 #[tokio::test]
@@ -639,6 +744,248 @@ async fn test_upload_invalid_filename_is_bad_request() {
 }
 
 #[tokio::test]
+async fn test_upload_invalid_distribution_filename_is_bad_request() {
+    for (filename, expected) in [
+        (
+            "velodexpkg-1.0.zip",
+            "invalid distribution filename \"velodexpkg-1.0.zip\": accepted upload formats are .whl and .tar.gz",
+        ),
+        (
+            "velodexpkg-1.0.egg",
+            "invalid distribution filename \"velodexpkg-1.0.egg\": legacy .egg uploads are not accepted; upload a wheel or .tar.gz sdist",
+        ),
+        (
+            "velodexpkg-1.0-py3-none.whl",
+            "invalid distribution filename \"velodexpkg-1.0-py3-none.whl\": wheel filenames must use distribution-version(-build tag)?-python tag-abi tag-platform tag.whl",
+        ),
+        (
+            "velodexpkg.tar.gz",
+            "invalid distribution filename \"velodexpkg.tar.gz\": sdist filenames must use name-version.tar.gz",
+        ),
+        (
+            "velodexpkg!-1.0-py3-none-any.whl",
+            "invalid distribution filename \"velodexpkg!-1.0-py3-none-any.whl\": distribution name component \"velodexpkg!\" is not a valid PyPA project name",
+        ),
+        (
+            "velodexpkg-bad-py3-none-any.whl",
+            "invalid distribution filename \"velodexpkg-bad-py3-none-any.whl\": version component \"bad\" is not a PEP 440 version",
+        ),
+        (
+            "velodexpkg-1.0-py3-*-any.whl",
+            "invalid distribution filename \"velodexpkg-1.0-py3-*-any.whl\": wheel build/tag component \"*\" contains invalid characters",
+        ),
+    ] {
+        let h = harness().await;
+        let (ct, body) = multipart_body(&upload_fields(), Some((filename, b"x")));
+        let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, expected);
+    }
+}
+
+#[tokio::test]
+async fn test_upload_form_validation_errors_include_actionable_body() {
+    let h = harness().await;
+    for (fields, content, expected_status, expected_body) in [
+        (
+            vec![(":action", "submit"), ("name", "velodexpkg"), ("version", "1.0")],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "unsupported :action",
+        ),
+        (
+            vec![(":action", "file_upload"), ("version", "1.0")],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "missing required field: name",
+        ),
+        (
+            vec![
+                (":action", "file_upload"),
+                ("name", "velodexpkg"),
+                ("version", "1.0"),
+                ("filetype", "bdist_wheel"),
+            ],
+            None,
+            StatusCode::BAD_REQUEST,
+            "missing required field: content",
+        ),
+        (
+            vec![(":action", "file_upload"), ("name", "-bad"), ("version", "1.0")],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "invalid project name \"-bad\": names must start and end with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'",
+        ),
+        (
+            vec![(":action", "file_upload"), ("name", "velodexpkg"), ("version", "bad")],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "invalid version \"bad\": expected a PEP 440 version",
+        ),
+        (
+            vec![
+                (":action", "file_upload"),
+                ("name", "velodexpkg"),
+                ("version", "1.0"),
+                ("filetype", "sdist"),
+            ],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "filetype \"sdist\" does not match filename; expected \"bdist_wheel\"",
+        ),
+        (
+            upload_fields(),
+            Some(("other-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "filename project \"other\" does not match upload name \"velodexpkg\"",
+        ),
+        (
+            upload_fields(),
+            Some(("velodexpkg-2.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "filename version \"2.0\" does not match upload version \"1.0\"",
+        ),
+        (
+            vec![
+                (":action", "file_upload"),
+                ("name", "velodexpkg"),
+                ("version", "1.0"),
+                ("filetype", "bdist_wheel"),
+                ("sha256_digest", "00"),
+            ],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "sha256_digest value \"00\" is not lowercase hex with the expected length",
+        ),
+        (
+            vec![
+                (":action", "file_upload"),
+                ("name", "velodexpkg"),
+                ("version", "1.0"),
+                ("filetype", "bdist_wheel"),
+                ("md5_digest", "d41d8cd98f00b204e9800998ecf8427e"),
+            ],
+            Some(("velodexpkg-1.0-py3-none-any.whl", b"x".as_slice())),
+            StatusCode::BAD_REQUEST,
+            "md5_digest is not accepted without a sha256_digest or blake2_256_digest",
+        ),
+    ] {
+        assert_upload_response(&h, &fields, content, expected_status, expected_body).await;
+    }
+}
+
+#[tokio::test]
+async fn test_upload_digest_and_requires_python_errors_include_actionable_body() {
+    let h = harness().await;
+    let wrong = "00".repeat(32);
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "velodexpkg"),
+        ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
+        ("sha256_digest", wrong.as_str()),
+    ];
+    assert_upload_response(
+        &h,
+        &fields,
+        Some(("velodexpkg-1.0-py3-none-any.whl", b"x")),
+        StatusCode::BAD_REQUEST,
+        "sha256_digest mismatch",
+    )
+    .await;
+
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "velodexpkg"),
+        ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
+        ("requires_python", "=>3"),
+    ];
+    let wheel = fixture_wheel();
+    assert_upload_response(
+        &h,
+        &fields,
+        Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)),
+        StatusCode::BAD_REQUEST,
+        "invalid Requires-Python value \"=>3\": expected PEP 440 version specifiers",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_upload_content_validation_errors_include_actionable_body() {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some(("velodexpkg-1.0-py3-none-any.whl", b"not a zip")),
+        StatusCode::BAD_REQUEST,
+        "uploaded content does not match the filename format: archive read failed: invalid Zip archive: Could not find EOCD",
+    )
+    .await;
+
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "velodexpkg-1.0-py3-none-any.whl",
+            fixture_wheel_without_metadata().as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "uploaded artifact is missing required METADATA metadata",
+    )
+    .await;
+
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "velodexpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(b"\xff").as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "artifact metadata is not valid UTF-8",
+    )
+    .await;
+
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "velodexpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(b"Metadata-Version: 2.1\nName: other\nVersion: 1.0\n").as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "metadata Name \"other\" does not match upload name \"velodexpkg\"",
+    )
+    .await;
+
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "velodexpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 2.0\n").as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "metadata Version \"2.0\" does not match upload version \"1.0\"",
+    )
+    .await;
+
+    h.clock.store(i64::MAX, Ordering::Relaxed);
+    let wheel = fixture_wheel();
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "configured clock produced an invalid upload timestamp",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_upload_non_utf8_field_is_bad_request() {
     let h = harness().await;
     let mut body = Vec::new();
@@ -654,6 +1001,18 @@ async fn test_upload_non_utf8_field_is_bad_request() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_upload_large_text_field_is_bad_request() {
+    let h = harness().await;
+    let large_name = "x".repeat(64 * 1024 + 1);
+    let fields = vec![(":action", "file_upload"), ("name", large_name.as_str())];
+    let (ct, body) = multipart_body(&fields, Some(("x-1.0.whl", b"x")));
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("upload field \"name\" exceeds 65536 bytes"));
 }
 
 #[tokio::test]
@@ -692,16 +1051,18 @@ async fn test_upload_declared_digest_mismatch_is_bad_request() {
 #[tokio::test]
 async fn test_upload_with_declared_digest_and_extra_field() {
     let h = harness().await;
-    let wheel = b"PKwheelpayload";
-    let digest = Digest::of(wheel);
+    let wheel = fixture_wheel();
+    let digest = Digest::of(&wheel);
     let fields = vec![
         (":action", "file_upload"),
         ("name", "velodexpkg"),
         ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
         ("sha256_digest", digest.as_str()),
+        ("blake2_256_digest", ""),
         ("summary", "ignored"),
     ];
-    let (ct, body) = multipart_body(&fields, Some(("velodexpkg-1.0.whl", wheel)));
+    let (ct, body) = multipart_body(&fields, Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
     assert_eq!(
         post_upload(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await,
         StatusCode::OK
@@ -730,9 +1091,25 @@ async fn test_upload_storage_failure_is_server_error() {
 }
 
 #[tokio::test]
+async fn test_upload_corrupt_existing_record_is_server_error() {
+    let h = harness().await;
+    h.state
+        .meta
+        .put_upload("local", "velodexpkg", "velodexpkg-1.0-py3-none-any.whl", b"not-json")
+        .unwrap();
+    let wheel = fixture_wheel();
+    let (content_type, body) = multipart_body(&upload_fields(), Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
+
+    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, "storage error");
+}
+
+#[tokio::test]
 async fn test_yank_and_unyank_and_delete() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/root/pypi/", b"PKyankme").await;
+    upload_velodexpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
 
     // Yank the version, then the file is served with a yank marker.
     assert_eq!(
@@ -768,7 +1145,7 @@ async fn test_yank_and_unyank_and_delete() {
 #[tokio::test]
 async fn test_delete_specific_version() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/local/", b"PKv1").await;
+    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
     assert_eq!(
         request(&h.state, "DELETE", "/local/velodexpkg/1.0/", Some(&upload_auth())).await,
         StatusCode::OK
@@ -840,7 +1217,7 @@ async fn test_delete_nonexistent_is_not_found() {
 #[tokio::test]
 async fn test_delete_requires_auth() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/local/", b"x").await;
+    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
     assert_eq!(
         request(&h.state, "DELETE", "/local/velodexpkg/", None).await,
         StatusCode::UNAUTHORIZED
@@ -850,7 +1227,7 @@ async fn test_delete_requires_auth() {
 #[tokio::test]
 async fn test_delete_on_non_volatile_is_forbidden() {
     let h = harness_with(true, false).await;
-    upload_velodexpkg(&h.state, "/local/", b"x").await;
+    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
     assert_eq!(
         request(&h.state, "DELETE", "/local/velodexpkg/", Some(&upload_auth())).await,
         StatusCode::FORBIDDEN
@@ -917,7 +1294,10 @@ async fn test_longest_prefix_wins() {
     ];
     let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
     // Uploading requires a token; only "a/b" has one, so a 401-vs-200 proves which matched.
-    assert_eq!(upload_velodexpkg(&state, "/a/b/", b"x").await, StatusCode::OK);
+    assert_eq!(
+        upload_velodexpkg(&state, "/a/b/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -987,10 +1367,16 @@ fn test_index_response_error_is_bad_gateway() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
 
-async fn upload_version(state: &Arc<AppState>, uri: &str, version: &str, wheel: &[u8]) -> StatusCode {
-    let fields = vec![(":action", "file_upload"), ("name", "velodexpkg"), ("version", version)];
+async fn upload_version(state: &Arc<AppState>, uri: &str, version: &str, _wheel: &[u8]) -> StatusCode {
+    let wheel = fixture_wheel_for(version);
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "velodexpkg"),
+        ("version", version),
+        ("filetype", "bdist_wheel"),
+    ];
     let filename = format!("velodexpkg-{version}-py3-none-any.whl");
-    let (ct, body) = multipart_body(&fields, Some((&filename, wheel)));
+    let (ct, body) = multipart_body(&fields, Some((&filename, &wheel)));
     post_upload(state, uri, Some(&upload_auth()), &ct, body).await
 }
 
@@ -1122,7 +1508,7 @@ async fn test_get_route_without_trailing_slash_is_not_found() {
 #[tokio::test]
 async fn test_project_list_html() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/local/", b"x").await;
+    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
     let (status, headers, body) = get(&h.state, "/local/simple/", Some("text/html")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
@@ -1273,28 +1659,100 @@ async fn test_delete_upstream_on_non_volatile_still_hides() {
 }
 
 fn fixture_wheel() -> Vec<u8> {
+    fixture_wheel_for("1.0")
+}
+
+fn fixture_sdist() -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let encoder = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let content = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "velodexpkg-1.0/PKG-INFO", content.as_slice())
+            .unwrap();
+        tar.finish().unwrap();
+    }
+    buf
+}
+
+fn fixture_wheel_for(version: &str) -> Vec<u8> {
+    fixture_wheel_with_body(version, b"VALUE = 1\n")
+}
+
+fn fixture_wheel_with_body(version: &str, body: &[u8]) -> Vec<u8> {
+    fixture_wheel_with_body_and_metadata(
+        version,
+        body,
+        Some(format!("Metadata-Version: 2.1\nName: velodexpkg\nVersion: {version}\n").as_bytes()),
+    )
+}
+
+fn fixture_wheel_without_metadata() -> Vec<u8> {
+    fixture_wheel_with_body_and_metadata("1.0", b"VALUE = 1\n", None)
+}
+
+fn fixture_wheel_with_metadata(metadata: &[u8]) -> Vec<u8> {
+    fixture_wheel_with_body_and_metadata("1.0", b"VALUE = 1\n", Some(metadata))
+}
+
+fn fixture_wheel_with_body_and_metadata(version: &str, body: &[u8], metadata: Option<&[u8]>) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         zip.start_file("velodexpkg/__init__.py", options).unwrap();
-        zip.write_all(b"VALUE = 1\n").unwrap();
-        zip.start_file("velodexpkg-1.0.dist-info/METADATA", options).unwrap();
-        zip.write_all(b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n")
-            .unwrap();
+        zip.write_all(body).unwrap();
+        if let Some(metadata) = metadata {
+            zip.start_file(format!("velodexpkg-{version}.dist-info/METADATA"), options)
+                .unwrap();
+            zip.write_all(metadata).unwrap();
+        }
         zip.finish().unwrap();
     }
     buf
 }
 
 async fn upload_wheel(state: &Arc<AppState>, filename: &str, bytes: &[u8]) -> Digest {
-    let fields = vec![(":action", "file_upload"), ("name", "velodexpkg"), ("version", "1.0")];
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "velodexpkg"),
+        ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
+    ];
     let (ct, body) = multipart_body(&fields, Some((filename, bytes)));
     assert_eq!(
         post_upload(state, "/local/", Some(&upload_auth()), &ct, body).await,
         StatusCode::OK
     );
     Digest::of(bytes)
+}
+
+fn put_local_file(state: &AppState, filename: &str, bytes: &[u8], version: &str) -> Digest {
+    let digest = Digest::of(bytes);
+    state.blobs.write_verified(bytes, &digest).unwrap();
+    let uploaded = Uploaded {
+        version: version.to_owned(),
+        file: File {
+            filename: filename.to_owned(),
+            url: local_file_url("local", digest.as_str(), filename),
+            hashes: std::collections::BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+            requires_python: None,
+            size: Some(bytes.len() as u64),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+        },
+    };
+    state
+        .meta
+        .put_upload("local", "velodexpkg", filename, &to_json(&uploaded).into_bytes())
+        .unwrap();
+    state.meta.put_project("local", "velodexpkg", "velodexpkg").unwrap();
+    digest
 }
 
 #[tokio::test]
@@ -1331,7 +1789,7 @@ async fn test_inspect_reads_member_content() {
 #[tokio::test]
 async fn test_inspect_reads_query_member_content() {
     let h = harness().await;
-    let digest = upload_wheel(&h.state, "velodexpkg 1.0#x?.whl", &fixture_wheel()).await;
+    let digest = put_local_file(&h.state, "velodexpkg 1.0#x?.whl", &fixture_wheel(), "1.0");
     let uri = format!(
         "/local/inspect/{}/velodexpkg%201.0%23x%3F.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
         digest.as_str()
@@ -1411,7 +1869,7 @@ async fn test_inspect_rejects_bad_member_chunk_parameters() {
 #[tokio::test]
 async fn test_inspect_unsupported_type() {
     let h = harness().await;
-    let digest = upload_wheel(&h.state, "velodexpkg-1.0.txt", b"not an archive").await;
+    let digest = put_local_file(&h.state, "velodexpkg-1.0.txt", b"not an archive", "1.0");
     let uri = format!("/local/inspect/{}/velodexpkg-1.0.txt", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -1420,7 +1878,7 @@ async fn test_inspect_unsupported_type() {
 #[tokio::test]
 async fn test_inspect_corrupt_archive_is_unprocessable() {
     let h = harness().await;
-    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", b"PK corrupt bytes").await;
+    let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", b"PK corrupt bytes", "1.0");
     let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -1450,7 +1908,7 @@ async fn test_inspect_tarball_and_size_limit() {
             .unwrap();
         builder.into_inner().unwrap().finish().unwrap();
     }
-    let digest = upload_wheel(&h.state, "velodexpkg-1.0.tar.gz", &tarball).await;
+    let digest = put_local_file(&h.state, "velodexpkg-1.0.tar.gz", &tarball, "1.0");
 
     let uri = format!("/local/inspect/{}/velodexpkg-1.0.tar.gz", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -1497,7 +1955,7 @@ async fn test_inspect_binary_member_rejected_for_inline_preview() {
         zip.write_all(&[0xff, 0xfe, 0x00]).unwrap();
         zip.finish().unwrap();
     }
-    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf).await;
+    let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf, "1.0");
     let uri = format!(
         "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl/data.bin",
         digest.as_str()
@@ -1527,7 +1985,7 @@ async fn test_inspect_nested_archive_lists_selected_container_only() {
         zip.write_all(&inner).unwrap();
         zip.finish().unwrap();
     }
-    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf).await;
+    let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf, "1.0");
     let uri = format!(
         "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?container=vendor%2Finner.zip",
         digest.as_str()
@@ -1572,7 +2030,7 @@ async fn test_inspect_archive_listing_limit_is_payload_too_large() {
         }
         zip.finish().unwrap();
     }
-    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf).await;
+    let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf, "1.0");
     let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -1665,12 +2123,7 @@ async fn test_versioned_delete_matches_upload_record_when_filename_lacks_version
     let h = harness().await;
     // The filename carries no parsable version, so the served-page filter misses it and the
     // record-based fallback deletes by the version stored at upload time.
-    let fields = vec![(":action", "file_upload"), ("name", "velodexpkg"), ("version", "9.9")];
-    let (ct, body) = multipart_body(&fields, Some(("velodexpkg.whl", b"payload")));
-    assert_eq!(
-        post_upload(&h.state, "/local/", Some(&upload_auth()), &ct, body).await,
-        StatusCode::OK
-    );
+    put_local_file(&h.state, "velodexpkg.whl", b"payload", "9.9");
     assert_eq!(
         request(&h.state, "DELETE", "/local/velodexpkg/9.9/", Some(&upload_auth())).await,
         StatusCode::OK
@@ -1684,12 +2137,7 @@ async fn test_versioned_delete_fallback_skips_other_versions() {
     let h = harness().await;
     // Neither filename carries a parsable version, so both deletes go through the record fallback.
     for (version, filename) in [("1.5", "velodexpkg-one.whl"), ("2.5", "velodexpkg-two.whl")] {
-        let fields = vec![(":action", "file_upload"), ("name", "velodexpkg"), ("version", version)];
-        let (ct, body) = multipart_body(&fields, Some((filename, format!("payload {version}").as_bytes())));
-        assert_eq!(
-            post_upload(&h.state, "/local/", Some(&upload_auth()), &ct, body).await,
-            StatusCode::OK
-        );
+        put_local_file(&h.state, filename, format!("payload {version}").as_bytes(), version);
     }
     assert_eq!(
         request(&h.state, "DELETE", "/local/velodexpkg/1.5/", Some(&upload_auth())).await,

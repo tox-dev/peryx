@@ -14,20 +14,26 @@ use std::sync::atomic::Ordering;
 use axum::extract::{Multipart, OriginalUri, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use velodex_core::pypi::{ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html, to_json};
+use blake2::Blake2bVar;
+use blake2::digest::{Update as _, VariableOutput as _};
+use velodex_core::pypi::{
+    DistributionFilenameError, ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html,
+    to_json,
+};
 use velodex_storage::blob::Digest;
 
 use crate::cache::{self, CacheError, PageOutcome};
 use crate::metrics::Event;
 use crate::path_safety::{self, PathSafetyError};
 use crate::state::{AppState, Index, IndexKind};
-use crate::upload::{self, UploadError, UploadForm};
+use crate::upload::{self, StagedUpload, UploadError, UploadForm};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 const MIME_HTML: &str = "text/html; charset=utf-8";
 const MEMBER_SIZE_HEADER: &str = "x-velodex-member-size";
 const MEMBER_OFFSET_HEADER: &str = "x-velodex-member-offset";
 const MEMBER_NEXT_OFFSET_HEADER: &str = "x-velodex-next-offset";
+const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Format {
@@ -360,22 +366,33 @@ pub async fn dispatch_post(
     if let Err(response) = authorize(local, &headers) {
         return response;
     }
-    let form = match collect_form(multipart).await {
+    let (form, staged) = match collect_form(multipart, &state.blobs).await {
         Ok(form) => form,
         Err(response) => return response,
     };
-    let prepared = match upload::prepare(form, &index.route) {
+    let Some(staged) = staged else {
+        return upload_error_response(&UploadError::Missing("content"));
+    };
+    let prepared = match upload::prepare(form, staged, &index.route, (state.clock)()) {
         Ok(prepared) => prepared,
         Err(err) => return upload_error_response(&err),
     };
-    match cache::store_upload(&state, &local.name, &prepared) {
-        Ok(()) => {
-            state.metrics.record(Event::Upload {
-                route: index.route.clone(),
-                project: prepared.normalized.clone(),
-            });
+    let project = prepared.normalized.clone();
+    match cache::store_upload(&state, &local.name, prepared) {
+        Ok(stored) => {
+            if stored {
+                state.metrics.record(Event::Upload {
+                    route: index.route.clone(),
+                    project,
+                });
+            }
             (StatusCode::OK, "upload accepted").into_response()
         }
+        Err(CacheError::FileExists(filename)) => (
+            StatusCode::BAD_REQUEST,
+            format!("File already exists: {filename:?} has different content; use a different filename"),
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!(error = ?err, "upload store failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
@@ -583,34 +600,130 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-/// Drain a multipart body into an [`UploadForm`], reading the `content` part as bytes and the rest
-/// as UTF-8 text. Unknown fields are ignored, as the upload API carries many metadata fields velodex
-/// does not need. Every read or decode error funnels through [`reject`] as a 400.
-async fn collect_form(mut multipart: Multipart) -> Result<UploadForm, Response> {
+/// Drain a multipart body into an [`UploadForm`], staging the `content` part on disk while the rest
+/// stays as UTF-8 text. Unknown fields are ignored, as the upload API carries many metadata fields
+/// velodex does not need. Every read or decode error funnels through [`reject`] as a 400.
+async fn collect_form(
+    mut multipart: Multipart,
+    blobs: &velodex_storage::blob::BlobStore,
+) -> Result<(UploadForm, Option<StagedUpload>), Response> {
     let mut form = UploadForm::default();
+    let mut staged = None;
     while let Some(field) = multipart.next_field().await.map_err(reject)? {
-        let name = field.name().unwrap_or_default().to_owned();
-        if name == "content" {
-            form.filename = field.file_name().map(str::to_owned);
-            form.content = Some(field.bytes().await.map_err(reject)?.to_vec());
-        } else {
-            let value = String::from_utf8(field.bytes().await.map_err(reject)?.to_vec()).map_err(reject)?;
-            match name.as_str() {
-                ":action" => form.action = Some(value),
-                "name" => form.name = Some(value),
-                "version" => form.version = Some(value),
-                "requires_python" => form.requires_python = Some(value),
-                "sha256_digest" => form.sha256_digest = Some(value),
-                _ => {}
+        let field_name = field.name().unwrap_or_default().to_owned();
+        if field_name == "content" {
+            if staged.is_some() {
+                return Err(reject("duplicate content field"));
             }
+            form.filename = field.file_name().map(str::to_owned);
+            staged = Some(stage_content(field, blobs).await?);
+        } else if let Some(upload_field) = upload_text_field(&field_name) {
+            let value = read_text_field(field, &field_name).await?;
+            set_upload_text_field(&mut form, upload_field, value);
+        } else {
+            drain_field(field).await?;
         }
     }
-    Ok(form)
+    Ok((form, staged))
+}
+
+#[derive(Clone, Copy)]
+enum UploadTextField {
+    Action,
+    Name,
+    Version,
+    RequiresPython,
+    Filetype,
+    Sha256Digest,
+    Blake2Digest,
+    Md5Digest,
+}
+
+fn upload_text_field(name: &str) -> Option<UploadTextField> {
+    match name {
+        ":action" => Some(UploadTextField::Action),
+        "name" => Some(UploadTextField::Name),
+        "version" => Some(UploadTextField::Version),
+        "requires_python" => Some(UploadTextField::RequiresPython),
+        "filetype" => Some(UploadTextField::Filetype),
+        "sha256_digest" => Some(UploadTextField::Sha256Digest),
+        "blake2_256_digest" => Some(UploadTextField::Blake2Digest),
+        "md5_digest" => Some(UploadTextField::Md5Digest),
+        _ => None,
+    }
+}
+
+fn set_upload_text_field(form: &mut UploadForm, field: UploadTextField, value: String) {
+    match field {
+        UploadTextField::Action => form.action = Some(value),
+        UploadTextField::Name => form.name = Some(value),
+        UploadTextField::Version => form.version = Some(value),
+        UploadTextField::RequiresPython => form.requires_python = Some(value),
+        UploadTextField::Filetype => form.filetype = Some(value),
+        UploadTextField::Sha256Digest => form.sha256_digest = Some(value),
+        UploadTextField::Blake2Digest => form.blake2_256_digest = Some(value),
+        UploadTextField::Md5Digest => form.md5_digest = Some(value),
+    }
+}
+
+async fn read_text_field(mut field: axum::extract::multipart::Field<'_>, name: &str) -> Result<String, Response> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = field.chunk().await.map_err(reject)? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_UPLOAD_TEXT_FIELD_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("upload field {name:?} exceeds {MAX_UPLOAD_TEXT_FIELD_BYTES} bytes"),
+            )
+                .into_response());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(reject)
+}
+
+async fn drain_field(mut field: axum::extract::multipart::Field<'_>) -> Result<(), Response> {
+    while field.chunk().await.map_err(reject)?.is_some() {}
+    Ok(())
+}
+
+async fn stage_content(
+    mut field: axum::extract::multipart::Field<'_>,
+    blobs: &velodex_storage::blob::BlobStore,
+) -> Result<StagedUpload, Response> {
+    let mut pending = blobs.begin().map_err(storage_reject)?;
+    let mut blake2 = Blake2bVar::new(32).expect("blake2b-256 output size is valid");
+    while let Some(chunk) = field.chunk().await.map_err(reject)? {
+        blake2.update(&chunk);
+        pending.write(&chunk).map_err(storage_reject)?;
+    }
+    let mut digest = [0; 32];
+    blake2
+        .finalize_variable(&mut digest)
+        .expect("blake2b-256 output buffer has the requested size");
+    Ok(StagedUpload {
+        blob: pending.finish().map_err(storage_reject)?,
+        blake2_256: hex(&digest),
+    })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Map any multipart read or decode failure to a 400 response.
 fn reject(err: impl std::fmt::Display) -> Response {
     (StatusCode::BAD_REQUEST, format!("bad upload: {err}")).into_response()
+}
+
+fn storage_reject(err: impl std::fmt::Display) -> Response {
+    tracing::error!(error = %err, "upload staging failed");
+    (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
 }
 
 fn upload_error_response(err: &UploadError) -> Response {
@@ -619,7 +732,18 @@ fn upload_error_response(err: &UploadError) -> Response {
         UploadError::Missing(field) => {
             (StatusCode::BAD_REQUEST, format!("missing required field: {field}")).into_response()
         }
-        UploadError::DigestMismatch => (StatusCode::BAD_REQUEST, "sha256 digest mismatch").into_response(),
+        UploadError::InvalidName(name) => (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid project name {name:?}: names must start and end with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'"
+            ),
+        )
+            .into_response(),
+        UploadError::InvalidVersion(version) => (
+            StatusCode::BAD_REQUEST,
+            format!("invalid version {version:?}: expected a PEP 440 version"),
+        )
+            .into_response(),
         UploadError::InvalidFilename(filename) => (
             StatusCode::BAD_REQUEST,
             format!(
@@ -627,6 +751,97 @@ fn upload_error_response(err: &UploadError) -> Response {
             ),
         )
             .into_response(),
+        UploadError::InvalidDistributionFilename { filename, error } => (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid distribution filename {filename:?}: {}",
+                distribution_filename_error_message(error)
+            ),
+        )
+            .into_response(),
+        UploadError::FiletypeMismatch { expected, actual } => (
+            StatusCode::BAD_REQUEST,
+            format!("filetype {actual:?} does not match filename; expected {expected:?}"),
+        )
+            .into_response(),
+        UploadError::FilenameNameMismatch { filename, form } => (
+            StatusCode::BAD_REQUEST,
+            format!("filename project {filename:?} does not match upload name {form:?}"),
+        )
+            .into_response(),
+        UploadError::FilenameVersionMismatch { filename, form } => (
+            StatusCode::BAD_REQUEST,
+            format!("filename version {filename:?} does not match upload version {form:?}"),
+        )
+            .into_response(),
+        UploadError::DigestMismatch(field) => {
+            (StatusCode::BAD_REQUEST, format!("{field} mismatch")).into_response()
+        }
+        UploadError::Md5Only => (
+            StatusCode::BAD_REQUEST,
+            "md5_digest is not accepted without a sha256_digest or blake2_256_digest",
+        )
+            .into_response(),
+        UploadError::InvalidDigest { field, value } => (
+            StatusCode::BAD_REQUEST,
+            format!("{field} value {value:?} is not lowercase hex with the expected length"),
+        )
+            .into_response(),
+        UploadError::InvalidRequiresPython(value) => (
+            StatusCode::BAD_REQUEST,
+            format!("invalid Requires-Python value {value:?}: expected PEP 440 version specifiers"),
+        )
+            .into_response(),
+        UploadError::InvalidContent(message) => (
+            StatusCode::BAD_REQUEST,
+            format!("uploaded content does not match the filename format: {message}"),
+        )
+            .into_response(),
+        UploadError::MissingMetadata(member) => (
+            StatusCode::BAD_REQUEST,
+            format!("uploaded artifact is missing required {member} metadata"),
+        )
+            .into_response(),
+        UploadError::InvalidMetadataUtf8 => {
+            (StatusCode::BAD_REQUEST, "artifact metadata is not valid UTF-8").into_response()
+        }
+        UploadError::MetadataNameMismatch { metadata, form } => (
+            StatusCode::BAD_REQUEST,
+            format!("metadata Name {metadata:?} does not match upload name {form:?}"),
+        )
+            .into_response(),
+        UploadError::MetadataVersionMismatch { metadata, form } => (
+            StatusCode::BAD_REQUEST,
+            format!("metadata Version {metadata:?} does not match upload version {form:?}"),
+        )
+            .into_response(),
+        UploadError::InvalidUploadTime => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "configured clock produced an invalid upload timestamp",
+        )
+            .into_response(),
+    }
+}
+
+fn distribution_filename_error_message(err: &DistributionFilenameError) -> String {
+    match err {
+        DistributionFilenameError::UnsupportedExtension => "accepted upload formats are .whl and .tar.gz".to_owned(),
+        DistributionFilenameError::LegacyEgg => {
+            "legacy .egg uploads are not accepted; upload a wheel or .tar.gz sdist".to_owned()
+        }
+        DistributionFilenameError::InvalidWheelShape => {
+            "wheel filenames must use distribution-version(-build tag)?-python tag-abi tag-platform tag.whl".to_owned()
+        }
+        DistributionFilenameError::InvalidSdistShape => "sdist filenames must use name-version.tar.gz".to_owned(),
+        DistributionFilenameError::InvalidName(name) => {
+            format!("distribution name component {name:?} is not a valid PyPA project name")
+        }
+        DistributionFilenameError::InvalidVersion(version) => {
+            format!("version component {version:?} is not a PEP 440 version")
+        }
+        DistributionFilenameError::InvalidTag(tag) => {
+            format!("wheel build/tag component {tag:?} contains invalid characters")
+        }
     }
 }
 

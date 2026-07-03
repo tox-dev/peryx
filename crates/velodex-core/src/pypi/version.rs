@@ -2,12 +2,18 @@
 
 use std::str::FromStr as _;
 
-pub use pep440_rs::Version;
+pub use pep440_rs::{Version, VersionSpecifiers};
 
 /// Parse a PEP 440 version, returning `None` when the string is not a valid version.
 #[must_use]
 pub fn parse_version(text: &str) -> Option<Version> {
     Version::from_str(text).ok()
+}
+
+/// Parse PEP 440 version specifiers, returning `None` when the string is invalid.
+#[must_use]
+pub fn parse_version_specifiers(text: &str) -> Option<VersionSpecifiers> {
+    VersionSpecifiers::from_str(text).ok()
 }
 
 /// Sort version strings newest-first. Strings that do not parse as PEP 440 keep their input order

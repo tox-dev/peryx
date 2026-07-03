@@ -143,6 +143,27 @@ fn test_put_upload_overwrites_same_filename() {
 }
 
 #[test]
+fn test_get_upload_fetches_one_entry() {
+    let (_dir, store) = store();
+    store
+        .put_upload("root/local", "flask", "flask-1.0.whl", b"one")
+        .unwrap();
+    assert_eq!(
+        store
+            .get_upload("root/local", "flask", "flask-1.0.whl")
+            .unwrap()
+            .as_deref(),
+        Some(b"one".as_slice())
+    );
+    assert!(
+        store
+            .get_upload("root/local", "flask", "missing.whl")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn test_delete_upload() {
     let (_dir, store) = store();
     store

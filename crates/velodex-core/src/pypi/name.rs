@@ -22,6 +22,17 @@ pub fn normalize_name(name: &str) -> String {
     out
 }
 
+/// Whether `name` matches the `PyPA` project-name grammar before normalization.
+#[must_use]
+pub fn is_valid_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 /// A project name in its normalized (PEP 503) form. Two spellings that normalize equal compare
 /// equal, so this is the correct key for lookups and storage.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -29,6 +29,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 http = "1"
 http-body-util = "0.1"
 sha2 = "0.11"
+blake2 = "0.10"
 tempfile = "3"
 mimalloc = "0.1"
 redb = "4.1"
@@ -70,6 +71,7 @@ send_wrapper = "0.6"
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "DomStringMap", "Navigator", "Clipboard", "MediaQueryList", "Storage"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 tracing-appender = "0.2"
+time = { version = "0.3", features = ["formatting"] }
 
 [profile.release]
 strip = true
