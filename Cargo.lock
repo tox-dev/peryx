@@ -553,7 +553,9 @@ dependencies = [
  "codspeed",
  "codspeed-criterion-compat-walltime",
  "colored",
+ "futures",
  "regex",
+ "tokio",
 ]
 
 [[package]]
@@ -568,6 +570,7 @@ dependencies = [
  "clap",
  "codspeed",
  "criterion-plot",
+ "futures",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -578,6 +581,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "tinytemplate",
+ "tokio",
  "walkdir",
 ]
 
@@ -4015,8 +4019,11 @@ name = "velodex-bench"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "codspeed-criterion-compat",
+ "http",
+ "http-body-util",
  "reqwest",
  "rustls",
  "serde",
@@ -4025,10 +4032,11 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
- "url",
- "velodex-core",
+ "tower",
  "velodex-http",
  "velodex-storage",
+ "velodex-upstream",
+ "wiremock",
 ]
 
 [[package]]

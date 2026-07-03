@@ -20,18 +20,22 @@ tempfile.workspace = true
 tokio.workspace = true
 toml.workspace = true
 
-# The wall-clock workloads live in the binary; the component benchmarks live beside them and share
-# the same fixtures, so CodSpeed's instrumented micro-benchmarks are a subset of one suite. They
-# call the real crate functions rather than re-implementing them.
+# The wall-clock workloads live in the binary; the instrumented benchmarks live beside them and
+# drive a real velodex instance end to end, so CodSpeed measures the actual serving path — routing,
+# cache lookup, upstream mirroring, transform, and streaming — not re-implemented helpers.
 [dev-dependencies]
-criterion = { workspace = true }
-url.workspace = true
-velodex-core.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
 velodex-http.workspace = true
 velodex-storage.workspace = true
+velodex-upstream.workspace = true
+axum.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+wiremock.workspace = true
 
 [[bench]]
-name = "components"
+name = "serve"
 harness = false
 
 [lints]
