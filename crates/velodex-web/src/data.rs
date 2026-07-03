@@ -7,7 +7,9 @@
 
 use velodex_core::pypi::CoreMetadataDoc;
 
-use crate::model::{UiMember, UiProject, UiSnapshot};
+use crate::model::{UiMember, UiMemberChunk, UiProject, UiSnapshot};
+#[cfg(feature = "hydrate")]
+use crate::url::{encode_component, encode_path};
 
 /// The dashboard snapshot.
 pub async fn load_snapshot() -> UiSnapshot {
@@ -129,16 +131,15 @@ pub async fn admin_request(method: &str, url: &str, token: &str) -> String {
 }
 
 /// The member listing of a cached archive.
-pub async fn load_members(route: String, sha256: String, filename: String) -> Vec<UiMember> {
+pub async fn load_members(route: String, sha256: String, filename: String, containers: Vec<String>) -> Vec<UiMember> {
     #[cfg(feature = "ssr")]
     {
-        let _ = &route;
-        crate::ssr::members(&sha256, &filename).await
+        crate::ssr::members(&route, &sha256, &filename, &containers).await
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_json(&format!("/{route}/inspect/{sha256}/{filename}"))
+            fetch_json(&inspect_url(&route, &sha256, &filename, &containers, None, 0))
                 .await
                 .map_or_else(Vec::new, |value| crate::model::members_from_listing(&value))
         })
@@ -146,32 +147,115 @@ pub async fn load_members(route: String, sha256: String, filename: String) -> Ve
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
-        let _ = (route, sha256, filename);
+        let _ = (route, sha256, filename, containers);
         Vec::new()
     }
 }
 
-/// One archive member's content, rendered as text (binary members come back as a note).
-pub async fn load_member(route: String, sha256: String, filename: String, member: String) -> String {
+/// One archive member chunk, rendered as text.
+pub async fn load_member_chunk(
+    route: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+    member: String,
+    offset: u64,
+) -> UiMemberChunk {
     #[cfg(feature = "ssr")]
     {
-        let _ = &route;
-        crate::ssr::member(&sha256, &filename, &member).await
+        crate::ssr::member_chunk(&route, &sha256, &filename, &containers, &member, offset).await
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_text(&format!("/{route}/inspect/{sha256}/{filename}/{member}"))
-                .await
-                .unwrap_or_else(|| "(binary or unavailable)".to_owned())
+            fetch_member_chunk(&inspect_url(
+                &route,
+                &sha256,
+                &filename,
+                &containers,
+                Some(&member),
+                offset,
+            ))
+            .await
+            .unwrap_or_else(|| UiMemberChunk {
+                text: "(binary or unavailable)".to_owned(),
+                ..UiMemberChunk::default()
+            })
         })
         .await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
-        let _ = (route, sha256, filename, member);
-        String::new()
+        let _ = (route, sha256, filename, containers, member, offset);
+        UiMemberChunk::default()
     }
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+fn inspect_url(
+    route: &str,
+    sha256: &str,
+    filename: &str,
+    containers: &[String],
+    member: Option<&str>,
+    offset: u64,
+) -> String {
+    let mut url = format!(
+        "/{}/inspect/{}/{}",
+        encode_path(route),
+        encode_component(sha256),
+        encode_component(filename)
+    );
+    let mut separator = "?";
+    for container in containers {
+        url.push_str(separator);
+        url.push_str("container=");
+        url.push_str(&encode_component(container));
+        separator = "&";
+    }
+    if let Some(member) = member {
+        url.push_str(separator);
+        url.push_str("member=");
+        url.push_str(&encode_component(member));
+        url.push('&');
+        url.push_str("offset=");
+        url.push_str(&offset.to_string());
+    }
+    url
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+async fn fetch_member_chunk(url: &str) -> Option<UiMemberChunk> {
+    let response = gloo_net::http::Request::get(url).send().await.ok()?;
+    if !response.ok() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Some(UiMemberChunk {
+            text: format!("{status}: {text}"),
+            ..UiMemberChunk::default()
+        });
+    }
+    let content_type = response.headers().get("content-type").unwrap_or_default();
+    if !content_type.starts_with("text/plain") {
+        return Some(UiMemberChunk {
+            text: "(binary or unavailable)".to_owned(),
+            ..UiMemberChunk::default()
+        });
+    }
+    let size = parse_header_u64(&response, "x-velodex-member-size");
+    let offset = parse_header_u64(&response, "x-velodex-member-offset").unwrap_or_default();
+    let next_offset = parse_header_u64(&response, "x-velodex-next-offset");
+    Some(UiMemberChunk {
+        text: response.text().await.ok()?,
+        size,
+        offset,
+        next_offset,
+    })
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+fn parse_header_u64(response: &gloo_net::http::Response, name: &str) -> Option<u64> {
+    response.headers().get(name)?.parse().ok()
 }
 
 /// The stats drill at the requested depth: all indexes, one index's projects, or one project's

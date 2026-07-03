@@ -6,6 +6,7 @@ pub mod archive;
 pub mod cache;
 pub mod handlers;
 pub mod metrics;
+pub mod path_safety;
 pub mod router;
 pub mod state;
 pub mod stream;

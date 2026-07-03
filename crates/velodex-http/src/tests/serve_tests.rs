@@ -194,6 +194,94 @@ async fn test_inspect_fetches_an_uncached_file_from_upstream() {
     assert!(h.state.blobs.exists(&digest));
 }
 
+#[tokio::test]
+async fn test_concurrent_inspect_misses_share_one_fetch() {
+    let h = harness().await;
+    let wheel = b"not a real archive";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_json_page(&h.server, &detail_json(digest.as_str(), &file_url)).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(150))
+                .set_body_bytes(wheel.to_vec()),
+        )
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    let uri = format!("/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (first, second) = tokio::join!(get(&h.state, &uri, None), get(&h.state, &uri, None));
+    assert_eq!(
+        (first.0, second.0, h.state.blobs.exists(&digest)),
+        (StatusCode::UNPROCESSABLE_ENTITY, StatusCode::UNPROCESSABLE_ENTITY, true)
+    );
+}
+
+#[tokio::test]
+async fn test_inspect_digest_mismatch_is_bad_gateway() {
+    let h = harness().await;
+    let digest = Digest::of(b"expected");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_json_page(&h.server, &detail_json(digest.as_str(), &file_url)).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wrong".to_vec()))
+        .mount(&h.server)
+        .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    let uri = format!("/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(
+        (status, body.as_str(), h.state.blobs.exists(&digest)),
+        (StatusCode::BAD_GATEWAY, "upstream error", false)
+    );
+}
+
+#[tokio::test]
+async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let guard = cache::flight_gate(&h.state, digest.as_str()).lock_owned().await;
+    let task = tokio::spawn(cache::file_path(
+        h.state.clone(),
+        digest.clone(),
+        "pypi".to_owned(),
+        "flask.whl".to_owned(),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    h.state.blobs.write_verified(b"wheel", &digest).unwrap();
+    drop(guard);
+    let path = task.await.unwrap().unwrap();
+    assert_eq!(path, h.state.blobs.path_for(&digest));
+}
+
+#[tokio::test]
+async fn test_file_path_abandoned_download_errors() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let (sender, receiver) = tokio::sync::watch::channel(cache::DownloadProgress::default());
+    drop(sender);
+    h.state.downloads.lock().expect("downloads lock").insert(
+        digest.as_str().to_owned(),
+        cache::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
+    );
+    let err = cache::file_path(
+        h.state.clone(),
+        digest.clone(),
+        "pypi".to_owned(),
+        "flask.whl".to_owned(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        cache::CacheError::Stream(message) if message == "blob transfer abandoned"
+    ));
+}
+
 /// A state with the given indexes over a fresh store, for topologies the shared harness lacks.
 fn custom_state(dir: &tempfile::TempDir, upstream: &str, indexes: fn(UpstreamClient) -> Vec<Index>) -> Arc<AppState> {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();

@@ -66,12 +66,13 @@ test("project page renders pypi.org-style metadata", async ({ page }) => {
 test("archive browser lists members and shows file content", async ({ page }) => {
   await goto(page, PROJECT_URL);
   await page.locator("a.inspect").click();
-  const metadataRow = page.locator("table.files a", { hasText: "dist-info/METADATA" });
+  await expect(page.locator(".archive-tree .archive-name.folder", { hasText: "veloxdemo-1.0.0.dist-info" })).toBeVisible();
+  const metadataRow = page.locator(".archive-tree a.kind-text", { hasText: "METADATA" });
   await expect(metadataRow).toBeVisible();
   await metadataRow.click();
   await expect(page.locator(".member-content")).toContainText("Metadata-Version: 2.1");
-  await page.locator("a", { hasText: "back to the archive listing" }).click();
-  await expect(page.locator("table.files a", { hasText: "__init__.py" })).toBeVisible();
+  await page.locator("a", { hasText: "back to archive" }).click();
+  await expect(page.locator(".archive-tree a.kind-text", { hasText: "__init__.py" })).toBeVisible();
 });
 
 test("admin panel yanks and un-yanks with the upload token", async ({ page }) => {

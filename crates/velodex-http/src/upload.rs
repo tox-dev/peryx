@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use velodex_core::pypi::{CoreMetadata, File, Yanked, normalize_name};
 use velodex_storage::blob::Digest;
 
+use crate::path_safety::{local_file_url, validate_filename};
+
 /// An uploaded file plus the version it belongs to, stored per file on a private index and
 /// reassembled into the project's detail page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +62,8 @@ pub enum UploadError {
     Missing(&'static str),
     /// The client's declared `sha256_digest` did not match the content.
     DigestMismatch,
+    /// The uploaded filename is not a safe URL path segment.
+    InvalidFilename(String),
 }
 
 /// A validated, content-addressed upload ready to be stored.
@@ -78,7 +82,7 @@ pub struct PreparedUpload {
 ///
 /// # Errors
 /// Returns [`UploadError`] if the action is wrong, a required field is missing, or a declared digest
-/// does not match the content.
+/// does not match the content, or the filename is not a safe URL path segment.
 pub fn prepare(form: UploadForm, index: &str) -> Result<PreparedUpload, UploadError> {
     if form.action.as_deref() != Some("file_upload") {
         return Err(UploadError::NotFileUpload);
@@ -86,6 +90,7 @@ pub fn prepare(form: UploadForm, index: &str) -> Result<PreparedUpload, UploadEr
     let name = form.name.ok_or(UploadError::Missing("name"))?;
     let version = form.version.ok_or(UploadError::Missing("version"))?;
     let filename = form.filename.ok_or(UploadError::Missing("filename"))?;
+    validate_filename(&filename).map_err(|_| UploadError::InvalidFilename(filename.clone()))?;
     let content = form.content.ok_or(UploadError::Missing("content"))?;
     let digest = Digest::of(&content);
     if let Some(declared) = form.sha256_digest.as_deref()
@@ -96,7 +101,7 @@ pub fn prepare(form: UploadForm, index: &str) -> Result<PreparedUpload, UploadEr
     let normalized = normalize_name(&name);
     let file = File {
         filename: filename.clone(),
-        url: format!("/{index}/files/{}/{filename}", digest.as_str()),
+        url: local_file_url(index, digest.as_str(), &filename),
         hashes: BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
         requires_python: form.requires_python,
         size: Some(content.len() as u64),

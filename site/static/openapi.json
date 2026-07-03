@@ -198,7 +198,7 @@
             "description": "Rejected",
             "content": {
               "text/plain": {
-                "example": "sha256 digest mismatch"
+                "example": "invalid filename \"../pkg.whl\": filenames must be relative path segments without separators, traversal, or control characters"
               }
             }
           },
@@ -225,7 +225,7 @@
           "files"
         ],
         "summary": "Download an artifact",
-        "description": "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the sha256, caches it, and serves it. Responses are immutable (`Cache-Control: max-age=31536000`).",
+        "description": "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the sha256, caches it, and serves it. The `{filename}` segment is display context and must be percent-encoded as one path segment. Responses are immutable (`Cache-Control: max-age=31536000`).",
         "parameters": [
           {
             "name": "route",
@@ -244,6 +244,7 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl"
           }
@@ -256,7 +257,7 @@
             }
           },
           "400": {
-            "description": "The digest is not 64 hex characters"
+            "description": "The digest is not 64 lowercase hex, or the filename is not a safe path segment"
           },
           "404": {
             "description": "No file with this digest is known"
@@ -292,6 +293,7 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl.metadata"
           }
@@ -317,7 +319,7 @@
           "files"
         ],
         "summary": "List archive members",
-        "description": "The file members of a cached wheel, zip, or gzipped tarball, for browsing a distribution's contents without downloading it.",
+        "description": "The file members of a cached wheel, zip, or gzipped tarball. Nested archives are not expanded unless the request names them with repeated `container` query parameters. Pass `member` to read one bounded text chunk.",
         "parameters": [
           {
             "name": "route",
@@ -336,36 +338,87 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl"
+          },
+          {
+            "name": "container",
+            "in": "query",
+            "description": "Optional archive-member path to treat as the next archive level. Repeat in stack order.",
+            "required": false,
+            "example": "vendor/inner.zip"
+          },
+          {
+            "name": "member",
+            "in": "query",
+            "description": "Optional text member path to read as a bounded chunk",
+            "required": false,
+            "example": "velodexpkg-1.0.dist-info/METADATA"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Byte offset inside the selected member; defaults to 0",
+            "required": false,
+            "example": 262144
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum bytes to return, from 1 through 1048576; defaults to 262144",
+            "required": false,
+            "example": 262144
           }
         ],
         "responses": {
           "200": {
-            "description": "The archive listing",
+            "description": "The archive listing, or a text member chunk when `member` is set",
             "content": {
               "application/json": {
                 "example": {
                   "filename": "velodexpkg-1.0-py3-none-any.whl",
                   "members": [
                     {
+                      "kind": "text",
                       "path": "velodexpkg/__init__.py",
+                      "previewable": true,
                       "size": 20
                     },
                     {
-                      "path": "velodexpkg-1.0.dist-info/METADATA",
-                      "size": 653
+                      "kind": "archive",
+                      "path": "vendor/inner.zip",
+                      "previewable": false,
+                      "size": 1102
+                    },
+                    {
+                      "kind": "binary",
+                      "path": "velodexpkg/data.bin",
+                      "previewable": false,
+                      "size": 8192
                     }
                   ]
                 }
+              },
+              "text/plain; charset=utf-8": {
+                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n"
               }
             }
           },
+          "400": {
+            "description": "Bad digest, unsafe filename, or archive nesting depth above the limit"
+          },
           "404": {
-            "description": "No file with this digest is known"
+            "description": "No file with this digest is known, or the member does not exist"
+          },
+          "413": {
+            "description": "Nested archive size or listed entries exceed limits"
           },
           "415": {
-            "description": "Not a supported archive type"
+            "description": "Not a supported archive type, or the selected member is not text"
+          },
+          "416": {
+            "description": "The requested member offset is beyond the member size"
           },
           "422": {
             "description": "The archive cannot be read"
@@ -379,7 +432,7 @@
           "files"
         ],
         "summary": "Read an archive member",
-        "description": "One member's content: UTF-8 members come back as text, others as bytes. Members over 1 MiB are refused inline; download the artifact instead.",
+        "description": "Legacy path form for reading one root archive member as bounded text chunks. Prefer the query form when member names contain slashes or when inspecting nested archives.",
         "parameters": [
           {
             "name": "route",
@@ -398,6 +451,7 @@
           {
             "name": "filename",
             "in": "path",
+            "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
             "example": "velodexpkg-1.0-py3-none-any.whl"
           },
@@ -420,8 +474,11 @@
           "404": {
             "description": "Unknown digest or member"
           },
-          "413": {
-            "description": "Member exceeds the inline limit"
+          "415": {
+            "description": "The member is not previewable text"
+          },
+          "416": {
+            "description": "The requested offset is beyond the member size"
           }
         }
       }

@@ -274,7 +274,9 @@ fn file_download() -> OperationBuilder {
         .summary(Some("Download an artifact"))
         .description(Some(
             "Serves the blob if cached; otherwise fetches it from its source mirror, verifies the \
-             sha256, caches it, and serves it. Responses are immutable (`Cache-Control: max-age=31536000`).",
+             sha256, caches it, and serves it. The `{filename}` segment is display context and must \
+             be percent-encoded as one path segment. Responses are immutable \
+             (`Cache-Control: max-age=31536000`).",
         ))
         .parameter(route_param())
         .parameter(sha256_param())
@@ -287,7 +289,8 @@ fn file_download() -> OperationBuilder {
         )
         .response(
             "400",
-            ResponseBuilder::new().description("The digest is not 64 hex characters"),
+            ResponseBuilder::new()
+                .description("The digest is not 64 lowercase hex, or the filename is not a safe path segment"),
         )
         .response(
             "404",
@@ -341,6 +344,10 @@ fn filename_param(example: &str) -> ParameterBuilder {
         .name("filename")
         .parameter_in(ParameterIn::Path)
         .required(Required::True)
+        .description(Some(
+            "The display filename, percent-encoded as one path segment. Separators, traversal, and \
+             control characters are rejected.",
+        ))
         .example(Some(json!(example)))
 }
 
@@ -375,7 +382,14 @@ fn upload() -> OperationBuilder {
                 .build(),
         ))
         .response("200", text_response("Stored", "text/plain", "upload accepted"))
-        .response("400", text_response("Rejected", "text/plain", "sha256 digest mismatch"))
+        .response(
+            "400",
+            text_response(
+                "Rejected",
+                "text/plain",
+                "invalid filename \"../pkg.whl\": filenames must be relative path segments without separators, traversal, or control characters",
+            ),
+        )
         .response("401", ResponseBuilder::new().description("Missing or wrong token"))
         .response(
             "403",
@@ -412,34 +426,88 @@ fn inspect_listing() -> OperationBuilder {
         .tag("files")
         .summary(Some("List archive members"))
         .description(Some(
-            "The file members of a cached wheel, zip, or gzipped tarball, for browsing a \
-             distribution's contents without downloading it.",
+            "The file members of a cached wheel, zip, or gzipped tarball. Nested archives are not \
+             expanded unless the request names them with repeated `container` query parameters. \
+             Pass `member` to read one bounded text chunk.",
         ))
         .parameter(route_param())
         .parameter(sha256_param())
         .parameter(filename_param("velodexpkg-1.0-py3-none-any.whl"))
+        .parameter(
+            ParameterBuilder::new()
+                .name("container")
+                .parameter_in(ParameterIn::Query)
+                .description(Some(
+                    "Optional archive-member path to treat as the next archive level. Repeat in stack order.",
+                ))
+                .example(Some(json!("vendor/inner.zip"))),
+        )
+        .parameter(
+            ParameterBuilder::new()
+                .name("member")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("Optional text member path to read as a bounded chunk"))
+                .example(Some(json!("velodexpkg-1.0.dist-info/METADATA"))),
+        )
+        .parameter(
+            ParameterBuilder::new()
+                .name("offset")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("Byte offset inside the selected member; defaults to 0"))
+                .example(Some(json!(262_144))),
+        )
+        .parameter(
+            ParameterBuilder::new()
+                .name("limit")
+                .parameter_in(ParameterIn::Query)
+                .description(Some(
+                    "Maximum bytes to return, from 1 through 1048576; defaults to 262144",
+                ))
+                .example(Some(json!(262_144))),
+        )
         .response(
             "200",
-            ResponseBuilder::new().description("The archive listing").content(
-                "application/json",
-                ContentBuilder::new()
-                    .example(Some(json!({
-                        "filename": "velodexpkg-1.0-py3-none-any.whl",
-                        "members": [
-                            {"path": "velodexpkg/__init__.py", "size": 20},
-                            {"path": "velodexpkg-1.0.dist-info/METADATA", "size": 653}
-                        ]
-                    })))
-                    .build(),
-            ),
+            ResponseBuilder::new()
+                .description("The archive listing, or a text member chunk when `member` is set")
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .example(Some(json!({
+                            "filename": "velodexpkg-1.0-py3-none-any.whl",
+                            "members": [
+                                {"path": "velodexpkg/__init__.py", "size": 20, "kind": "text", "previewable": true},
+                                {"path": "vendor/inner.zip", "size": 1102, "kind": "archive", "previewable": false},
+                                {"path": "velodexpkg/data.bin", "size": 8192, "kind": "binary", "previewable": false}
+                            ]
+                        })))
+                        .build(),
+                )
+                .content(
+                    "text/plain; charset=utf-8",
+                    ContentBuilder::new()
+                        .example(Some(json!("Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n")))
+                        .build(),
+                ),
+        )
+        .response(
+            "413",
+            ResponseBuilder::new().description("Nested archive size or listed entries exceed limits"),
+        )
+        .response(
+            "400",
+            ResponseBuilder::new().description("Bad digest, unsafe filename, or archive nesting depth above the limit"),
         )
         .response(
             "404",
-            ResponseBuilder::new().description("No file with this digest is known"),
+            ResponseBuilder::new().description("No file with this digest is known, or the member does not exist"),
         )
         .response(
             "415",
-            ResponseBuilder::new().description("Not a supported archive type"),
+            ResponseBuilder::new().description("Not a supported archive type, or the selected member is not text"),
+        )
+        .response(
+            "416",
+            ResponseBuilder::new().description("The requested member offset is beyond the member size"),
         )
         .response("422", ResponseBuilder::new().description("The archive cannot be read"))
 }
@@ -449,8 +517,8 @@ fn inspect_member() -> OperationBuilder {
         .tag("files")
         .summary(Some("Read an archive member"))
         .description(Some(
-            "One member's content: UTF-8 members come back as text, others as bytes. Members over \
-             1 MiB are refused inline; download the artifact instead.",
+            "Legacy path form for reading one root archive member as bounded text chunks. Prefer \
+             the query form when member names contain slashes or when inspecting nested archives.",
         ))
         .parameter(route_param())
         .parameter(sha256_param())
@@ -472,8 +540,12 @@ fn inspect_member() -> OperationBuilder {
         )
         .response("404", ResponseBuilder::new().description("Unknown digest or member"))
         .response(
-            "413",
-            ResponseBuilder::new().description("Member exceeds the inline limit"),
+            "415",
+            ResponseBuilder::new().description("The member is not previewable text"),
+        )
+        .response(
+            "416",
+            ResponseBuilder::new().description("The requested offset is beyond the member size"),
         )
 }
 

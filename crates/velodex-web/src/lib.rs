@@ -28,6 +28,7 @@ pub mod pages;
 #[cfg(feature = "ssr")]
 pub mod ssr;
 pub mod style;
+pub mod url;
 
 use pages::{Browse, Dashboard, Stats};
 

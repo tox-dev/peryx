@@ -11,19 +11,23 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Multipart, Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::{Multipart, OriginalUri, Path, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use velodex_core::pypi::{ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html, to_json};
 use velodex_storage::blob::Digest;
 
 use crate::cache::{self, CacheError, PageOutcome};
 use crate::metrics::Event;
+use crate::path_safety::{self, PathSafetyError};
 use crate::state::{AppState, Index, IndexKind};
 use crate::upload::{self, UploadError, UploadForm};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 const MIME_HTML: &str = "text/html; charset=utf-8";
+const MEMBER_SIZE_HEADER: &str = "x-velodex-member-size";
+const MEMBER_OFFSET_HEADER: &str = "x-velodex-member-offset";
+const MEMBER_NEXT_OFFSET_HEADER: &str = "x-velodex-next-offset";
 
 #[derive(Clone, Copy)]
 pub(crate) enum Format {
@@ -46,11 +50,12 @@ fn negotiate(headers: &HeaderMap) -> Format {
 /// `GET /{route}/...` — project list, project detail, or a file/metadata download.
 pub async fn dispatch_get(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let Some((position, rest)) = state.resolve_position(&path) else {
+    let path = uri.path().trim_start_matches('/');
+    let Some((position, rest)) = state.resolve_position(path) else {
         return not_found();
     };
     let index = state.index_at(position);
@@ -92,80 +97,215 @@ pub async fn dispatch_get(
         return file_route(&state, index.route.clone(), file).await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
-        return inspect_route(&state, target).await;
+        return inspect_route(state.clone(), index.route.clone(), target, uri.query()).await;
     }
     not_found()
 }
 
-/// `GET /{route}/inspect/{sha256}/{filename}[/{member}]` — list a cached archive's members, or read
-/// one member inline (pypi-browser-style introspection over the blob store).
-async fn inspect_route(state: &AppState, target: &str) -> Response {
+/// `GET /{route}/inspect/{sha256}/{filename}` — list a cached archive's members, or read one text
+/// member inline. Repeated `container` query parameters select nested archives.
+async fn inspect_route(state: Arc<AppState>, route: String, target: &str, query: Option<&str>) -> Response {
     let Some((sha256, rest)) = target.split_once('/') else {
         return not_found();
     };
-    let Some(digest) = Digest::from_hex(sha256) else {
-        return (StatusCode::BAD_REQUEST, "invalid digest").into_response();
+    let digest = match path_safety::parse_digest(sha256) {
+        Ok(digest) => digest,
+        Err(err) => return path_error_response(&err),
     };
-    let (filename, member) = match rest.split_once('/') {
-        Some((filename, member)) => (filename, Some(member)),
+    let archive_query = match archive_query(query) {
+        Ok(query) => query,
+        Err(response) => return response,
+    };
+    let (raw_filename, member) = match archive_query.member {
+        Some(member) => (rest, Some(member)),
+        None if archive_query.containers.is_empty() => match rest.split_once('/') {
+            Some((filename, member)) => match path_safety::decode_path(member) {
+                Ok(member) => (filename, Some(member)),
+                Err(err) => return path_error_response(&err),
+            },
+            None => (rest, None),
+        },
         None => (rest, None),
     };
-    let bytes = match cache::file_bytes(state, &digest).await {
-        Ok(bytes) => bytes,
+    let filename = match safe_filename(raw_filename) {
+        Ok(filename) => filename,
+        Err(err) => return path_error_response(&err),
+    };
+    let path = match cache::file_path(state, digest, route, filename.clone()).await {
+        Ok(path) => path,
         Err(err) => return file_response(Err(err)),
     };
-    member.map_or_else(
-        || archive_listing(filename, &bytes),
-        |member| archive_member(filename, &bytes, member),
-    )
+    match member {
+        Some(member) => {
+            archive_member(
+                &filename,
+                path,
+                archive_query.containers,
+                &member,
+                archive_query.offset,
+                archive_query.limit,
+            )
+            .await
+        }
+        None => archive_listing(&filename, path, archive_query.containers).await,
+    }
+}
+
+struct ArchiveQuery {
+    member: Option<String>,
+    containers: Vec<String>,
+    offset: u64,
+    limit: u64,
+}
+
+fn archive_query(query: Option<&str>) -> Result<ArchiveQuery, Response> {
+    let mut parsed = ArchiveQuery {
+        member: None,
+        containers: Vec::new(),
+        offset: 0,
+        limit: crate::archive::DEFAULT_MEMBER_CHUNK,
+    };
+    let Some(query) = query else {
+        return Ok(parsed);
+    };
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "member" => parsed.member = Some(value.into_owned()),
+            "container" => parsed.containers.push(value.into_owned()),
+            "offset" => {
+                parsed.offset = value
+                    .parse::<u64>()
+                    .map_err(|_| (StatusCode::BAD_REQUEST, "offset must be a non-negative integer").into_response())?;
+            }
+            "limit" => {
+                let limit = value.parse::<u64>().map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "limit must be an integer between 1 and 1048576",
+                    )
+                        .into_response()
+                })?;
+                if !(1..=crate::archive::MAX_MEMBER_CHUNK).contains(&limit) {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("limit must be between 1 and {} bytes", crate::archive::MAX_MEMBER_CHUNK),
+                    )
+                        .into_response());
+                }
+                parsed.limit = limit;
+            }
+            _ => {}
+        }
+    }
+    Ok(parsed)
 }
 
 /// Render an archive's member list as JSON.
-fn archive_listing(filename: &str, bytes: &[u8]) -> Response {
-    match crate::archive::list_members(filename, bytes) {
+async fn archive_listing(filename: &str, path: std::path::PathBuf, containers: Vec<String>) -> Response {
+    let filename = filename.to_owned();
+    match tokio::task::spawn_blocking({
+        let filename = filename.clone();
+        move || crate::archive::list_members_nested_path(&filename, &path, &containers)
+    })
+    .await
+    .expect("archive listing task panicked")
+    {
         Ok(members) => axum::Json(serde_json::json!({ "filename": filename, "members": members })).into_response(),
-        Err(err) => archive_error(&err),
+        Err(err) => archive_error(&err, &filename, None),
     }
 }
 
-/// Serve one archive member: UTF-8 content as text, anything else as bytes.
-fn archive_member(filename: &str, bytes: &[u8], member: &str) -> Response {
-    match crate::archive::read_member(filename, bytes, member) {
-        Ok(content) => match String::from_utf8(content) {
-            Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response(),
-            Err(raw) => ([(header::CONTENT_TYPE, "application/octet-stream")], raw.into_bytes()).into_response(),
-        },
-        Err(err) => archive_error(&err),
+/// Serve one text archive member chunk.
+async fn archive_member(
+    filename: &str,
+    path: std::path::PathBuf,
+    containers: Vec<String>,
+    member: &str,
+    offset: u64,
+    limit: u64,
+) -> Response {
+    let filename = filename.to_owned();
+    let member = member.to_owned();
+    match tokio::task::spawn_blocking({
+        let filename = filename.clone();
+        let member = member.clone();
+        move || {
+            crate::archive::read_text_member_chunk_nested_path(&filename, &path, &containers, &member, offset, limit)
+        }
+    })
+    .await
+    .expect("archive member task panicked")
+    {
+        Ok(chunk) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
+            insert_header(&mut headers, MEMBER_SIZE_HEADER, chunk.size);
+            insert_header(&mut headers, MEMBER_OFFSET_HEADER, chunk.offset);
+            if let Some(next) = chunk.next_offset {
+                insert_header(&mut headers, MEMBER_NEXT_OFFSET_HEADER, next);
+            }
+            (headers, chunk.bytes).into_response()
+        }
+        Err(err) => archive_error(&err, &filename, Some(&member)),
     }
 }
 
-fn archive_error(err: &crate::archive::ArchiveError) -> Response {
+fn insert_header(headers: &mut HeaderMap, name: &'static str, value: u64) {
+    if let Ok(value) = HeaderValue::from_str(&value.to_string()) {
+        headers.insert(name, value);
+    }
+}
+
+fn archive_error(err: &crate::archive::ArchiveError, filename: &str, member: Option<&str>) -> Response {
     use crate::archive::ArchiveError;
     let status = match err {
-        ArchiveError::Unsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ArchiveError::Unsupported | ArchiveError::UnsupportedNestedArchive(_) | ArchiveError::BinaryMember(_) => {
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        }
         ArchiveError::MemberNotFound => StatusCode::NOT_FOUND,
-        ArchiveError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-        ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        ArchiveError::InvalidRange { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
+        ArchiveError::UnsafeMember(_) | ArchiveError::Read(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        ArchiveError::NestingTooDeep { .. } => StatusCode::BAD_REQUEST,
+        ArchiveError::NestedArchiveTooLarge { .. } | ArchiveError::TooManyEntries(_) => StatusCode::PAYLOAD_TOO_LARGE,
     };
-    (status, err.to_string()).into_response()
+    let target = member.map_or_else(
+        || format!("archive {filename:?}"),
+        |member| format!("member {member:?} in archive {filename:?}"),
+    );
+    (status, format!("{target}: {err}")).into_response()
 }
 
 async fn file_route(state: &Arc<AppState>, route: String, file: &str) -> Response {
-    let Some((sha256, filename)) = file.split_once('/') else {
+    let Some((sha256, raw_filename)) = file.split_once('/') else {
         return not_found();
     };
-    let Some(digest) = Digest::from_hex(sha256) else {
-        return (StatusCode::BAD_REQUEST, "invalid digest").into_response();
+    let digest = match path_safety::parse_digest(sha256) {
+        Ok(digest) => digest,
+        Err(err) => return path_error_response(&err),
+    };
+    let filename = match safe_filename(raw_filename) {
+        Ok(filename) => filename,
+        Err(err) => return path_error_response(&err),
     };
     if filename.ends_with(".metadata") {
         state.metadata_requests.fetch_add(1, Ordering::Relaxed);
-        state.metrics.record(Event::Metadata {
-            route,
-            filename: filename.to_owned(),
-        });
+        state.metrics.record(Event::Metadata { route, filename });
         return file_response(cache::metadata_bytes(state, &digest).await);
     }
-    serve_blob(state, route, filename, digest).await
+    serve_blob(state, route, &filename, digest).await
+}
+
+fn safe_filename(raw: &str) -> Result<String, PathSafetyError> {
+    let filename = path_safety::decode_path_segment(raw)?;
+    path_safety::validate_filename(&filename)?;
+    Ok(filename)
+}
+
+fn path_error_response(err: &PathSafetyError) -> Response {
+    (StatusCode::BAD_REQUEST, err.to_string()).into_response()
 }
 
 /// Stream a blob to the client: from disk when cached, teed from the source mirror otherwise.
@@ -449,6 +589,13 @@ fn upload_error_response(err: &UploadError) -> Response {
             (StatusCode::BAD_REQUEST, format!("missing required field: {field}")).into_response()
         }
         UploadError::DigestMismatch => (StatusCode::BAD_REQUEST, "sha256 digest mismatch").into_response(),
+        UploadError::InvalidFilename(filename) => (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid filename {filename:?}: filenames must be relative path segments without separators, traversal, or control characters"
+            ),
+        )
+            .into_response(),
     }
 }
 

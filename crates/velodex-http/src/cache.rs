@@ -2,6 +2,7 @@
 //! an index's layers, fetching and caching from upstream on a miss.
 
 use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -15,6 +16,7 @@ use velodex_storage::meta::CachedIndex;
 use velodex_upstream::{SimpleResponse, UpstreamClient};
 
 use crate::metrics::Event;
+use crate::path_safety::local_file_url;
 use crate::state::{AppState, Index, IndexKind};
 use crate::stream::{PageSummary, PageTransformer};
 use crate::upload::{PreparedUpload, Uploaded};
@@ -36,6 +38,8 @@ pub enum CacheError {
     NotVolatile,
     #[error("no known source for this file")]
     FileNotFound,
+    #[error("file stream failed: {0}")]
+    Stream(String),
 }
 
 /// Resolve a project's detail on `index`, composing overlay layers.
@@ -470,7 +474,7 @@ fn present_file(mut file: File, route: &str) -> File {
         file.core_metadata = CoreMetadata::Absent;
     }
     if !file.url.starts_with('/') {
-        file.url = format!("/{route}/files/{sha256}/{}", file.filename);
+        file.url = local_file_url(route, sha256, &file.filename);
     }
     file
 }
@@ -501,7 +505,7 @@ fn local_detail(state: &AppState, name: &str, project: &str) -> Result<Option<Pr
 fn rewrite_urls(detail: &mut ProjectDetail, route: &str) {
     for file in &mut detail.files {
         if let Some(sha256) = file.hashes.get("sha256") {
-            file.url = format!("/{route}/files/{sha256}/{}", file.filename);
+            file.url = local_file_url(route, sha256, &file.filename);
         }
     }
 }
@@ -538,22 +542,48 @@ async fn fetch_from_source(state: &AppState, source: &str, url: &str) -> Result<
     Ok(source_client(state, source)?.fetch_bytes(url).await?)
 }
 
-/// Resolve a file's bytes: serve the cached blob, or fetch it from its source mirror, verify, cache.
+/// Resolve a file to a local blob path. A cache miss is fetched through the same streaming path as
+/// downloads, so the archive inspector never buffers the whole artifact in memory.
 ///
 /// # Errors
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, or another error on a
 /// store or upstream failure.
-pub async fn file_bytes(state: &AppState, digest: &Digest) -> Result<Bytes, CacheError> {
-    if state.blobs.exists(digest) {
-        return Ok(Bytes::from(state.blobs.read(digest)?));
+///
+/// # Panics
+/// Panics only if the downloads registry lock is poisoned by an earlier panic.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the connect gate stays held across start_download so racing inspectors attach instead of double-fetching"
+)]
+pub async fn file_path(
+    state: Arc<AppState>,
+    digest: Digest,
+    route: String,
+    filename: String,
+) -> Result<PathBuf, CacheError> {
+    if state.blobs.exists(&digest) {
+        return Ok(state.blobs.path_for(&digest));
     }
-    let (url, source) = state
-        .meta
-        .get_file_url(digest.as_str())?
-        .ok_or(CacheError::FileNotFound)?;
-    let bytes = fetch_from_source(state, &source, &url).await?;
-    state.blobs.write_verified(&bytes, digest)?;
-    Ok(bytes)
+    let gate = flight_gate(&state, digest.as_str());
+    let guard = gate.lock_owned().await;
+    if state.blobs.exists(&digest) {
+        release_flight(&state, digest.as_str(), guard);
+        return Ok(state.blobs.path_for(&digest));
+    }
+    let mut handle = if let Some(running) = existing_download(&state, &digest) {
+        running
+    } else {
+        let started = start_download(&state, &digest, route, filename).await?;
+        state
+            .downloads
+            .lock()
+            .expect("downloads lock")
+            .insert(digest.as_str().to_owned(), started.clone());
+        started
+    };
+    release_flight(&state, digest.as_str(), guard);
+    wait_for_download(&mut handle).await?;
+    Ok(state.blobs.path_for(&digest))
 }
 
 /// Resolve a wheel's PEP 658 metadata bytes: cached blob, or fetch the sibling from its source
@@ -1263,6 +1293,21 @@ fn existing_download(state: &AppState, digest: &Digest) -> Option<DownloadHandle
         .expect("downloads lock")
         .get(digest.as_str())
         .cloned()
+}
+
+async fn wait_for_download(handle: &mut DownloadHandle) -> Result<(), CacheError> {
+    loop {
+        let done = handle.progress.borrow_and_update().done.clone();
+        match done {
+            Some(Ok(())) => return Ok(()),
+            Some(Err(message)) => return Err(CacheError::Stream(message)),
+            None => {
+                if handle.progress.changed().await.is_err() {
+                    return Err(CacheError::Stream("blob transfer abandoned".to_owned()));
+                }
+            }
+        }
+    }
 }
 
 fn source_client(state: &AppState, source: &str) -> Result<UpstreamClient, CacheError> {

@@ -12,9 +12,10 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 use velodex_core::pypi::CoreMetadataDoc;
 
-use crate::data::{load_member, load_members, load_project, load_projects, load_snapshot, load_stats};
+use crate::data::{load_member_chunk, load_members, load_project, load_projects, load_snapshot, load_stats};
 use crate::markdown::render_description;
-use crate::model::{UiCounters, UiFile, UiIndex, UiProject, UiSnapshot, UiStats};
+use crate::model::{UiCounters, UiFile, UiIndex, UiMember, UiMemberChunk, UiProject, UiSnapshot, UiStats};
+use crate::url::encode_component as url_encode;
 
 /// The landing dashboard: identity, live counters, and the configured indexes with their usage.
 #[component]
@@ -210,15 +211,56 @@ pub fn Browse() -> impl IntoView {
     let route = Memo::new(move |_| query.read().get("index").unwrap_or_default());
     let project = Memo::new(move |_| query.read().get("project").filter(|name| !name.is_empty()));
     let file = Memo::new(move |_| query.read().get("file").filter(|name| !name.is_empty()));
+    let sha256 = Memo::new(move |_| query.read().get("sha256").filter(|digest| !digest.is_empty()));
     let member = Memo::new(move |_| query.read().get("member").filter(|name| !name.is_empty()));
+    let containers = Memo::new(move |_| {
+        query
+            .read()
+            .get_all("container")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let offset = Memo::new(move |_| {
+        query
+            .read()
+            .get("offset")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_default()
+    });
     view! {
         <section class="page">
-            {move || match (project.get(), file.get()) {
-                (Some(name), Some(file)) => {
-                    view! { <ArchiveView route=route.get() project=name file member=member.get() /> }.into_any()
+            {move || match (project.get(), sha256.get(), file.get()) {
+                (Some(name), Some(sha256), Some(file)) => {
+                    view! {
+                        <ArchiveView
+                            route=route.get()
+                            project=name
+                            sha256
+                            filename=file
+                            containers=containers.get()
+                            member=member.get()
+                            offset=offset.get()
+                        />
+                    }.into_any()
                 }
-                (Some(name), None) => view! { <ProjectView route=route.get() project=name /> }.into_any(),
-                (None, _) => view! { <IndexView route=route.get() /> }.into_any(),
+                (Some(name), None, Some(file)) => {
+                    let (sha256, filename) = split_legacy_archive_file(&file);
+                    view! {
+                        <ArchiveView
+                            route=route.get()
+                            project=name
+                            sha256
+                            filename
+                            containers=containers.get()
+                            member=member.get()
+                            offset=offset.get()
+                        />
+                    }.into_any()
+                }
+                (Some(name), _, None) => view! { <ProjectView route=route.get() project=name /> }.into_any(),
+                (None, _, _) => view! { <IndexView route=route.get() /> }.into_any(),
             }}
         </section>
     }
@@ -387,10 +429,10 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                     .map(|file| {
                         let class = if file.yanked { "yanked" } else { "" };
                         let inspect = format!(
-                            "/browse?index={}&project={}&file={}%2F{}",
+                            "/browse?index={}&project={}&sha256={}&file={}",
                             url_encode(&route),
                             url_encode(&project),
-                            file.sha256,
+                            url_encode(&file.sha256),
                             url_encode(&file.filename)
                         );
                         let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
@@ -398,8 +440,11 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                             <tr class=class>
                                 <td>
                                     <a href=file.url.clone()>{file.filename.clone()}</a>
-                                    " · "
-                                    <a class="inspect" href=inspect>"contents"</a>
+                                    {supports_archive_browser(&file.filename)
+                                        .then(|| view! {
+                                            " · "
+                                            <a class="inspect" href=inspect>"contents"</a>
+                                        })}
                                 </td>
                                 <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
                                 <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |t| t.chars().take(10).collect())}</td>
@@ -419,14 +464,26 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
     }
 }
 
-/// The archive browser: member listing of one distribution, or one member's content, the way
-/// pypi-browser presents package contents.
+fn supports_archive_browser(filename: &str) -> bool {
+    let path = std::path::Path::new(filename);
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("whl") || ext.eq_ignore_ascii_case("zip"))
+        || filename
+            .get(filename.len().saturating_sub(7)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
+}
+
+/// The archive browser: member listing of one distribution, or one member's content.
 #[component]
-fn ArchiveView(route: String, project: String, file: String, member: Option<String>) -> impl IntoView {
-    let (sha256, filename) = file
-        .split_once('/')
-        .map(|(sha, name)| (sha.to_owned(), name.to_owned()))
-        .unwrap_or_default();
+fn ArchiveView(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+    member: Option<String>,
+    offset: u64,
+) -> impl IntoView {
     let back = format!("/browse?index={}&project={}", url_encode(&route), url_encode(&project));
     view! {
         <p class="breadcrumb">
@@ -434,60 +491,79 @@ fn ArchiveView(route: String, project: String, file: String, member: Option<Stri
             " / "
             <a href=back>{project.clone()}</a>
             " / "
-            <span>{filename.clone()}</span>
+            <ArchiveBreadcrumb route=route.clone() project=project.clone() sha256=sha256.clone() filename=filename.clone() containers=containers.clone() />
         </p>
         {match member {
             Some(path) => {
-                view! { <MemberView route project file sha256 filename member=path /> }.into_any()
+                view! { <MemberView route project sha256 filename containers member=path offset /> }.into_any()
             }
-            None => view! { <MemberList route project file sha256 filename /> }.into_any(),
+            None => view! { <MemberList route project sha256 filename containers /> }.into_any(),
         }}
     }
 }
 
 #[component]
-fn MemberList(route: String, project: String, file: String, sha256: String, filename: String) -> impl IntoView {
+fn ArchiveBreadcrumb(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+) -> impl IntoView {
+    let root = archive_listing_href(&route, &project, &sha256, &filename, &[]);
+    let filename_view = if containers.is_empty() {
+        view! { <span>{filename.clone()}</span> }.into_any()
+    } else {
+        view! { <a href=root>{filename.clone()}</a> }.into_any()
+    };
+    view! {
+        {filename_view}
+        {containers
+            .iter()
+            .enumerate()
+            .map(|(position, container)| {
+                let next = position + 1;
+                let prefix = containers[..next].to_vec();
+                let href = archive_listing_href(&route, &project, &sha256, &filename, &prefix);
+                let container = container.clone();
+                if next == containers.len() {
+                    view! { " / " <span>{container}</span> }.into_any()
+                } else {
+                    view! { " / " <a href=href>{container}</a> }.into_any()
+                }
+            })
+            .collect_view()}
+    }
+}
+
+#[component]
+fn MemberList(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+) -> impl IntoView {
     let members = Resource::new(
         {
-            let key = (route.clone(), sha256, filename.clone());
+            let key = (route.clone(), sha256.clone(), filename.clone(), containers.clone());
             move || key.clone()
         },
-        |(route, sha256, filename)| load_members(route, sha256, filename),
+        |(route, sha256, filename, containers)| load_members(route, sha256, filename, containers),
     );
+    let heading = containers.last().cloned().unwrap_or_else(|| filename.clone());
     view! {
-        <h1><code>{filename}</code></h1>
+        <h1><code>{heading}</code></h1>
         <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
             {move || {
                 let route = route.clone();
                 let project = project.clone();
-                let file = file.clone();
+                let sha256 = sha256.clone();
+                let filename = filename.clone();
+                let containers = containers.clone();
                 Suspend::new(async move {
                     let entries = members.await;
-                    view! {
-                        <table class="files">
-                            <thead><tr><th>"Member"</th><th>"Size"</th></tr></thead>
-                            <tbody>
-                                {entries
-                                    .into_iter()
-                                    .map(|entry| {
-                                        let href = format!(
-                                            "/browse?index={}&project={}&file={}&member={}",
-                                            url_encode(&route),
-                                            url_encode(&project),
-                                            url_encode(&file),
-                                            url_encode(&entry.path)
-                                        );
-                                        view! {
-                                            <tr>
-                                                <td><a href=href>{entry.path.clone()}</a></td>
-                                                <td>{human_size(entry.size)}</td>
-                                            </tr>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </tbody>
-                        </table>
-                    }
+                    view! { <ArchiveTree route project sha256 filename containers entries /> }
                 })
             }}
         </Suspense>
@@ -495,36 +571,292 @@ fn MemberList(route: String, project: String, file: String, sha256: String, file
 }
 
 #[component]
+fn ArchiveTree(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+    entries: Vec<UiMember>,
+) -> impl IntoView {
+    let nodes = archive_tree(entries);
+    if nodes.is_empty() {
+        return view! { <p class="dim">"No files found in this archive."</p> }.into_any();
+    }
+    view! {
+        <ul class="archive-tree">
+            {nodes
+                .into_iter()
+                .map(|node| {
+                    view! {
+                        <ArchiveTreeNode
+                            route=route.clone()
+                            project=project.clone()
+                            sha256=sha256.clone()
+                            filename=filename.clone()
+                            containers=containers.clone()
+                            node
+                        />
+                    }
+                })
+                .collect_view()}
+        </ul>
+    }
+    .into_any()
+}
+
+#[component]
+fn ArchiveTreeNode(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+    node: ArchiveNode,
+) -> impl IntoView {
+    let ArchiveNode {
+        name,
+        path,
+        size,
+        kind,
+        previewable,
+        directory,
+        children,
+    } = node;
+    if directory {
+        return view! {
+            <li>
+                <details open>
+                    <summary><span class="archive-name folder">{name}</span></summary>
+                    <ul>
+                        {children
+                            .into_iter()
+                            .map(|child| {
+                                view! {
+                                    <ArchiveTreeNode
+                                        route=route.clone()
+                                        project=project.clone()
+                                        sha256=sha256.clone()
+                                        filename=filename.clone()
+                                        containers=containers.clone()
+                                        node=child
+                                    />
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                </details>
+            </li>
+        }
+        .into_any();
+    }
+    let size = size.unwrap_or_default();
+    let label = view! {
+        <span class="archive-meta">{human_size(size)}" · "{kind.clone()}</span>
+    };
+    let class = format!("archive-name kind-{kind}");
+    view! {
+        <li>
+            {if kind == "archive" {
+                let mut next_containers = containers;
+                next_containers.push(path);
+                let href = archive_listing_href(&route, &project, &sha256, &filename, &next_containers);
+                view! { <a class=class href=href>{name}</a> }.into_any()
+            } else if previewable {
+                let href = archive_member_href(&route, &project, &sha256, &filename, &containers, &path, 0);
+                view! { <a class=class href=href>{name}</a> }.into_any()
+            } else {
+                view! { <span class=class>{name}</span> }.into_any()
+            }}
+            {label}
+        </li>
+    }
+    .into_any()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArchiveNode {
+    name: String,
+    path: String,
+    size: Option<u64>,
+    kind: String,
+    previewable: bool,
+    directory: bool,
+    children: Vec<Self>,
+}
+
+#[derive(Default)]
+struct ArchiveBranch {
+    directories: std::collections::BTreeMap<String, Self>,
+    files: Vec<UiMember>,
+}
+
+fn archive_tree(entries: Vec<UiMember>) -> Vec<ArchiveNode> {
+    let mut root = ArchiveBranch::default();
+    for entry in entries {
+        root.insert(entry);
+    }
+    root.into_nodes("")
+}
+
+impl ArchiveBranch {
+    fn insert(&mut self, entry: UiMember) {
+        let parts = entry.path.split('/').map(str::to_owned).collect::<Vec<_>>();
+        let mut branch = self;
+        for directory in parts.iter().take(parts.len().saturating_sub(1)) {
+            branch = branch.directories.entry(directory.clone()).or_default();
+        }
+        branch.files.push(entry);
+    }
+
+    fn into_nodes(self, prefix: &str) -> Vec<ArchiveNode> {
+        self.directories
+            .into_iter()
+            .map(|(name, branch)| {
+                let path = archive_child_path(prefix, &name);
+                ArchiveNode {
+                    name,
+                    path: path.clone(),
+                    size: None,
+                    kind: "folder".to_owned(),
+                    previewable: false,
+                    directory: true,
+                    children: branch.into_nodes(&path),
+                }
+            })
+            .chain(self.files.into_iter().map(|file| {
+                let name = file.path.rsplit('/').next().unwrap_or(&file.path).to_owned();
+                ArchiveNode {
+                    name,
+                    path: file.path,
+                    size: Some(file.size),
+                    kind: file.kind,
+                    previewable: file.previewable,
+                    directory: false,
+                    children: Vec::new(),
+                }
+            }))
+            .collect()
+    }
+}
+
+fn archive_child_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
+#[component]
 fn MemberView(
     route: String,
     project: String,
-    file: String,
     sha256: String,
     filename: String,
+    containers: Vec<String>,
     member: String,
+    offset: u64,
 ) -> impl IntoView {
     let content = Resource::new(
         {
-            let key = (route.clone(), sha256, filename, member.clone());
+            let key = (
+                route.clone(),
+                sha256.clone(),
+                filename.clone(),
+                containers.clone(),
+                member.clone(),
+                offset,
+            );
             move || key.clone()
         },
-        |(route, sha256, filename, member)| load_member(route, sha256, filename, member),
+        |(route, sha256, filename, containers, member, offset)| {
+            load_member_chunk(route, sha256, filename, containers, member, offset)
+        },
     );
-    let back = format!(
-        "/browse?index={}&project={}&file={}",
-        url_encode(&route),
-        url_encode(&project),
-        url_encode(&file)
-    );
+    let back = archive_listing_href(&route, &project, &sha256, &filename, &containers);
     view! {
-        <h1><code>{member}</code></h1>
-        <p><a href=back>"back to the archive listing"</a></p>
+        <h1><code>{member.clone()}</code></h1>
+        <p><a href=back>"back to archive"</a></p>
         <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-            {move || Suspend::new(async move {
-                let text = content.await;
-                view! { <pre class="member-content"><code>{text}</code></pre> }
-            })}
+            {move || {
+                let route = route.clone();
+                let project = project.clone();
+                let sha256 = sha256.clone();
+                let filename = filename.clone();
+                let containers = containers.clone();
+                let member = member.clone();
+                Suspend::new(async move {
+                    let chunk = content.await;
+                    view! { <MemberChunk route project sha256 filename containers member chunk /> }
+                })
+            }}
         </Suspense>
+    }
+}
+
+#[component]
+fn MemberChunk(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+    member: String,
+    chunk: UiMemberChunk,
+) -> impl IntoView {
+    let next = chunk
+        .next_offset
+        .map(|offset| archive_member_href(&route, &project, &sha256, &filename, &containers, &member, offset));
+    let end = chunk
+        .next_offset
+        .or(chunk.size)
+        .unwrap_or_else(|| chunk.offset + chunk.text.len() as u64);
+    let range = chunk.size.map(|size| {
+        view! { <p class="dim">"bytes "{chunk.offset}"-"{end}" of "{size}</p> }
+    });
+    view! {
+        {range}
+        <pre class="member-content"><code>{chunk.text}</code></pre>
+        {next.map(|href| view! { <p><a class="button-link" href=href>"next chunk"</a></p> })}
+    }
+}
+
+fn archive_listing_href(route: &str, project: &str, sha256: &str, filename: &str, containers: &[String]) -> String {
+    let mut href = format!(
+        "/browse?index={}&project={}&sha256={}&file={}",
+        url_encode(route),
+        url_encode(project),
+        url_encode(sha256),
+        url_encode(filename)
+    );
+    append_container_query(&mut href, containers);
+    href
+}
+
+fn archive_member_href(
+    route: &str,
+    project: &str,
+    sha256: &str,
+    filename: &str,
+    containers: &[String],
+    member: &str,
+    offset: u64,
+) -> String {
+    let mut href = archive_listing_href(route, project, sha256, filename, containers);
+    href.push_str("&member=");
+    href.push_str(&url_encode(member));
+    if offset > 0 {
+        href.push_str("&offset=");
+        href.push_str(&offset.to_string());
+    }
+    href
+}
+
+fn append_container_query(href: &mut String, containers: &[String]) {
+    for container in containers {
+        href.push_str("&container=");
+        href.push_str(&url_encode(container));
     }
 }
 
@@ -679,19 +1011,10 @@ fn human_size(bytes: u64) -> String {
     format!("{value:.1} TB")
 }
 
-/// Percent-encode a URL query component (RFC 3986 unreserved characters stay literal).
-fn url_encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(byte as char),
-            other => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
+fn split_legacy_archive_file(file: &str) -> (String, String) {
+    file.split_once('/')
+        .map(|(sha256, filename)| (sha256.to_owned(), filename.to_owned()))
+        .unwrap_or_default()
 }
 
 /// The usage statistics drill-down: every index, one index's projects, or one project's files,

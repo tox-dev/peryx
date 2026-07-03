@@ -13,25 +13,33 @@ You need Python with `pip` or [`uv`](https://docs.astral.sh/uv/) to act as the c
 whichever install channel fits; [installation](@/reference/installation.md) lists them all:
 
 {% tabs(names="installer, uv, pip, from source") %}
+
 ```shell
 # standalone binary, no Python involved
 curl -LsSf https://github.com/tox-dev/velodex/releases/latest/download/velodex-installer.sh | sh
 ```
+
 %%%
+
 ```shell
 uv tool install velodex
 ```
+
 %%%
+
 ```shell
 pip install velodex
 ```
+
 %%%
+
 ```shell
 # needs a Rust toolchain (https://rustup.rs); rust-toolchain.toml pins the version
 git clone https://github.com/tox-dev/velodex.git
 cd velodex
 cargo build --release
 ```
+
 {% end %}
 
 ## Start velodex
@@ -74,7 +82,9 @@ curl -s http://127.0.0.1:4433/metrics | grep metadata
 velodex serves its own web interface on the same port. Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for a live
 dashboard of the configured indexes and request counters, click an index to get a searchable project list, and click a
 project for a pypi.org-style page: description, dependencies, classifiers, files with hashes, and a browser for the
-contents of each archive.
+contents of each supported archive. The `contents` links are shareable: the URL carries the file's sha256, display
+filename, member path, and chunk offset separately, so filenames with spaces or URL punctuation still open the right
+archive.
 
 ## Publish a private package
 

@@ -11,7 +11,7 @@ use velodex_core::pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_jso
 use velodex_http::{AppState, cache};
 use velodex_storage::blob::Digest;
 
-use crate::model::{UiIndex, UiMember, UiProject, UiSnapshot};
+use crate::model::{UiIndex, UiMember, UiMemberChunk, UiProject, UiSnapshot};
 use crate::{App, shell};
 
 /// The router state: leptos options plus the velodex application state.
@@ -114,15 +114,14 @@ pub async fn project(route: &str, project: &str) -> Option<(UiProject, Option<Co
     let detail = cache::resolve_detail(&app, index, &normalized, route).await.ok()??;
     let value = serde_json::from_str(&to_json(&detail)).ok()?;
     let ui = UiProject::from_detail(&value);
-    let mut doc = None;
-    if let Some(file) = ui.files.iter().rev().find(|file| file.has_metadata) {
-        let digest = file.url.split('/').nth_back(1).and_then(Digest::from_hex);
-        if let Some(digest) = digest
-            && let Ok(bytes) = cache::metadata_bytes(&app, &digest).await
-        {
-            doc = Some(parse_metadata(&String::from_utf8_lossy(&bytes)));
-        }
-    }
+    let doc = if let Some(file) = ui.files.iter().rev().find(|file| file.has_metadata)
+        && let Some(digest) = Digest::from_hex(&file.sha256)
+        && let Ok(bytes) = cache::metadata_bytes(&app, &digest).await
+    {
+        Some(parse_metadata(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
     Some((ui, doc))
 }
 
@@ -131,40 +130,78 @@ fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a velodex_http::In
 }
 
 /// The member listing of a cached archive, for server rendering.
-pub async fn members(sha256: &str, filename: &str) -> Vec<UiMember> {
+pub async fn members(route: &str, sha256: &str, filename: &str, containers: &[String]) -> Vec<UiMember> {
     let app = expect_context::<Arc<AppState>>();
     let Some(digest) = Digest::from_hex(sha256) else {
         return Vec::new();
     };
-    let Ok(bytes) = cache::file_bytes(&app, &digest).await else {
+    let Ok(path) = cache::file_path(app, digest, route.to_owned(), filename.to_owned()).await else {
         return Vec::new();
     };
-    velodex_http::archive::list_members(filename, &bytes)
+    let filename = filename.to_owned();
+    let containers = containers.to_vec();
+    tokio::task::spawn_blocking(move || velodex_http::archive::list_members_nested_path(&filename, &path, &containers))
+        .await
+        .ok()
+        .and_then(Result::ok)
         .map(|members| {
             members
                 .into_iter()
                 .map(|member| UiMember {
                     path: member.path,
                     size: member.size,
+                    kind: member.kind.as_str().to_owned(),
+                    previewable: member.previewable,
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// One archive member's text content, for server rendering.
-pub async fn member(sha256: &str, filename: &str, member: &str) -> String {
+/// One archive member chunk, for server rendering.
+pub async fn member_chunk(
+    route: &str,
+    sha256: &str,
+    filename: &str,
+    containers: &[String],
+    member: &str,
+    offset: u64,
+) -> UiMemberChunk {
     let app = expect_context::<Arc<AppState>>();
     let Some(digest) = Digest::from_hex(sha256) else {
-        return String::new();
+        return UiMemberChunk::default();
     };
-    let Ok(bytes) = cache::file_bytes(&app, &digest).await else {
-        return String::new();
+    let Ok(path) = cache::file_path(app, digest, route.to_owned(), filename.to_owned()).await else {
+        return UiMemberChunk::default();
     };
-    match velodex_http::archive::read_member(filename, &bytes, member) {
-        Ok(content) => String::from_utf8(content).unwrap_or_else(|_| "(binary content)".to_owned()),
-        Err(err) => format!("({err})"),
-    }
+    let filename = filename.to_owned();
+    let containers = containers.to_vec();
+    let member = member.to_owned();
+    tokio::task::spawn_blocking(move || {
+        velodex_http::archive::read_text_member_chunk_nested_path(
+            &filename,
+            &path,
+            &containers,
+            &member,
+            offset,
+            velodex_http::archive::DEFAULT_MEMBER_CHUNK,
+        )
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .map_or_else(
+        || UiMemberChunk {
+            text: "(binary or unavailable)".to_owned(),
+            ..UiMemberChunk::default()
+        },
+        |chunk| UiMemberChunk {
+            text: String::from_utf8(chunk.bytes).unwrap_or_default(),
+            size: Some(chunk.size),
+            offset: chunk.offset,
+            next_offset: chunk.next_offset,
+        },
+    )
 }
 
 /// The stats tree at the requested depth, read from the metrics aggregator.

@@ -180,6 +180,20 @@ tr.yanked td a { text-decoration: line-through; color: var(--text-soft); }
   background: var(--terminal-bg); color: var(--terminal-text); border-radius: 10px; padding: 1rem 1.2rem;
   overflow-x: auto; font-size: 0.85rem;
 }
+.archive-tree, .archive-tree ul { list-style: none; margin: 0; padding-left: 1.1rem; }
+.archive-tree { padding-left: 0; font-size: 0.92rem; }
+.archive-tree li { min-height: 1.75rem; line-height: 1.75rem; }
+.archive-tree summary { cursor: pointer; }
+.archive-name { font-family: ui-monospace, Menlo, monospace; }
+.archive-name.folder { color: var(--text); font-weight: 600; }
+.archive-name.kind-archive { font-weight: 600; }
+.archive-name.kind-binary, .archive-name.kind-unknown { color: var(--text-soft); }
+.archive-meta { color: var(--text-soft); margin-left: 0.55rem; font-size: 0.82rem; }
+.button-link {
+  display: inline-block; border: 1px solid var(--border); border-radius: 7px; padding: 0.3rem 0.75rem;
+  background: var(--bg); color: var(--accent);
+}
+.button-link:hover { border-color: var(--accent); text-decoration: none; }
 .inspect { font-size: 0.85rem; }
 .links-list { list-style: none; padding: 0; }
 .admin { margin-top: 2rem; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1.2rem; }

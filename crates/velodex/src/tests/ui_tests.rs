@@ -1,3 +1,5 @@
+use std::io::Write as _;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
@@ -57,6 +59,10 @@ async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
 /// Upload the frontend fixture wheel through the router, so UI pages have a metadata-rich package.
 async fn upload_fixture(router: &axum::Router) {
     let wheel = include_bytes!("../../../../tests/frontend/fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+    upload_file(router, "veloxdemo-1.0.0-py3-none-any.whl", wheel).await;
+}
+
+async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     let boundary = "velodexuitest";
     let mut body = Vec::new();
     for (name, value) in [(":action", "file_upload"), ("name", "veloxdemo"), ("version", "1.0.0")] {
@@ -67,11 +73,11 @@ async fn upload_fixture(router: &axum::Router) {
     body.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; \
-             filename=\"veloxdemo-1.0.0-py3-none-any.whl\"\r\n\r\n"
+             filename=\"{filename}\"\r\n\r\n"
         )
         .as_bytes(),
     );
-    body.extend_from_slice(wheel);
+    body.extend_from_slice(content);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let request = Request::builder()
         .uri("/root/pypi/")
@@ -154,6 +160,17 @@ async fn test_ui_project_page_missing_project() {
 }
 
 #[tokio::test]
+async fn test_ui_project_page_hides_contents_for_unsupported_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    upload_file(&router, "veloxdemo-1.0.0.egg", b"legacy egg").await;
+    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo-1.0.0.egg"));
+    assert!(!body.contains("class=\"inspect\""));
+}
+
+#[tokio::test]
 async fn test_ui_archive_listing_and_member() {
     let dir = tempfile::tempdir().unwrap();
     let router = build_router(&ui_config(&dir)).unwrap();
@@ -168,18 +185,76 @@ async fn test_ui_archive_listing_and_member() {
         .unwrap()
         .to_owned();
 
-    let file = format!("{sha}%2Fveloxdemo-1.0.0-py3-none-any.whl");
-    let (status, listing) = get(&router, &format!("/browse?index=local&project=veloxdemo&file={file}")).await;
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=local&project=veloxdemo&sha256={sha}&file={file}");
+    let (status, listing) = get(&router, &listing_url).await;
     assert_eq!(status, StatusCode::OK);
     assert!(listing.contains("dist-info/METADATA"));
     assert!(listing.contains("__init__.py"));
 
-    let member =
-        format!("/browse?index=local&project=veloxdemo&file={file}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
+    let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
     let (status, content) = get(&router, &member).await;
     assert_eq!(status, StatusCode::OK);
     assert!(content.contains("Metadata-Version: 2.1"));
-    assert!(content.contains("back to the archive listing"));
+    assert!(content.contains("back to archive"));
+}
+
+#[tokio::test]
+async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    let mut inner = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut inner));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("pkg/mod.py", options).unwrap();
+        zip.write_all(b"x = 1\n").unwrap();
+        zip.finish().unwrap();
+    }
+    let mut wheel = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut wheel));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("veloxdemo/__init__.py", options).unwrap();
+        zip.write_all(b"").unwrap();
+        zip.start_file("veloxdemo/data.bin", options).unwrap();
+        zip.write_all(&[0xff, 0xfe]).unwrap();
+        zip.start_file("vendor/inner.zip", options).unwrap();
+        zip.write_all(&inner).unwrap();
+        zip.finish().unwrap();
+    }
+    upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;
+    let (_, detail) = get(&router, "/local/simple/veloxdemo/").await;
+    let sha = detail
+        .split("files/")
+        .nth(1)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=local&project=veloxdemo&sha256={sha}&file={file}");
+    let (status, listing) = get(&router, &listing_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains("class=\"archive-tree\""));
+    assert!(listing.contains("vendor"));
+    assert!(listing.contains("inner.zip"));
+    assert!(listing.contains("container=vendor%2Finner.zip"));
+    assert!(listing.contains("data.bin"));
+    assert!(!listing.contains("member=veloxdemo%2Fdata.bin"));
+
+    let nested_url = format!("{listing_url}&container=vendor%2Finner.zip");
+    let (status, nested) = get(&router, &nested_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(nested.contains("pkg"));
+    assert!(nested.contains("mod.py"));
+
+    let member_url = format!("{nested_url}&member=pkg%2Fmod.py");
+    let (status, content) = get(&router, &member_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("x = 1"));
 }
 
 #[tokio::test]

@@ -46,10 +46,13 @@ fn test_project_from_detail_maps_files() {
 fn test_projects_and_members_from_json() {
     let list = serde_json::json!({"projects": [{"name": "a"}, {"name": "b"}]});
     assert_eq!(projects_from_list(&list), ["a", "b"]);
-    let listing = serde_json::json!({"members": [{"path": "x/METADATA", "size": 5}]});
+    let listing =
+        serde_json::json!({"members": [{"path": "x/METADATA", "size": 5, "kind": "text", "previewable": true}]});
     let members = members_from_listing(&listing);
     assert_eq!(members[0].path, "x/METADATA");
     assert_eq!(members[0].size, 5);
+    assert_eq!(members[0].kind, "text");
+    assert!(members[0].previewable);
 }
 
 #[test]

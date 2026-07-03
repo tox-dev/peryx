@@ -87,6 +87,17 @@ pub struct UiFile {
 pub struct UiMember {
     pub path: String,
     pub size: u64,
+    pub kind: String,
+    pub previewable: bool,
+}
+
+/// One rendered chunk of an archive member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiMemberChunk {
+    pub text: String,
+    pub size: Option<u64>,
+    pub offset: u64,
+    pub next_offset: Option<u64>,
 }
 
 /// Rebuild an archive listing from the inspect endpoint's JSON document.
@@ -99,6 +110,8 @@ pub fn members_from_listing(value: &serde_json::Value) -> Vec<UiMember> {
         .map(|member| UiMember {
             path: string_at(member, "path"),
             size: member["size"].as_u64().unwrap_or_default(),
+            kind: member["kind"].as_str().unwrap_or("unknown").to_owned(),
+            previewable: member["previewable"].as_bool().unwrap_or(false),
         })
         .collect()
 }

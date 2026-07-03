@@ -15,22 +15,22 @@ velodex is a single async Rust process built on [axum](https://github.com/tokio-
 
 1. **Routing.** The HTTP layer resolves the path against the configured index routes by longest prefix, so routes
    are configuration data rather than compiled-in paths.
-2. **Resolution.** The cache layer answers from local state when it can and talks to upstreams when it must. An
+1. **Resolution.** The cache layer answers from local state when it can and talks to upstreams when it must. An
    overlay walks its layers in order and merges their answers.
-3. **Storage.** Two stores under one data directory hold all state.
+1. **Storage.** Two stores under one data directory hold all state.
 
 {% mermaid() %}
 flowchart LR
-  client["pip / uv / twine"] --> router["route resolver"]
-  subgraph velodex["velodex, one process"]
-    router --> cache["cache layer"]
-    cache --> hot["hot page cache (RAM)"]
-    cache --> meta["metadata store (redb)"]
-    cache --> blobs["artifact store (disk)"]
-  end
-  cache -.->|"only on miss"| upstream["pypi.org, or any mirror"]
-  classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-  class cache accent
+client["pip / uv / twine"] --> router["route resolver"]
+subgraph velodex["velodex, one process"]
+router --> cache["cache layer"]
+cache --> hot["hot page cache (RAM)"]
+cache --> meta["metadata store (redb)"]
+cache --> blobs["artifact store (disk)"]
+end
+cache -.->|"only on miss"| upstream["pypi.org, or any mirror"]
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+class cache accent
 {% end %}
 
 ## How a page is served
@@ -39,22 +39,22 @@ A simple-index page (say `/root/pypi/simple/pandas/`) can be answered three ways
 
 1. **Hot:** the transformed page sits in an in-memory cache, keyed by a mutation epoch so any upload or override
    invalidates it instantly. Serving is a lookup and a memcpy.
-2. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. velodex
+1. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. velodex
    transforms it for the requesting route in one in-memory pass (file URLs rewritten, local uploads injected,
    yanked and hidden files applied) and remembers the result in the hot cache.
-3. **Cold:** nothing usable is stored. velodex opens the upstream request and streams.
+1. **Cold:** nothing usable is stored. velodex opens the upstream request and streams.
 
 {% mermaid() %}
 flowchart LR
-  req["GET simple/pandas/"] --> hot{"hot cache?"}
-  hot -->|hit| serve["serve from RAM"]
-  hot -->|miss| warm{"raw page fresh?"}
-  warm -->|yes| transform["transform in memory"] --> serve
-  warm -->|no| cold["stream from upstream"] --> serve2["serve while caching"]
-  classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-  classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-  class serve good
-  class cold,serve2 accent
+req["GET simple/pandas/"] --> hot{"hot cache?"}
+hot -->|hit| serve["serve from RAM"]
+hot -->|miss| warm{"raw page fresh?"}
+warm -->|yes| transform["transform in memory"] --> serve
+warm -->|no| cold["stream from upstream"] --> serve2["serve while caching"]
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+class serve good
+class cold,serve2 accent
 {% end %}
 
 The stored form is always the **raw upstream document** (HTML upstreams are canonicalized to PEP 691 JSON once, at
@@ -69,19 +69,19 @@ artifacts stream, with the caching work riding along:
 
 {% mermaid() %}
 sequenceDiagram
-  participant C as uv
-  participant V as velodex
-  participant U as upstream
-  C->>+V: GET simple/pandas/
-  V->>+U: GET (If-None-Match)
-  U-->>-V: 200, JSON streams
-  V-->>-C: transformed JSON, chunk by chunk
-  Note over V: raw page persists before the<br/>final chunk, so file lookups<br/>that follow always resolve
-  C->>+V: GET files/{sha256}/pandas…whl
-  V->>+U: GET wheel
-  U-->>-V: bytes
-  V-->>-C: the same bytes, teed to a temp file
-  Note over V: after the client has everything:<br/>verify sha256, rename into the store
+participant C as uv
+participant V as velodex
+participant U as upstream
+C->>+V: GET simple/pandas/
+V->>+U: GET (If-None-Match)
+U-->>-V: 200, JSON streams
+V-->>-C: transformed JSON, chunk by chunk
+Note over V: raw page persists before the<br/>final chunk, so file lookups<br/>that follow always resolve
+C->>+V: GET files/{sha256}/pandas…whl
+V->>+U: GET wheel
+U-->>-V: bytes
+V-->>-C: the same bytes, teed to a temp file
+Note over V: after the client has everything:<br/>verify sha256, rename into the store
 {% end %}
 
 For pages, a chunk-at-a-time transformer rewrites each `files[]` element mid-flight (URL rewriting, local-file
@@ -89,6 +89,13 @@ injection, yank and hide overrides), so the client starts parsing while the upst
 For artifacts, the tee hashes into a temp file that is verified and atomically renamed into the store after the
 client already has its bytes. A digest mismatch still forwards (pip and uv verify hashes themselves) but is never
 cached, and shows up as `rejected` in the [usage counters](@/reference/endpoints.md).
+
+File URLs put the sha256 in the path because it is the real storage key. The filename is kept for installer behavior,
+browser save names, and operator logs, but velodex treats it as one percent-encoded path segment and rejects decoded
+separators, traversal, and control characters. Archive inspection uses the same rule for the distribution filename
+and passes member paths in a query parameter so member names can contain `/` without becoming route structure. The
+inspector opens cached blobs from disk and returns member text by byte offset, so looking at a large generated file does
+not require loading the whole archive member into server memory or the browser.
 
 Three more decisions keep the cold path at wire speed:
 
@@ -110,12 +117,12 @@ over `max-age`; pypi.org grants 600 seconds). When the server grants none (the h
 
 {% mermaid() %}
 stateDiagram-v2
-  [*] --> Fresh: first fetch
-  Fresh --> Stale: lifetime lapses
-  Stale --> Fresh: 304, nothing changed
-  Stale --> Fresh: 200, new content
-  Stale --> ServedStale: upstream down
-  ServedStale --> Fresh: upstream back
+[\*] --> Fresh: first fetch
+Fresh --> Stale: lifetime lapses
+Stale --> Fresh: 304, nothing changed
+Stale --> Fresh: 200, new content
+Stale --> ServedStale: upstream down
+ServedStale --> Fresh: upstream back
 {% end %}
 
 A stale page is not dropped: the next request revalidates it with `If-None-Match`, and the common answer is a
@@ -161,8 +168,7 @@ the aggregation lock; recording costs one channel send. The tree serves
 velodex ships one static binary through two channels. GitHub releases carry per-platform archives and installer
 scripts (built by [dist](https://axodotdev.github.io/cargo-dist/)); these copies carry the `self-update` feature
 and an install receipt, so `velodex self update` can replace them in place. PyPI carries the same binary wrapped
-in a `bindings = "bin"` wheel: Python-shop operators get velodex through the tooling they already run (`uv tool
-install`, a `requirements.txt` line, an internal mirror) without a second artifact channel, and since no Python
+in a `bindings = "bin"` wheel: Python-shop operators get velodex through the tooling they already run (`uv tool install`, a `requirements.txt` line, an internal mirror) without a second artifact channel, and since no Python
 ABI is involved, one wheel per platform serves every interpreter. Wheel installs have no self-update: pip owns
 that file, and the updater refuses copies without a receipt rather than fight it.
 

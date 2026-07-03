@@ -52,13 +52,13 @@ jobs:
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
-      # Lines and functions are gated at 100%. Region coverage is reported but not gated: it
-      # includes compiler/macro-generated branches (tracing expansions, drop glue) that are not
-      # reachable from a test on stable. main.rs is the entrypoint shell; velodex-web is the UI,
-      # whose browser-event closures only execute as wasm (uninstrumentable) — its server rendering
-      # is asserted by velodex's UI tests and its interactivity by the Playwright suite.
+      # Uncovered lines and functions fail CI. Region coverage is reported but not gated: it includes
+      # compiler/macro-generated branches (tracing expansions, drop glue) that are not reachable from
+      # a test on stable. main.rs is the entrypoint shell; velodex-web is the UI, whose browser-event
+      # closures only execute as wasm. velodex's UI tests assert server rendering; Playwright asserts
+      # browser interactivity.
       - run: >
-          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/velodex-web/|crates/velodex-bench/)' --fail-under-lines 100 --fail-under-functions 100 --lcov --output-path lcov.info
+          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/velodex-web/|crates/velodex-bench/)' --fail-uncovered-lines 0 --fail-under-functions 100 --lcov --output-path lcov.info
       - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           files: lcov.info
