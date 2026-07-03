@@ -308,6 +308,22 @@ async fn test_unsupported_simple_api_major_version_is_bad_gateway() {
 }
 
 #[tokio::test]
+async fn test_unsupported_upstream_content_type_is_bad_gateway() {
+    let h = harness().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"not an index".to_vec(), "application/octet-stream"))
+        .mount(&h.server)
+        .await;
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.contains("unsupported upstream Simple API Content-Type"));
+    assert!(body.contains("/simple/flask/"));
+}
+
+#[tokio::test]
 async fn test_unknown_route_is_not_found() {
     let h = harness().await;
     let (status, ..) = get(&h.state, "/nope/simple/flask/", None).await;
@@ -406,8 +422,11 @@ async fn test_mirror_detail_upstream_404() {
     Mock::given(method("GET"))
         .and(path("/simple/missing/"))
         .respond_with(ResponseTemplate::new(404))
+        .expect(1)
         .mount(&h.server)
         .await;
+    let (status, ..) = get(&h.state, "/pypi/simple/missing/", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, ..) = get(&h.state, "/pypi/simple/missing/", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

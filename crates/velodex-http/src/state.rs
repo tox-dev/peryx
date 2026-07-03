@@ -64,6 +64,9 @@ pub struct AppState {
     /// uploads and overrides invalidate by key miss; the expiry honors each page's upstream
     /// `Cache-Control` lifetime, and moka's own time-to-live is a coarse eviction backstop.
     pub hot: moka::sync::Cache<String, (i64, Bytes)>,
+    /// Short-lived misses from upstream, keyed separately from stored pages and artifacts so 404s
+    /// do not add fake rows to the persistent cache.
+    pub negative: moka::sync::Cache<String, i64>,
     /// Bumped by every mutation that changes what a page serves (persisted fetches, uploads,
     /// yank/hide/restore), retiring hot-cache keys.
     pub epoch: AtomicU64,
@@ -100,6 +103,7 @@ impl AppState {
                     u64::try_from(ttl_secs.max(1)).unwrap_or(1800),
                 ))
                 .build(),
+            negative: moka::sync::Cache::builder().max_capacity(65_536).build(),
             epoch: AtomicU64::new(0),
             metrics: Metrics::start(),
         }
@@ -146,6 +150,24 @@ impl AppState {
     pub fn hot_key(&self, route: &str, project: &str) -> String {
         let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
         format!("{route}\u{0}{project}\u{0}{epoch}")
+    }
+
+    /// Whether a remembered upstream miss is still inside its injected-clock expiry.
+    #[must_use]
+    pub fn negative_fresh(&self, key: &str) -> bool {
+        match self.negative.get(key) {
+            Some(expires_at) if (self.clock)() < expires_at => true,
+            Some(_) => {
+                self.negative.invalidate(key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Remember an upstream miss for `ttl_secs` according to the injected clock.
+    pub fn remember_negative(&self, key: String, ttl_secs: i64) {
+        self.negative.insert(key, (self.clock)() + ttl_secs);
     }
 
     /// Retire every hot-cache entry after a mutation (upload, yank, hide, restore, or a fresh

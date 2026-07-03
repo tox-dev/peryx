@@ -122,6 +122,54 @@ async fn test_concurrent_streaming_misses_share_one_fetch() {
 }
 
 #[tokio::test]
+async fn test_concurrent_buffered_404_waiter_uses_negative_cache() {
+    let h = harness().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/ghost/"))
+        .respond_with(ResponseTemplate::new(404).set_delay(std::time::Duration::from_millis(150)))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+
+    let (first, second) = tokio::join!(
+        get(&h.state, "/pypi/simple/ghost/", None),
+        get(&h.state, "/pypi/simple/ghost/", None),
+    );
+
+    assert_eq!((first.0, second.0), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+}
+
+#[tokio::test]
+async fn test_concurrent_streaming_404_waiter_uses_negative_cache() {
+    let h = harness().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/ghost/"))
+        .respond_with(ResponseTemplate::new(404).set_delay(std::time::Duration::from_millis(150)))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+
+    let (first, second) = tokio::join!(
+        get(&h.state, "/pypi/simple/ghost/", Some("application/json")),
+        get(&h.state, "/pypi/simple/ghost/", Some("application/json")),
+    );
+
+    assert_eq!((first.0, second.0), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+}
+
+#[tokio::test]
+async fn test_negative_cache_expires_by_clock() {
+    let h = harness().await;
+
+    h.state.remember_negative("missing".to_owned(), 30);
+    assert!(h.state.negative_fresh("missing"));
+    h.clock.fetch_add(31, Ordering::Relaxed);
+
+    assert!(!h.state.negative_fresh("missing"));
+    assert!(!h.state.negative_fresh("missing"));
+}
+
+#[tokio::test]
 async fn test_third_request_hits_the_hot_cache() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
@@ -664,6 +712,34 @@ async fn test_upstream_metadata_error_is_bad_gateway() {
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl.metadata", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn test_upstream_metadata_404_is_negative_cached() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    let page = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}",
+        digest = digest.as_str(),
+        meta = Digest::of(b"meta").as_str(),
+    );
+    mount_json_page(&h.server, &page).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl.metadata"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl.metadata", digest.as_str());
+
+    let first = get(&h.state, &uri, None).await;
+    let second = get(&h.state, &uri, None).await;
+
+    assert_eq!((first.0, second.0), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
 }
 
 #[tokio::test]
