@@ -182,11 +182,16 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .description pre code { background: none; color: inherit; padding: 0; }
 .description img { max-width: 100%; }
 .description-plain { white-space: pre-wrap; }
+.file-filter { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; margin: 0 0 0.8rem; }
+.file-search { flex: 1 1 18rem; margin: 0; }
+.file-filter-mode { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
+.file-filter-count { color: var(--text-soft); font-size: 0.9rem; margin-left: auto; }
 table.files, table.admin-table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
 table.files th, table.files td, table.admin-table td {
   border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left;
 }
 table.files th { background: var(--bg-soft); }
+table.files td.empty { color: var(--text-soft); text-align: center; }
 tr.yanked td a { text-decoration: line-through; color: var(--text-soft); }
 .project-side h3 { margin-bottom: 0.3rem; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
 .chips code { margin: 0 0.3rem 0.3rem 0; display: inline-block; }

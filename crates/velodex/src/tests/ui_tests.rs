@@ -70,6 +70,12 @@ async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+fn first_files_table(body: &str) -> &str {
+    let table = body.find("<table class=\"files\"").unwrap();
+    let rest = &body[table..];
+    &rest[..rest.find("</table>").unwrap()]
+}
+
 /// Upload the frontend fixture wheel through the router, so UI pages have a metadata-rich package.
 async fn upload_fixture(router: &axum::Router) {
     let wheel = include_bytes!("../../../../tests/frontend/fixtures/veloxdemo-1.0.0-py3-none-any.whl");
@@ -147,6 +153,12 @@ fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8
         .unwrap();
     state.meta.put_project("local", "veloxdemo", "veloxdemo").unwrap();
     digest
+}
+
+fn put_filter_files(state: &velodex_http::AppState) {
+    put_legacy_file(state, "veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", b"wheel 1");
+    put_legacy_file(state, "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl", b"wheel 2");
+    put_legacy_file(state, "veloxdemo-1.0.0.tar.gz", b"sdist");
 }
 
 #[tokio::test]
@@ -249,6 +261,63 @@ async fn test_ui_project_page_renders_metadata() {
     assert!(body.contains("badge meta-badge"));
     assert!(body.contains("Manage uploads"));
     assert!(body.contains("1.2 kB"));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_filters_files_by_substring() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_filter_files(&state);
+    let router = router_for(state);
+
+    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo&filename=cp312").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("1 of 3 files"));
+    let table = first_files_table(&body);
+    assert!(table.contains("veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"));
+    assert!(!table.contains("veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl"));
+    assert!(!table.contains("veloxdemo-1.0.0.tar.gz"));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_filters_files_by_regex() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_filter_files(&state);
+    let router = router_for(state);
+
+    let (status, body) = get(
+        &router,
+        "/browse?index=local&project=veloxdemo&filename=cp31%5B12%5D.*whl&filename_match=regex",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("2 of 3 files"));
+    let table = first_files_table(&body);
+    assert!(table.contains("veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl"));
+    assert!(table.contains("veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"));
+    assert!(!table.contains("veloxdemo-1.0.0.tar.gz"));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_invalid_regex_keeps_full_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_filter_files(&state);
+    let router = router_for(state);
+
+    let (status, body) = get(
+        &router,
+        "/browse?index=local&project=veloxdemo&filename=%5B&filename_match=regex",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Invalid regex"));
+    assert!(body.contains("3 files"));
+    let table = first_files_table(&body);
+    assert!(table.contains("veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl"));
+    assert!(table.contains("veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"));
+    assert!(table.contains("veloxdemo-1.0.0.tar.gz"));
 }
 
 #[tokio::test]
