@@ -116,15 +116,21 @@ async fn get_bytes(state: &Arc<AppState>, uri: &str, accept: Option<&str>) -> (S
 }
 
 async fn request(state: &Arc<AppState>, verb: &str, uri: &str, auth: Option<&str>) -> StatusCode {
+    request_response(state, verb, uri, auth).await.0
+}
+
+async fn request_response(state: &Arc<AppState>, verb: &str, uri: &str, auth: Option<&str>) -> (StatusCode, String) {
     let mut builder = Request::builder().uri(uri).method(verb);
     if let Some(auth) = auth {
         builder = builder.header(header::AUTHORIZATION, auth);
     }
-    router(state.clone())
+    let response = router(state.clone())
         .oneshot(builder.body(Body::empty()).unwrap())
         .await
-        .unwrap()
-        .status()
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 pub(super) fn detail_json(digest: &str, file_url: &str) -> String {
@@ -297,10 +303,8 @@ async fn test_unsupported_simple_api_major_version_is_bad_gateway() {
     let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert_eq!(
-        body,
-        "unsupported upstream Simple API version \"2.0\"; velodex supports Simple API 1.x"
-    );
+    assert!(body.contains("project detail on index \"pypi\" for project \"flask\""));
+    assert!(body.contains("unsupported upstream Simple API version \"2.0\""));
 }
 
 #[tokio::test]
@@ -1361,7 +1365,8 @@ async fn test_upload_corrupt_existing_record_is_server_error() {
     let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(body, "storage error");
+    assert!(body.contains("upload storage on index \"local\" for project \"velodexpkg\""));
+    assert!(body.contains("simple API document could not be parsed"));
 }
 
 #[tokio::test]
@@ -1486,10 +1491,9 @@ async fn test_delete_requires_auth() {
 async fn test_delete_on_non_volatile_is_forbidden() {
     let h = harness_with(true, false).await;
     upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
-    assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/", Some(&upload_auth())).await,
-        StatusCode::FORBIDDEN
-    );
+    let (status, body) = request_response(&h.state, "DELETE", "/local/velodexpkg/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, "file removal: index is not volatile; delete is disabled");
 }
 
 #[tokio::test]
@@ -1674,12 +1678,17 @@ async fn test_metrics_exposes_per_index_counters() {
     assert!(body.contains("velodex_index_rejected_total{index=\"pypi\"} 0"));
 }
 
-#[test]
-fn test_index_response_error_is_bad_gateway() {
+#[tokio::test]
+async fn test_index_response_error_is_bad_gateway() {
     use crate::cache::CacheError;
     use crate::handlers::{Format, index_response};
-    let response = index_response(Err(CacheError::Unavailable), Format::Json);
+    let response = index_response(Err(CacheError::Unavailable), Format::Json, "pypi");
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "project list on index \"pypi\": upstream is unavailable and no cached page exists"
+    );
 }
 
 async fn upload_version(state: &Arc<AppState>, uri: &str, version: &str, _wheel: &[u8]) -> StatusCode {
@@ -1866,6 +1875,30 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
     ];
     let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
     assert_eq!(upload_velodexpkg(&state, "/ov/", b"x").await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_metadata_digest_mismatch_is_server_error() {
+    let h = harness().await;
+    let artifact = Digest::of(b"artifact");
+    let metadata = Digest::of(b"expected");
+    let metadata_url = format!("{}/files/pkg.whl.metadata", h.server.uri());
+    h.state
+        .meta
+        .put_metadata(artifact.as_str(), &metadata_url, metadata.as_str(), "pypi")
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl.metadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wrong".to_vec()))
+        .mount(&h.server)
+        .await;
+
+    let uri = format!("/pypi/files/{}/pkg.whl.metadata", artifact.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("metadata fetch on index \"pypi\" for file \"pkg.whl.metadata\""));
+    assert!(body.contains("blob store error: digest mismatch"));
 }
 
 #[tokio::test]

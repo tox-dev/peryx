@@ -72,7 +72,7 @@ pub async fn dispatch_get(
         return index_api(&state, position, base.as_ref());
     }
     if rest == "simple/" {
-        return index_response(cache::resolve_list(&state, index), negotiate(&headers));
+        return index_response(cache::resolve_list(&state, index), negotiate(&headers), &index.route);
     }
     if let Some(project) = rest.strip_prefix("simple/").and_then(|rest| rest.strip_suffix('/')) {
         let normalized = normalize_name(project);
@@ -97,7 +97,7 @@ pub async fn dispatch_get(
                 }
                 Ok(PageOutcome::Fallback) => {}
                 Err(err @ CacheError::Simple(_)) => {
-                    return detail_response(Err(err), Format::Json);
+                    return detail_response(Err(err), Format::Json, &index.route, &normalized);
                 }
                 Err(err) => {
                     tracing::error!(error = ?err, "streaming page failed, serving buffered");
@@ -106,7 +106,7 @@ pub async fn dispatch_get(
         }
         let index = state.index_at(position);
         let detail = cache::resolve_detail(&state, index, &normalized, &index.route).await;
-        return detail_response(detail, negotiate(&headers));
+        return detail_response(detail, negotiate(&headers), &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
         return file_route(&state, index.route.clone(), file).await;
@@ -146,9 +146,11 @@ async fn inspect_route(state: Arc<AppState>, route: String, target: &str, query:
         Ok(filename) => filename,
         Err(err) => return path_error_response(&err),
     };
-    let path = match cache::file_path(state, digest, route, filename.clone()).await {
+    let path = match cache::file_path(state, digest, route.clone(), filename.clone()).await {
         Ok(path) => path,
-        Err(err) => return file_response(Err(err)),
+        Err(err) => {
+            return file_response(Err(err), CacheContext::file(&route, sha256, &filename));
+        }
     };
     match member {
         Some(member) => {
@@ -310,8 +312,15 @@ async fn file_route(state: &Arc<AppState>, route: String, file: &str) -> Respons
     };
     if filename.ends_with(".metadata") {
         state.metadata_requests.fetch_add(1, Ordering::Relaxed);
-        state.metrics.record(Event::Metadata { route, filename });
-        return file_response(cache::metadata_bytes(state, &digest).await);
+        let digest_hex = digest.as_str().to_owned();
+        state.metrics.record(Event::Metadata {
+            route: route.clone(),
+            filename: filename.clone(),
+        });
+        return file_response(
+            cache::metadata_bytes(state, &digest).await,
+            CacheContext::metadata(&route, &digest_hex, &filename),
+        );
     }
     serve_blob(state, route, &filename, digest).await
 }
@@ -328,6 +337,7 @@ fn path_error_response(err: &PathSafetyError) -> Response {
 
 /// Stream a blob to the client: from disk when cached, teed from the source mirror otherwise.
 async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest: Digest) -> Response {
+    let digest_hex = digest.as_str().to_owned();
     let blob_headers = [
         (header::CONTENT_TYPE, "application/octet-stream"),
         (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
@@ -335,7 +345,11 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
     match cache::stream_file(state.clone(), digest, route.clone(), filename.to_owned()).await {
         Ok(cache::FileOutcome::Cached(path)) => {
             let Ok(file) = tokio::fs::File::open(&path).await else {
-                return (StatusCode::NOT_FOUND, "file not found").into_response();
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("cached file missing on index {route:?}: digest {digest_hex}, filename {filename:?}"),
+                )
+                    .into_response();
             };
             let bytes = file.metadata().await.map(|meta| meta.len()).unwrap_or_default();
             state.metrics.record(Event::Download {
@@ -350,10 +364,9 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
         }
         // A live stream records its download event at EOF, when the byte count exists.
         Ok(cache::FileOutcome::Live(stream)) => (blob_headers, axum::body::Body::from_stream(stream)).into_response(),
-        Err(CacheError::FileNotFound) => (StatusCode::NOT_FOUND, "file not found").into_response(),
         Err(err) => {
             tracing::error!(error = ?err, "file stream failed");
-            (StatusCode::BAD_GATEWAY, "upstream error").into_response()
+            cache_error_response(&err, CacheContext::file(&route, &digest_hex, filename))
         }
     }
 }
@@ -407,7 +420,7 @@ pub async fn dispatch_post(
             .into_response(),
         Err(err) => {
             tracing::error!(error = ?err, "upload store failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+            cache_error_response(&err, CacheContext::upload(&index.route, &project))
         }
     }
 }
@@ -549,9 +562,10 @@ fn parse_project_version(spec: &str) -> Result<(String, Option<String>), Respons
 }
 
 /// Map a project-list result to a negotiated response. Sync so every arm is directly testable.
-pub(crate) fn index_response(result: Result<ProjectList, CacheError>, format: Format) -> Response {
-    let Ok(list) = result else {
-        return (StatusCode::BAD_GATEWAY, "index error").into_response();
+pub(crate) fn index_response(result: Result<ProjectList, CacheError>, format: Format, index: &str) -> Response {
+    let list = match result {
+        Ok(list) => list,
+        Err(err) => return cache_error_response(&err, CacheContext::list(index)),
     };
     let vary = (header::VARY, "Accept");
     match format {
@@ -562,17 +576,24 @@ pub(crate) fn index_response(result: Result<ProjectList, CacheError>, format: Fo
 
 /// Map a resolved project detail to a negotiated response. Kept sync so every arm is directly
 /// unit-testable.
-pub(crate) fn detail_response(result: Result<Option<ProjectDetail>, CacheError>, format: Format) -> Response {
+pub(crate) fn detail_response(
+    result: Result<Option<ProjectDetail>, CacheError>,
+    format: Format,
+    index: &str,
+    project: &str,
+) -> Response {
     let detail = match result {
         Ok(Some(detail)) => detail,
-        Ok(None) => return (StatusCode::NOT_FOUND, "project not found").into_response(),
-        Err(CacheError::Simple(err)) => {
-            tracing::warn!(error = ?err, "unsupported upstream simple api");
-            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("project {project:?} was not found on index {index:?}"),
+            )
+                .into_response();
         }
         Err(err) => {
-            tracing::error!(error = ?err, "upstream error");
-            return (StatusCode::BAD_GATEWAY, "upstream error").into_response();
+            tracing::error!(error = ?err, "project detail failed");
+            return cache_error_response(&err, CacheContext::project(index, project));
         }
     };
     let vary = (header::VARY, "Accept");
@@ -583,7 +604,7 @@ pub(crate) fn detail_response(result: Result<Option<ProjectDetail>, CacheError>,
 }
 
 /// Map a file-bytes result to a response. Sync so every arm is directly unit-testable.
-pub(crate) fn file_response(result: Result<bytes::Bytes, CacheError>) -> Response {
+pub(crate) fn file_response(result: Result<bytes::Bytes, CacheError>, context: CacheContext<'_>) -> Response {
     match result {
         Ok(body) => (
             [
@@ -593,8 +614,7 @@ pub(crate) fn file_response(result: Result<bytes::Bytes, CacheError>) -> Respons
             body,
         )
             .into_response(),
-        Err(CacheError::FileNotFound) => (StatusCode::NOT_FOUND, "file not found").into_response(),
-        Err(_) => (StatusCode::BAD_GATEWAY, "upstream error").into_response(),
+        Err(err) => cache_error_response(&err, context),
     }
 }
 
@@ -602,14 +622,122 @@ fn count_response(result: Result<usize, CacheError>) -> Response {
     match result {
         Ok(0) => (StatusCode::NOT_FOUND, "nothing to remove").into_response(),
         Ok(count) => (StatusCode::OK, format!("affected {count} file(s)")).into_response(),
-        Err(CacheError::NotVolatile) => {
-            (StatusCode::FORBIDDEN, "index is not volatile; delete is disabled").into_response()
-        }
         Err(err) => {
             tracing::error!(error = ?err, "removal failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+            cache_error_response(&err, CacheContext::mutation("file removal"))
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CacheContext<'a> {
+    operation: &'static str,
+    index: Option<&'a str>,
+    project: Option<&'a str>,
+    digest: Option<&'a str>,
+    filename: Option<&'a str>,
+}
+
+impl<'a> CacheContext<'a> {
+    const fn list(index: &'a str) -> Self {
+        Self {
+            operation: "project list",
+            index: Some(index),
+            project: None,
+            digest: None,
+            filename: None,
+        }
+    }
+
+    const fn project(index: &'a str, project: &'a str) -> Self {
+        Self {
+            operation: "project detail",
+            index: Some(index),
+            project: Some(project),
+            digest: None,
+            filename: None,
+        }
+    }
+
+    const fn file(index: &'a str, digest: &'a str, filename: &'a str) -> Self {
+        Self {
+            operation: "file download",
+            index: Some(index),
+            project: None,
+            digest: Some(digest),
+            filename: Some(filename),
+        }
+    }
+
+    const fn metadata(index: &'a str, digest: &'a str, filename: &'a str) -> Self {
+        Self {
+            operation: "metadata fetch",
+            index: Some(index),
+            project: None,
+            digest: Some(digest),
+            filename: Some(filename),
+        }
+    }
+
+    const fn upload(index: &'a str, project: &'a str) -> Self {
+        Self {
+            operation: "upload storage",
+            index: Some(index),
+            project: Some(project),
+            digest: None,
+            filename: None,
+        }
+    }
+
+    const fn mutation(operation: &'static str) -> Self {
+        Self {
+            operation,
+            index: None,
+            project: None,
+            digest: None,
+            filename: None,
+        }
+    }
+}
+
+fn cache_error_response(err: &CacheError, context: CacheContext<'_>) -> Response {
+    (cache_error_status(err, &context), cache_error_message(err, context)).into_response()
+}
+
+fn cache_error_status(err: &CacheError, context: &CacheContext<'_>) -> StatusCode {
+    match err {
+        CacheError::Meta(_) | CacheError::Blob(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        CacheError::FileNotFound => StatusCode::NOT_FOUND,
+        CacheError::FileExists(_) => StatusCode::BAD_REQUEST,
+        CacheError::NotVolatile => StatusCode::FORBIDDEN,
+        CacheError::Parse(_) if matches!(context.operation, "upload storage" | "file removal") => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        CacheError::Upstream(_)
+        | CacheError::Parse(_)
+        | CacheError::Simple(_)
+        | CacheError::Unavailable
+        | CacheError::Stream(_) => StatusCode::BAD_GATEWAY,
+    }
+}
+
+fn cache_error_message(err: &CacheError, context: CacheContext<'_>) -> String {
+    let mut message = context.operation.to_owned();
+    if let Some(index) = context.index {
+        let _ = write!(message, " on index {index:?}");
+    }
+    if let Some(project) = context.project {
+        let _ = write!(message, " for project {project:?}");
+    }
+    if let Some(filename) = context.filename {
+        let _ = write!(message, " for file {filename:?}");
+    }
+    if let Some(digest) = context.digest {
+        let _ = write!(message, " with digest {digest}");
+    }
+    message.push_str(": ");
+    message.push_str(&err.user_message());
+    message
 }
 
 fn not_found() -> Response {
@@ -760,7 +888,11 @@ fn reject(err: impl std::fmt::Display) -> Response {
 
 fn storage_reject(err: impl std::fmt::Display) -> Response {
     tracing::error!(error = %err, "upload staging failed");
-    (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("upload staging: blob store error: {err}"),
+    )
+        .into_response()
 }
 
 fn upload_error_response(err: &UploadError) -> Response {
@@ -1073,4 +1205,40 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
         }
     }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use velodex_storage::blob::BlobError;
+    use velodex_storage::meta::MetaError;
+
+    use super::*;
+
+    #[test]
+    fn test_cache_error_status_maps_store_and_policy_errors() {
+        let context = CacheContext::mutation("file removal");
+        assert_eq!(
+            cache_error_status(&CacheError::Meta(meta_error()), &context),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            cache_error_status(
+                &CacheError::Blob(BlobError::NotFound("sha256:abc".to_owned())),
+                &context
+            ),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            cache_error_status(&CacheError::FileExists("pkg-1.0.whl".to_owned()), &context),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            cache_error_status(&CacheError::NotVolatile, &context),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    fn meta_error() -> MetaError {
+        MetaError::Decode(serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
+    }
 }

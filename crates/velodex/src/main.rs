@@ -129,9 +129,12 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
         let addr = format!("{}:{}", config.host, config.port);
         // Nagle batches the small chunked frames the streaming transformer emits; disable it so
         // page bytes reach resolvers the moment they exist.
-        let listener = tokio::net::TcpListener::bind(&addr).await?.tap_io(|stream| {
-            let _ = stream.set_nodelay(true);
-        });
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("bind HTTP listener on {addr}"))?
+            .tap_io(|stream| {
+                let _ = stream.set_nodelay(true);
+            });
         tracing::info!(%addr, indexes = config.indexes.len(), "velodex listening");
         axum::serve(listener, router).await?;
         anyhow::Ok(())

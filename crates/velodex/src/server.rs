@@ -8,7 +8,7 @@ use axum::Router;
 use velodex_http::{AppState, Index, IndexKind, path_safety, router};
 use velodex_storage::blob::BlobStore;
 use velodex_storage::meta::MetaStore;
-use velodex_upstream::{Auth, UpstreamClient};
+use velodex_upstream::{Auth, UpstreamClient, redact_url};
 
 use crate::config::{Config, IndexConfig, IndexKind as ConfigKind};
 
@@ -34,7 +34,8 @@ pub fn build_router(config: &Config) -> anyhow::Result<Router> {
 pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     std::fs::create_dir_all(&config.data_dir)
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
-    let meta = MetaStore::open(config.data_dir.join("velodex.redb"))?;
+    let meta_path = config.data_dir.join("velodex.redb");
+    let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let indexes = build_indexes(&config.indexes)?;
     Ok(Arc::new(AppState::new(meta, blobs, config.cache_ttl_secs, indexes)))
@@ -86,7 +87,15 @@ fn build_kind(
             token,
         } => {
             let auth = mirror_auth(token.as_deref(), username.as_deref(), password.as_deref());
-            Ok(IndexKind::Mirror(UpstreamClient::with_auth(upstream, auth)?))
+            Ok(IndexKind::Mirror(
+                UpstreamClient::with_auth(upstream, auth).with_context(|| {
+                    format!(
+                        "build mirror index {} with upstream {}",
+                        index.name,
+                        redact_url(upstream)
+                    )
+                })?,
+            ))
         }
         ConfigKind::Local { upload_token, volatile } => Ok(IndexKind::Local {
             upload_token: upload_token.clone(),

@@ -6,7 +6,7 @@ use velodex_http::IndexKind as RuntimeKind;
 use velodex_upstream::Auth;
 
 use crate::config::{Config, IndexConfig, IndexKind};
-use crate::server::{build_indexes, build_router, mirror_auth};
+use crate::server::{build_indexes, build_router, build_state, mirror_auth};
 
 fn mirror(name: &str, upstream: &str) -> IndexConfig {
     IndexConfig {
@@ -61,6 +61,52 @@ async fn test_build_router_serves_status() {
 }
 
 #[test]
+fn test_build_state_opens_configured_data_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(state.indexes.len(), config.indexes.len());
+    assert!(dir.path().join("velodex.redb").exists());
+}
+
+#[test]
+fn test_build_state_reports_metadata_store_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("velodex.redb")).unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let Err(err) = build_state(&config) else {
+        panic!("expected metadata store error");
+    };
+
+    assert!(err.to_string().contains("open metadata store"));
+}
+
+#[test]
+fn test_build_state_reports_index_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![mirror("pypi", "not a url")],
+        ..Config::default()
+    };
+
+    let Err(err) = build_state(&config) else {
+        panic!("expected index error");
+    };
+
+    assert!(err.to_string().contains("build mirror index pypi"));
+}
+
+#[test]
 fn test_mirror_auth_bearer_takes_precedence() {
     assert_eq!(
         mirror_auth(Some("tok"), Some("u"), Some("p")),
@@ -93,12 +139,15 @@ fn test_build_router_data_dir_error() {
         data_dir: file.join("sub"),
         ..Config::default()
     };
-    assert!(build_router(&config).is_err());
+    let err = build_router(&config).unwrap_err();
+    assert!(err.to_string().contains("create data directory"));
 }
 
 #[test]
 fn test_build_indexes_rejects_bad_upstream() {
-    assert!(build_indexes(&[mirror("pypi", "not a url")]).is_err());
+    let err = build_indexes(&[mirror("pypi", "not a url")]).unwrap_err();
+    assert!(err.to_string().contains("build mirror index pypi"));
+    assert!(err.to_string().contains("<invalid upstream URL>"));
 }
 
 #[test]

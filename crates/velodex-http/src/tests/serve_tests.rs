@@ -5,8 +5,8 @@ use axum::http::StatusCode;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use velodex_core::pypi::SimpleError;
-use velodex_storage::blob::{BlobStore, Digest};
-use velodex_storage::meta::{CachedIndex, MetaStore};
+use velodex_storage::blob::{BlobError, BlobStore, Digest};
+use velodex_storage::meta::{CachedIndex, MetaError, MetaStore};
 use velodex_upstream::UpstreamClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -205,6 +205,28 @@ fn test_cache_error_preserves_simple_api_version_errors() {
     assert!(matches!(err, cache::CacheError::Simple(SimpleError::InvalidApiVersion(version)) if version == "1"));
 }
 
+#[test]
+fn test_cache_error_user_message_describes_store_and_policy_errors() {
+    let meta_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+    assert!(
+        cache::CacheError::Meta(MetaError::Decode(meta_err))
+            .user_message()
+            .starts_with("metadata store error:")
+    );
+    assert_eq!(
+        cache::CacheError::Blob(BlobError::NotFound("sha256:abc".to_owned())).user_message(),
+        "blob store error: blob sha256:abc not found"
+    );
+    assert_eq!(
+        cache::CacheError::NotVolatile.user_message(),
+        "index is not volatile; delete is disabled"
+    );
+    assert_eq!(
+        cache::CacheError::FileExists("pkg-1.0.whl".to_owned()).user_message(),
+        "file \"pkg-1.0.whl\" already exists with different content"
+    );
+}
+
 #[tokio::test]
 async fn test_inspect_fetches_an_uncached_file_from_upstream() {
     let h = harness().await;
@@ -263,10 +285,11 @@ async fn test_inspect_digest_mismatch_is_bad_gateway() {
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     let uri = format!("/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
-    assert_eq!(
-        (status, body.as_str(), h.state.blobs.exists(&digest)),
-        (StatusCode::BAD_GATEWAY, "upstream error", false)
-    );
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.contains("file download on index \"pypi\""));
+    assert!(body.contains("flask-1.0-py3-none-any.whl"));
+    assert!(body.contains(digest.as_str()));
+    assert!(!h.state.blobs.exists(&digest));
 }
 
 #[tokio::test]

@@ -141,33 +141,65 @@ fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
 }
 
 /// The project names of the index at `route`.
-#[must_use]
-pub fn projects(route: &str) -> Vec<String> {
+///
+/// # Errors
+/// Returns a user-visible message when the index is unknown or its project list cannot be read.
+pub fn projects(route: &str) -> Result<Vec<String>, String> {
     let app = expect_context::<Arc<AppState>>();
-    find_index(&app, route)
-        .and_then(|index| cache::resolve_list(&app, index).ok())
+    let Some(index) = find_index(&app, route) else {
+        return Err(format!("index {route:?} is not configured"));
+    };
+    cache::resolve_list(&app, index)
         .map(|list| list.projects.into_iter().map(|entry| entry.name).collect())
-        .unwrap_or_default()
+        .map_err(|err| format!("project list on index {route:?}: {}", err.user_message()))
 }
 
 /// One project's page data: files plus the parsed core metadata of its newest wheel with a PEP 658
 /// sibling.
-pub async fn project(route: &str, project: &str) -> Option<(UiProject, Option<CoreMetadataDoc>)> {
+///
+/// # Errors
+/// Returns a user-visible message when project detail or metadata cannot be read.
+pub async fn project(route: &str, project: &str) -> Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String> {
     let app = expect_context::<Arc<AppState>>();
-    let index = find_index(&app, route)?;
-    let normalized = normalize_name(project);
-    let detail = cache::resolve_detail(&app, index, &normalized, route).await.ok()??;
-    let value = serde_json::from_str(&to_json(&detail)).ok()?;
-    let ui = UiProject::from_detail(&value);
-    let doc = if let Some(file) = ui.files.iter().rev().find(|file| file.has_metadata)
-        && let Some(digest) = Digest::from_hex(&file.sha256)
-        && let Ok(bytes) = cache::metadata_bytes(&app, &digest).await
-    {
-        Some(parse_metadata(&String::from_utf8_lossy(&bytes)))
-    } else {
-        None
+    let Some(index) = find_index(&app, route) else {
+        return Err(format!("index {route:?} is not configured"));
     };
-    Some((ui, doc))
+    let normalized = normalize_name(project);
+    let Some(detail) = cache::resolve_detail(&app, index, &normalized, route)
+        .await
+        .map_err(|err| {
+            format!(
+                "project detail on index {route:?} for project {normalized:?}: {}",
+                err.user_message()
+            )
+        })?
+    else {
+        return Ok(None);
+    };
+    let value = serde_json::from_str(&to_json(&detail))
+        .map_err(|err| format!("project detail on index {route:?} for project {normalized:?}: {err}"))?;
+    let ui = UiProject::from_detail(&value);
+    let doc = match ui.files.iter().rev().find(|file| file.has_metadata) {
+        Some(file) => {
+            let Some(digest) = Digest::from_hex(&file.sha256) else {
+                return Err(format!(
+                    "metadata fetch on index {route:?} for file {:?}: invalid sha256 digest {:?}",
+                    file.filename, file.sha256
+                ));
+            };
+            let bytes = cache::metadata_bytes(&app, &digest).await.map_err(|err| {
+                format!(
+                    "metadata fetch on index {route:?} for file {:?} with digest {}: {}",
+                    file.filename,
+                    digest.as_str(),
+                    err.user_message()
+                )
+            })?;
+            Some(parse_metadata(&String::from_utf8_lossy(&bytes)))
+        }
+        None => None,
+    };
+    Ok(Some((ui, doc)))
 }
 
 fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a velodex_http::Index> {
@@ -175,35 +207,52 @@ fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a velodex_http::In
 }
 
 /// The member listing of a cached archive, for server rendering.
-pub async fn members(route: &str, sha256: &str, filename: &str, containers: &[String]) -> Vec<UiMember> {
+///
+/// # Errors
+/// Returns a user-visible message when the artifact cannot be found, fetched, or listed.
+pub async fn members(
+    route: &str,
+    sha256: &str,
+    filename: &str,
+    containers: &[String],
+) -> Result<Vec<UiMember>, String> {
     let app = expect_context::<Arc<AppState>>();
     let Some(digest) = Digest::from_hex(sha256) else {
-        return Vec::new();
+        return Err(format!(
+            "archive listing on index {route:?} for file {filename:?}: invalid sha256 digest {sha256:?}"
+        ));
     };
-    let Ok(path) = cache::file_path(app, digest, route.to_owned(), filename.to_owned()).await else {
-        return Vec::new();
-    };
-    let filename = filename.to_owned();
-    let containers = containers.to_vec();
-    tokio::task::spawn_blocking(move || velodex_http::archive::list_members_nested_path(&filename, &path, &containers))
+    let path = cache::file_path(app, digest, route.to_owned(), filename.to_owned())
         .await
-        .ok()
-        .and_then(Result::ok)
-        .map(|members| {
-            members
-                .into_iter()
-                .map(|member| UiMember {
-                    path: member.path,
-                    size: member.size,
-                    kind: member.kind.as_str().to_owned(),
-                    previewable: member.previewable,
-                })
-                .collect()
+        .map_err(|err| {
+            format!(
+                "archive listing on index {route:?} for file {filename:?} with digest {sha256}: {}",
+                err.user_message()
+            )
+        })?;
+    let archive = filename.to_owned();
+    let containers = containers.to_vec();
+    let members = tokio::task::spawn_blocking(move || {
+        velodex_http::archive::list_members_nested_path(&archive, &path, &containers)
+    })
+    .await
+    .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?
+    .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?;
+    Ok(members
+        .into_iter()
+        .map(|member| UiMember {
+            path: member.path,
+            size: member.size,
+            kind: member.kind.as_str().to_owned(),
+            previewable: member.previewable,
         })
-        .unwrap_or_default()
+        .collect())
 }
 
 /// One archive member chunk, for server rendering.
+///
+/// # Errors
+/// Returns a user-visible message when the member cannot be previewed as UTF-8 text.
 pub async fn member_chunk(
     route: &str,
     sha256: &str,
@@ -211,42 +260,45 @@ pub async fn member_chunk(
     containers: &[String],
     member: &str,
     offset: u64,
-) -> UiMemberChunk {
+) -> Result<UiMemberChunk, String> {
     let app = expect_context::<Arc<AppState>>();
     let Some(digest) = Digest::from_hex(sha256) else {
-        return UiMemberChunk::default();
+        return Err(format!(
+            "archive member on index {route:?} for file {filename:?}: invalid sha256 digest {sha256:?}"
+        ));
     };
-    let Ok(path) = cache::file_path(app, digest, route.to_owned(), filename.to_owned()).await else {
-        return UiMemberChunk::default();
-    };
-    let filename = filename.to_owned();
+    let path = cache::file_path(app, digest, route.to_owned(), filename.to_owned())
+        .await
+        .map_err(|err| {
+            format!(
+                "archive member on index {route:?} for file {filename:?} with digest {sha256}: {}",
+                err.user_message()
+            )
+        })?;
+    let archive = filename.to_owned();
     let containers = containers.to_vec();
-    let member = member.to_owned();
-    tokio::task::spawn_blocking(move || {
+    let selected = member.to_owned();
+    let chunk = tokio::task::spawn_blocking(move || {
         velodex_http::archive::read_text_member_chunk_nested_path(
-            &filename,
+            &archive,
             &path,
             &containers,
-            &member,
+            &selected,
             offset,
             velodex_http::archive::DEFAULT_MEMBER_CHUNK,
         )
     })
     .await
-    .ok()
-    .and_then(Result::ok)
-    .map_or_else(
-        || UiMemberChunk {
-            text: "(binary or unavailable)".to_owned(),
-            ..UiMemberChunk::default()
-        },
-        |chunk| UiMemberChunk {
-            text: String::from_utf8(chunk.bytes).unwrap_or_default(),
-            size: Some(chunk.size),
-            offset: chunk.offset,
-            next_offset: chunk.next_offset,
-        },
-    )
+    .map_err(|err| format!("archive member {member:?} on index {route:?} for file {filename:?}: {err}"))?
+    .map_err(|err| format!("archive member {member:?} on index {route:?} for file {filename:?}: {err}"))?;
+    Ok(UiMemberChunk {
+        text: String::from_utf8(chunk.bytes).map_err(|err| {
+            format!("archive member {member:?} on index {route:?} for file {filename:?} is not valid UTF-8: {err}")
+        })?,
+        size: Some(chunk.size),
+        offset: chunk.offset,
+        next_offset: chunk.next_offset,
+    })
 }
 
 /// The stats tree at the requested depth, read from the metrics aggregator.

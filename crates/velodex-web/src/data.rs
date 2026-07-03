@@ -54,7 +54,13 @@ pub async fn load_admin_snapshot() -> UiSnapshot {
 }
 
 /// The project names of the index at `route`.
-pub async fn load_projects(route: String) -> Vec<String> {
+///
+/// # Errors
+/// Returns a user-visible message when the index cannot be read.
+pub async fn load_projects(route: String) -> Result<Vec<String>, String> {
+    if route.is_empty() {
+        return Ok(Vec::new());
+    }
     #[cfg(feature = "ssr")]
     {
         crate::ssr::projects(&route)
@@ -62,22 +68,27 @@ pub async fn load_projects(route: String) -> Vec<String> {
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_json(&simple_index_url(&route))
+            fetch_json_required(&simple_index_url(&route))
                 .await
-                .map_or_else(Vec::new, |value| crate::model::projects_from_list(&value))
+                .map(|value| crate::model::projects_from_list(&value))
         })
         .await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
-        let _ = route;
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
 /// One project's page data: its files, and the parsed core metadata of its newest wheel that
 /// advertises a PEP 658 sibling.
-pub async fn load_project(route: String, project: String) -> Option<(UiProject, Option<CoreMetadataDoc>)> {
+///
+/// # Errors
+/// Returns a user-visible message when the project page or metadata sibling cannot be read.
+pub async fn load_project(
+    route: String,
+    project: String,
+) -> Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String> {
     #[cfg(feature = "ssr")]
     {
         crate::ssr::project(&route, &project).await
@@ -85,45 +96,85 @@ pub async fn load_project(route: String, project: String) -> Option<(UiProject, 
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            let value = fetch_json(&simple_project_url(&route, &project)).await?;
+            let Some(value) = fetch_json_optional(&simple_project_url(&route, &project)).await? else {
+                return Ok(None);
+            };
             let ui = UiProject::from_detail(&value);
             let doc = match ui.files.iter().rev().find(|file| file.has_metadata) {
-                Some(file) => fetch_text(&format!("{}.metadata", file.url))
-                    .await
-                    .map(|text| velodex_core::pypi::parse_metadata(&text)),
+                Some(file) => {
+                    let text = fetch_text_required(&format!("{}.metadata", file.url)).await?;
+                    Some(velodex_core::pypi::parse_metadata(&text))
+                }
                 None => None,
             };
-            Some((ui, doc))
+            Ok(Some((ui, doc)))
         })
         .await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
         let _ = (route, project);
-        None
+        Ok(None)
     }
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 async fn fetch_json(url: &str) -> Option<serde_json::Value> {
+    fetch_json_required(url).await.ok()
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+async fn fetch_json_required(url: &str) -> Result<serde_json::Value, String> {
+    let Some(value) = fetch_json_optional(url).await? else {
+        return Err(format!("404 from {url}: not found"));
+    };
+    Ok(value)
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+async fn fetch_json_optional(url: &str) -> Result<Option<serde_json::Value>, String> {
     let response = gloo_net::http::Request::get(url)
         .header("accept", "application/vnd.pypi.simple.v1+json, application/json")
         .send()
         .await
-        .ok()?;
-    if !response.ok() {
-        return None;
+        .map_err(|err| format!("request failed for {url}: {err}"))?;
+    if response.status() == 404 {
+        return Ok(None);
     }
-    response.json().await.ok()
+    if !response.ok() {
+        return Err(response_error(response, url).await);
+    }
+    response
+        .json()
+        .await
+        .map(Some)
+        .map_err(|err| format!("invalid JSON from {url}: {err}"))
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-async fn fetch_text(url: &str) -> Option<String> {
-    let response = gloo_net::http::Request::get(url).send().await.ok()?;
+async fn fetch_text_required(url: &str) -> Result<String, String> {
+    let response = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|err| format!("request failed for {url}: {err}"))?;
     if !response.ok() {
-        return None;
+        return Err(response_error(response, url).await);
     }
-    response.text().await.ok()
+    response
+        .text()
+        .await
+        .map_err(|err| format!("response body from {url} could not be read: {err}"))
+}
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+async fn response_error(response: gloo_net::http::Response, url: &str) -> String {
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if text.is_empty() {
+        format!("{status} from {url}")
+    } else {
+        format!("{status} from {url}: {text}")
+    }
 }
 
 /// Send an authenticated admin request (yank, un-yank, or delete) from the browser. Returns the
@@ -152,7 +203,15 @@ pub async fn admin_request(method: &str, url: &str, token: &str) -> String {
 }
 
 /// The member listing of a cached archive.
-pub async fn load_members(route: String, sha256: String, filename: String, containers: Vec<String>) -> Vec<UiMember> {
+///
+/// # Errors
+/// Returns a user-visible message when the archive cannot be fetched, listed, or decoded.
+pub async fn load_members(
+    route: String,
+    sha256: String,
+    filename: String,
+    containers: Vec<String>,
+) -> Result<Vec<UiMember>, String> {
     #[cfg(feature = "ssr")]
     {
         crate::ssr::members(&route, &sha256, &filename, &containers).await
@@ -160,20 +219,23 @@ pub async fn load_members(route: String, sha256: String, filename: String, conta
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_json(&inspect_url(&route, &sha256, &filename, &containers, None, 0))
+            fetch_json_required(&inspect_url(&route, &sha256, &filename, &containers, None, 0))
                 .await
-                .map_or_else(Vec::new, |value| crate::model::members_from_listing(&value))
+                .map(|value| crate::model::members_from_listing(&value))
         })
         .await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
         let _ = (route, sha256, filename, containers);
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
 /// One archive member chunk, rendered as text.
+///
+/// # Errors
+/// Returns a user-visible message when the member cannot be previewed as text.
 pub async fn load_member_chunk(
     route: String,
     sha256: String,
@@ -181,7 +243,7 @@ pub async fn load_member_chunk(
     containers: Vec<String>,
     member: String,
     offset: u64,
-) -> UiMemberChunk {
+) -> Result<UiMemberChunk, String> {
     #[cfg(feature = "ssr")]
     {
         crate::ssr::member_chunk(&route, &sha256, &filename, &containers, &member, offset).await
@@ -198,43 +260,37 @@ pub async fn load_member_chunk(
                 offset,
             ))
             .await
-            .unwrap_or_else(|| UiMemberChunk {
-                text: "(binary or unavailable)".to_owned(),
-                ..UiMemberChunk::default()
-            })
         })
         .await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
         let _ = (route, sha256, filename, containers, member, offset);
-        UiMemberChunk::default()
+        Ok(UiMemberChunk::default())
     }
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-async fn fetch_member_chunk(url: &str) -> Option<UiMemberChunk> {
-    let response = gloo_net::http::Request::get(url).send().await.ok()?;
+async fn fetch_member_chunk(url: &str) -> Result<UiMemberChunk, String> {
+    let response = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|err| format!("request failed for {url}: {err}"))?;
     if !response.ok() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Some(UiMemberChunk {
-            text: format!("{status}: {text}"),
-            ..UiMemberChunk::default()
-        });
+        return Err(response_error(response, url).await);
     }
     let content_type = response.headers().get("content-type").unwrap_or_default();
     if !content_type.starts_with("text/plain") {
-        return Some(UiMemberChunk {
-            text: "(binary or unavailable)".to_owned(),
-            ..UiMemberChunk::default()
-        });
+        return Err(format!("{url} returned {content_type}; text/plain expected"));
     }
     let size = parse_header_u64(&response, "x-velodex-member-size");
     let offset = parse_header_u64(&response, "x-velodex-member-offset").unwrap_or_default();
     let next_offset = parse_header_u64(&response, "x-velodex-next-offset");
-    Some(UiMemberChunk {
-        text: response.text().await.ok()?,
+    Ok(UiMemberChunk {
+        text: response
+            .text()
+            .await
+            .map_err(|err| format!("response body from {url} could not be read: {err}"))?,
         size,
         offset,
         next_offset,

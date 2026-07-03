@@ -57,6 +57,25 @@ impl From<velodex_core::pypi::SimpleError> for CacheError {
     }
 }
 
+impl CacheError {
+    /// Error text safe for user-visible responses, without upstream URLs or credentials.
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Meta(err) => format!("metadata store error: {err}"),
+            Self::Blob(err) => format!("blob store error: {err}"),
+            Self::Upstream(err) => err.user_message(),
+            Self::Parse(err) => format!("simple API document could not be parsed: {err}"),
+            Self::Simple(err) => format!("unsupported simple API response: {err}"),
+            Self::Unavailable => "upstream is unavailable and no cached page exists".to_owned(),
+            Self::NotVolatile => "index is not volatile; delete is disabled".to_owned(),
+            Self::FileNotFound => "no matching cached file or upstream source was found".to_owned(),
+            Self::FileExists(filename) => format!("file {filename:?} already exists with different content"),
+            Self::Stream(err) => format!("file stream failed: {err}"),
+        }
+    }
+}
+
 /// Resolve a project's detail on `index`, composing overlay layers.
 ///
 /// Every file URL is rewritten to `serve_route` so clients fetch through the route they asked on;

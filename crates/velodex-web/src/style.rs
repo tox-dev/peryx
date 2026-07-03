@@ -55,6 +55,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .page h1 { letter-spacing: -0.02em; margin-top: 0; }
 .page h2 { margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
 .dim { color: var(--text-soft); }
+.error { color: #e5484d; font-family: ui-monospace, Menlo, monospace; font-size: 0.9rem; }
 .ops-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .ops-title h1 { margin: 0 0.4rem 0 0; }
 .ops-title a code { color: inherit; }

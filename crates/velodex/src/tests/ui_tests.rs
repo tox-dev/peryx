@@ -391,6 +391,12 @@ async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() 
     assert!(listing.contains("data.bin"));
     assert!(!listing.contains("member=veloxdemo%2Fdata.bin"));
 
+    let binary_url = format!("{listing_url}&member=veloxdemo%2Fdata.bin");
+    let (status, binary) = get(&router, &binary_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(binary.contains("archive member"));
+    assert!(binary.contains("cannot be previewed inline"));
+
     let nested_url = format!("{listing_url}&container=vendor%2Finner.zip");
     let (status, nested) = get(&router, &nested_url).await;
     assert_eq!(status, StatusCode::OK);

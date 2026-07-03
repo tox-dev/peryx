@@ -44,6 +44,10 @@ still show as downloadable files, but do not get a broken archive link. The brow
 display filename, selected member, and chunk offset as separate query parameters. That keeps links stable for filenames
 and member paths containing spaces, slashes, `#`, or `?`.
 
+Browse pages keep empty results separate from request failures. A failed project lookup, metadata fetch, archive list,
+or member preview shows the HTTP status and response body from velodex, including the index, project, digest, or file
+context the server can provide.
+
 ## Managing uploads
 
 "Manage uploads" on a project page takes the index's upload token and offers yank, un-yank, and delete per version, plus

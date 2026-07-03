@@ -65,6 +65,22 @@ pub enum UpstreamError {
     Http(#[from] reqwest::Error),
 }
 
+impl UpstreamError {
+    /// Error text safe for user-visible responses: status and failure class, without URLs that may
+    /// contain credentials or signed query strings.
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Url(err) => format!("invalid upstream URL: {err}"),
+            Self::Http(err) if let Some(status) = err.status() => format!("upstream returned {status}"),
+            Self::Http(err) if err.is_timeout() => "upstream request timed out".to_owned(),
+            Self::Http(err) if err.is_connect() => "upstream connection failed".to_owned(),
+            Self::Http(err) if err.is_decode() => "upstream response could not be decoded".to_owned(),
+            Self::Http(_) => "upstream request failed".to_owned(),
+        }
+    }
+}
+
 /// How velodex authenticates to a private upstream. `Basic` covers pypi.org tokens (`__token__` +
 /// token) and Artifactory/GitLab username/password; `Bearer` covers access/identity tokens.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -225,21 +241,16 @@ impl UpstreamClient {
     /// Fetch a file's bytes from an absolute URL.
     ///
     /// # Errors
-    /// Returns [`UpstreamError::Http`] if the request fails.
+    /// Returns [`UpstreamError::Http`] if the request fails or answers a non-success status.
     pub async fn fetch_bytes(&self, url: &str) -> Result<Bytes, UpstreamError> {
-        let response = self.authenticate(self.http.get(url)).send().await?;
+        let response = self.authenticate(self.http.get(url)).send().await?.error_for_status()?;
         Ok(response.bytes().await?)
     }
 
     /// The upstream base URL with user info, query, and fragment removed for status pages.
     #[must_use]
     pub fn redacted_base_url(&self) -> String {
-        let mut url = self.base.clone();
-        let _ = url.set_username("");
-        let _ = url.set_password(None);
-        url.set_query(None);
-        url.set_fragment(None);
-        url.to_string()
+        redact_url(self.base.as_ref())
     }
 
     /// The authentication scheme without credential material.
@@ -251,6 +262,19 @@ impl UpstreamClient {
             Auth::Bearer(_) => AuthStatus::Bearer,
         }
     }
+}
+
+/// Remove credential-bearing URL parts before displaying configured upstreams.
+#[must_use]
+pub fn redact_url(value: &str) -> String {
+    let Ok(mut url) = Url::parse(value) else {
+        return "<invalid upstream URL>".to_owned();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 fn header_str(headers: &HeaderMap, name: &HeaderName) -> Option<String> {

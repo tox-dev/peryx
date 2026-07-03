@@ -1,7 +1,8 @@
+use futures_util::TryStreamExt as _;
 use wiremock::matchers::{header, header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::client::{Auth, UpstreamClient, UpstreamError};
+use crate::client::{Auth, UpstreamClient, UpstreamError, redact_url};
 
 #[tokio::test]
 async fn test_fetch_project_json_with_metadata() {
@@ -94,6 +95,93 @@ async fn test_fetch_bytes() {
 }
 
 #[tokio::test]
+async fn test_head_project_bytes_reads_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"{\"meta\":{}}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let response = client.head_project("flask", None).await.unwrap();
+
+    assert_eq!(&response.bytes().await.unwrap()[..], b"{\"meta\":{}}");
+}
+
+#[tokio::test]
+async fn test_stream_bytes_streams_file() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let bytes = client
+        .stream_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .await
+        .unwrap()
+        .try_fold(Vec::new(), |mut bytes, chunk| async move {
+            bytes.extend_from_slice(&chunk);
+            Ok(bytes)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(bytes, b"wheelbytes");
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_reports_decode_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .set_body_bytes(b"not gzip".to_vec()),
+        )
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let err = client
+        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.user_message(), "upstream response could not be decoded");
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_reports_request_failures() {
+    let client = UpstreamClient::new("https://pypi.org/simple/").unwrap();
+    let err = client.fetch_bytes("ftp://example.invalid/pkg.whl").await.unwrap_err();
+
+    assert_eq!(err.user_message(), "upstream request failed");
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_rejects_error_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let err = client
+        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.user_message(), "upstream returned 500 Internal Server Error");
+}
+
+#[tokio::test]
 async fn test_new_adds_trailing_slash() {
     let client = UpstreamClient::new("https://pypi.org/simple").unwrap();
     // A trailing slash was added, so joining a project stays under /simple/.
@@ -106,6 +194,7 @@ async fn test_new_adds_trailing_slash() {
 fn test_new_rejects_invalid_url() {
     let err = UpstreamClient::new("not a url").unwrap_err();
     assert!(matches!(err, UpstreamError::Url(_)));
+    assert_eq!(err.user_message(), "invalid upstream URL: relative URL without a base");
 }
 
 #[tokio::test]
@@ -138,6 +227,15 @@ fn test_auth_status_redacts_basic_credentials_and_url_secrets() {
 
     assert_eq!(client.auth_status().as_str(), "basic");
     assert_eq!(client.redacted_base_url(), "https://example.invalid/simple/");
+}
+
+#[test]
+fn test_redact_url_removes_credential_bearing_parts() {
+    assert_eq!(
+        redact_url("https://user:pass@example.invalid/simple/?token=secret#frag"),
+        "https://example.invalid/simple/"
+    );
+    assert_eq!(redact_url("not a url"), "<invalid upstream URL>");
 }
 
 #[tokio::test]

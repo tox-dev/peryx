@@ -24,6 +24,9 @@ use crate::url::{
     browse_index_url, browse_project_url, simple_index_url, stats_index_url, stats_project_url,
 };
 
+type ProjectPage = Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String>;
+type ProjectPageResource = Resource<ProjectPage>;
+
 /// The landing dashboard: identity, live counters, and the configured indexes with their usage.
 #[component]
 pub fn Dashboard() -> impl IntoView {
@@ -596,8 +599,10 @@ fn IndexView(route: String) -> impl IntoView {
             {move || {
                 let route = route.clone();
                 Suspend::new(async move {
-                    let names = projects.await;
-                    view! { <ProjectList route names filter /> }
+                    match projects.await {
+                        Ok(names) => view! { <ProjectList route names filter /> }.into_any(),
+                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
+                    }
                 })
             }}
         </Suspense>
@@ -626,6 +631,11 @@ fn ProjectList(route: String, names: Vec<String>, filter: ReadSignal<String>) ->
 }
 
 #[component]
+fn ErrorMessage(message: String) -> impl IntoView {
+    view! { <p class="error">{message}</p> }
+}
+
+#[component]
 fn ProjectView(route: String, project: String) -> impl IntoView {
     let page = Resource::new(
         {
@@ -649,11 +659,12 @@ fn ProjectView(route: String, project: String) -> impl IntoView {
                 let route = route.clone();
                 Suspend::new(async move {
                     match page.await {
-                        Some((ui, doc)) => {
+                        Ok(Some((ui, doc))) => {
                             view! { <ProjectBody route ui doc refresh=page token set_token set_outcome /> }
                                 .into_any()
                         }
-                        None => view! { <p class="dim">"Project not found on this index."</p> }.into_any(),
+                        Ok(None) => view! { <p class="dim">"Project not found on this index."</p> }.into_any(),
+                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
                     }
                 })
             }}
@@ -670,7 +681,7 @@ fn ProjectBody(
     route: String,
     ui: UiProject,
     doc: Option<CoreMetadataDoc>,
-    refresh: Resource<Option<(UiProject, Option<CoreMetadataDoc>)>>,
+    refresh: ProjectPageResource,
     token: ReadSignal<String>,
     set_token: WriteSignal<String>,
     set_outcome: WriteSignal<String>,
@@ -868,8 +879,11 @@ fn MemberList(
                 let filename = filename.clone();
                 let containers = containers.clone();
                 Suspend::new(async move {
-                    let entries = members.await;
-                    view! { <ArchiveTree route project sha256 filename containers entries /> }
+                    match members.await {
+                        Ok(entries) => view! { <ArchiveTree route project sha256 filename containers entries /> }
+                            .into_any(),
+                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
+                    }
                 })
             }}
         </Suspense>
@@ -1093,8 +1107,11 @@ fn MemberView(
                 let containers = containers.clone();
                 let member = member.clone();
                 Suspend::new(async move {
-                    let chunk = content.await;
-                    view! { <MemberChunk route project sha256 filename containers member chunk /> }
+                    match content.await {
+                        Ok(chunk) => view! { <MemberChunk route project sha256 filename containers member chunk /> }
+                            .into_any(),
+                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
+                    }
                 })
             }}
         </Suspense>
@@ -1199,7 +1216,7 @@ fn AdminPanel(
     route: String,
     project: String,
     versions: Vec<String>,
-    refresh: Resource<Option<(UiProject, Option<CoreMetadataDoc>)>>,
+    refresh: ProjectPageResource,
     token: ReadSignal<String>,
     set_token: WriteSignal<String>,
     set_outcome: WriteSignal<String>,
@@ -1247,7 +1264,7 @@ fn run_admin(
     url: String,
     token: String,
     outcome: WriteSignal<String>,
-    refresh: Resource<Option<(UiProject, Option<CoreMetadataDoc>)>>,
+    refresh: ProjectPageResource,
 ) {
     #[cfg(feature = "hydrate")]
     {
