@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, OriginalUri, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use velodex_core::pypi::{ProjectDetail, ProjectList, normalize_name, render_detail_html, render_index_html, to_json};
@@ -19,6 +19,7 @@ use velodex_storage::blob::Digest;
 
 use crate::cache::{self, CacheError, PageOutcome};
 use crate::metrics::Event;
+use crate::path_safety::{self, PathSafetyError};
 use crate::state::{AppState, Index, IndexKind};
 use crate::upload::{self, UploadError, UploadForm};
 
@@ -46,11 +47,12 @@ fn negotiate(headers: &HeaderMap) -> Format {
 /// `GET /{route}/...` — project list, project detail, or a file/metadata download.
 pub async fn dispatch_get(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let Some((position, rest)) = state.resolve_position(&path) else {
+    let path = uri.path().trim_start_matches('/');
+    let Some((position, rest)) = state.resolve_position(path) else {
         return not_found();
     };
     let index = state.index_at(position);
@@ -92,32 +94,53 @@ pub async fn dispatch_get(
         return file_route(&state, index.route.clone(), file).await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
-        return inspect_route(&state, target).await;
+        return inspect_route(&state, target, uri.query()).await;
     }
     not_found()
 }
 
 /// `GET /{route}/inspect/{sha256}/{filename}[/{member}]` — list a cached archive's members, or read
 /// one member inline (pypi-browser-style introspection over the blob store).
-async fn inspect_route(state: &AppState, target: &str) -> Response {
+async fn inspect_route(state: &AppState, target: &str, query: Option<&str>) -> Response {
     let Some((sha256, rest)) = target.split_once('/') else {
         return not_found();
     };
-    let Some(digest) = Digest::from_hex(sha256) else {
-        return (StatusCode::BAD_REQUEST, "invalid digest").into_response();
+    let digest = match path_safety::parse_digest(sha256) {
+        Ok(digest) => digest,
+        Err(err) => return path_error_response(&err),
     };
-    let (filename, member) = match rest.split_once('/') {
-        Some((filename, member)) => (filename, Some(member)),
-        None => (rest, None),
+    let (raw_filename, member) = match archive_member_query(query) {
+        Some(member) => (rest, Some(member)),
+        None => match rest.split_once('/') {
+            Some((filename, member)) => match path_safety::decode_path(member) {
+                Ok(member) => (filename, Some(member)),
+                Err(err) => return path_error_response(&err),
+            },
+            None => (rest, None),
+        },
+    };
+    let filename = match safe_filename(raw_filename) {
+        Ok(filename) => filename,
+        Err(err) => return path_error_response(&err),
     };
     let bytes = match cache::file_bytes(state, &digest).await {
         Ok(bytes) => bytes,
         Err(err) => return file_response(Err(err)),
     };
     member.map_or_else(
-        || archive_listing(filename, &bytes),
-        |member| archive_member(filename, &bytes, member),
+        || archive_listing(&filename, &bytes),
+        |member| archive_member(&filename, &bytes, &member),
     )
+}
+
+fn archive_member_query(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if key == "member" {
+            return Some(value.into_owned());
+        }
+    }
+    None
 }
 
 /// Render an archive's member list as JSON.
@@ -151,21 +174,33 @@ fn archive_error(err: &crate::archive::ArchiveError) -> Response {
 }
 
 async fn file_route(state: &Arc<AppState>, route: String, file: &str) -> Response {
-    let Some((sha256, filename)) = file.split_once('/') else {
+    let Some((sha256, raw_filename)) = file.split_once('/') else {
         return not_found();
     };
-    let Some(digest) = Digest::from_hex(sha256) else {
-        return (StatusCode::BAD_REQUEST, "invalid digest").into_response();
+    let digest = match path_safety::parse_digest(sha256) {
+        Ok(digest) => digest,
+        Err(err) => return path_error_response(&err),
+    };
+    let filename = match safe_filename(raw_filename) {
+        Ok(filename) => filename,
+        Err(err) => return path_error_response(&err),
     };
     if filename.ends_with(".metadata") {
         state.metadata_requests.fetch_add(1, Ordering::Relaxed);
-        state.metrics.record(Event::Metadata {
-            route,
-            filename: filename.to_owned(),
-        });
+        state.metrics.record(Event::Metadata { route, filename });
         return file_response(cache::metadata_bytes(state, &digest).await);
     }
-    serve_blob(state, route, filename, digest).await
+    serve_blob(state, route, &filename, digest).await
+}
+
+fn safe_filename(raw: &str) -> Result<String, PathSafetyError> {
+    let filename = path_safety::decode_path_segment(raw)?;
+    path_safety::validate_filename(&filename)?;
+    Ok(filename)
+}
+
+fn path_error_response(err: &PathSafetyError) -> Response {
+    (StatusCode::BAD_REQUEST, err.to_string()).into_response()
 }
 
 /// Stream a blob to the client: from disk when cached, teed from the source mirror otherwise.
@@ -449,6 +484,13 @@ fn upload_error_response(err: &UploadError) -> Response {
             (StatusCode::BAD_REQUEST, format!("missing required field: {field}")).into_response()
         }
         UploadError::DigestMismatch => (StatusCode::BAD_REQUEST, "sha256 digest mismatch").into_response(),
+        UploadError::InvalidFilename(filename) => (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid filename {filename:?}: filenames must be relative path segments without separators, traversal, or control characters"
+            ),
+        )
+            .into_response(),
     }
 }
 

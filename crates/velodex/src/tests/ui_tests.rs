@@ -168,14 +168,14 @@ async fn test_ui_archive_listing_and_member() {
         .unwrap()
         .to_owned();
 
-    let file = format!("{sha}%2Fveloxdemo-1.0.0-py3-none-any.whl");
-    let (status, listing) = get(&router, &format!("/browse?index=local&project=veloxdemo&file={file}")).await;
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=local&project=veloxdemo&sha256={sha}&file={file}");
+    let (status, listing) = get(&router, &listing_url).await;
     assert_eq!(status, StatusCode::OK);
     assert!(listing.contains("dist-info/METADATA"));
     assert!(listing.contains("__init__.py"));
 
-    let member =
-        format!("/browse?index=local&project=veloxdemo&file={file}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
+    let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
     let (status, content) = get(&router, &member).await;
     assert_eq!(status, StatusCode::OK);
     assert!(content.contains("Metadata-Version: 2.1"));

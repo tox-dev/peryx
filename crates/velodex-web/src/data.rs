@@ -8,6 +8,8 @@
 use velodex_core::pypi::CoreMetadataDoc;
 
 use crate::model::{UiMember, UiProject, UiSnapshot};
+#[cfg(feature = "hydrate")]
+use crate::url::{encode_component, encode_path};
 
 /// The dashboard snapshot.
 pub async fn load_snapshot() -> UiSnapshot {
@@ -138,9 +140,14 @@ pub async fn load_members(route: String, sha256: String, filename: String) -> Ve
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_json(&format!("/{route}/inspect/{sha256}/{filename}"))
-                .await
-                .map_or_else(Vec::new, |value| crate::model::members_from_listing(&value))
+            fetch_json(&format!(
+                "/{}/inspect/{}/{}",
+                encode_path(&route),
+                encode_component(&sha256),
+                encode_component(&filename)
+            ))
+            .await
+            .map_or_else(Vec::new, |value| crate::model::members_from_listing(&value))
         })
         .await
     }
@@ -161,9 +168,15 @@ pub async fn load_member(route: String, sha256: String, filename: String, member
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            fetch_text(&format!("/{route}/inspect/{sha256}/{filename}/{member}"))
-                .await
-                .unwrap_or_else(|| "(binary or unavailable)".to_owned())
+            fetch_text(&format!(
+                "/{}/inspect/{}/{}?member={}",
+                encode_path(&route),
+                encode_component(&sha256),
+                encode_component(&filename),
+                encode_component(&member)
+            ))
+            .await
+            .unwrap_or_else(|| "(binary or unavailable)".to_owned())
         })
         .await
     }

@@ -28,7 +28,8 @@ project links, grouped classifiers, and a file table with sizes, upload dates, s
 
 Each file's `contents` link opens the archive browser: the members of the wheel or sdist with their sizes, and each
 text member readable in place, the way [pypi-browser](https://github.com/chriskuehl/pypi-browser) presents packages.
-Members over 1 MiB are not shown inline; download the artifact instead.
+The browser URL stores the file's sha256, display filename, and selected member as separate query parameters. That
+keeps links stable for filenames and member paths containing spaces, slashes, `#`, or `?`.
 
 ## Managing uploads
 
@@ -42,7 +43,6 @@ deleted.
 The interactive layer is a wasm bundle built by [cargo-leptos](https://github.com/leptos-rs/cargo-leptos)
 (`cargo leptos build --release`, output in `ui/pkg/`, served at `/pkg`). Without the bundle every page still renders
 server-side; filtering, live counters, and the admin buttons need it.
-
 
 ## Related
 

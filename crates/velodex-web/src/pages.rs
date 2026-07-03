@@ -15,6 +15,7 @@ use velodex_core::pypi::CoreMetadataDoc;
 use crate::data::{load_member, load_members, load_project, load_projects, load_snapshot, load_stats};
 use crate::markdown::render_description;
 use crate::model::{UiCounters, UiFile, UiIndex, UiProject, UiSnapshot, UiStats};
+use crate::url::encode_component as url_encode;
 
 /// The landing dashboard: identity, live counters, and the configured indexes with their usage.
 #[component]
@@ -210,15 +211,20 @@ pub fn Browse() -> impl IntoView {
     let route = Memo::new(move |_| query.read().get("index").unwrap_or_default());
     let project = Memo::new(move |_| query.read().get("project").filter(|name| !name.is_empty()));
     let file = Memo::new(move |_| query.read().get("file").filter(|name| !name.is_empty()));
+    let sha256 = Memo::new(move |_| query.read().get("sha256").filter(|digest| !digest.is_empty()));
     let member = Memo::new(move |_| query.read().get("member").filter(|name| !name.is_empty()));
     view! {
         <section class="page">
-            {move || match (project.get(), file.get()) {
-                (Some(name), Some(file)) => {
-                    view! { <ArchiveView route=route.get() project=name file member=member.get() /> }.into_any()
+            {move || match (project.get(), sha256.get(), file.get()) {
+                (Some(name), Some(sha256), Some(file)) => {
+                    view! { <ArchiveView route=route.get() project=name sha256 filename=file member=member.get() /> }.into_any()
                 }
-                (Some(name), None) => view! { <ProjectView route=route.get() project=name /> }.into_any(),
-                (None, _) => view! { <IndexView route=route.get() /> }.into_any(),
+                (Some(name), None, Some(file)) => {
+                    let (sha256, filename) = split_legacy_archive_file(&file);
+                    view! { <ArchiveView route=route.get() project=name sha256 filename member=member.get() /> }.into_any()
+                }
+                (Some(name), _, None) => view! { <ProjectView route=route.get() project=name /> }.into_any(),
+                (None, _, _) => view! { <IndexView route=route.get() /> }.into_any(),
             }}
         </section>
     }
@@ -387,10 +393,10 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                     .map(|file| {
                         let class = if file.yanked { "yanked" } else { "" };
                         let inspect = format!(
-                            "/browse?index={}&project={}&file={}%2F{}",
+                            "/browse?index={}&project={}&sha256={}&file={}",
                             url_encode(&route),
                             url_encode(&project),
-                            file.sha256,
+                            url_encode(&file.sha256),
                             url_encode(&file.filename)
                         );
                         let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
@@ -419,14 +425,15 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
     }
 }
 
-/// The archive browser: member listing of one distribution, or one member's content, the way
-/// pypi-browser presents package contents.
+/// The archive browser: member listing of one distribution, or one member's content.
 #[component]
-fn ArchiveView(route: String, project: String, file: String, member: Option<String>) -> impl IntoView {
-    let (sha256, filename) = file
-        .split_once('/')
-        .map(|(sha, name)| (sha.to_owned(), name.to_owned()))
-        .unwrap_or_default();
+fn ArchiveView(
+    route: String,
+    project: String,
+    sha256: String,
+    filename: String,
+    member: Option<String>,
+) -> impl IntoView {
     let back = format!("/browse?index={}&project={}", url_encode(&route), url_encode(&project));
     view! {
         <p class="breadcrumb">
@@ -438,29 +445,31 @@ fn ArchiveView(route: String, project: String, file: String, member: Option<Stri
         </p>
         {match member {
             Some(path) => {
-                view! { <MemberView route project file sha256 filename member=path /> }.into_any()
+                view! { <MemberView route project sha256 filename member=path /> }.into_any()
             }
-            None => view! { <MemberList route project file sha256 filename /> }.into_any(),
+            None => view! { <MemberList route project sha256 filename /> }.into_any(),
         }}
     }
 }
 
 #[component]
-fn MemberList(route: String, project: String, file: String, sha256: String, filename: String) -> impl IntoView {
+fn MemberList(route: String, project: String, sha256: String, filename: String) -> impl IntoView {
     let members = Resource::new(
         {
-            let key = (route.clone(), sha256, filename.clone());
+            let key = (route.clone(), sha256.clone(), filename.clone());
             move || key.clone()
         },
         |(route, sha256, filename)| load_members(route, sha256, filename),
     );
+    let heading = filename.clone();
     view! {
-        <h1><code>{filename}</code></h1>
+        <h1><code>{heading}</code></h1>
         <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
             {move || {
                 let route = route.clone();
                 let project = project.clone();
-                let file = file.clone();
+                let sha256 = sha256.clone();
+                let filename = filename.clone();
                 Suspend::new(async move {
                     let entries = members.await;
                     view! {
@@ -471,10 +480,11 @@ fn MemberList(route: String, project: String, file: String, sha256: String, file
                                     .into_iter()
                                     .map(|entry| {
                                         let href = format!(
-                                            "/browse?index={}&project={}&file={}&member={}",
+                                            "/browse?index={}&project={}&sha256={}&file={}&member={}",
                                             url_encode(&route),
                                             url_encode(&project),
-                                            url_encode(&file),
+                                            url_encode(&sha256),
+                                            url_encode(&filename),
                                             url_encode(&entry.path)
                                         );
                                         view! {
@@ -495,26 +505,20 @@ fn MemberList(route: String, project: String, file: String, sha256: String, file
 }
 
 #[component]
-fn MemberView(
-    route: String,
-    project: String,
-    file: String,
-    sha256: String,
-    filename: String,
-    member: String,
-) -> impl IntoView {
+fn MemberView(route: String, project: String, sha256: String, filename: String, member: String) -> impl IntoView {
     let content = Resource::new(
         {
-            let key = (route.clone(), sha256, filename, member.clone());
+            let key = (route.clone(), sha256.clone(), filename.clone(), member.clone());
             move || key.clone()
         },
         |(route, sha256, filename, member)| load_member(route, sha256, filename, member),
     );
     let back = format!(
-        "/browse?index={}&project={}&file={}",
+        "/browse?index={}&project={}&sha256={}&file={}",
         url_encode(&route),
         url_encode(&project),
-        url_encode(&file)
+        url_encode(&sha256),
+        url_encode(&filename)
     );
     view! {
         <h1><code>{member}</code></h1>
@@ -679,19 +683,10 @@ fn human_size(bytes: u64) -> String {
     format!("{value:.1} TB")
 }
 
-/// Percent-encode a URL query component (RFC 3986 unreserved characters stay literal).
-fn url_encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(byte as char),
-            other => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
+fn split_legacy_archive_file(file: &str) -> (String, String) {
+    file.split_once('/')
+        .map(|(sha256, filename)| (sha256.to_owned(), filename.to_owned()))
+        .unwrap_or_default()
 }
 
 /// The usage statistics drill-down: every index, one index's projects, or one project's files,

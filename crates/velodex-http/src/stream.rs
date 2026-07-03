@@ -11,6 +11,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use velodex_core::pypi::{CoreMetadata, File, to_json};
 
+use crate::path_safety::local_file_url;
+
 /// Per-request configuration: how to rewrite and merge one page.
 #[derive(Debug, Default, Clone)]
 pub struct PageContext {
@@ -370,7 +372,7 @@ impl PageTransformer {
                 url: file.url.clone(),
                 metadata,
             });
-            file.url = format!("/{}/files/{sha256}/{}", self.context.route, file.filename);
+            file.url = local_file_url(&self.context.route, &sha256, &file.filename);
         } else {
             file.core_metadata = CoreMetadata::Absent;
         }

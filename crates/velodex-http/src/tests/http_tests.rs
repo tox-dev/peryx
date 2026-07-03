@@ -334,8 +334,28 @@ async fn test_file_download_fetches_verifies_and_caches() {
 #[tokio::test]
 async fn test_file_download_invalid_digest_is_bad_request() {
     let h = harness().await;
-    let (status, ..) = get(&h.state, "/pypi/files/notahex/x.whl", None).await;
+    let (status, _, body) = get(&h.state, "/pypi/files/notahex/x.whl", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("expected 64 lowercase hex sha256"));
+}
+
+#[tokio::test]
+async fn test_file_download_rejects_encoded_path_filename() {
+    let h = harness().await;
+    let uri = format!("/pypi/files/{}/pkg%2Fname.whl", "a".repeat(64));
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("filenames must be relative path segments"));
+}
+
+#[tokio::test]
+async fn test_file_download_allows_literal_percent_filename() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "velodexpkg%2F.whl", b"PKpercent").await;
+    let uri = format!("/local/files/{}/velodexpkg%252F.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "PKpercent");
 }
 
 #[tokio::test]
@@ -441,6 +461,16 @@ async fn post_upload(
     content_type: &str,
     body: Vec<u8>,
 ) -> StatusCode {
+    post_upload_response(state, uri, auth, content_type, body).await.0
+}
+
+async fn post_upload_response(
+    state: &Arc<AppState>,
+    uri: &str,
+    auth: Option<&str>,
+    content_type: &str,
+    body: Vec<u8>,
+) -> (StatusCode, String) {
     let mut builder = Request::builder()
         .uri(uri)
         .method("POST")
@@ -448,11 +478,13 @@ async fn post_upload(
     if let Some(auth) = auth {
         builder = builder.header(header::AUTHORIZATION, auth);
     }
-    router(state.clone())
+    let response = router(state.clone())
         .oneshot(builder.body(Body::from(body)).unwrap())
         .await
-        .unwrap()
-        .status()
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 async fn upload_velodexpkg(state: &Arc<AppState>, uri: &str, wheel: &[u8]) -> StatusCode {
@@ -594,6 +626,16 @@ async fn test_upload_missing_field_is_bad_request() {
         post_upload(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn test_upload_invalid_filename_is_bad_request() {
+    let h = harness().await;
+    let (ct, body) = multipart_body(&upload_fields(), Some(("velodexpkg/1.0.whl", b"x")));
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("invalid filename"));
+    assert!(body.contains("without separators"));
 }
 
 #[tokio::test]
@@ -1211,6 +1253,43 @@ async fn test_inspect_reads_member_content() {
 }
 
 #[tokio::test]
+async fn test_inspect_reads_query_member_content() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "velodexpkg 1.0#x?.whl", &fixture_wheel()).await;
+    let uri = format!(
+        "/local/inspect/{}/velodexpkg%201.0%23x%3F.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
+        digest.as_str()
+    );
+    let (status, headers, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+    assert!(body.starts_with("Metadata-Version: 2.1"));
+}
+
+#[tokio::test]
+async fn test_inspect_query_without_member_lists_archive() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!(
+        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?ignored=1",
+        digest.as_str()
+    );
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("velodexpkg-1.0.dist-info/METADATA"));
+}
+
+#[tokio::test]
+async fn test_inspect_legacy_member_rejects_invalid_encoding() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl/%FF", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("invalid percent-encoded path segment"));
+}
+
+#[tokio::test]
 async fn test_inspect_missing_member_is_not_found() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
@@ -1303,10 +1382,15 @@ async fn test_inspect_binary_member_served_as_bytes() {
 #[tokio::test]
 async fn test_inspect_bad_digest_and_missing_paths() {
     let h = harness().await;
-    let (status, ..) = get(&h.state, "/local/inspect/nothex/x.whl", None).await;
+    let (status, _, body) = get(&h.state, "/local/inspect/nothex/x.whl", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("expected 64 lowercase hex sha256"));
     let (status, ..) = get(&h.state, "/local/inspect/onlyonesegment", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let uri = format!("/local/inspect/{}/pkg%2Fname.whl", "a".repeat(64));
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("filenames must be relative path segments"));
     let uri = format!("/local/inspect/{}/ghost.whl", "a".repeat(64));
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

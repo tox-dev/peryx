@@ -117,7 +117,7 @@ fn test_escapes_and_braces_inside_strings_survive() {
     for chunk in [1, 5] {
         let (out, registrations) = transform(page, plain_context(), chunk);
         let detail = parse_detail(out.as_bytes()).unwrap();
-        assert_eq!(detail.files[0].url, "/root/pypi/files/ee55/a{1}-1.0.whl");
+        assert_eq!(detail.files[0].url, "/root/pypi/files/ee55/a%7B1%7D-1.0.whl");
         assert_eq!(registrations[0].url, "https://up/a\"b[");
     }
 }
