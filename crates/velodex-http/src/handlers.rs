@@ -95,6 +95,9 @@ pub async fn dispatch_get(
                     return (StatusCode::NOT_FOUND, "project not found").into_response();
                 }
                 Ok(PageOutcome::Fallback) => {}
+                Err(err @ CacheError::Simple(_)) => {
+                    return detail_response(Err(err), Format::Json);
+                }
                 Err(err) => {
                     tracing::error!(error = ?err, "streaming page failed, serving buffered");
                 }
@@ -561,6 +564,10 @@ pub(crate) fn detail_response(result: Result<Option<ProjectDetail>, CacheError>,
     let detail = match result {
         Ok(Some(detail)) => detail,
         Ok(None) => return (StatusCode::NOT_FOUND, "project not found").into_response(),
+        Err(CacheError::Simple(err)) => {
+            tracing::warn!(error = ?err, "unsupported upstream simple api");
+            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+        }
         Err(err) => {
             tracing::error!(error = ?err, "upstream error");
             return (StatusCode::BAD_GATEWAY, "upstream error").into_response();

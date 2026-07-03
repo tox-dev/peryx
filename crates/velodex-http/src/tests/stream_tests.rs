@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use velodex_core::pypi::{CoreMetadata, File, Yanked, parse_detail, to_json};
+use velodex_core::pypi::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
 
 use crate::stream::{PageContext, PageTransformer, Registration, page_context};
 
@@ -71,6 +71,9 @@ fn test_injects_local_files_and_shadows_upstream() {
         upload_time: None,
         yanked: Yanked::No,
         core_metadata: CoreMetadata::Absent,
+        dist_info_metadata: CoreMetadata::Absent,
+        gpg_sig: None,
+        provenance: Provenance::Absent,
     };
     let context = page_context("root/pypi", vec![local], vec!["3.0".to_owned()], &HashMap::new());
     let (out, _) = transform(&upstream_page(), context, 1);
@@ -145,6 +148,9 @@ fn test_local_files_emitted_into_empty_upstream_array() {
         upload_time: None,
         yanked: Yanked::No,
         core_metadata: CoreMetadata::Absent,
+        dist_info_metadata: CoreMetadata::Absent,
+        gpg_sig: None,
+        provenance: Provenance::Absent,
     };
     let (out, _) = transform(page, page_context("r", vec![local], Vec::new(), &HashMap::new()), 3);
     let detail = parse_detail(out.as_bytes()).unwrap();
@@ -186,10 +192,76 @@ fn test_unrelated_top_level_arrays_pass_through() {
 #[test]
 fn test_nested_array_inside_file_object_is_captured() {
     let page = r#"{"files":[{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/d.whl",
-        "hashes":{"sha256":"aa11"},"provenance":["sig1","sig2"]}]}"#;
+        "hashes":{"sha256":"aa11"},"extra":["sig1","sig2"]}]}"#;
     let (out, registrations) = transform(page, plain_context(), 5);
     assert_eq!(registrations.len(), 1);
     assert!(out.contains("/root/pypi/files/aa11/demo-1.0-py3-none-any.whl"));
+}
+
+#[test]
+fn test_preserves_simple_api_fields_during_streaming() {
+    let page = r#"{"meta":{"api-version":"1.4","project-status":"archived",
+        "project-status-reason":"read only"},"name":"demo","versions":["1.0"],"files":[
+        {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+         "hashes":{"sha256":"aa11"},"size":10,"upload-time":"2024-01-01T00:00:00Z",
+         "core-metadata":{"sha256":"bb22"},"dist-info-metadata":{"sha256":"bb22"},
+         "gpg-sig":false,"provenance":"https://up/demo-1.0-py3-none-any.whl.provenance"}
+    ]}"#;
+    for chunk in [1, 11, 4096] {
+        let (out, _) = transform(page, plain_context(), chunk);
+        let detail = parse_detail(out.as_bytes()).unwrap();
+        assert_eq!(
+            (
+                detail.meta.project_status.as_deref(),
+                detail.meta.project_status_reason.as_deref(),
+                detail.files[0].size,
+                detail.files[0].upload_time.as_deref(),
+                &detail.files[0].core_metadata,
+                &detail.files[0].dist_info_metadata,
+                detail.files[0].gpg_sig,
+                &detail.files[0].provenance,
+            ),
+            (
+                Some("archived"),
+                Some("read only"),
+                Some(10),
+                Some("2024-01-01T00:00:00Z"),
+                &CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+                    "sha256".to_owned(),
+                    "bb22".to_owned(),
+                )])),
+                &CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+                    "sha256".to_owned(),
+                    "bb22".to_owned(),
+                )])),
+                Some(false),
+                &Provenance::Url("https://up/demo-1.0-py3-none-any.whl.provenance".to_owned()),
+            ),
+            "chunk size {chunk}"
+        );
+    }
+}
+
+#[test]
+fn test_meta_streaming_handles_escaped_and_nested_unknown_values() {
+    let page = r#"{"meta":{"api-version":"1.4","project-status":"arch\"ived",
+        "extra":[{"ignored":"yes"}]},"name":"demo","files":[]}"#;
+    let (out, _) = transform(page, plain_context(), 4096);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.meta.project_status.as_deref(), Some("arch\"ived"));
+}
+
+#[test]
+fn test_streaming_rejects_unsupported_major_api_version() {
+    let mut transformer = PageTransformer::new(plain_context());
+    let result = transformer.push(br#"{"meta":{"api-version":"2.0"},"name":"demo","files":[]}"#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_simple_field_deserializers_reject_invalid_types() {
+    assert!(serde_json::from_str::<Yanked>("123").is_err());
+    assert!(serde_json::from_str::<CoreMetadata>("123").is_err());
 }
 
 #[test]
@@ -218,6 +290,9 @@ fn test_two_local_files_emit_with_separators() {
         upload_time: None,
         yanked: Yanked::No,
         core_metadata: CoreMetadata::Absent,
+        dist_info_metadata: CoreMetadata::Absent,
+        gpg_sig: None,
+        provenance: Provenance::Absent,
     };
     let context = page_context(
         "root/pypi",

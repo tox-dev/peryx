@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use velodex_core::pypi::{CoreMetadata, File, to_json};
+use velodex_core::pypi::{CoreMetadata, File, parse_meta, to_json};
 
 use crate::path_safety::local_file_url;
 
@@ -50,6 +50,8 @@ pub struct PageSummary {
 enum Mode {
     /// Copying bytes through, watching top-level keys.
     Passthrough,
+    /// Capturing the top-level `meta` object so velodex can advertise its supported version.
+    Meta,
     /// Between `files[` and its matching `]`: elements are captured and rewritten one by one.
     Files,
     /// Between `versions[` and its matching `]`: the whole (small) array is buffered and merged.
@@ -76,6 +78,10 @@ pub struct PageTransformer {
     capturing_name: bool,
     /// The page's top-level `name`, captured in flight so persistence needs no re-parse.
     name: Vec<u8>,
+    /// The top-level `meta` object has been checked.
+    meta_seen: bool,
+    /// Preflight reached page content before seeing `meta`.
+    meta_search_done: bool,
     /// The document root has closed; anything but whitespace afterwards is malformed.
     closed: bool,
     trailing: bool,
@@ -92,6 +98,8 @@ pub struct PageTransformer {
 pub enum TransformError {
     #[error("upstream page is not valid JSON: {0}")]
     Parse(#[from] serde_json::Error),
+    #[error(transparent)]
+    Simple(#[from] velodex_core::pypi::SimpleError),
     #[error("upstream page ended mid-token")]
     Truncated,
     #[error("upstream page carries data after the document root")]
@@ -112,6 +120,8 @@ impl PageTransformer {
             expect_name_value: false,
             capturing_name: false,
             name: Vec::new(),
+            meta_seen: false,
+            meta_search_done: false,
             closed: false,
             trailing: false,
             capture: Vec::new(),
@@ -119,6 +129,12 @@ impl PageTransformer {
             emitted_in_array: false,
             registrations: Vec::new(),
         }
+    }
+
+    /// Whether a bounded preflight has enough information to return to the streaming path.
+    #[must_use]
+    pub const fn meta_preflight_done(&self) -> bool {
+        self.meta_seen || self.meta_search_done
     }
 
     /// Transform one chunk of upstream bytes, returning the bytes to send downstream.
@@ -157,6 +173,7 @@ impl PageTransformer {
                 self.step_passthrough(byte, out);
                 Ok(())
             }
+            Mode::Meta => self.step_meta(byte, out),
             Mode::Files => self.step_files(byte, out),
             Mode::Versions => self.step_versions(byte, out),
         }
@@ -208,6 +225,13 @@ impl PageTransformer {
                 self.depth += 1;
                 // `"files": [` or `"versions": [` at the top level switches modes; the bracket is
                 // emitted (files) or captured (versions merges into one emission).
+                if byte == b'{' && self.depth == 2 && self.key == b"meta" {
+                    self.mode = Mode::Meta;
+                    self.array_depth = self.depth;
+                    self.capture.clear();
+                    self.capture.push(byte);
+                    return;
+                }
                 if byte == b'[' && self.depth == 2 {
                     if self.key == b"files" {
                         out.push(byte);
@@ -236,6 +260,9 @@ impl PageTransformer {
             }
             b':' if self.depth == 1 => {
                 self.expect_name_value = self.key == b"name";
+                if !self.meta_seen && self.key != b"meta" && self.key != b"name" {
+                    self.meta_search_done = true;
+                }
                 out.push(byte);
             }
             _ => {
@@ -245,6 +272,45 @@ impl PageTransformer {
                 out.push(byte);
             }
         }
+    }
+
+    fn step_meta(&mut self, byte: u8, out: &mut Vec<u8>) -> Result<(), TransformError> {
+        if self.in_string {
+            self.capture.push(byte);
+            if self.escaped {
+                self.escaped = false;
+            } else if byte == b'\\' {
+                self.escaped = true;
+            } else if byte == b'"' {
+                self.in_string = false;
+            }
+            return Ok(());
+        }
+        match byte {
+            b'"' => {
+                self.in_string = true;
+                self.capture.push(byte);
+            }
+            b'{' | b'[' => {
+                self.depth += 1;
+                self.capture.push(byte);
+            }
+            b'}' => {
+                self.depth = self.depth.saturating_sub(1);
+                self.capture.push(byte);
+                if self.depth == self.array_depth - 1 {
+                    self.emit_meta(out)?;
+                    self.capture.clear();
+                    self.mode = Mode::Passthrough;
+                }
+            }
+            b']' => {
+                self.depth = self.depth.saturating_sub(1);
+                self.capture.push(byte);
+            }
+            _ => self.capture.push(byte),
+        }
+        Ok(())
     }
 
     fn step_files(&mut self, byte: u8, out: &mut Vec<u8>) -> Result<(), TransformError> {
@@ -358,14 +424,14 @@ impl PageTransformer {
             return Ok(());
         }
         if let Some(sha256) = file.hashes.get("sha256").cloned() {
-            let metadata = match &file.core_metadata {
+            let metadata = match file.metadata() {
                 CoreMetadata::Hashes(hashes) => hashes
                     .get("sha256")
                     .map(|digest| (format!("{}.metadata", file.url), digest.clone())),
                 CoreMetadata::Absent | CoreMetadata::Available => None,
             };
             if metadata.is_none() {
-                file.core_metadata = CoreMetadata::Absent;
+                file.clear_metadata();
             }
             self.registrations.push(Registration {
                 sha256: sha256.clone(),
@@ -374,13 +440,20 @@ impl PageTransformer {
             });
             file.url = local_file_url(&self.context.route, &sha256, &file.filename);
         } else {
-            file.core_metadata = CoreMetadata::Absent;
+            file.clear_metadata();
         }
         if self.emitted_in_array {
             out.push(b',');
         }
         out.extend_from_slice(to_json(&file).as_bytes());
         self.emitted_in_array = true;
+        Ok(())
+    }
+
+    /// Rewrite the upstream meta object to velodex's advertised API version.
+    fn emit_meta(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
+        out.extend_from_slice(to_json(&parse_meta(&self.capture)?).as_bytes());
+        self.meta_seen = true;
         Ok(())
     }
 

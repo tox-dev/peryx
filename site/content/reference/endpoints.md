@@ -35,8 +35,8 @@ drill-down), and `GET /pkg/*` (the wasm bundle that hydrates the pages).
 Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+json`
 ([PEP 691](https://peps.python.org/pep-0691/)) when the client asks for JSON, `text/html`
 ([PEP 503](https://peps.python.org/pep-0503/)) otherwise. Responses carry `Vary: Accept` and advertise
-`meta.api-version` 1.1, which includes the [PEP 700](https://peps.python.org/pep-0700/) `versions`, `size`, and
-`upload-time` fields.
+`meta.api-version` 1.4. velodex preserves upstream Simple API fields it understands, including `versions`, `size`,
+`upload-time`, `project-status`, `provenance`, `gpg-sig`, and both `core-metadata` and `dist-info-metadata`.
 
 ## Discovery
 

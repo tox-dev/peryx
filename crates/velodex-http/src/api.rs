@@ -323,7 +323,7 @@ fn project_list() -> OperationBuilder {
             json_response(
                 "The project list (PEP 691 shown; PEP 503 HTML without the JSON `Accept`)",
                 json!({
-                    "meta": {"api-version": "1.1"},
+                    "meta": {"api-version": "1.4"},
                     "projects": [{"name": "requests"}, {"name": "velodexpkg"}]
                 }),
             ),
@@ -348,7 +348,7 @@ fn project_detail() -> OperationBuilder {
             json_response(
                 "The project detail page",
                 json!({
-                    "meta": {"api-version": "1.1"},
+                    "meta": {"api-version": "1.4", "project-status": "active"},
                     "name": "velodexpkg",
                     "versions": ["1.0"],
                     "files": [{
@@ -357,8 +357,12 @@ fn project_detail() -> OperationBuilder {
                         "hashes": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
                         "requires-python": ">=3.8",
                         "size": 1832,
+                        "upload-time": "2026-01-01T00:00:00Z",
                         "yanked": false,
-                        "core-metadata": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"}
+                        "core-metadata": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"},
+                        "dist-info-metadata": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"},
+                        "gpg-sig": false,
+                        "provenance": "https://example.test/provenance/velodexpkg-1.0-py3-none-any.whl"
                     }]
                 }),
             ),

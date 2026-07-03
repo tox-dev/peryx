@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 
 use url::Url;
 
-use crate::pypi::parse_detail_html;
-use crate::pypi::{CoreMetadata, Yanked};
+use crate::pypi::{CoreMetadata, Meta, Provenance, SimpleError, Yanked, parse_detail_html};
 
 fn base() -> Url {
     Url::parse("https://pypi.org/simple/flask/").unwrap()
@@ -11,13 +10,20 @@ fn base() -> Url {
 
 #[test]
 fn test_parse_full_anchor() {
-    let html = r#"<!DOCTYPE html><html><body>
+    let html = r#"<!DOCTYPE html><html><head>
+        <meta name="pypi:repository-version" content="1.4">
+        <meta name="pypi:project-status" content="archived">
+        <meta name="pypi:project-status-reason" content="read only">
+        </head><body>
         <a href="../../packages/flask-2.0-py3-none-any.whl#sha256=abc123"
            data-requires-python="&gt;=3.7" data-yanked="broken"
-           data-core-metadata="sha256=deadbeef">flask-2.0-py3-none-any.whl</a>
+           data-core-metadata="sha256=deadbeef" data-gpg-sig="true"
+           data-provenance="https://example.test/provenance">flask-2.0-py3-none-any.whl</a>
         </body></html>"#;
-    let parsed = parse_detail_html("flask", html, &base());
+    let parsed = parse_detail_html("flask", html, &base()).unwrap();
     assert_eq!(parsed.name, "flask");
+    assert_eq!(parsed.meta.project_status.as_deref(), Some("archived"));
+    assert_eq!(parsed.meta.project_status_reason.as_deref(), Some("read only"));
     assert_eq!(parsed.files.len(), 1);
     let file = &parsed.files[0];
     assert_eq!(file.filename, "flask-2.0-py3-none-any.whl");
@@ -32,12 +38,17 @@ fn test_parse_full_anchor() {
         file.core_metadata,
         CoreMetadata::Hashes(BTreeMap::from([("sha256".to_owned(), "deadbeef".to_owned())]))
     );
+    assert_eq!(file.gpg_sig, Some(true));
+    assert_eq!(
+        file.provenance,
+        Provenance::Url("https://example.test/provenance".to_owned())
+    );
 }
 
 #[test]
 fn test_parse_yanked_empty_and_core_metadata_true() {
     let html = r#"<a href="x-1.whl" data-yanked="" data-core-metadata="true">x-1.whl</a>"#;
-    let file = &parse_detail_html("x", html, &base()).files[0];
+    let file = &parse_detail_html("x", html, &base()).unwrap().files[0];
     assert_eq!(file.yanked, Yanked::Yes);
     assert_eq!(file.core_metadata, CoreMetadata::Available);
 }
@@ -45,20 +56,32 @@ fn test_parse_yanked_empty_and_core_metadata_true() {
 #[test]
 fn test_parse_legacy_dist_info_metadata_and_no_hash() {
     let html = r#"<a href="x-1.tar.gz" data-dist-info-metadata="sha256=aa">x-1.tar.gz</a>"#;
-    let file = &parse_detail_html("x", html, &base()).files[0];
+    let file = &parse_detail_html("x", html, &base()).unwrap().files[0];
     assert!(file.hashes.is_empty());
     assert_eq!(
-        file.core_metadata,
+        file.dist_info_metadata,
         CoreMetadata::Hashes(BTreeMap::from([("sha256".to_owned(), "aa".to_owned())]))
     );
+    assert_eq!(file.core_metadata, CoreMetadata::Absent);
     assert_eq!(file.yanked, Yanked::No);
     assert!(file.requires_python.is_none());
 }
 
 #[test]
+fn test_parse_ignores_irrelevant_meta_and_gpg_sig_edges() {
+    let html = r#"<meta content="ignored"><meta name="other" content="ignored">
+        <a href="signed.whl" data-gpg-sig>signed.whl</a>
+        <a href="unknown.whl" data-gpg-sig="unknown">unknown.whl</a>"#;
+    let parsed = parse_detail_html("x", html, &base()).unwrap();
+    assert_eq!(parsed.meta, Meta::default());
+    assert_eq!(parsed.files[0].gpg_sig, Some(true));
+    assert_eq!(parsed.files[1].gpg_sig, None);
+}
+
+#[test]
 fn test_anchor_without_href_is_skipped() {
     let html = "<a>not a link</a><a href=\"good-1.whl\">good-1.whl</a>";
-    let parsed = parse_detail_html("good", html, &base());
+    let parsed = parse_detail_html("good", html, &base()).unwrap();
     assert_eq!(parsed.files.len(), 1);
     assert_eq!(parsed.files[0].filename, "good-1.whl");
 }
@@ -67,7 +90,15 @@ fn test_anchor_without_href_is_skipped() {
 fn test_empty_or_no_anchors_yields_no_files() {
     assert!(
         parse_detail_html("x", "<html><body>nothing</body></html>", &base())
+            .unwrap()
             .files
             .is_empty()
     );
+}
+
+#[test]
+fn test_rejects_unsupported_major_api_version() {
+    let html = r#"<meta name="pypi:repository-version" content="2.0">"#;
+    let err = parse_detail_html("x", html, &base()).unwrap_err();
+    assert!(matches!(err, SimpleError::UnsupportedApiVersion(version) if version == "2.0"));
 }

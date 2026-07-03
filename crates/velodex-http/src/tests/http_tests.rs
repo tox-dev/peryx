@@ -10,7 +10,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
-use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
+use velodex_core::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::UpstreamClient;
@@ -173,6 +173,46 @@ async fn test_mirror_detail_json_rewrites_file_url_and_caches() {
 }
 
 #[tokio::test]
+async fn test_mirror_detail_json_preserves_simple_api_fields() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let meta_digest = Digest::of(b"meta");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    let json = format!(
+        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"archived\",\
+         \"project-status-reason\":\"read only\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}},\"size\":123,\"upload-time\":\"2024-01-01T00:00:00Z\",\
+         \"core-metadata\":{{\"sha256\":\"{meta}\"}},\"dist-info-metadata\":{{\"sha256\":\"{meta}\"}},\
+         \"gpg-sig\":false,\"provenance\":\"https://example.test/flask.provenance\"}}]}}",
+        digest = digest.as_str(),
+        meta = meta_digest.as_str(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(json.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&h.server)
+        .await;
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    let detail: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let file = &detail["files"][0];
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["meta"]["api-version"], "1.4");
+    assert_eq!(detail["meta"]["project-status"], "archived");
+    assert_eq!(detail["meta"]["project-status-reason"], "read only");
+    assert_eq!(detail["versions"], serde_json::json!(["1.0"]));
+    assert_eq!(file["size"], 123);
+    assert_eq!(file["upload-time"], "2024-01-01T00:00:00Z");
+    assert_eq!(file["core-metadata"]["sha256"], meta_digest.as_str());
+    assert_eq!(file["dist-info-metadata"]["sha256"], meta_digest.as_str());
+    assert_eq!(file["gpg-sig"], false);
+    assert_eq!(file["provenance"], "https://example.test/flask.provenance");
+    assert!(file["url"].as_str().unwrap().starts_with("/pypi/files/"));
+}
+
+#[tokio::test]
 async fn test_mirror_detail_html() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
@@ -203,6 +243,64 @@ async fn test_mirror_detail_from_html_only_upstream() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(&format!("/pypi/files/{}/flask-1.0.whl", digest.as_str())));
+}
+
+#[tokio::test]
+async fn test_mirror_detail_from_html_preserves_simple_api_fields() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let metadata = Digest::of(b"meta");
+    let html = format!(
+        r#"<!DOCTYPE html><html><head>
+        <meta name="pypi:repository-version" content="1.4">
+        <meta name="pypi:project-status" content="archived">
+        <meta name="pypi:project-status-reason" content="read only">
+        </head><body>
+        <a href="/files/flask.whl#sha256={digest}" data-core-metadata="sha256={metadata}"
+           data-dist-info-metadata="sha256={metadata}" data-gpg-sig="true"
+           data-provenance="https://example.test/flask.provenance">flask-1.0.whl</a>
+        </body></html>"#,
+        digest = digest.as_str(),
+        metadata = metadata.as_str(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(html.into_bytes(), "text/html"))
+        .mount(&h.server)
+        .await;
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    let detail: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let file = &detail["files"][0];
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["meta"]["project-status"], "archived");
+    assert_eq!(detail["meta"]["project-status-reason"], "read only");
+    assert_eq!(file["core-metadata"]["sha256"], metadata.as_str());
+    assert_eq!(file["dist-info-metadata"]["sha256"], metadata.as_str());
+    assert_eq!(file["gpg-sig"], true);
+    assert_eq!(file["provenance"], "https://example.test/flask.provenance");
+}
+
+#[tokio::test]
+async fn test_unsupported_simple_api_major_version_is_bad_gateway() {
+    let h = harness().await;
+    let json = r#"{"name":"flask","meta":{"api-version":"2.0"},"versions":[],"files":[]}"#;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(json.as_bytes().to_vec(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&h.server)
+        .await;
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        body,
+        "unsupported upstream Simple API version \"2.0\"; velodex supports Simple API 1.x"
+    );
 }
 
 #[tokio::test]
@@ -1898,6 +1996,9 @@ fn put_local_file(state: &AppState, filename: &str, bytes: &[u8], version: &str)
             upload_time: None,
             yanked: Yanked::No,
             core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
         },
     };
     state

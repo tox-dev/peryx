@@ -8,7 +8,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
-use velodex_core::pypi::{CoreMetadata, File, Yanked, to_json};
+use velodex_core::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_http::path_safety::local_file_url;
 use velodex_http::upload::Uploaded;
 use velodex_storage::blob::Digest;
@@ -128,6 +128,9 @@ fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8
             upload_time: None,
             yanked: Yanked::No,
             core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
         },
     };
     state

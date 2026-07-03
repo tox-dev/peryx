@@ -6,30 +6,52 @@ use std::collections::BTreeMap;
 use tl::{HTMLTag, ParserOptions};
 use url::Url;
 
-use super::simple::{CoreMetadata, File, ParsedDetail, Yanked};
+use super::simple::{CoreMetadata, File, Meta, ParsedDetail, Provenance, SimpleError, Yanked};
 
 /// Parse the HTML detail page for `project`, resolving relative file links against `base`.
 ///
-/// A page that does not parse yields an empty file list rather than an error: a degraded upstream
-/// should not take the whole request down.
-#[must_use]
-pub fn parse_detail_html(project: &str, html: &str, base: &Url) -> ParsedDetail {
-    let files = tl::parse(html, ParserOptions::default())
-        .map(|dom| {
-            let parser = dom.parser();
-            dom.query_selector("a")
-                .into_iter()
-                .flatten()
-                .filter_map(|handle| handle.get(parser).and_then(|node| node.as_tag()))
-                .filter_map(|tag| anchor_to_file(tag, tag.inner_text(parser).into_owned(), base))
-                .collect()
-        })
-        .unwrap_or_default();
-    ParsedDetail {
+/// # Errors
+/// Returns an error when the HTML page advertises an unsupported Simple API major version.
+pub fn parse_detail_html(project: &str, html: &str, base: &Url) -> Result<ParsedDetail, SimpleError> {
+    let dom = tl::parse(html, ParserOptions::default())?;
+    let parser = dom.parser();
+    let meta = parse_meta(parser, &dom)?;
+    let files = dom
+        .query_selector("a")
+        .into_iter()
+        .flatten()
+        .filter_map(|handle| handle.get(parser).and_then(|node| node.as_tag()))
+        .filter_map(|tag| anchor_to_file(tag, tag.inner_text(parser).into_owned(), base))
+        .collect();
+    Ok(ParsedDetail {
+        meta,
         name: project.to_owned(),
         versions: Vec::new(),
         files,
+    })
+}
+
+fn parse_meta(parser: &tl::Parser, dom: &tl::VDom<'_>) -> Result<Meta, SimpleError> {
+    let mut api_version = None;
+    let mut project_status = None;
+    let mut project_status_reason = None;
+    for tag in dom
+        .query_selector("meta")
+        .into_iter()
+        .flatten()
+        .filter_map(|handle| handle.get(parser).and_then(|node| node.as_tag()))
+    {
+        let Some(name) = attr_string(tag, "name") else {
+            continue;
+        };
+        match name.as_str() {
+            "pypi:repository-version" => api_version = attr_string(tag, "content"),
+            "pypi:project-status" => project_status = attr_string(tag, "content"),
+            "pypi:project-status-reason" => project_status_reason = attr_string(tag, "content"),
+            _ => {}
+        }
     }
+    Meta::from_upstream(api_version.as_deref(), project_status, project_status_reason)
 }
 
 fn anchor_to_file(tag: &HTMLTag, filename: String, base: &Url) -> Option<File> {
@@ -46,7 +68,10 @@ fn anchor_to_file(tag: &HTMLTag, filename: String, base: &Url) -> Option<File> {
         size: None,
         upload_time: None,
         yanked: parse_yanked(tag),
-        core_metadata: parse_core_metadata(tag),
+        core_metadata: parse_metadata_attr(tag, "data-core-metadata"),
+        dist_info_metadata: parse_metadata_attr(tag, "data-dist-info-metadata"),
+        gpg_sig: parse_gpg_sig(tag),
+        provenance: attr_string(tag, "data-provenance").map_or(Provenance::Absent, Provenance::Url),
     })
 }
 
@@ -79,18 +104,24 @@ fn parse_yanked(tag: &HTMLTag) -> Yanked {
     }
 }
 
-fn parse_core_metadata(tag: &HTMLTag) -> CoreMetadata {
-    let attrs = tag.attributes();
-    let Some(present) = attrs
-        .get("data-core-metadata")
-        .or_else(|| attrs.get("data-dist-info-metadata"))
-    else {
+fn parse_metadata_attr(tag: &HTMLTag, name: &str) -> CoreMetadata {
+    let Some(present) = tag.attributes().get(name) else {
         return CoreMetadata::Absent;
     };
     let value = present.map(|value| value.as_utf8_str()).unwrap_or_default();
     match value.split_once('=') {
         Some((algo, hash)) => CoreMetadata::Hashes(BTreeMap::from([(algo.to_owned(), hash.to_owned())])),
         None => CoreMetadata::Available,
+    }
+}
+
+fn parse_gpg_sig(tag: &HTMLTag) -> Option<bool> {
+    let value = tag.attributes().get("data-gpg-sig")?;
+    match value.map(|value| value.as_utf8_str()) {
+        Some(value) if value.eq_ignore_ascii_case("false") => Some(false),
+        Some(value) if value.eq_ignore_ascii_case("true") => Some(true),
+        None => Some(true),
+        Some(_) => None,
     }
 }
 
