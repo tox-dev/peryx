@@ -1007,8 +1007,73 @@ table {
   max-width: 100%;
   margin: 1.25rem 0;
 
+  // Prose-filled cells let a table collapse to the viewport and squish instead of scrolling. A
+  // floor keeps columns readable and forces the container to scroll in the tablet range; wide
+  // desktop columns still fill past it. Below 40rem the table restacks into cards instead (below).
   table {
     margin: 0;
+    min-width: 42rem;
+  }
+}
+
+// On phones a wide multi-column table is unreadable even scrolled, so restack each row as a card:
+// the first cell is the card title, the rest become label/value pairs (labels come from the JS that
+// copies each column header onto its cells). Bench tables live in .bench, not .table-scroll, so they
+// keep horizontal scroll instead.
+@media (max-width: 40rem) {
+  .table-scroll {
+    overflow-x: visible;
+  }
+
+  .table-scroll table {
+    display: block;
+    min-width: 0;
+    width: 100%;
+    font-size: 0.9rem;
+  }
+
+  .table-scroll thead {
+    display: none;
+  }
+
+  .table-scroll tbody {
+    display: block;
+  }
+
+  .table-scroll tr {
+    display: block;
+    margin-bottom: 0.7rem;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .table-scroll td {
+    display: block;
+    padding: 0.18rem 0;
+    border: none;
+  }
+
+  .table-scroll td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .table-scroll td:first-child {
+    margin-bottom: 0.25rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border);
+    font-weight: 700;
+    font-size: 1.02rem;
+  }
+
+  .table-scroll td:first-child::before {
+    display: none;
   }
 }
 
@@ -1177,6 +1242,10 @@ pre:hover .copy-snippet,
     padding-bottom: 0.4rem;
   }
   td { font-variant-numeric: tabular-nums; }
+  // Keep every cell on one line so the table holds its natural width and scrolls sideways (with the
+  // frozen columns below) instead of squishing the servers into unreadable slivers.
+  th,
+  td { white-space: nowrap; }
   .bench-ratio { color: var(--text-soft); font-size: 0.8rem; }
   td.bench-faster { background: rgba(12, 163, 12, 0.28); }
   td.bench-par { background: rgba(12, 163, 12, 0.14); }
@@ -1185,6 +1254,29 @@ pre:hover .copy-snippet,
   td.bench-veryslow { background: rgba(208, 59, 59, 0.22); }
   td.bench-worst { background: rgba(208, 59, 59, 0.38); }
   td.bench-none { color: var(--text-soft); }
+
+  // Freeze the label column and the velodex baseline column so both stay visible while the row
+  // scrolls sideways through the other servers. The velodex column takes a uniform, opaque baseline
+  // tint (so scrolled cells never show through it) in place of its per-cell best/worst shade.
+  th:first-child,
+  td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    white-space: nowrap;
+    background: var(--bg-soft);
+  }
+
+  // --label-w is set by JS to the measured width of the first column, so the velodex column freezes
+  // flush against it whatever the longest label is.
+  th:nth-child(2),
+  td:nth-child(2) {
+    position: sticky;
+    left: var(--label-w, 9rem);
+    z-index: 1;
+    background: color-mix(in srgb, var(--brand-a) 8%, var(--bg));
+    box-shadow: 1px 0 0 var(--border);
+  }
 }
 [data-theme="dark"] .bench-table {
   td.bench-faster { background: rgba(12, 163, 12, 0.34); }
@@ -1193,6 +1285,10 @@ pre:hover .copy-snippet,
   td.bench-slow { background: rgba(236, 131, 90, 0.24); }
   td.bench-veryslow { background: rgba(208, 59, 59, 0.28); }
   td.bench-worst { background: rgba(208, 59, 59, 0.44); }
+  th:nth-child(2),
+  td:nth-child(2) {
+    background: color-mix(in srgb, var(--brand-a) 15%, var(--bg));
+  }
 }
 
 

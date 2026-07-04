@@ -216,7 +216,31 @@
       wrap.className = "table-scroll";
       table.parentNode.insertBefore(wrap, table);
       wrap.appendChild(table);
+      // Label each cell with its column header so the table can restack into cards on phones.
+      var headers = Array.prototype.map.call(table.querySelectorAll("thead th"), function (th) {
+        return th.textContent.trim();
+      });
+      if (headers.length) {
+        table.querySelectorAll("tbody tr").forEach(function (row) {
+          Array.prototype.forEach.call(row.children, function (cell, index) {
+            if (headers[index]) cell.setAttribute("data-label", headers[index]);
+          });
+        });
+      }
     });
+    // Freeze offset for the velodex column: measure the label column so the sticky left matches
+    // whatever the widest row label is, in each bench table, and keep it current on resize.
+    var benchTables = document.querySelectorAll(".bench-table");
+    if (benchTables.length) {
+      var sizeBench = function () {
+        benchTables.forEach(function (table) {
+          var first = table.querySelector("tbody tr > :first-child");
+          if (first) table.style.setProperty("--label-w", first.offsetWidth + "px");
+        });
+      };
+      sizeBench();
+      window.addEventListener("resize", sizeBench);
+    }
     var railQuery = window.matchMedia("(max-width: 52rem)");
     function syncDocsRails() {
       var collapsed = railQuery.matches;
