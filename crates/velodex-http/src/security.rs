@@ -1,4 +1,4 @@
-//! Structured security-relevant repository events.
+//! Structured security-relevant index events.
 
 use axum::http::{HeaderMap, header};
 
@@ -8,9 +8,9 @@ pub(crate) struct Event<'a> {
     action: &'static str,
     result: &'static str,
     actor: Option<&'a str>,
-    repository: Option<&'a str>,
-    source_repository: Option<&'a str>,
-    local_repository: Option<&'a str>,
+    index: Option<&'a str>,
+    source_index: Option<&'a str>,
+    local_index: Option<&'a str>,
     project: Option<&'a str>,
     version: Option<&'a str>,
     filename: Option<&'a str>,
@@ -28,9 +28,9 @@ impl<'a> Event<'a> {
             action,
             result,
             actor: None,
-            repository: None,
-            source_repository: None,
-            local_repository: None,
+            index: None,
+            source_index: None,
+            local_index: None,
             project: None,
             version: None,
             filename: None,
@@ -48,18 +48,18 @@ impl<'a> Event<'a> {
         self
     }
 
-    pub(crate) const fn repository(mut self, repository: &'a str) -> Self {
-        self.repository = Some(repository);
+    pub(crate) const fn index(mut self, index: &'a str) -> Self {
+        self.index = Some(index);
         self
     }
 
-    pub(crate) const fn source_repository(mut self, source_repository: &'a str) -> Self {
-        self.source_repository = Some(source_repository);
+    pub(crate) const fn source_index(mut self, source_index: &'a str) -> Self {
+        self.source_index = Some(source_index);
         self
     }
 
-    pub(crate) const fn local_repository(mut self, local_repository: &'a str) -> Self {
-        self.local_repository = Some(local_repository);
+    pub(crate) const fn local_index(mut self, local_index: &'a str) -> Self {
+        self.local_index = Some(local_index);
         self
     }
 
@@ -106,9 +106,9 @@ impl<'a> Event<'a> {
 
     pub(crate) fn emit(&self) {
         let actor = text(self.actor);
-        let repository = text(self.repository);
-        let source_repository = text(self.source_repository);
-        let local_repository = text(self.local_repository);
+        let index = text(self.index);
+        let source_index = text(self.source_index);
+        let local_index = text(self.local_index);
         let project = text(self.project);
         let version = text(self.version);
         let filename = text(self.filename);
@@ -119,13 +119,13 @@ impl<'a> Event<'a> {
         tracing::info!(
             target: "velodex::security",
             security_event = true,
-            event = "repository_action",
+            event = "index_action",
             action = self.action,
             result = self.result,
             actor,
-            repository,
-            source_repository,
-            local_repository,
+            index,
+            source_index,
+            local_index,
             project,
             version,
             filename,
@@ -135,7 +135,7 @@ impl<'a> Event<'a> {
             reason,
             request_id,
             user_agent,
-            "repository security event"
+            "index security event"
         );
     }
 }

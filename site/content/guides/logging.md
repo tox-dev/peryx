@@ -45,8 +45,8 @@ to filter by actor, action, target, or result.
 velodex serve --log-format json --log-sink file --log-file /var/log/velodex/events.log
 ```
 
-Each record sets `security_event=true` and `event=repository_action`. Velodex also writes `action`, `result`, `actor`,
-`repository`, `local_repository`, `project`, `version`, `filename`, `digest`, `count`, `changed`, `reason`,
+Each record sets `security_event=true` and `event=index_action`. Velodex also writes `action`, `result`, `actor`,
+`index`, `local_index`, `project`, `version`, `filename`, `digest`, `count`, `changed`, `reason`,
 `request_id`, and `user_agent`. Missing values use empty strings or zero values. Velodex leaves credentials, bearer
 tokens, Basic auth passwords, and URL secrets out of these records.
 

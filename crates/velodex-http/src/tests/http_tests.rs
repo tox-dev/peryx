@@ -2069,14 +2069,14 @@ async fn test_security_logs_upload_success_without_token_secret() {
         field(event, "action") == Some("token_use")
             && field(event, "result") == Some("success")
             && field(event, "actor") == Some("__token__")
-            && field(event, "repository") == Some("local")
+            && field(event, "index") == Some("local")
     }));
     let upload = events
         .iter()
         .find(|event| field(event, "action") == Some("upload") && field(event, "result") == Some("success"))
         .unwrap();
-    assert_eq!(field(upload, "repository"), Some("root/pypi"));
-    assert_eq!(field(upload, "local_repository"), Some("local"));
+    assert_eq!(field(upload, "index"), Some("root/pypi"));
+    assert_eq!(field(upload, "local_index"), Some("local"));
     assert_eq!(field(upload, "project"), Some("velodexpkg"));
     assert_eq!(field(upload, "version"), Some("1.0"));
     assert_eq!(field(upload, "filename"), Some("velodexpkg-1.0-py3-none-any.whl"));
@@ -2107,7 +2107,7 @@ async fn test_security_logs_invalid_token_without_secret() {
         .find(|event| field(event, "action") == Some("token_use") && field(event, "result") == Some("denied"))
         .unwrap();
     assert_eq!(field(token, "actor"), Some("alice"));
-    assert_eq!(field(token, "repository"), Some("local"));
+    assert_eq!(field(token, "index"), Some("local"));
     assert_eq!(field(token, "reason"), Some("invalid upload token"));
 }
 
@@ -2982,8 +2982,8 @@ async fn test_security_logs_delete_policy_denial() {
         .find(|event| field(event, "action") == Some("delete") && field(event, "result") == Some("denied"))
         .unwrap();
     assert_eq!(field(delete, "actor"), Some("__token__"));
-    assert_eq!(field(delete, "repository"), Some("local"));
-    assert_eq!(field(delete, "local_repository"), Some("local"));
+    assert_eq!(field(delete, "index"), Some("local"));
+    assert_eq!(field(delete, "local_index"), Some("local"));
     assert_eq!(field(delete, "project"), Some("velodexpkg"));
     assert_eq!(
         field(delete, "reason"),
@@ -3655,8 +3655,8 @@ async fn test_promote_skips_target_file_with_same_digest() {
     assert_eq!(body, "promoted 0 file(s)");
     assert_eq!(field(&event, "action"), Some("promote"));
     assert_eq!(field(&event, "result"), Some("noop"));
-    assert_eq!(field(&event, "repository"), Some("prod"));
-    assert_eq!(field(&event, "source_repository"), Some("staging"));
+    assert_eq!(field(&event, "index"), Some("prod"));
+    assert_eq!(field(&event, "source_index"), Some("staging"));
     assert_eq!(field(&event, "reason"), Some("same files already exist on target"));
 }
 

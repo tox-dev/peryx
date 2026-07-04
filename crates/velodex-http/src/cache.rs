@@ -525,7 +525,7 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
 
 fn log_mirror_sync(repository: &str, project: &str, result: &'static str, changed: bool, reason: Option<&str>) {
     crate::security::Event::new("mirror_sync", result)
-        .repository(repository)
+        .index(repository)
         .project(Some(project))
         .changed(changed)
         .count(1)

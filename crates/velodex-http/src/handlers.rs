@@ -717,8 +717,8 @@ struct PromotionAudit<'a> {
     headers: &'a HeaderMap,
     actor: Option<&'a str>,
     repository: &'a str,
-    source_repository: &'a str,
-    local_repository: &'a str,
+    source_index: &'a str,
+    local_index: &'a str,
     project: &'a str,
     version: &'a str,
 }
@@ -726,9 +726,9 @@ struct PromotionAudit<'a> {
 fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusBlock) {
     crate::security::Event::new("promote", block.result)
         .actor(audit.actor)
-        .repository(audit.repository)
-        .source_repository(audit.source_repository)
-        .local_repository(audit.local_repository)
+        .index(audit.repository)
+        .source_index(audit.source_index)
+        .local_index(audit.local_index)
         .project(Some(audit.project))
         .version(Some(audit.version))
         .reason(Some(&block.reason))
@@ -848,8 +848,8 @@ async fn promote_request(
         headers,
         actor,
         repository: &index.route,
-        source_repository: &source.route,
-        local_repository: &local.name,
+        source_index: &source.route,
+        local_index: &local.name,
         project: &project,
         version: &version,
     };
@@ -894,7 +894,7 @@ async fn yank_request(
         actor,
         index: &index.name,
         repository: &index.route,
-        local_repository: &local.name,
+        local_index: &local.name,
         project: &project,
         version: version.as_deref(),
         request_id: request_id(headers),
@@ -923,7 +923,7 @@ fn restore_request(
         actor,
         index: &index.name,
         repository: &index.route,
-        local_repository: &local.name,
+        local_index: &local.name,
         project: &project,
         version: version.as_deref(),
         request_id: request_id(headers),
@@ -959,7 +959,7 @@ pub async fn dispatch_delete(
             actor: actor.as_deref(),
             index: &index.name,
             repository: &index.route,
-            local_repository: &local.name,
+            local_index: &local.name,
             project: &project,
             version: version.as_deref(),
             request_id: request_id(&headers),
@@ -980,7 +980,7 @@ pub async fn dispatch_delete(
         actor: actor.as_deref(),
         index: &index.name,
         repository: &index.route,
-        local_repository: &local.name,
+        local_index: &local.name,
         project: &project,
         version: version.as_deref(),
         request_id: request_id(&headers),
@@ -1053,15 +1053,15 @@ fn security_upload_event<'a>(
     headers: &'a HeaderMap,
     actor: Option<&'a str>,
     repository: &'a str,
-    local_repository: Option<&'a str>,
+    local_index: Option<&'a str>,
     result: &'static str,
 ) -> crate::security::Event<'a> {
     let event = crate::security::Event::new("upload", result)
         .actor(actor)
-        .repository(repository)
+        .index(repository)
         .request(headers);
-    if let Some(local_repository) = local_repository {
-        event.local_repository(local_repository)
+    if let Some(local_index) = local_index {
+        event.local_index(local_index)
     } else {
         event
     }
@@ -1076,7 +1076,7 @@ fn security_token_event(
 ) {
     let event = crate::security::Event::new("token_use", result)
         .actor(actor)
-        .repository(repository)
+        .index(repository)
         .request(headers);
     if reason.is_empty() {
         event.emit();
@@ -1091,7 +1091,7 @@ struct MutationAudit<'a> {
     actor: Option<&'a str>,
     index: &'a str,
     repository: &'a str,
-    local_repository: &'a str,
+    local_index: &'a str,
     project: &'a str,
     version: Option<&'a str>,
     request_id: Option<String>,
@@ -1106,8 +1106,8 @@ fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, Cac
     };
     crate::security::Event::new(audit.action, security_result)
         .actor(audit.actor)
-        .repository(audit.repository)
-        .local_repository(audit.local_repository)
+        .index(audit.repository)
+        .local_index(audit.local_index)
         .project(Some(audit.project))
         .version(audit.version)
         .count(count)
@@ -1127,9 +1127,9 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
     };
     crate::security::Event::new("promote", security_result)
         .actor(audit.actor)
-        .repository(audit.repository)
-        .source_repository(audit.source_repository)
-        .local_repository(audit.local_repository)
+        .index(audit.repository)
+        .source_index(audit.source_index)
+        .local_index(audit.local_index)
         .project(Some(audit.project))
         .version(Some(audit.version))
         .count(count)
@@ -1158,7 +1158,7 @@ fn emit_mutation_webhook(
             created_at_unix,
             index: audit.index.to_owned(),
             route: audit.repository.to_owned(),
-            local_index: audit.local_repository.to_owned(),
+            local_index: audit.local_index.to_owned(),
             project: audit.project.to_owned(),
             version: audit.version.map(str::to_owned),
             filename: None,

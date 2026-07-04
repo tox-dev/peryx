@@ -109,7 +109,7 @@ async fn test_refresh_sweep_skips_policy_denied_project() {
         .iter()
         .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("denied"))
         .unwrap();
-    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "index"), Some("pypi"));
     assert_eq!(field(sync, "project"), Some("flask"));
     assert_eq!(field(sync, "reason"), Some("project \"flask\" is blocked"));
 }
@@ -147,7 +147,7 @@ async fn test_refresh_sweep_logs_mirror_sync_event() {
         .iter()
         .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("success"))
         .unwrap();
-    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "index"), Some("pypi"));
     assert_eq!(field(sync, "project"), Some("flask"));
     assert_eq!(sync["fields"]["changed"], true);
     assert_eq!(sync["fields"]["count"], 1);
@@ -180,7 +180,7 @@ async fn test_refresh_sweep_logs_mirror_sync_not_found() {
         .iter()
         .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("noop"))
         .unwrap();
-    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "index"), Some("pypi"));
     assert_eq!(field(sync, "project"), Some("flask"));
     assert_eq!(field(sync, "reason"), Some("project not found upstream"));
     assert_eq!(sync["fields"]["changed"], false);
@@ -217,7 +217,7 @@ async fn test_refresh_sweep_logs_mirror_sync_failure() {
         .iter()
         .find(|event| field(event, "action") == Some("mirror_sync") && field(event, "result") == Some("failure"))
         .unwrap();
-    assert_eq!(field(sync, "repository"), Some("pypi"));
+    assert_eq!(field(sync, "index"), Some("pypi"));
     assert_eq!(field(sync, "project"), Some("flask"));
     assert!(field(sync, "reason").is_some_and(|reason| reason.starts_with("simple API document could not be parsed")));
     assert_eq!(sync["fields"]["changed"], false);
