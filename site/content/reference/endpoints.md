@@ -83,20 +83,20 @@ Configured webhooks run after a write commits. Velodex enqueues one delivery per
 then sends the JSON payload from a background task. Duplicate uploads with the same bytes and mutations that affect zero
 files do not enqueue webhook deliveries.
 
-Events emitted by the write endpoints are `upload`, `yank`, `unyank`, `delete`, and `restore`. Payloads contain
-`event`, `created_at`, `index`, `route`, `local_index`, `project`, `count`, and, when present, `version`, `file`,
-`actor`, and `request_id`. Upload payloads include `file.filename` and `file.sha256`. Payloads and delivery errors
-exclude `Authorization`, upload tokens, upstream credentials, webhook secrets, URL query strings, and response bodies.
+Events emitted by the write endpoints are `upload`, `yank`, `unyank`, `delete`, and `restore`. Payloads contain `event`,
+`created_at`, `index`, `route`, `local_index`, `project`, `count`, and, when present, `version`, `file`, `actor`, and
+`request_id`. Upload payloads include `file.filename` and `file.sha256`. Payloads and delivery errors exclude
+`Authorization`, upload tokens, upstream credentials, webhook secrets, URL query strings, and response bodies.
 
 Each request carries these headers:
 
-| Header | Meaning |
-| ----------------------- | ----------------------------------------------------------------------- |
-| `X-Velodex-Event` | Event name, such as `upload` |
-| `X-Velodex-Delivery` | Delivery ID, stable across retries |
+| Header                | Meaning                               |
+| --------------------- | ------------------------------------- |
+| `X-Velodex-Event`     | Event name, such as `upload`          |
+| `X-Velodex-Delivery`  | Delivery ID, stable across retries    |
 | `X-Velodex-Timestamp` | Unix timestamp used for the signature |
-| `X-Velodex-Signature` | `sha256=<hex>` HMAC-SHA256 signature |
-| `Content-Type` | `application/json` |
+| `X-Velodex-Signature` | `sha256=<hex>` HMAC-SHA256 signature  |
+| `Content-Type`        | `application/json`                    |
 
 The signature input is `{timestamp}.{delivery}.{body}`, where `body` is the exact request body bytes. Consumers should
 compare the HMAC with the configured target secret and reject timestamps outside their replay window.

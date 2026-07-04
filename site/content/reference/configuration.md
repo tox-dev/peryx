@@ -9,15 +9,15 @@ the file. Precedence is `defaults < TOML file < flags`.
 
 ## Top level
 
-| Setting | Flag | TOML key | Default |
+| Setting                   | Flag              | TOML key         | Default        |
 | ------------------------- | ----------------- | ---------------- | -------------- |
-| Bind host | `--host` | `host` | `127.0.0.1` |
-| Bind port | `--port` | `port` | `4433` |
-| Data directory | `--data-dir` | `data_dir` | `velodex-data` |
-| Config file | `--config` / `-c` | (n/a) | (none) |
-| Cache freshness (seconds) | (file only) | `cache_ttl_secs` | `300` |
-| Indexes | (file only) | `[[index]]` | (see below) |
-| Rate limits | (file only) | `[rate_limit]` | (see below) |
+| Bind host                 | `--host`          | `host`           | `127.0.0.1`    |
+| Bind port                 | `--port`          | `port`           | `4433`         |
+| Data directory            | `--data-dir`      | `data_dir`       | `velodex-data` |
+| Config file               | `--config` / `-c` | (n/a)            | (none)         |
+| Cache freshness (seconds) | (file only)       | `cache_ttl_secs` | `300`          |
+| Indexes                   | (file only)       | `[[index]]`      | (see below)    |
+| Rate limits               | (file only)       | `[rate_limit]`   | (see below)    |
 
 `cache_ttl_secs` is a fallback: when an upstream response carries a usable `Cache-Control` lifetime (`s-maxage` or
 `max-age`), that lifetime governs the page instead. The fallback applies when the header is absent,
@@ -29,21 +29,21 @@ is a new entry on the page rather than a mutation.
 Each `[[index]]` table declares one index. `name` is required; exactly one of `mirror`, `local`, or `layers` selects the
 kind. velodex rejects unknown keys.
 
-| Key | Applies to | Meaning | Default |
+| Key                    | Applies to | Meaning                                                           | Default           |
 | ---------------------- | ---------- | ----------------------------------------------------------------- | ----------------- |
-| `name` | all | Identifier other indexes reference in `layers` | (required) |
-| `route` | all | URL prefix the index is served under | same as `name` |
-| `mirror` | mirror | Upstream simple-index URL | |
-| `username` | mirror | Basic-auth username for the upstream | (none) |
-| `password` | mirror | Basic-auth password for the upstream | (none) |
-| `token` | mirror | Bearer token; takes precedence over username/password | (none) |
-| `upstream_concurrency` | mirror | Concurrent upstream fetches for this mirror; `0` disables the cap | `8` |
-| `local` | local | `true` marks a hosted store (implied by `upload_token`) | `false` |
-| `upload_token` | local | Basic-auth password uploads must present; unset disables uploads | (none) |
-| `volatile` | local | Allow delete and overwrite | `true` |
-| `layers` | overlay | Ordered index names to compose; first match per filename wins | |
-| `upload` | overlay | Local layer that receives uploads | first local layer |
-| `webhook` | all | Signed delivery targets for upload and index-change events | none |
+| `name`                 | all        | Identifier other indexes reference in `layers`                    | (required)        |
+| `route`                | all        | URL prefix the index is served under                              | same as `name`    |
+| `mirror`               | mirror     | Upstream simple-index URL                                         |                   |
+| `username`             | mirror     | Basic-auth username for the upstream                              | (none)            |
+| `password`             | mirror     | Basic-auth password for the upstream                              | (none)            |
+| `token`                | mirror     | Bearer token; takes precedence over username/password             | (none)            |
+| `upstream_concurrency` | mirror     | Concurrent upstream fetches for this mirror; `0` disables the cap | `8`               |
+| `local`                | local      | `true` marks a hosted store (implied by `upload_token`)           | `false`           |
+| `upload_token`         | local      | Basic-auth password uploads must present; unset disables uploads  | (none)            |
+| `volatile`             | local      | Allow delete and overwrite                                        | `true`            |
+| `layers`               | overlay    | Ordered index names to compose; first match per filename wins     |                   |
+| `upload`               | overlay    | Local layer that receives uploads                                 | first local layer |
+| `webhook`              | all        | Signed delivery targets for upload and index-change events        | none              |
 
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
@@ -80,20 +80,20 @@ For authenticated requests, velodex hashes the `Authorization` header and uses t
 store the credential value. Other requests use the peer IP address. In in-process tests and deployments without socket
 peer metadata, velodex falls back to `X-Forwarded-For`, then `X-Real-IP`, then `127.0.0.1`.
 
-| Key | Meaning | Default |
+| Key           | Meaning                                     | Default |
 | ------------- | ------------------------------------------- | ------- |
-| `enabled` | Install the HTTP request limiter | `false` |
-| `max_clients` | Maximum client/class buckets kept in memory | `8192` |
+| `enabled`     | Install the HTTP request limiter            | `false` |
+| `max_clients` | Maximum client/class buckets kept in memory | `8192`  |
 
 Each route class is a sub-table with `requests` and `window_secs`:
 
-| Table | Route class | Default |
+| Table                   | Route class                                     | Default        |
 | ----------------------- | ----------------------------------------------- | -------------- |
-| `[rate_limit.simple]` | Simple project list and project detail pages | `600` / `60s` |
-| `[rate_limit.metadata]` | PEP 658/714 `.metadata` siblings | `1200` / `60s` |
-| `[rate_limit.artifact]` | Artifact downloads and archive inspection | `300` / `60s` |
-| `[rate_limit.upload]` | Upload, yank, restore, and delete requests | `60` / `60s` |
-| `[rate_limit.admin]` | Status, stats, metrics, and discovery endpoints | `120` / `60s` |
+| `[rate_limit.simple]`   | Simple project list and project detail pages    | `600` / `60s`  |
+| `[rate_limit.metadata]` | PEP 658/714 `.metadata` siblings                | `1200` / `60s` |
+| `[rate_limit.artifact]` | Artifact downloads and archive inspection       | `300` / `60s`  |
+| `[rate_limit.upload]`   | Upload, yank, restore, and delete requests      | `60` / `60s`   |
+| `[rate_limit.admin]`    | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
 
 Example:
 
@@ -130,13 +130,13 @@ secret_env = "VELODEX_WEBHOOK_SECRET"
 events = ["upload", "delete", "restore"]
 ```
 
-| Key | Meaning | Default |
-| ------------ | ----------------------------------------------------------------------- | ------- |
-| `name` | Stable target name used in delivery logs | |
-| `url` | HTTP or HTTPS endpoint that receives JSON payloads; credentials, query, and fragment are rejected | |
-| `secret` | Literal HMAC signing secret | |
-| `secret_env` | Environment variable that contains the HMAC signing secret | |
-| `events` | Event names to send; omit or leave empty for all supported event names | all |
+| Key          | Meaning                                                                                           | Default |
+| ------------ | ------------------------------------------------------------------------------------------------- | ------- |
+| `name`       | Stable target name used in delivery logs                                                          |         |
+| `url`        | HTTP or HTTPS endpoint that receives JSON payloads; credentials, query, and fragment are rejected |         |
+| `secret`     | Literal HMAC signing secret                                                                       |         |
+| `secret_env` | Environment variable that contains the HMAC signing secret                                        |         |
+| `events`     | Event names to send; omit or leave empty for all supported event names                            | all     |
 
 Use one of `secret` or `secret_env`. Supported event names are `upload`, `yank`, `unyank`, `delete`, `restore`,
 `promote`, `project-status`, and `management`. Velodex emits `upload`, `yank`, `unyank`, `delete`, and `restore` from
@@ -148,11 +148,11 @@ target name, attempt count, next retry time, response status, and last error. It
 
 ## `[log]`
 
-| Key | Values | Default |
+| Key      | Values                                                                                                                                                      | Default  |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `level` | a [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `error` ... `trace`, per-module filters | `info` |
-| `format` | `pretty`, `json` | `pretty` |
-| `sink` | `stdout`, `file`, `journald`, `syslog` | `stdout` |
-| `file` | path, required when `sink = "file"` | (none) |
+| `level`  | a [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `error` ... `trace`, per-module filters | `info`   |
+| `format` | `pretty`, `json`                                                                                                                                            | `pretty` |
+| `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                                                                      | `stdout` |
+| `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
 
 The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these.
