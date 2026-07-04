@@ -22,7 +22,7 @@ pub struct Config {
     /// Fallback freshness for cached simple pages, in seconds. Upstream `Cache-Control` lifetimes
     /// take precedence; this applies only when the server granted none.
     pub cache_ttl_secs: i64,
-    /// The configured indexes: mirrors, local (hosted) stores, and overlays that compose them.
+    /// The configured indexes: caches, hosted stores, and virtual indexes that compose them.
     pub indexes: Vec<IndexConfig>,
     pub log: LogConfig,
     pub rate_limit: RateLimitConfig,
@@ -46,16 +46,16 @@ pub struct IndexConfig {
 /// index that aggregates other indexes under one route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexKind {
-    /// Proxy and cache an upstream simple index.
-    Proxy {
+    /// Cache an upstream simple index, fetching on demand.
+    Cached {
         upstream: String,
         username: Option<String>,
         password: Option<String>,
         /// Bearer token; takes precedence over username/password.
         token: Option<String>,
-        /// Concurrent upstream fetches allowed for this proxy in this process; `0` disables the cap.
+        /// Concurrent upstream fetches allowed for this cached index in this process; `0` disables the cap.
         upstream_concurrency: usize,
-        /// Serve only cached data for this proxy.
+        /// Serve only cached data for this index.
         offline: bool,
         /// Optional package set and artifact filters for `velodex mirror`.
         prefetch: Box<MirrorPrefetchConfig>,
@@ -190,7 +190,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
                 password: None,
@@ -272,8 +272,8 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             layers,
             upload: raw.upload,
         }
-    } else if let Some(upstream) = raw.proxy {
-        IndexKind::Proxy {
+    } else if let Some(upstream) = raw.cached {
+        IndexKind::Cached {
             upstream,
             username: raw.username,
             password: raw.password,
@@ -290,7 +290,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
     } else {
         return Err(ConfigError::Index {
             name: raw.name,
-            reason: "index needs one of `proxy`, `hosted`, or `layers`",
+            reason: "index needs one of `cached`, `hosted`, or `layers`",
         });
     };
     Ok(IndexConfig {
@@ -415,7 +415,7 @@ pub struct PartialConfig {
     pub rate_limit: PartialRateLimitConfig,
 }
 
-/// A raw `[[index]]` table before classification. Exactly one of `proxy`, `hosted`, or `layers`
+/// A raw `[[index]]` table before classification. Exactly one of `cached`, `hosted`, or `layers`
 /// selects the kind; [`classify_index`] enforces that.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -425,7 +425,7 @@ pub struct RawIndex {
     pub ecosystem: Option<String>,
     #[serde(default)]
     pub policy: PolicyConfig,
-    pub proxy: Option<String>,
+    pub cached: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,

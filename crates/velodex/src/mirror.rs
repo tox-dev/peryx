@@ -21,7 +21,7 @@ use crate::cli::{MirrorCommand, MirrorOptions};
 use crate::config::{Config, IndexKind as ConfigIndexKind, MirrorPrefetchConfig, MirrorPrefetchMode};
 use crate::server;
 
-const HEADER: &str = "kind\trepository\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n";
+const HEADER: &str = "kind\tindex\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n";
 
 type Output = dyn Write + Send;
 
@@ -40,7 +40,7 @@ pub async fn run(config: &Config, command: &MirrorCommand, out: &mut Output) -> 
 
 async fn plan(config: &Config, options: &MirrorOptions, out: &mut Output) -> anyhow::Result<()> {
     let state = server::build_state(config)?;
-    let target = target(config, &state, &options.repo)?;
+    let target = target(config, &state, &options.index)?;
     let selection = selection(&state, &target, options, SelectionSource::Upstream).await?;
     out.write_all(HEADER.as_bytes())?;
     let mut projects = 0_u64;
@@ -101,7 +101,7 @@ async fn plan(config: &Config, options: &MirrorOptions, out: &mut Output) -> any
 async fn sync(config: &Config, options: &MirrorOptions, out: &mut Output) -> anyhow::Result<()> {
     let started_at = unix_now();
     let state = server::build_state(config)?;
-    let target = target(config, &state, &options.repo)?;
+    let target = target(config, &state, &options.index)?;
     let selection = selection(&state, &target, options, SelectionSource::Upstream).await?;
     out.write_all(HEADER.as_bytes())?;
     let mut summary = SyncSummary::default();
@@ -138,7 +138,7 @@ async fn sync(config: &Config, options: &MirrorOptions, out: &mut Output) -> any
 
 async fn verify(config: &Config, options: &MirrorOptions, out: &mut Output) -> anyhow::Result<()> {
     let state = server::build_state(config)?;
-    let target = target(config, &state, &options.repo)?;
+    let target = target(config, &state, &options.index)?;
     let selection = selection(&state, &target, options, SelectionSource::Cache).await?;
     out.write_all(HEADER.as_bytes())?;
     let mut problems = 0_u64;
@@ -688,7 +688,7 @@ fn target(config: &Config, state: &Arc<AppState>, repo: &str) -> anyhow::Result<
         .indexes
         .iter()
         .position(|index| index.name == repo || index.route == repo)
-        .context(format!("unknown mirror repository {repo:?}"))?;
+        .context(format!("unknown cached index {repo:?}"))?;
     let index = state.index_at(position);
     let (mirror, client, offline) = target_mirror(state, index)?;
     let prefetch = mirror_prefetch(config, &mirror)?.clone();
@@ -705,19 +705,19 @@ fn target(config: &Config, state: &Arc<AppState>, repo: &str) -> anyhow::Result<
 
 fn target_mirror(state: &AppState, index: &Index) -> anyhow::Result<(String, UpstreamClient, bool)> {
     match &index.kind {
-        IndexKind::Proxy { client, offline } => Ok((index.name.clone(), client.clone(), *offline)),
-        IndexKind::Hosted { .. } => bail!("repository {:?} is local and has no upstream mirror", index.name),
+        IndexKind::Cached { client, offline } => Ok((index.name.clone(), client.clone(), *offline)),
+        IndexKind::Hosted { .. } => bail!("index {:?} is hosted and has no upstream", index.name),
         IndexKind::Virtual { layers, .. } => {
             let mut mirror = None;
             for &pos in layers {
                 let layer = state.index_at(pos);
-                if let IndexKind::Proxy { client, offline } = &layer.kind
+                if let IndexKind::Cached { client, offline } = &layer.kind
                     && mirror.replace((layer.name.clone(), client.clone(), *offline)).is_some()
                 {
-                    bail!("repository {:?} has more than one mirror layer", index.name);
+                    bail!("index {:?} has more than one cached member", index.name);
                 }
             }
-            mirror.context(format!("repository {:?} has no mirror layer", index.name))
+            mirror.context(format!("index {:?} has no cached member", index.name))
         }
     }
 }
@@ -727,7 +727,7 @@ fn mirror_prefetch<'a>(config: &'a Config, mirror: &str) -> anyhow::Result<&'a M
         .indexes
         .iter()
         .find_map(|index| match (index.name == mirror, &index.kind) {
-            (true, ConfigIndexKind::Proxy { prefetch, .. }) => Some(prefetch.as_ref()),
+            (true, ConfigIndexKind::Cached { prefetch, .. }) => Some(prefetch.as_ref()),
             _ => None,
         })
         .context(format!("mirror config {mirror:?} not found"))

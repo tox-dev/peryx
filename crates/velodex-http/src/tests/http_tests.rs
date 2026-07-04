@@ -59,7 +59,7 @@ pub(super) async fn harness_with_policies(
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },
@@ -118,7 +118,7 @@ async fn promotion_harness() -> Harness {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },
@@ -618,7 +618,7 @@ async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },
@@ -1093,7 +1093,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             client: upstream,
             offline: false,
         },
@@ -1133,7 +1133,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             client: upstream,
             offline: false,
         },
@@ -1161,7 +1161,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             client: upstream,
             offline: true,
         },
@@ -1207,7 +1207,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             client: upstream,
             offline: true,
         },
@@ -1292,7 +1292,7 @@ async fn test_file_download_status_store_error_is_server_error() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             client: upstream,
             offline: false,
         },
@@ -2165,7 +2165,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },
@@ -3108,7 +3108,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             name: "private".to_owned(),
             route: "private".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: UpstreamClient::with_auth(
                     "https://user:pass@example.invalid/simple/?token=url-secret#frag",
                     Auth::Bearer("bearer-secret".to_owned()),
@@ -3367,7 +3367,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },
@@ -4627,7 +4627,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },

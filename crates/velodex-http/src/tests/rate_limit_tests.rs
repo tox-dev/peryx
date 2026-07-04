@@ -43,7 +43,7 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },
@@ -345,7 +345,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
             },

@@ -293,7 +293,7 @@ fn test_parse_import_dir() {
         panic!("expected import-dir");
     };
     assert_eq!(args.runtime.data_dir, Some(PathBuf::from("/d")));
-    assert_eq!(args.repo, "root/pypi");
+    assert_eq!(args.index, "root/pypi");
     assert_eq!(args.dir, PathBuf::from("/packages"));
 }
 
@@ -360,7 +360,7 @@ fn test_parse_mirror_plan_options() {
     };
     assert_eq!(args.options.runtime.data_dir, Some(PathBuf::from("/d")));
     assert!(args.options.runtime.offline);
-    assert_eq!(args.options.repo, "root/pypi");
+    assert_eq!(args.options.index, "root/pypi");
     assert_eq!(args.options.packages, vec!["Requests>=2,<3".to_owned()]);
     assert_eq!(args.options.requirements, vec![PathBuf::from("requirements.txt")]);
     assert_eq!(args.options.mode, Some(MirrorPrefetchMode::MetadataOnly));

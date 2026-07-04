@@ -108,7 +108,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; font-weight: 600;
   border: 1px solid var(--border); color: var(--text-soft);
 }
-.badge.kind-proxy { color: #2f81f7; border-color: #2f81f7; }
+.badge.kind-cached { color: #2f81f7; border-color: #2f81f7; }
 .badge.ecosystem-pypi { color: #3775a9; border-color: #3775a9; }
 .badge.kind-hosted { color: #34c496; border-color: #34c496; }
 .badge.kind-virtual { color: var(--accent); border-color: var(--accent); }

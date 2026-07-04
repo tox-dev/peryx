@@ -558,7 +558,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             policy: velodex_policy::PolicyConfig::default(),
             webhooks: Vec::new(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
                 password: None,
@@ -605,13 +605,13 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
         operator::import_dir(&overlay_config, "overlay", &import, &mut Vec::new())
             .unwrap_err()
             .to_string()
-            .contains("no local upload target")
+            .contains("no hosted upload target")
     );
     assert!(
         operator::import_dir(&overlay_config, "missing", &import, &mut Vec::new())
             .unwrap_err()
             .to_string()
-            .contains("unknown repository")
+            .contains("unknown index")
     );
 }
 

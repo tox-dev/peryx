@@ -20,7 +20,7 @@ use crate::webhook::WebhookRuntime;
 /// tests.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
-/// One resolved index. `layers`/`upload` in an overlay are indices into [`AppState::indexes`], so
+/// One resolved index. `layers`/`upload` in a virtual index are indices into [`AppState::indexes`], so
 /// resolution is a plain vector walk with no name lookups at request time.
 #[derive(Debug)]
 pub struct Index {
@@ -31,11 +31,11 @@ pub struct Index {
     pub policy: Policy,
 }
 
-/// The runtime shape of an index by role: a proxy owns its upstream client, a hosted store its
+/// The runtime shape of an index by role: a cached index owns its upstream client, a hosted store its
 /// upload policy, a virtual index the resolved positions of its members and upload target.
 #[derive(Debug)]
 pub enum IndexKind {
-    Proxy {
+    Cached {
         client: UpstreamClient,
         offline: bool,
     },
@@ -301,7 +301,7 @@ impl AppState {
         let upstream_limits = indexes
             .iter()
             .filter_map(|index| match &index.kind {
-                IndexKind::Proxy { .. } => Some((
+                IndexKind::Cached { .. } => Some((
                     index.name.clone(),
                     configured
                         .get(&index.name)
@@ -426,7 +426,7 @@ pub fn describe_indexes(indexes: &[Index]) -> Vec<IndexDescription> {
 pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
     let index = &indexes[position];
     let (kind, layers, uploads, volatile_deletes, upload_to) = match &index.kind {
-        IndexKind::Proxy { .. } => ("proxy", Vec::new(), false, false, None),
+        IndexKind::Cached { .. } => ("cached", Vec::new(), false, false, None),
         IndexKind::Hosted { upload_token, volatile } => (
             "hosted",
             Vec::new(),
@@ -459,7 +459,7 @@ pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescrip
         }
     };
     let (upstream, local) = match &index.kind {
-        IndexKind::Proxy { client, offline } => (
+        IndexKind::Cached { client, offline } => (
             Some(UpstreamDescription {
                 url: client.redacted_base_url(),
                 auth: client.auth_status().as_str(),

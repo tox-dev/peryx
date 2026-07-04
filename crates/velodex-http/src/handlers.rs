@@ -1009,7 +1009,7 @@ fn upload_target<'a>(state: &'a AppState, index: &'a Index) -> Option<&'a Index>
     match &index.kind {
         IndexKind::Hosted { .. } => Some(index),
         IndexKind::Virtual { upload: Some(pos), .. } => Some(state.index_at(*pos)),
-        IndexKind::Proxy { .. } | IndexKind::Virtual { upload: None, .. } => None,
+        IndexKind::Cached { .. } | IndexKind::Virtual { upload: None, .. } => None,
     }
 }
 

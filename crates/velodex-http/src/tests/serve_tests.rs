@@ -403,7 +403,7 @@ async fn test_file_path_offline_mirror_miss_is_unavailable() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: true },
+            kind: IndexKind::Cached { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -441,7 +441,7 @@ async fn test_refresh_stale_pages_skips_offline_mirrors() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: true },
+            kind: IndexKind::Cached { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -475,7 +475,7 @@ async fn test_offline_metadata_fetches_are_unavailable() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: true },
+            kind: IndexKind::Cached { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -506,7 +506,7 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: true },
+            kind: IndexKind::Cached { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -535,7 +535,7 @@ async fn test_stream_detail_offline_cold_miss_falls_back() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: true },
+            kind: IndexKind::Cached { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -554,7 +554,7 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
-                kind: IndexKind::Proxy { client, offline: true },
+                kind: IndexKind::Cached { client, offline: true },
                 policy: velodex_policy::Policy::default(),
             },
             Index {
@@ -584,7 +584,7 @@ async fn test_offline_mirror_resolves_cached_page() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: true },
+            kind: IndexKind::Cached { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -640,7 +640,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
                 name: "a".to_owned(),
                 route: "a".to_owned(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
-                kind: IndexKind::Proxy {
+                kind: IndexKind::Cached {
                     client: client.clone(),
                     offline: false,
                 },
@@ -650,7 +650,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
                 name: "b".to_owned(),
                 route: "b".to_owned(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
-                kind: IndexKind::Proxy { client, offline: false },
+                kind: IndexKind::Cached { client, offline: false },
                 policy: velodex_policy::Policy::default(),
             },
             Index {
@@ -685,7 +685,7 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
                 name: "a".to_owned(),
                 route: "a".to_owned(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
-                kind: IndexKind::Proxy { client, offline: false },
+                kind: IndexKind::Cached { client, offline: false },
                 policy: velodex_policy::Policy::default(),
             },
             Index {
@@ -834,7 +834,7 @@ async fn test_json_meta_preflight_streams_without_remainder() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: false },
+            kind: IndexKind::Cached { client, offline: false },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -1091,7 +1091,7 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy { client, offline: false },
+            kind: IndexKind::Cached { client, offline: false },
             policy: velodex_policy::Policy::default(),
         }]
     });

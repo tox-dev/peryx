@@ -66,7 +66,7 @@ impl FromStr for Ecosystem {
 
 /// The behavior every ecosystem must provide so the serving layer stays format-agnostic.
 ///
-/// The role model (hosted/proxy/virtual), storage, the journal, aggregation, and the request router
+/// The role model (hosted/cached/virtual), storage, the journal, aggregation, and the request router
 /// are ecosystem-neutral; everything format-specific — index render/parse, artifact identity, the
 /// metadata sidecar, the upstream wire protocol, and client setup snippets — lives behind this trait.
 /// Its methods are filled in as the serving layer is converted to dispatch through it (the `PyPI`

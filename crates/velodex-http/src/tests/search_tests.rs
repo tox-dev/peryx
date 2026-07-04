@@ -623,7 +623,7 @@ fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 client: UpstreamClient::new("https://example.test/simple/").unwrap(),
                 offline: false,
             },

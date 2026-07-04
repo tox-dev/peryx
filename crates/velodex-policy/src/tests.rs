@@ -166,7 +166,7 @@ fn test_check_file_denies_wheel_platform_block_list() {
 
 #[test]
 fn test_policy_action_display_formats_mirror() {
-    assert_eq!(PolicyAction::Proxy.to_string(), "proxy");
+    assert_eq!(PolicyAction::Cached.to_string(), "cached");
 }
 
 #[test]

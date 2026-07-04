@@ -51,9 +51,9 @@ pub enum Command {
     Backup(BackupCommand),
     /// Restore an offline backup into a data directory.
     Restore(RestoreArgs),
-    /// Import local wheels and sdists into a hosted repository.
+    /// Import local wheels and sdists into a hosted index.
     ImportDir(ImportDirArgs),
-    /// Preview repository policy decisions against cached records.
+    /// Preview index policy decisions against cached records.
     #[command(subcommand)]
     Policy(PolicyCommand),
     /// Plan, sync, and verify a configured mirror set.
@@ -96,7 +96,7 @@ pub struct MirrorOptions {
     pub runtime: RuntimeArgs,
 
     /// Configured index name or route to sync.
-    pub repo: String,
+    pub index: String,
 
     /// Add a package selector such as `requests>=2,<3`.
     #[arg(long = "package", short = 'p')]
@@ -288,8 +288,8 @@ pub struct ImportDirArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 
-    /// Hosted repository name or route.
-    pub repo: String,
+    /// Hosted index name or route.
+    pub index: String,
 
     /// Directory containing wheel or sdist files.
     pub dir: PathBuf,

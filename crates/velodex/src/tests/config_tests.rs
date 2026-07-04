@@ -26,7 +26,7 @@ fn test_default_config() {
     // A pypi mirror with a local store overlaid in front, served at root/pypi.
     let routes: Vec<&str> = c.indexes.iter().map(|index| index.route.as_str()).collect();
     assert_eq!(routes, ["pypi", "local", "root/pypi"]);
-    assert!(matches!(&c.indexes[0].kind, IndexKind::Proxy { .. }));
+    assert!(matches!(&c.indexes[0].kind, IndexKind::Cached { .. }));
     assert!(matches!(&c.indexes[1].kind, IndexKind::Hosted { .. }));
     assert!(matches!(&c.indexes[2].kind, IndexKind::Virtual { upload: Some(target), .. } if target == "local"));
 }
@@ -84,7 +84,7 @@ fn test_mirror_prefetch_from_toml() {
 offline = true
 [[index]]
 name = \"pypi\"
-proxy = \"https://pypi.org/simple/\"
+cached = \"https://pypi.org/simple/\"
 offline = true
 
 [index.prefetch]
@@ -100,7 +100,7 @@ max_file_size_bytes = 1048576
 ",
     );
     assert!(c.offline);
-    let IndexKind::Proxy { offline, prefetch, .. } = &c.indexes[0].kind else {
+    let IndexKind::Cached { offline, prefetch, .. } = &c.indexes[0].kind else {
         panic!("expected mirror");
     };
     assert!(*offline);
@@ -119,8 +119,8 @@ max_file_size_bytes = 1048576
 #[test]
 fn test_indexes_from_toml_classify_all_kinds() {
     let text = "\
-[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\ntoken = \"bear\"\nupstream_concurrency = 3\n\
-[[index]]\nname = \"corp\"\nproxy = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
+[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\ntoken = \"bear\"\nupstream_concurrency = 3\n\
+[[index]]\nname = \"corp\"\ncached = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
 [[index]]\nname = \"team-local\"\nhosted = true\nupload_token = \"s\"\nvolatile = false\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret_env = \"VELODEX_WEBHOOK_SECRET\"\nevents = [\"upload\", \"delete\"]\n\
 [[index]]\nname = \"secret\"\nupload_token = \"z\"\n\
@@ -129,11 +129,11 @@ fn test_indexes_from_toml_classify_all_kinds() {
     assert_eq!(c.indexes.len(), 5);
     assert_eq!(c.indexes[0].route, "pypi"); // route defaults to name
     assert!(
-        matches!(&c.indexes[0].kind, IndexKind::Proxy { token: Some(token), upstream_concurrency: 3, .. } if token == "bear")
+        matches!(&c.indexes[0].kind, IndexKind::Cached { token: Some(token), upstream_concurrency: 3, .. } if token == "bear")
     );
     assert!(matches!(
         &c.indexes[1].kind,
-        IndexKind::Proxy {
+        IndexKind::Cached {
             username: Some(_),
             password: Some(_),
             token: None,
@@ -179,10 +179,10 @@ fn test_rate_limits_from_toml_overlay_defaults() {
 
 #[test]
 fn test_mirror_upstream_concurrency_defaults() {
-    let c = toml_config("[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\n");
+    let c = toml_config("[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n");
     assert!(matches!(
         &c.indexes[0].kind,
-        IndexKind::Proxy {
+        IndexKind::Cached {
             upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
             ..
         }
@@ -192,7 +192,7 @@ fn test_mirror_upstream_concurrency_defaults() {
 #[test]
 fn test_index_policy_from_toml() {
     let text = "\
-[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\n\
+[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n\
 [index.policy]\nallow_projects = [\"Flask\"]\nblock_projects = [\"bad-pkg\"]\nallow_versions = \">=1,<2\"\n\
 allow_package_types = [\"wheel\"]\nblock_package_types = [\"sdist\"]\n\
 allow_wheel_pythons = [\"py3\"]\nblock_wheel_pythons = [\"py2\"]\n\
@@ -277,7 +277,7 @@ fn test_from_toml_rejects_unknown_index_key() {
 fn test_from_toml_rejects_unknown_policy_key() {
     let err = config::from_toml(
         PathBuf::from("x.toml"),
-        "[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\n[index.policy]\nbogus = 1\n",
+        "[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n[index.policy]\nbogus = 1\n",
     )
     .unwrap_err();
     assert!(err.to_string().contains("bogus"));

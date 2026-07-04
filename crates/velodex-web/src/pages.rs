@@ -211,7 +211,7 @@ fn TopologyCell(index: UiIndex, all: Vec<UiIndex>) -> impl IntoView {
 
 #[component]
 fn UploadCell(index: UiIndex) -> impl IntoView {
-    if index.kind == "proxy" {
+    if index.kind == "cached" {
         return view! { <span class="dim">"none"</span> }.into_any();
     }
     let label = if index.uploads { "enabled" } else { "disabled" };

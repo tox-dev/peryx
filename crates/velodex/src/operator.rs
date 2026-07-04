@@ -270,7 +270,7 @@ struct SnapshotIndex {
     name: String,
     route: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    proxy: Option<String>,
+    cached: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -554,7 +554,7 @@ fn import_target(config: &Config, repo: &str) -> anyhow::Result<ImportTarget> {
         .iter()
         .position(|index| index.name == repo)
         .or_else(|| indexes.iter().position(|index| index.route == repo))
-        .context(format!("unknown repository {repo:?}"))?;
+        .context(format!("unknown index {repo:?}"))?;
     let index = &indexes[position];
     match &index.kind {
         velodex_http::IndexKind::Hosted { .. } => Ok(ImportTarget {
@@ -571,9 +571,9 @@ fn import_target(config: &Config, repo: &str) -> anyhow::Result<ImportTarget> {
             })
         }
         velodex_http::IndexKind::Virtual { upload: None, .. } => {
-            bail!("repository {repo:?} has no local upload target")
+            bail!("index {repo:?} has no hosted upload target")
         }
-        velodex_http::IndexKind::Proxy { .. } => bail!("repository {repo:?} is read-only"),
+        velodex_http::IndexKind::Cached { .. } => bail!("index {repo:?} is read-only"),
     }
 }
 
@@ -797,7 +797,7 @@ fn config_snapshot(config: &Config) -> anyhow::Result<String> {
 
 fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
     match &index.kind {
-        IndexKind::Proxy {
+        IndexKind::Cached {
             upstream,
             username,
             password,
@@ -807,7 +807,7 @@ fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
         } => SnapshotIndex {
             name: index.name.clone(),
             route: index.route.clone(),
-            proxy: Some(upstream.clone()),
+            cached: Some(upstream.clone()),
             username: username.clone(),
             password: password.clone(),
             token: token.clone(),
@@ -821,7 +821,7 @@ fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
         IndexKind::Hosted { upload_token, volatile } => SnapshotIndex {
             name: index.name.clone(),
             route: index.route.clone(),
-            proxy: None,
+            cached: None,
             username: None,
             password: None,
             token: None,
@@ -835,7 +835,7 @@ fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
         IndexKind::Virtual { layers, upload } => SnapshotIndex {
             name: index.name.clone(),
             route: index.route.clone(),
-            proxy: None,
+            cached: None,
             username: None,
             password: None,
             token: None,

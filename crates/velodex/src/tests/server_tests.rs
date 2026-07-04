@@ -15,7 +15,7 @@ fn mirror(name: &str, upstream: &str) -> IndexConfig {
         policy: velodex_policy::PolicyConfig::default(),
         webhooks: Vec::new(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             upstream: upstream.to_owned(),
             username: None,
             password: None,
@@ -90,7 +90,7 @@ fn test_build_state_opens_configured_data_dir() {
 fn test_build_state_applies_upstream_concurrency() {
     let dir = tempfile::tempdir().unwrap();
     let mut pypi = mirror("pypi", "https://pypi.org/simple/");
-    let IndexKind::Proxy {
+    let IndexKind::Cached {
         upstream_concurrency, ..
     } = &mut pypi.kind
     else {

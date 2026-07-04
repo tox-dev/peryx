@@ -99,7 +99,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     runtime.block_on(async {
         let state = velodex::server::build_state(config)?;
         for index in &state.indexes {
-            if let velodex_http::IndexKind::Proxy { client, offline: false } = &index.kind {
+            if let velodex_http::IndexKind::Cached { client, offline: false } = &index.kind {
                 let client = client.clone();
                 tokio::spawn(async move { client.warm().await });
             }
@@ -185,7 +185,7 @@ fn main() -> anyhow::Result<()> {
         }
         velodex::cli::Command::ImportDir(args) => {
             let config = resolve_config(&args.runtime)?;
-            operator::import_dir(&config, &args.repo, &args.dir, &mut std::io::stdout())
+            operator::import_dir(&config, &args.index, &args.dir, &mut std::io::stdout())
         }
         velodex::cli::Command::Policy(command) => {
             let config = resolve_config(command.runtime_args())?;

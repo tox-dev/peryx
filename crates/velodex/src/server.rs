@@ -130,7 +130,7 @@ fn build_kind(
     global_offline: bool,
 ) -> anyhow::Result<IndexKind> {
     match &index.kind {
-        ConfigKind::Proxy {
+        ConfigKind::Cached {
             upstream,
             username,
             password,
@@ -139,7 +139,7 @@ fn build_kind(
             ..
         } => {
             let auth = mirror_auth(token.as_deref(), username.as_deref(), password.as_deref());
-            Ok(IndexKind::Proxy {
+            Ok(IndexKind::Cached {
                 client: UpstreamClient::with_auth(upstream, auth).with_context(|| {
                     format!(
                         "build mirror index {} with upstream {}",
@@ -172,7 +172,7 @@ fn upstream_concurrency(configs: &[IndexConfig]) -> Vec<(String, usize)> {
     configs
         .iter()
         .filter_map(|index| match &index.kind {
-            ConfigKind::Proxy {
+            ConfigKind::Cached {
                 upstream_concurrency, ..
             } => Some((index.name.clone(), *upstream_concurrency)),
             ConfigKind::Hosted { .. } | ConfigKind::Virtual { .. } => None,

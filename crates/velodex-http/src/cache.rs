@@ -136,7 +136,7 @@ pub async fn resolve_detail(
 ) -> Result<Option<ProjectDetail>, CacheError> {
     index.policy.check_project(PolicyAction::Serve, project)?;
     let detail = match &index.kind {
-        IndexKind::Proxy { client, offline } => {
+        IndexKind::Cached { client, offline } => {
             let Some(mut detail) = mirror_detail(state, &index.name, &index.route, client, *offline, project).await?
             else {
                 return Ok(None);
@@ -342,7 +342,7 @@ async fn fetch_and_store(
     project: &str,
     client: &UpstreamClient,
 ) -> Result<Option<CachedIndex>, CacheError> {
-    mirror_policy(state, name).check_project(PolicyAction::Proxy, project)?;
+    mirror_policy(state, name).check_project(PolicyAction::Cached, project)?;
     let now = (state.clock)();
     let cached = state.meta.get_index(key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
@@ -491,7 +491,7 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
         if offline {
             continue;
         }
-        if let Err(denial) = index.policy.check_project(PolicyAction::Proxy, &project) {
+        if let Err(denial) = index.policy.check_project(PolicyAction::Cached, &project) {
             log_mirror_sync(&index.route, &project, "denied", false, Some(&denial.reason));
             continue;
         }
@@ -540,7 +540,7 @@ fn mirror_for_key<'a>(state: &'a AppState, key: &str) -> Option<(&'a Index, &'a 
         .indexes
         .iter()
         .filter_map(|index| match &index.kind {
-            IndexKind::Proxy { client, offline } => {
+            IndexKind::Cached { client, offline } => {
                 let project = key.strip_prefix(&index.name)?.strip_prefix('/')?;
                 Some((index, client, *offline, project.to_owned()))
             }
@@ -636,7 +636,7 @@ pub(crate) fn persist_page(
     let mut metadata = Vec::new();
     let policy = mirror_policy(state, name);
     for file in &parsed.files {
-        if policy.check_file(PolicyAction::Proxy, project, file).is_err() {
+        if policy.check_file(PolicyAction::Cached, project, file).is_err() {
             continue;
         }
         let Some(sha256) = file.hashes.get("sha256") else {
@@ -779,7 +779,7 @@ pub fn resolve_list(state: &AppState, index: &Index) -> Result<ProjectList, Cach
 
 fn collect_projects(state: &AppState, index: &Index, names: &mut BTreeSet<String>) -> Result<(), CacheError> {
     match &index.kind {
-        IndexKind::Proxy { .. } | IndexKind::Hosted { .. } => {
+        IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
             names.extend(state.meta.list_projects(&index.name)?);
         }
         IndexKind::Virtual { layers, .. } => {
@@ -1447,7 +1447,7 @@ pub fn download_status(state: &AppState, index: &Index, filename: &str) -> Resul
 
 fn stored_project_status(state: &AppState, index: &Index, normalized: &str) -> Result<ProjectStatus, CacheError> {
     match &index.kind {
-        IndexKind::Proxy { .. } => status_for_index(state, &index.name, normalized),
+        IndexKind::Cached { .. } => status_for_index(state, &index.name, normalized),
         IndexKind::Hosted { .. } => Ok(ProjectStatus::Active),
         IndexKind::Virtual { layers, .. } => {
             for &pos in layers {
@@ -1841,7 +1841,7 @@ fn streaming_parts(
 ) -> Result<Option<(String, UpstreamClient, bool, crate::stream::PageContext)>, CacheError> {
     match &index.kind {
         _ if index.policy.has_project_size_limit() => Ok(None),
-        IndexKind::Proxy { client, offline } => Ok(Some((
+        IndexKind::Cached { client, offline } => Ok(Some((
             index.name.clone(),
             client.clone(),
             *offline,
@@ -1862,7 +1862,7 @@ fn streaming_parts(
             for &pos in layers {
                 let layer = state.index_at(pos);
                 match &layer.kind {
-                    IndexKind::Proxy { client, offline } => {
+                    IndexKind::Cached { client, offline } => {
                         if layer.policy.active() {
                             return Ok(None);
                         }
@@ -2263,7 +2263,7 @@ fn source_mirror(state: &AppState, source: &str) -> Result<(UpstreamClient, bool
         .iter()
         .find(|index| index.name == source)
         .and_then(|index| match &index.kind {
-            IndexKind::Proxy { client, offline } => Some((client.clone(), *offline)),
+            IndexKind::Cached { client, offline } => Some((client.clone(), *offline)),
             IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
         })
         .ok_or(CacheError::FileNotFound)

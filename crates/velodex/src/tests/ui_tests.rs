@@ -26,7 +26,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 policy: velodex_policy::PolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
-                kind: IndexKind::Proxy {
+                kind: IndexKind::Cached {
                     upstream: "http://127.0.0.1:9/simple/".to_owned(),
                     username: None,
                     password: None,

@@ -20,7 +20,7 @@ fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
             ecosystem: velodex_format::Ecosystem::Pypi,
-            kind: IndexKind::Proxy {
+            kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,
                 password: None,
@@ -55,7 +55,7 @@ fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 policy: PolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
-                kind: IndexKind::Proxy {
+                kind: IndexKind::Cached {
                     upstream: upstream.to_owned(),
                     username: None,
                     password: None,
@@ -95,7 +95,7 @@ fn command_options(data_dir: &Path, packages: Vec<String>) -> MirrorOptions {
             log_sink: None,
             log_file: None,
         },
-        repo: "pypi".to_owned(),
+        index: "pypi".to_owned(),
         packages,
         requirements: Vec::new(),
         mode: None,
@@ -427,7 +427,7 @@ async fn test_mirror_plan_reports_missing_and_upstream_failures() {
 async fn test_mirror_plan_offline_reads_cached_pages() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = mirror_config(dir.path(), "https://example.invalid/simple/");
-    let IndexKind::Proxy { offline, .. } = &mut config.indexes[0].kind else {
+    let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
         panic!("expected mirror");
     };
     *offline = true;
@@ -561,7 +561,7 @@ async fn test_mirror_sync_overlay_target_and_metadata_only_skips_artifact() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), vec!["flask".to_owned()]);
-    options.repo = "root/pypi".to_owned();
+    options.index = "root/pypi".to_owned();
     options.metadata_only = true;
     let mut out = Vec::new();
 
@@ -927,7 +927,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         policy: PolicyConfig::default(),
         webhooks: Vec::new(),
         ecosystem: velodex_format::Ecosystem::Pypi,
-        kind: IndexKind::Proxy {
+        kind: IndexKind::Cached {
             upstream: format!("{}/simple/", server.uri()),
             username: None,
             password: None,
@@ -960,15 +960,15 @@ async fn test_mirror_rejects_non_mirror_targets() {
         },
     });
     let commands = [
-        ("unknown", "unknown mirror repository"),
-        ("local", "is local and has no upstream mirror"),
-        ("double", "has more than one mirror layer"),
-        ("local-overlay", "has no mirror layer"),
+        ("unknown", "unknown cached index"),
+        ("local", "is hosted and has no upstream"),
+        ("double", "has more than one cached member"),
+        ("local-overlay", "has no cached member"),
     ];
 
     for (repo, expected) in commands {
         let mut options = command_options(dir.path(), vec!["flask".to_owned()]);
-        options.repo = repo.to_owned();
+        options.index = repo.to_owned();
         let mut out = Vec::new();
         let err = crate::mirror::run(&config, &MirrorCommand::Plan(MirrorPlanArgs { options }), &mut out)
             .await
