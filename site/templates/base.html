@@ -176,18 +176,31 @@
       // no-op rather than a loop.
       var searchRoot = document.getElementById("pagefind-search");
       if (searchRoot) {
-        var relabel = function () {
+        var SECTION_LABELS = { tutorials: "Tutorial", guides: "How-to", reference: "Reference", explanation: "Explanation", migration: "Migration" };
+        var update = function () {
           var message = modal.querySelector(".pagefind-ui__message");
-          if (!message) return;
-          var raw = message.textContent.trim();
-          var match = raw.match(/^(\d+)\s+result/i) || raw.match(/of\s+(\d+)\s+results/i);
-          if (!match) return;
-          var total = +match[1];
-          var shown = modal.querySelectorAll(".pagefind-ui__result").length;
-          var next = shown < total ? "Showing " + shown + " of " + total + " results" : total + " results";
-          if (raw !== next) message.textContent = next;
+          if (message) {
+            var raw = message.textContent.trim();
+            var match = raw.match(/^(\d+)\s+result/i) || raw.match(/of\s+(\d+)\s+results/i);
+            if (match) {
+              var total = +match[1];
+              var shown = modal.querySelectorAll(".pagefind-ui__result").length;
+              var next = shown < total ? "Showing " + shown + " of " + total + " results" : total + " results";
+              if (raw !== next) message.textContent = next;
+            }
+          }
+          modal.querySelectorAll(".pagefind-ui__result-title").forEach(function (title) {
+            if (title.querySelector(".pf-badge")) return;
+            var link = title.querySelector("a[href]");
+            var section = link && link.getAttribute("href").match(/\/(tutorials|guides|reference|explanation|migration)\//);
+            if (!section) return;
+            var badge = document.createElement("span");
+            badge.className = "pf-badge";
+            badge.textContent = SECTION_LABELS[section[1]];
+            title.insertBefore(badge, title.firstChild);
+          });
         };
-        new MutationObserver(relabel).observe(searchRoot, { childList: true, subtree: true });
+        new MutationObserver(update).observe(searchRoot, { childList: true, subtree: true });
       }
     })();
     var navToggle = document.querySelector(".nav-toggle");

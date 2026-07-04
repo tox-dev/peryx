@@ -339,6 +339,22 @@ a {
     padding: 0.35rem 0;
     margin-bottom: 0.15rem;
   }
+
+  // Diátaxis-type badge injected into each result title so readers see where a hit lives.
+  .pf-badge {
+    display: inline-block;
+    margin-right: 0.45rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--text-soft);
+    font-size: 0.66rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    vertical-align: 0.08em;
+  }
 }
 
 .hero {
