@@ -1,8 +1,8 @@
 # <img src="assets/icon.svg" width="28" alt=""> velodex
 
-A PyPI-compatible read-through cache and private index, written in Rust. Point pip, uv, or twine at velodex: it proxies
-and caches pypi.org (or any private mirror), hosts your own uploads in overlays on top, and serves both through the wire
-protocols the clients already speak.
+A PyPI-compatible read-through cache and private index, written in Rust. Point pip, uv, or twine at velodex: it caches
+pypi.org (or any upstream), hosts your own uploads, and serves both from one virtual index through the wire protocols the
+clients already speak.
 
 ```shell
 cargo build --release
