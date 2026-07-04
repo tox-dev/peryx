@@ -12,3 +12,8 @@ build:
       | tar xz
     - ./zola --root site build --base-url "${READTHEDOCS_CANONICAL_URL}" --output-dir "${READTHEDOCS_OUTPUT}/html"
       --force
+    - curl -sL "https://github.com/CloudCannon/pagefind/releases/download/v1.5.2/pagefind-v1.5.2-x86_64-unknown-linux-musl.tar.gz"
+      | tar xz
+    - ./pagefind --site "${READTHEDOCS_OUTPUT}/html" --include-characters "_./-"
+    - python site/scripts/gen_llms.py --base-url "${READTHEDOCS_CANONICAL_URL}" --content site/content
+      --out "${READTHEDOCS_OUTPUT}/html/llms.txt"

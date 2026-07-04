@@ -1,5 +1,10 @@
 {%- set report = load_data(path="data/bench/report.toml") -%}
 {%- set feed = report.tables[file] -%}
+{#- optional `only`: a comma-separated list of party names to keep (e.g. "velodex,devpi"), so a
+    migration page can show just velodex against the one tool it covers instead of the whole field. -#}
+{%- set only_val = only | default(value="") -%}
+{%- set keep = only_val | split(pat=",") -%}
+{%- set filtering = only_val != "" -%}
 <div class="bench">
   <table class="bench-table">
     <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}</caption>
@@ -7,7 +12,10 @@
       <tr>
         <th></th>
         {%- for party in feed.parties %}
+        {%- set pname = party.name | default(value=party) %}
+        {%- if not filtering or pname in keep %}
         <th>{% if party.url %}<a href="{{ party.url }}" rel="external">{{ party.name }}</a>{% else %}{{ party }}{% endif %}</th>
+        {%- endif %}
         {%- endfor %}
       </tr>
     </thead>
@@ -16,7 +24,11 @@
       <tr>
         <th>{{ row.name }}</th>
         {%- for cell in row.cells %}
+        {%- set party = feed.parties[loop.index0] %}
+        {%- set pname = party.name | default(value=party) %}
+        {%- if not filtering or pname in keep %}
         <td class="bench-{{ cell.tint }}">{{ cell.text }} <span class="bench-ratio">({{ cell.ratio }})</span></td>
+        {%- endif %}
         {%- endfor %}
       </tr>
       {%- endfor %}

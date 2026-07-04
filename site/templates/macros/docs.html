@@ -1,0 +1,70 @@
+{# Left docs navigation: the diátaxis sections in a fixed order, each with its pages, current page
+   marked active. Rendered as a <details> so the same markup is a static column on desktop and a
+   collapsible drawer on mobile. #}
+{# The diátaxis section glyphs, moved out of the header into the sidebar. #}
+{% macro icon(name) %}
+{%- if name == "tutorials" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5 10-5v6"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
+{%- elif name == "guides" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4.6 4.6 0 0 0-6 6L3 18l3 3 5.7-5.7a4.6 4.6 0 0 0 6-6L14 13l-3-3z"/></svg>
+{%- elif name == "reference" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+{%- elif name == "explanation" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"/></svg>
+{%- elif name == "migration" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+{%- elif name == "contributing" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><path d="M8.6 7.7 15.4 11M8.6 16.3 15.4 13"/></svg>
+{%- endif %}
+{% endmacro %}
+
+{% macro nav(current) %}
+{% set groups = ["tutorials", "guides", "reference", "explanation", "migration"] %}
+<details class="docs-nav" open>
+  <summary>Documentation</summary>
+  <div class="docs-nav-search" data-search-slot></div>
+  <nav aria-label="Documentation sections">
+    {% for group in groups %}
+    {% set sec = get_section(path=group ~ "/_index.md") %}
+    {% set in_section = current is starting_with(sec.permalink) %}
+    <details class="docs-nav-group"{% if in_section %} open{% endif %}>
+      <summary>
+        {{ self::icon(name=group) }}
+        <a class="docs-nav-title{% if current == sec.permalink %} active{% endif %}" href="{{ sec.permalink }}">{{ sec.title }}</a>
+      </summary>
+      {% if sec.pages %}
+      <ul>
+        {% for p in sec.pages %}
+        <li><a{% if current == p.permalink %} class="active" aria-current="page"{% endif %} href="{{ p.permalink }}">{{ p.title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </details>
+    {% endfor %}
+    <div class="docs-nav-group docs-nav-leaf">
+      {{ self::icon(name="contributing") }}
+      <a class="docs-nav-title{% if current == get_url(path='@/contributing.md') %} active{% endif %}" href="{{ get_url(path='@/contributing.md') }}">Contributing</a>
+    </div>
+  </nav>
+</details>
+{% endmacro %}
+
+{# Right table of contents from the page/section headings, two levels deep. Also a <details> so it
+   folds away on narrow screens. #}
+{% macro toc(entries) %}
+{% if entries %}
+<details class="docs-toc" open>
+  <summary>On this page</summary>
+  <nav aria-label="On this page">
+    <ul>
+      {% for h in entries %}
+      <li>
+        <a href="#{{ h.id }}">{{ h.title }}</a>
+        {% if h.children %}
+        <ul>
+          {% for c in h.children %}
+          <li><a href="#{{ c.id }}">{{ c.title }}</a></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </nav>
+</details>
+{% endif %}
+{% endmacro %}

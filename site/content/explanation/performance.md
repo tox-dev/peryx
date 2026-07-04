@@ -58,6 +58,116 @@ effects compound:
 - **Latency stops stacking.** A resolve-install cycle is a chain of dependent requests; moving them from cross-continent
   RTTs to your LAN shortens every link in the chain.
 
+## The field
+
+The tables below put velodex next to every alternative that starts hermetically from a package, plus **direct**, meaning
+[uv](https://docs.astral.sh/uv/) talking to pypi.org with no proxy in between, the baseline every ratio compares
+against. The servers overlap on features. They diverge on two things the benchmarks price: where the bytes go on a cache
+miss, and what happens when many clients miss the same thing at once. The rest of this section reads each server's
+source for those two axes, so the tables that follow are readable in advance rather than in hindsight.
+
+| Server                                                 | Stack                                                                                                                                                                | On a miss                                                  | Persisted cache                                                     | Private uploads   |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- | ----------------- |
+| [velodex](@/explanation/architecture.md)               | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)), one process                                                     | streams the bytes through, teeing into the store           | content-addressed, on disk ([redb](https://www.redb.org/) + blobs)  | token per index   |
+| [devpi](https://devpi.net/docs/)                       | Python/[Pyramid](https://docs.pylonsproject.org/projects/pyramid/) on [waitress](https://docs.pylonsproject.org/projects/waitress/) (~50 threads); primary + replica | pages: fetch, parse, store, render; files: stream and tee  | [SQLite](https://www.sqlite.org/) keyfs plus sha256-addressed files | per-user, per-ACL |
+| [proxpi](https://github.com/EpicWink/proxpi)           | Python/[Flask](https://flask.palletsprojects.com/) under [gunicorn](https://gunicorn.org/) (4 worker processes here)                                                 | download to a disk temp dir in a thread; client waits      | index in RAM (per worker), files on disk                            | none              |
+| [pypiserver](https://github.com/pypiserver/pypiserver) | Python/[Bottle](https://bottlepy.org/docs/dev/), serves a directory of files                                                                                         | `302` redirect to pypi.org, caching nothing                | none for upstream content                                           | htpasswd on a dir |
+| [pypicloud](https://pypicloud.readthedocs.io/)         | Python/Pyramid on waitress (8 threads); archived since 2023                                                                                                          | buffer the whole file to a temp file, store it, then serve | SQLite (or S3/GCS/DB) plus named-path files                         | user/group access |
+
+### Where the bytes go on a miss
+
+The cold rows come down to how each server moves an uncached wheel from pypi.org to the client.
+
+{% mermaid() %}
+flowchart TB
+miss["client requests an uncached wheel"]
+miss --> V["velodex, devpi:<br/>stream to the client while<br/>teeing into a content-addressed store"]
+miss --> P["proxpi:<br/>download to a disk temp dir in a thread;<br/>client waits, or is redirected after 0.9 s"]
+miss --> S["pypiserver:<br/>302 redirect to pypi.org;<br/>nothing is downloaded or cached"]
+miss --> C["pypicloud:<br/>buffer the whole file to a temp file,<br/>write to store + DB, then serve"]
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
+class V good
+class C,S warn
+{% end %}
+
+- **velodex** never buffers a whole response.
+  [Page and artifact bytes stream to the client and into the store at once](@/explanation/architecture.md); velodex
+  transforms a page chunk by chunk mid-flight, and tees a wheel to a temp file, hashes it, and renames it into the store
+  once the client already has its bytes. A miss costs upstream wire time plus one hop. That sets the cold-install and
+  cold-throughput numbers.
+- **devpi** handles artifacts much as velodex does. `FileStreamer` writes each chunk to a local file and yields it to
+  the client, then commits the sha256-addressed file once the body completes. Simple pages take the slower route: devpi
+  fetches the upstream page, parses it, writes the link list into its SQLite keyfs, and only then renders a response
+  from its own store. On PyPI-sized pages that parse-and-store step is real work on every refresh, and it runs under a
+  single-writer transaction model.
+- **proxpi** downloads a missed file to disk in a background thread while the requesting client blocks on
+  `thread.join(0.9 s)`; if the download outruns that `PROXPI_DOWNLOAD_TIMEOUT`, proxpi redirects the client to pypi.org
+  and lets the thread finish caching for next time. Its file cache defaults to a `tempfile.mkdtemp()` that gets deleted
+  on shutdown, so without a configured `PROXPI_CACHE_DIR` the cache does not survive a restart. proxpi serves cached
+  files from disk via `send_file`, not from an in-memory blob. The resident memory in the resource rows comes from four
+  gunicorn worker processes, each holding its own unshared in-RAM index cache.
+- **pypiserver** serves a directory of your own packages; with `--fallback-url` a miss is a bare `302` redirect to
+  pypi.org's simple page. It downloads and caches nothing. That is why its CPU sits near zero and its cold and warm
+  columns barely move: there is no cache to warm, and a miss is a formatted redirect string.
+- **pypicloud** was the closest design to velodex (a `fallback = cache` read-through mirror), but its cold path fully
+  buffers. It pulls the entire upstream file into a `TemporaryFile`, computes hashes, writes it to storage and a row
+  into its cache DB, and only then sets the response body. The client waits for the download, the disk write, and the DB
+  commit before its first byte. pypicloud stores files by `name/version/filename`, not by hash. The project has been
+  archived since 2023 and runs only under Python 3.10 with [SQLAlchemy](https://www.sqlalchemy.org/) pinned below 2.
+
+Only velodex serves [PEP 658](https://peps.python.org/pep-0658/) `.metadata` by default (and
+[synthesizes it with byte-range reads](@/explanation/architecture.md) when an upstream lacks it); proxpi proxies it when
+the upstream advertises it, devpi hides it behind an experimental `--enable-core-metadata`, and pypiserver and pypicloud
+do not serve it at all. This drives the warm-resolution numbers: a resolver comparing ten versions fetches kilobytes
+from velodex and megabytes of wheels from the servers that cannot offer the sibling.
+
+### What a concurrent cold burst does
+
+The cold rows of the parallel-install and throughput tables turn on one question: what does a server do when several
+clients miss the *same* uncached thing at once? velodex answers with single-flight, where concurrent misses for one page
+or file share a single upstream fetch and all tail its result. Two competitors answer with a failure the source
+explains.
+
+**devpi, the empty first page.** On the first concurrent fetch of a project, a request that loses the internal name-list
+lock evaluates the project against an as-yet-empty project list, concludes it does not exist, returns a `404`, and
+caches that negative result for the mirror-expiry window (30 minutes by default). uv reads the `404` as "no such
+package" and the install fails.
+
+{% mermaid() %}
+sequenceDiagram
+participant A as client A
+participant B as clients B…J
+participant D as devpi
+A->>+D: GET simple/polars/ (first ever)
+B->>+D: GET simple/polars/ (name list still empty)
+D-->>-B: 404 "does not exist" (cached ~30 min)
+Note over B: uv reads 404 as "no such package"
+D-->>-A: 200 once the upstream fetch lands
+{% end %}
+
+**pypicloud, the concurrent INSERT.** The cache-on-miss path has no dedup and no locking. Four clients asking for one
+wheel each download the whole file, then each try to write the same `filename` primary key into single-writer SQLite.
+The commits serialize; the losers hit a `UNIQUE` constraint (or `database is locked`), and because
+[pyramid_tm](https://docs.pylonsproject.org/projects/pyramid_tm/) commits after the view returns with no retry
+configured, the exception surfaces as `HTTP 500`.
+
+{% mermaid() %}
+sequenceDiagram
+participant C as 4 clients (cold)
+participant P as pypicloud
+participant S as SQLite
+C->>+P: GET the same wheel ×4
+Note over P: no dedup, each client<br/>downloads the whole file
+P->>+S: INSERT the same filename ×4
+S-->>-P: 2nd–4th: UNIQUE constraint / database is locked
+P-->>-C: HTTP 500
+{% end %}
+
+Read this way, each table below is a controlled test of one axis: cold latency, warm overhead, a concurrent cold burst,
+a fleet installing at once, a swarm reading pages. The architecture above says in advance which servers should struggle
+where.
+
 ## The benchmark suite
 
 The tables below come from a [benchmark harness](https://github.com/tox-dev/velodex/tree/main/crates/velodex-bench) the
