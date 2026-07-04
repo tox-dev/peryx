@@ -1,7 +1,9 @@
-//! The `PyPI` ecosystem: project names, versions, and the simple repository API.
+//! The `PyPI` ecosystem driver for velodex: project names, versions, and the simple repository API.
 //!
-//! This is the only ecosystem velodex implements. It sits under its own module so a future ecosystem
-//! can be added as a sibling rather than tangled into shared code.
+//! This crate implements the [`EcosystemDriver`] seam from `velodex-format` for Python. A future
+//! ecosystem is a sibling `velodex-ecosystem-*` crate, so nothing here is tangled into shared code.
+
+use velodex_format::{Ecosystem, EcosystemDriver};
 
 mod filename;
 mod html;
@@ -22,6 +24,16 @@ pub use simple::{
     to_json,
 };
 pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc};
+
+/// The [`EcosystemDriver`] for the Python Package Index.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PypiDriver;
+
+impl EcosystemDriver for PypiDriver {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::Pypi
+    }
+}
 
 #[cfg(test)]
 mod tests;

@@ -1,4 +1,4 @@
-use crate::pypi::{parse_version, sorted_desc};
+use crate::{parse_version, sorted_desc};
 
 #[test]
 fn test_parse_version_valid_and_invalid() {

@@ -4,7 +4,7 @@
 //! markdown formatting works, embedded tags render as text.
 
 use pulldown_cmark::{Event, Options, Parser, html};
-use velodex_format::pypi::CoreMetadataDoc;
+use velodex_ecosystem_pypi::CoreMetadataDoc;
 
 /// Render a long description to safe HTML.
 ///

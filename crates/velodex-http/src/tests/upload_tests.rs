@@ -8,8 +8,8 @@ use blake2::digest::{Update as _, VariableOutput as _};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
-use velodex_format::pypi::CoreMetadata;
-use velodex_format::pypi::DistributionFilenameError;
+use velodex_ecosystem_pypi::CoreMetadata;
+use velodex_ecosystem_pypi::DistributionFilenameError;
 use velodex_storage::blob::{BlobStore, Digest};
 
 use crate::upload::{StagedUpload, UploadError, UploadForm, authorized, prepare};

@@ -32,7 +32,7 @@ self-update = ["dep:axoupdater"]
 
 [dependencies]
 axoupdater = { version = "0.10", default-features = false, features = ["github_releases", "blocking"], optional = true }
-velodex-format.workspace = true
+velodex-ecosystem-pypi.workspace = true
 velodex-storage.workspace = true
 velodex-upstream.workspace = true
 velodex-http.workspace = true

@@ -5,7 +5,7 @@
     reason = "browser fetch futures are single-threaded by nature; callers wrap them in SendWrapper"
 )]
 
-use velodex_format::pypi::CoreMetadataDoc;
+use velodex_ecosystem_pypi::CoreMetadataDoc;
 
 use crate::model::{UiMember, UiMemberChunk, UiProject, UiSearchPage, UiSnapshot};
 #[cfg(feature = "hydrate")]
@@ -103,7 +103,7 @@ pub async fn load_project(
             let doc = match ui.files.iter().rev().find(|file| file.has_metadata) {
                 Some(file) => {
                     let text = fetch_text_required(&format!("{}.metadata", file.url)).await?;
-                    Some(velodex_format::pypi::parse_metadata(&text))
+                    Some(velodex_ecosystem_pypi::parse_metadata(&text))
                 }
                 None => None,
             };

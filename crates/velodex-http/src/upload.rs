@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
-use velodex_format::pypi::{
+use velodex_ecosystem_pypi::{
     CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
     is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
     parse_version_specifiers, to_json,
@@ -356,9 +356,9 @@ fn metadata_bytes(
 
 fn validate_metadata_identity(
     form: &UploadForm,
-    metadata: &velodex_format::pypi::CoreMetadataDoc,
+    metadata: &velodex_ecosystem_pypi::CoreMetadataDoc,
     normalized: &str,
-    parsed_version: &velodex_format::pypi::Version,
+    parsed_version: &velodex_ecosystem_pypi::Version,
 ) -> Result<(), UploadError> {
     if normalize_name(&metadata.name) != normalized || !is_valid_name(&metadata.name) {
         return Err(UploadError::MetadataNameMismatch {

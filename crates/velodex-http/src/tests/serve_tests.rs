@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
-use velodex_format::pypi::SimpleError;
+use velodex_ecosystem_pypi::SimpleError;
 use velodex_storage::blob::{BlobError, BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaError, MetaStore};
 use velodex_upstream::UpstreamClient;

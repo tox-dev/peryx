@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
-use velodex_format::pypi::{
+use velodex_ecosystem_pypi::{
     CoreMetadata, DistributionFilename, DistributionKind, File, ProjectDetail, Version, VersionSpecifiers,
     is_valid_name, normalize_name, parse_detail, parse_detail_html, parse_distribution_filename, parse_index,
     parse_index_html, parse_version_specifiers,

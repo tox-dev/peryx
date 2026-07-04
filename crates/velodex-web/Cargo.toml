@@ -46,6 +46,7 @@ base64 = { workspace = true, optional = true }
 pulldown-cmark.workspace = true
 regex.workspace = true
 velodex-format.workspace = true
+velodex-ecosystem-pypi.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

@@ -4635,7 +4635,7 @@ dependencies = [
  "tracing-appender",
  "tracing-journald",
  "tracing-subscriber",
- "velodex-format",
+ "velodex-ecosystem-pypi",
  "velodex-http",
  "velodex-storage",
  "velodex-upstream",
@@ -4662,7 +4662,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "velodex-format"
+name = "velodex-ecosystem-pypi"
 version = "0.0.1"
 dependencies = [
  "insta",
@@ -4671,6 +4671,14 @@ dependencies = [
  "serde_json",
  "tl",
  "url",
+ "velodex-format",
+]
+
+[[package]]
+name = "velodex-format"
+version = "0.0.1"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4707,6 +4715,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "utoipa",
+ "velodex-ecosystem-pypi",
  "velodex-format",
  "velodex-storage",
  "velodex-upstream",
@@ -4761,6 +4770,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-http 0.7.0",
+ "velodex-ecosystem-pypi",
  "velodex-format",
  "velodex-http",
  "velodex-storage",

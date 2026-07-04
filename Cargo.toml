@@ -19,6 +19,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 velodex-format = { path = "crates/velodex-format" }
+velodex-ecosystem-pypi = { path = "crates/velodex-ecosystem-pypi" }
 velodex-storage = { path = "crates/velodex-storage" }
 velodex-upstream = { path = "crates/velodex-upstream" }
 velodex-http = { path = "crates/velodex-http" }

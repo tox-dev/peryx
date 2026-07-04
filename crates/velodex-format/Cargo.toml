@@ -9,13 +9,6 @@ description = "Ecosystem-neutral domain core for velodex: the Ecosystem enum, th
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
-pep440_rs.workspace = true
-tl.workspace = true
-url.workspace = true
-
-[dev-dependencies]
-insta.workspace = true
 
 [lints]
 workspace = true

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use velodex_format::pypi::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
+use velodex_ecosystem_pypi::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaError, MetaScanError, MetaStore};
 use velodex_upstream::UpstreamClient;

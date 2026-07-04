@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::error::Error as _;
 
-use crate::pypi::{
+use crate::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Provenance, SimpleError,
     Yanked, parse_index, render_detail_html, render_index_html, render_legacy_json, to_json,
 };
@@ -15,7 +15,7 @@ fn sha256(value: &str) -> BTreeMap<String, String> {
 fn sample_detail() -> ProjectDetail {
     ProjectDetail {
         meta: Meta {
-            api_version: crate::pypi::API_VERSION,
+            api_version: crate::API_VERSION,
             project_status: Some("active".to_owned()),
             project_status_reason: Some("available".to_owned()),
         },
@@ -375,7 +375,7 @@ fn test_render_detail_html_omits_non_sha256_metadata_hash_attr() {
 #[test]
 fn test_parse_detail_roundtrips_serialized_model() {
     let detail = sample_detail();
-    let parsed = crate::pypi::parse_detail(to_json(&detail).as_bytes()).unwrap();
+    let parsed = crate::parse_detail(to_json(&detail).as_bytes()).unwrap();
     assert_eq!(parsed.meta, detail.meta);
     assert_eq!(parsed.name, detail.name);
     assert_eq!(parsed.versions, detail.versions);
@@ -384,7 +384,7 @@ fn test_parse_detail_roundtrips_serialized_model() {
 
 #[test]
 fn test_parse_detail_minimal() {
-    let parsed = crate::pypi::parse_detail(b"{\"name\":\"x\"}").unwrap();
+    let parsed = crate::parse_detail(b"{\"name\":\"x\"}").unwrap();
     assert_eq!(parsed.meta, Meta::default());
     assert_eq!(parsed.name, "x");
     assert!(parsed.versions.is_empty());
@@ -395,7 +395,7 @@ fn test_parse_detail_minimal() {
 fn test_parse_detail_reads_both_metadata_spellings() {
     let json = r#"{"name":"x","files":[{"filename":"x-1.whl","url":"u",
         "core-metadata":{"sha256":"abc"},"dist-info-metadata":{"sha256":"abc"}}]}"#;
-    let parsed = crate::pypi::parse_detail(json.as_bytes()).unwrap();
+    let parsed = crate::parse_detail(json.as_bytes()).unwrap();
     assert_eq!(
         (&parsed.files[0].core_metadata, &parsed.files[0].dist_info_metadata),
         (
@@ -408,7 +408,7 @@ fn test_parse_detail_reads_both_metadata_spellings() {
 #[test]
 fn test_parse_detail_reads_legacy_only_metadata_key() {
     let json = r#"{"name":"x","files":[{"filename":"x-1.whl","url":"u","dist-info-metadata":true}]}"#;
-    let parsed = crate::pypi::parse_detail(json.as_bytes()).unwrap();
+    let parsed = crate::parse_detail(json.as_bytes()).unwrap();
     assert_eq!(
         (&parsed.files[0].core_metadata, &parsed.files[0].dist_info_metadata),
         (&CoreMetadata::Absent, &CoreMetadata::Available)
@@ -454,7 +454,7 @@ fn test_parse_detail_reads_project_status_provenance_gpg_size_upload_time_and_ve
         "files":[{"filename":"x-1.whl","url":"u","hashes":{},"size":42,
         "upload-time":"2024-01-01T00:00:00Z","gpg-sig":false,
         "provenance":"https://example.test/x-1.whl.provenance"}]}"#;
-    let parsed = crate::pypi::parse_detail(json.as_bytes()).unwrap();
+    let parsed = crate::parse_detail(json.as_bytes()).unwrap();
     assert_eq!(
         (
             parsed.meta.project_status.as_deref(),
@@ -479,7 +479,7 @@ fn test_parse_detail_reads_project_status_provenance_gpg_size_upload_time_and_ve
 
 #[test]
 fn test_parse_detail_rejects_unsupported_major_api_version() {
-    let err = crate::pypi::parse_detail(br#"{"meta":{"api-version":"2.0"},"name":"x"}"#).unwrap_err();
+    let err = crate::parse_detail(br#"{"meta":{"api-version":"2.0"},"name":"x"}"#).unwrap_err();
     assert!(matches!(err, SimpleError::UnsupportedApiVersion(version) if version == "2.0"));
 }
 
@@ -487,7 +487,7 @@ fn test_parse_detail_rejects_unsupported_major_api_version() {
 fn test_parse_detail_rejects_invalid_api_version() {
     for version in ["1", "x.0", "1.x"] {
         let page = format!(r#"{{"meta":{{"api-version":"{version}"}},"name":"x"}}"#);
-        let err = crate::pypi::parse_detail(page.as_bytes()).unwrap_err();
+        let err = crate::parse_detail(page.as_bytes()).unwrap_err();
         assert!(matches!(&err, SimpleError::InvalidApiVersion(invalid) if invalid == version));
         assert_eq!(
             err.to_string(),
@@ -499,7 +499,7 @@ fn test_parse_detail_rejects_invalid_api_version() {
 
 #[test]
 fn test_parse_meta_reads_project_status() {
-    let meta = crate::pypi::parse_meta(
+    let meta = crate::parse_meta(
         br#"{"api-version":"1.4","project-status":"archived","project-status-reason":"read only"}"#,
     )
     .unwrap();
@@ -512,7 +512,7 @@ fn test_parse_meta_reads_project_status() {
 
 #[test]
 fn test_parse_meta_rejects_invalid_project_status() {
-    let err = crate::pypi::parse_meta(br#"{"api-version":"1.4","project-status":"frozen"}"#).unwrap_err();
+    let err = crate::parse_meta(br#"{"api-version":"1.4","project-status":"frozen"}"#).unwrap_err();
     assert!(matches!(&err, SimpleError::InvalidProjectStatus(status) if status == "frozen"));
     assert_eq!(err.to_string(), "invalid upstream project status marker \"frozen\"");
     assert!(err.source().is_none());
@@ -533,7 +533,7 @@ fn test_project_status_policy() {
 
 #[test]
 fn test_simple_error_json_source() {
-    let err = crate::pypi::parse_detail(b"not json").unwrap_err();
+    let err = crate::parse_detail(b"not json").unwrap_err();
     assert!(matches!(err, SimpleError::Json(_)));
     assert!(err.source().is_some());
     assert!(err.to_string().contains("expected"));

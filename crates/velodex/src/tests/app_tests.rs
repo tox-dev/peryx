@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use velodex_format::pypi::{CoreMetadata, File, Provenance, Yanked};
+use velodex_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
 use velodex_http::upload::Uploaded;
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};

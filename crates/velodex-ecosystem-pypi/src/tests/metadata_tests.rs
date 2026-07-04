@@ -1,4 +1,4 @@
-use crate::pypi::{file_matches_version, parse_metadata};
+use crate::{file_matches_version, parse_metadata};
 
 #[test]
 fn test_parse_metadata_headers_and_body() {

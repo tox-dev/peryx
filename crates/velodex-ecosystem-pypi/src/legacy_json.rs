@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use crate::pypi::{
+use crate::{
     File, ProjectDetail, Yanked, file_matches_version, parse_distribution_filename, parse_version, sorted_desc,
 };
 

@@ -9,7 +9,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Sha256, Sha384, Sha512};
-use velodex_format::pypi::{DistributionKind, parse_distribution_filename};
+use velodex_ecosystem_pypi::{DistributionKind, parse_distribution_filename};
 use zip::read::HasZipMetadata;
 
 /// Default amount of one archive member returned by the inspect endpoint.
@@ -1369,7 +1369,7 @@ impl SdistMembers {
             .metadata
             .ok_or_else(|| invalid_sdist(format!("missing required {}/PKG-INFO", self.root)))?;
         let text = std::str::from_utf8(&metadata).map_err(|_| invalid_sdist("PKG-INFO is not valid UTF-8"))?;
-        let doc = velodex_format::pypi::parse_metadata(text);
+        let doc = velodex_ecosystem_pypi::parse_metadata(text);
         let metadata_version_text = doc
             .metadata_version
             .as_deref()

@@ -9,6 +9,7 @@ description = "HTTP layer for velodex: read-through simple-index serving and blo
 
 [dependencies]
 velodex-format.workspace = true
+velodex-ecosystem-pypi.workspace = true
 velodex-storage.workspace = true
 velodex-upstream.workspace = true
 axum = { workspace = true, features = ["multipart"] }

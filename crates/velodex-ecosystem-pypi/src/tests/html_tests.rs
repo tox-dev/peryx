@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use url::Url;
 
-use crate::pypi::{CoreMetadata, Meta, Provenance, SimpleError, Yanked, parse_detail_html, parse_index_html};
+use crate::{CoreMetadata, Meta, Provenance, SimpleError, Yanked, parse_detail_html, parse_index_html};
 
 fn base() -> Url {
     Url::parse("https://pypi.org/simple/flask/").unwrap()

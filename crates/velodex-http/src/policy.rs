@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use velodex_format::pypi::{
+use velodex_ecosystem_pypi::{
     DistributionKind, File, ProjectDetail, ProjectList, normalize_name, parse_distribution_filename,
     parse_version_specifiers,
 };
@@ -69,7 +69,7 @@ pub enum PolicyConfigError {
 pub struct Policy {
     allow_projects: HashSet<String>,
     block_projects: HashSet<String>,
-    allow_versions: Option<velodex_format::pypi::VersionSpecifiers>,
+    allow_versions: Option<velodex_ecosystem_pypi::VersionSpecifiers>,
     allow_package_types: u8,
     block_package_types: u8,
     allow_wheel_pythons: HashSet<String>,
@@ -478,7 +478,7 @@ fn check_wheel_tag(action: PolicyAction, facts: &FileFacts, rule: WheelTagRule<'
 struct FileFacts {
     project: String,
     filename: Option<String>,
-    version: Option<velodex_format::pypi::Version>,
+    version: Option<velodex_ecosystem_pypi::Version>,
     package_type: Option<PackageType>,
     python_tag: Option<String>,
     platform_tag: Option<String>,

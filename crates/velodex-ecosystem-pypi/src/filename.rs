@@ -1,6 +1,6 @@
 //! Python distribution filename parsing for upload identity checks.
 
-use crate::pypi::{Version, is_valid_name, normalize_name, parse_version};
+use crate::{Version, is_valid_name, normalize_name, parse_version};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistributionKind {

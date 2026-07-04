@@ -1,4 +1,4 @@
-use crate::pypi::{DistributionFilenameError, DistributionKind, parse_distribution_filename};
+use crate::{DistributionFilenameError, DistributionKind, parse_distribution_filename};
 
 #[test]
 fn test_parse_distribution_filename_accepts_upload_formats() {
@@ -25,7 +25,7 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
             }
         );
         assert_eq!(parsed.name, name);
-        assert_eq!(parsed.normalized_name, crate::pypi::normalize_name(name));
+        assert_eq!(parsed.normalized_name, crate::normalize_name(name));
         assert_eq!(parsed.version.to_string(), version);
     }
 }

@@ -1,4 +1,4 @@
-use crate::pypi::{PackageName, is_valid_name, normalize_name};
+use crate::{PackageName, is_valid_name, normalize_name};
 
 #[test]
 fn test_normalize_name_matches_pep503() {

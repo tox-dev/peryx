@@ -229,7 +229,7 @@ where
     json!({
         "simple_html": true,
         "simple_json": true,
-        "simple_api_version": velodex_format::pypi::API_VERSION,
+        "simple_api_version": velodex_ecosystem_pypi::API_VERSION,
         "metadata_siblings": true,
         "uploads": capabilities.writes,
         "yanking": capabilities.writes,
