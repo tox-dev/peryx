@@ -251,10 +251,13 @@ a {
 // The search dialog and the Pagefind UI inside it, themed to the site palette so the accent, text,
 // surfaces, and borders match the rest of the chrome in both light and dark.
 .search-modal {
-  width: min(40rem, 92vw);
-  max-width: 92vw;
-  margin-top: 11vh;
-  padding: 1rem;
+  width: min(60rem, 94vw);
+  max-width: 94vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 8vh;
+  padding: 1rem 1.1rem;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg);
@@ -298,6 +301,43 @@ a {
 
   &::backdrop {
     background: rgba(0, 0, 0, 0.5);
+  }
+}
+
+// Pagefind's stylesheet is injected after ours, so at equal specificity its result spacing wins on
+// source order. Scope these rules to the dialog's id so they outrank it without !important, and
+// tighten the airy defaults (24/32px of padding per result) into a dense list.
+#search-modal {
+  .pagefind-ui__results {
+    margin-top: 0.3rem;
+  }
+
+  .pagefind-ui__result {
+    padding: 0.45rem 0;
+  }
+
+  .pagefind-ui__result-inner {
+    margin-top: 0.1rem;
+    gap: 0.2rem;
+  }
+
+  .pagefind-ui__result-title {
+    font-size: 1rem;
+    line-height: 1.3;
+  }
+
+  .pagefind-ui__result-excerpt {
+    margin-top: 0.1rem;
+    line-height: 1.4;
+  }
+
+  .pagefind-ui__result-nested {
+    padding-top: 0.25rem;
+  }
+
+  .pagefind-ui__message {
+    padding: 0.35rem 0;
+    margin-bottom: 0.15rem;
   }
 }
 
