@@ -4743,6 +4743,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "velodex-replication"
+version = "0.0.1"
+
+[[package]]
 name = "velodex-storage"
 version = "0.0.1"
 dependencies = [
