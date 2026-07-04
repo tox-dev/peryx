@@ -642,3 +642,47 @@ fn jitter(modulus: u64) -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| u64::from(duration.subsec_nanos()) % modulus)
 }
+
+/// The upstream fetch protocol a proxy index speaks.
+///
+/// A proxy revalidates and caches an upstream's index documents and files. This trait is the seam
+/// that logic plugs into: [`UpstreamClient`] implements the `PyPI` PEP 503/691 simple API, and an OCI
+/// registry (`/v2/`) or an npm registry are future implementations. It is dispatched **statically** —
+/// one concrete client today, an enum per proxy once a second protocol exists, never a boxed object —
+/// so proxying costs nothing over calling the client directly. Parsing the returned document is the
+/// ecosystem driver's job; this trait only fetches.
+///
+/// Returns are written as `impl Future + Send` rather than `async fn` so callers can spawn the futures
+/// on a multi-threaded runtime without the trait dictating auto-trait bounds.
+pub trait UpstreamProtocol {
+    /// Fetch a project's index document, conditional on `etag`.
+    fn fetch_project(
+        &self,
+        project: &str,
+        etag: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
+
+    /// Fetch the full project list.
+    fn fetch_index(&self) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
+
+    /// Fetch a file's bytes by URL.
+    fn fetch_bytes(&self, url: &str) -> impl std::future::Future<Output = Result<Bytes, UpstreamError>> + Send;
+}
+
+impl UpstreamProtocol for UpstreamClient {
+    fn fetch_project(
+        &self,
+        project: &str,
+        etag: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send {
+        Self::fetch_project(self, project, etag)
+    }
+
+    fn fetch_index(&self) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send {
+        Self::fetch_index(self)
+    }
+
+    fn fetch_bytes(&self, url: &str) -> impl std::future::Future<Output = Result<Bytes, UpstreamError>> + Send {
+        Self::fetch_bytes(self, url)
+    }
+}
