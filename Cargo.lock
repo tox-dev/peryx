@@ -4718,11 +4718,19 @@ dependencies = [
  "utoipa",
  "velodex-ecosystem-pypi",
  "velodex-format",
+ "velodex-identity",
  "velodex-policy",
  "velodex-storage",
  "velodex-upstream",
  "wiremock",
  "zip",
+]
+
+[[package]]
+name = "velodex-identity"
+version = "0.0.1"
+dependencies = [
+ "base64",
 ]
 
 [[package]]

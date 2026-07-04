@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 
 use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use flate2::Compression;
@@ -12,39 +12,7 @@ use velodex_ecosystem_pypi::CoreMetadata;
 use velodex_ecosystem_pypi::DistributionFilenameError;
 use velodex_storage::blob::{BlobStore, Digest};
 
-use crate::upload::{StagedUpload, UploadError, UploadForm, authorized, prepare};
-
-fn basic(credentials: &[u8]) -> String {
-    format!("Basic {}", STANDARD.encode(credentials))
-}
-
-#[test]
-fn test_authorized_accepts_any_user_with_the_token() {
-    assert!(authorized(Some(&basic(b"__token__:s3cret")), "s3cret"));
-    assert!(authorized(Some(&basic(b"alice:s3cret")), "s3cret"));
-}
-
-#[test]
-fn test_authorized_rejects_wrong_password() {
-    assert!(!authorized(Some(&basic(b"alice:nope")), "s3cret"));
-}
-
-#[test]
-fn test_authorized_rejects_missing_or_non_basic_header() {
-    assert!(!authorized(None, "s3cret"));
-    assert!(!authorized(Some("Bearer s3cret"), "s3cret"));
-}
-
-#[test]
-fn test_authorized_rejects_malformed_base64() {
-    assert!(!authorized(Some("Basic !!!not-base64!!!"), "s3cret"));
-}
-
-#[test]
-fn test_authorized_rejects_non_utf8_and_missing_colon() {
-    assert!(!authorized(Some(&basic(&[0xff, 0xfe])), "s3cret"));
-    assert!(!authorized(Some(&basic(b"nocolonhere")), "s3cret"));
-}
+use crate::upload::{StagedUpload, UploadError, UploadForm, prepare};
 
 fn full_form(filename: &str) -> UploadForm {
     UploadForm {

@@ -21,6 +21,7 @@ unsafe_code = "forbid"
 velodex-format = { path = "crates/velodex-format" }
 velodex-ecosystem-pypi = { path = "crates/velodex-ecosystem-pypi" }
 velodex-policy = { path = "crates/velodex-policy" }
+velodex-identity = { path = "crates/velodex-identity" }
 velodex-storage = { path = "crates/velodex-storage" }
 velodex-upstream = { path = "crates/velodex-upstream" }
 velodex-http = { path = "crates/velodex-http" }

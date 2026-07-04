@@ -1028,7 +1028,7 @@ fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
         return Err((StatusCode::FORBIDDEN, "uploads are disabled").into_response());
     };
     let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    if upload::authorized(auth, token) {
+    if velodex_identity::authorized(auth, token) {
         security_token_event(headers, actor.as_deref(), &local.name, "success", "");
         Ok(())
     } else {

@@ -6,8 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use velodex_ecosystem_pypi::{
     CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
@@ -25,24 +23,6 @@ use crate::path_safety::{local_file_url, validate_filename};
 pub struct Uploaded {
     pub version: String,
     pub file: File,
-}
-
-/// Whether an `Authorization` header carries the correct upload token as its Basic-auth password.
-/// Any username is accepted, matching pypi's `__token__` convention where the password is the token.
-#[must_use]
-pub fn authorized(header: Option<&str>, token: &str) -> bool {
-    let Some(basic) = header.and_then(|value| value.strip_prefix("Basic ")) else {
-        return false;
-    };
-    let Ok(decoded) = STANDARD.decode(basic.trim()) else {
-        return false;
-    };
-    let Ok(credentials) = String::from_utf8(decoded) else {
-        return false;
-    };
-    credentials
-        .split_once(':')
-        .is_some_and(|(_user, password)| password == token)
 }
 
 /// The fields velodex reads from an upload's multipart form. Every field is optional here so the

@@ -1,8 +1,6 @@
 //! Structured security-relevant repository events.
 
 use axum::http::{HeaderMap, header};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 
 const UNKNOWN: &str = "unknown";
 
@@ -144,14 +142,13 @@ impl<'a> Event<'a> {
 
 #[must_use]
 pub(crate) fn actor(headers: &HeaderMap) -> Option<String> {
-    let basic = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Basic "))?;
-    let decoded = STANDARD.decode(basic.trim()).ok()?;
-    let credentials = String::from_utf8(decoded).ok()?;
-    let (user, _) = credentials.split_once(':')?;
-    Some(if user.is_empty() { UNKNOWN } else { user }.to_owned())
+    let value = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())?;
+    let credentials = velodex_identity::parse_basic(value)?;
+    Some(if credentials.user.is_empty() {
+        UNKNOWN.to_owned()
+    } else {
+        credentials.user
+    })
 }
 
 fn request_id(headers: &HeaderMap) -> Option<&str> {
