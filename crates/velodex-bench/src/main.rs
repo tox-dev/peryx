@@ -24,39 +24,29 @@
 //! cargo run --release -p velodex-bench
 //! ```
 
-mod packages;
+mod ecosystems;
 mod report;
 mod servers;
 mod usage;
-mod workloads;
 
 use std::process::Command;
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
 
+use crate::ecosystems::Ecosystem;
+use crate::ecosystems::pypi::Part;
 use crate::report::repo_root;
 
-/// A part of the suite `--skip` can leave out.
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum Part {
-    /// The install workload.
-    Install,
-    /// The pip client inside the install workload (uv still runs).
-    Pip,
-    /// The file throughput workload.
-    Throughput,
-    /// The parallel-CI install workload.
-    Parallel,
-    /// The PEP 658 metadata sibling workload.
-    Metadata,
-    /// The request swarm workload.
-    Load,
-}
-
 /// Benchmark velodex against direct `PyPI` and competing index servers.
+///
+/// Selection is two-axis: `--ecosystem` picks the suite, `--skip` leaves parts of it out.
 #[derive(Parser)]
 struct Cli {
+    /// The package ecosystem to benchmark.
+    #[arg(long, value_enum, default_value_t = Ecosystem::Pypi)]
+    ecosystem: Ecosystem,
+
     /// Measurements per install cell; the best is kept.
     #[arg(long, default_value_t = 1)]
     runs: usize,
@@ -75,29 +65,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let _ = rustls::crypto::ring::default_provider().install_default();
     ensure_velodex_built()?;
-    let servers: Vec<_> = servers::all()
-        .into_iter()
-        .filter(|server| cli.only.is_empty() || cli.only.split(',').any(|name| name == server.name))
-        .collect();
     let http = reqwest::Client::builder().build()?;
-    let runs = |part: Part| !cli.skip.contains(&part);
-    if runs(Part::Install) {
-        let clients: &[&str] = if runs(Part::Pip) { &["uv", "pip"] } else { &["uv"] };
-        workloads::installs(&servers, clients, cli.runs, &http).await?;
+    match cli.ecosystem {
+        Ecosystem::Pypi => ecosystems::pypi::run(cli.runs, &cli.skip, &cli.only, &http).await,
     }
-    if runs(Part::Throughput) {
-        workloads::throughput(&servers, &http).await?;
-    }
-    if runs(Part::Parallel) {
-        workloads::fleet(&servers, &http).await?;
-    }
-    if runs(Part::Metadata) {
-        workloads::metadata(&servers, &http).await?;
-    }
-    if runs(Part::Load) {
-        workloads::load(&servers, &[1, 32], &http).await?;
-    }
-    Ok(())
 }
 
 /// Build the release binary when it is absent, so one command reproduces everything.

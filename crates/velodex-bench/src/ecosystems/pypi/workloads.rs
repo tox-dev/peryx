@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 
-use crate::packages::{FLEET_PACKAGE, METADATA_PROJECT, STRESS_PROJECT, TOP_PACKAGES};
+use super::packages::{FLEET_PACKAGE, METADATA_PROJECT, STRESS_PROJECT, TOP_PACKAGES};
 use crate::report::{Absent, Metric, Row, publish, row, table};
 use crate::servers::{Active, Server};
 use crate::usage::{Cost, Usage};
