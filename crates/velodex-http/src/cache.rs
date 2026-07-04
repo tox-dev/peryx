@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use velodex_core::pypi::file_matches_version;
-use velodex_core::pypi::{
+use velodex_format::pypi::file_matches_version;
+use velodex_format::pypi::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Yanked, parse_detail,
     parse_detail_html, parse_distribution_filename, to_json,
 };
@@ -38,7 +38,7 @@ pub enum CacheError {
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error(transparent)]
-    Simple(velodex_core::pypi::SimpleError),
+    Simple(velodex_format::pypi::SimpleError),
     #[error(transparent)]
     Archive(#[from] crate::archive::ArchiveError),
     #[error("upstream unreachable and nothing cached")]
@@ -67,14 +67,14 @@ pub enum CacheError {
     Policy(#[from] PolicyDenial),
 }
 
-impl From<velodex_core::pypi::SimpleError> for CacheError {
-    fn from(err: velodex_core::pypi::SimpleError) -> Self {
+impl From<velodex_format::pypi::SimpleError> for CacheError {
+    fn from(err: velodex_format::pypi::SimpleError) -> Self {
         match err {
-            velodex_core::pypi::SimpleError::Json(err) => Self::Parse(err),
-            err @ (velodex_core::pypi::SimpleError::UnsupportedApiVersion(_)
-            | velodex_core::pypi::SimpleError::InvalidApiVersion(_)
-            | velodex_core::pypi::SimpleError::InvalidProjectStatus(_)
-            | velodex_core::pypi::SimpleError::Html(_)) => Self::Simple(err),
+            velodex_format::pypi::SimpleError::Json(err) => Self::Parse(err),
+            err @ (velodex_format::pypi::SimpleError::UnsupportedApiVersion(_)
+            | velodex_format::pypi::SimpleError::InvalidApiVersion(_)
+            | velodex_format::pypi::SimpleError::InvalidProjectStatus(_)
+            | velodex_format::pypi::SimpleError::Html(_)) => Self::Simple(err),
         }
     }
 }
@@ -2462,7 +2462,7 @@ async fn tail_file(
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use velodex_core::pypi::Provenance;
+    use velodex_format::pypi::Provenance;
     use velodex_storage::blob::BlobStore;
     use velodex_storage::meta::MetaStore;
 

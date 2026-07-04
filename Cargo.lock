@@ -4635,7 +4635,7 @@ dependencies = [
  "tracing-appender",
  "tracing-journald",
  "tracing-subscriber",
- "velodex-core",
+ "velodex-format",
  "velodex-http",
  "velodex-storage",
  "velodex-upstream",
@@ -4662,7 +4662,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "velodex-core"
+name = "velodex-format"
 version = "0.0.1"
 dependencies = [
  "insta",
@@ -4707,7 +4707,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "utoipa",
- "velodex-core",
+ "velodex-format",
  "velodex-storage",
  "velodex-upstream",
  "wiremock",
@@ -4761,7 +4761,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-http 0.7.0",
- "velodex-core",
+ "velodex-format",
  "velodex-http",
  "velodex-storage",
  "wasm-bindgen",

@@ -16,7 +16,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
-use velodex_core::pypi::{
+use velodex_format::pypi::{
     DistributionFilenameError, ProjectDetail, ProjectList, ProjectStatus, Yanked, normalize_name, render_detail_html,
     render_index_html, render_legacy_json, to_json,
 };

@@ -18,7 +18,7 @@ nursery = { level = "warn", priority = -1 }
 unsafe_code = "forbid"
 
 [workspace.dependencies]
-velodex-core = { path = "crates/velodex-core" }
+velodex-format = { path = "crates/velodex-format" }
 velodex-storage = { path = "crates/velodex-storage" }
 velodex-upstream = { path = "crates/velodex-upstream" }
 velodex-http = { path = "crates/velodex-http" }

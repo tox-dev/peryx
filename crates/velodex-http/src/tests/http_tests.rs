@@ -12,7 +12,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
-use velodex_core::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
+use velodex_format::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::{Auth, UpstreamClient};
@@ -1045,8 +1045,8 @@ async fn test_mirror_detail_revalidate_304_serves_cached() {
 #[tokio::test]
 async fn test_mirror_detail_stale_on_5xx() {
     let h = harness().await;
-    let body = velodex_core::pypi::to_json(&velodex_core::pypi::ProjectDetail {
-        meta: velodex_core::pypi::Meta::default(),
+    let body = velodex_format::pypi::to_json(&velodex_format::pypi::ProjectDetail {
+        meta: velodex_format::pypi::Meta::default(),
         name: "flask".to_owned(),
         versions: vec!["1.0".to_owned()],
         files: vec![],
@@ -1101,8 +1101,8 @@ async fn test_mirror_detail_stale_on_upstream_error() {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
-    let body = velodex_core::pypi::to_json(&velodex_core::pypi::ProjectDetail {
-        meta: velodex_core::pypi::Meta::default(),
+    let body = velodex_format::pypi::to_json(&velodex_format::pypi::ProjectDetail {
+        meta: velodex_format::pypi::Meta::default(),
         name: "flask".to_owned(),
         versions: vec![],
         files: vec![],
@@ -1173,8 +1173,8 @@ async fn test_offline_mirror_serves_stale_cached_page() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let body = velodex_core::pypi::to_json(&velodex_core::pypi::ProjectDetail {
-        meta: velodex_core::pypi::Meta::default(),
+    let body = velodex_format::pypi::to_json(&velodex_format::pypi::ProjectDetail {
+        meta: velodex_format::pypi::Meta::default(),
         name: "flask".to_owned(),
         versions: vec!["1.0".to_owned()],
         files: vec![],

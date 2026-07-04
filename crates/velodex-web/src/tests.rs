@@ -1,4 +1,4 @@
-use velodex_core::pypi::parse_metadata;
+use velodex_format::pypi::parse_metadata;
 
 use crate::markdown::render_description;
 use crate::model::{UiProject, UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};

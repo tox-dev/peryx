@@ -13,7 +13,7 @@ use tantivy::schema::document::{TantivyDocument, Value as _};
 use tantivy::schema::{FAST, Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer, TokenizerManager};
 use tantivy::{Index as TantivyIndex, IndexReader, Order, Term};
-use velodex_core::pypi::{
+use velodex_format::pypi::{
     CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata,
 };
 use velodex_storage::blob::Digest;
@@ -272,7 +272,7 @@ pub enum SearchError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    Simple(#[from] velodex_core::pypi::SimpleError),
+    Simple(#[from] velodex_format::pypi::SimpleError),
     #[error("invalid package source type {0:?}")]
     InvalidSource(String),
 }

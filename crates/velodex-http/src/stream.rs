@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use velodex_core::pypi::{CoreMetadata, File, Yanked, parse_meta, to_json};
+use velodex_format::pypi::{CoreMetadata, File, Yanked, parse_meta, to_json};
 
 use crate::path_safety::local_file_url;
 use crate::policy::{Policy, PolicyAction};
@@ -112,7 +112,7 @@ pub enum TransformError {
     #[error("upstream page is not valid JSON: {0}")]
     Parse(#[from] serde_json::Error),
     #[error(transparent)]
-    Simple(#[from] velodex_core::pypi::SimpleError),
+    Simple(#[from] velodex_format::pypi::SimpleError),
     #[error("upstream page ended mid-token")]
     Truncated,
     #[error("upstream page carries data after the document root")]

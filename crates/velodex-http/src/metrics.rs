@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
-use velodex_core::pypi::normalize_name;
+use velodex_format::pypi::normalize_name;
 
 /// One request-path observation.
 #[derive(Debug, Clone)]

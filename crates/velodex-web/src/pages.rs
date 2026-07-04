@@ -14,7 +14,7 @@ use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::hooks::{use_navigate, use_query_map};
 use regex::Regex;
-use velodex_core::pypi::CoreMetadataDoc;
+use velodex_format::pypi::CoreMetadataDoc;
 
 use crate::data::{
     load_admin_snapshot, load_member_chunk, load_members, load_project, load_projects, load_search, load_snapshot,

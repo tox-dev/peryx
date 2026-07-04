@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use velodex_core::pypi::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
+use velodex_format::pypi::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
 
 use crate::policy::{PackageType, Policy, PolicyConfig};
 use crate::stream::{PageContext, PageTransformer, Registration, page_context as build_page_context};
@@ -240,7 +240,7 @@ fn test_quarantined_project_streams_without_files() {
     ]}"#;
     let (out, registrations) = transform(page, plain_context(), 5);
     let detail = parse_detail(out.as_bytes()).unwrap();
-    assert_eq!(detail.meta.status(), velodex_core::pypi::ProjectStatus::Quarantined);
+    assert_eq!(detail.meta.status(), velodex_format::pypi::ProjectStatus::Quarantined);
     assert!(detail.files.is_empty());
     assert!(registrations.is_empty());
 }

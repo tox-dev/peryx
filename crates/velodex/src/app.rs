@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
-use velodex_core::pypi::{CoreMetadata, ProjectDetail, normalize_name, parse_detail};
+use velodex_format::pypi::{CoreMetadata, ProjectDetail, normalize_name, parse_detail};
 use velodex_http::discovery::{BaseUrl, SnippetKind, snippet_text};
 use velodex_http::policy::{PolicyAction, PolicyDenial};
 use velodex_http::upload::Uploaded;

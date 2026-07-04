@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use velodex_core::pypi::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
+use velodex_format::pypi::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
 
 use crate::policy::{PackageType, Policy, PolicyAction, PolicyConfig, PolicyConfigError};
 

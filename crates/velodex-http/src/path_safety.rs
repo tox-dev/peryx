@@ -1,4 +1,4 @@
-use velodex_core::url_encoding::{push_component, push_path};
+use velodex_format::url_encoding::{push_component, push_path};
 use velodex_storage::blob::Digest;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -8,7 +8,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
-use velodex_core::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
+use velodex_format::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_http::path_safety::local_file_url;
 use velodex_http::upload::Uploaded;
 use velodex_storage::blob::Digest;

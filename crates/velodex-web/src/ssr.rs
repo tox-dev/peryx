@@ -7,7 +7,7 @@ use axum::Router;
 use axum::extract::FromRef;
 use leptos::prelude::*;
 use leptos_axum::{LeptosRoutes as _, generate_route_list};
-use velodex_core::pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
+use velodex_format::pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
 use velodex_http::search::{SearchParams, SourceFilter};
 use velodex_http::{AppState, cache};
 use velodex_storage::blob::Digest;

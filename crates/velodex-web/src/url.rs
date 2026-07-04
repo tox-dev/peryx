@@ -1,4 +1,4 @@
-use velodex_core::url_encoding::{push_component, push_path};
+use velodex_format::url_encoding::{push_component, push_path};
 
 #[must_use]
 pub(crate) fn simple_index_url(route: &str) -> String {
