@@ -781,7 +781,22 @@ $header-offset: 4.3rem;
     }
   }
 
+  .docs-nav-icon {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    color: var(--text-soft);
+  }
+
+  // The current (open) section's glyph picks up the accent, matching its active title.
+  .docs-nav-group[open] > summary .docs-nav-icon {
+    color: var(--accent);
+  }
+
   .docs-nav-leaf {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     padding: 0.25rem 0;
   }
 

@@ -170,6 +170,25 @@
           }
         }
       });
+      // Relabel Pagefind's "N results" message to reflect how many are currently shown versus the
+      // total, collapsing back to "N results" once "load more" has revealed them all. The regex
+      // matches both Pagefind's own text and our rewrite, so re-running on our own mutation is a
+      // no-op rather than a loop.
+      var searchRoot = document.getElementById("pagefind-search");
+      if (searchRoot) {
+        var relabel = function () {
+          var message = modal.querySelector(".pagefind-ui__message");
+          if (!message) return;
+          var raw = message.textContent.trim();
+          var match = raw.match(/^(\d+)\s+result/i) || raw.match(/of\s+(\d+)\s+results/i);
+          if (!match) return;
+          var total = +match[1];
+          var shown = modal.querySelectorAll(".pagefind-ui__result").length;
+          var next = shown < total ? "Showing " + shown + " of " + total + " results" : total + " results";
+          if (raw !== next) message.textContent = next;
+        };
+        new MutationObserver(relabel).observe(searchRoot, { childList: true, subtree: true });
+      }
     })();
     var navToggle = document.querySelector(".nav-toggle");
     var navLinks = document.getElementById("site-nav");
