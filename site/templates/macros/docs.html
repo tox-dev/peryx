@@ -1,0 +1,57 @@
+{# Left docs navigation: the diátaxis sections in a fixed order, each with its pages, current page
+   marked active. Rendered as a <details> so the same markup is a static column on desktop and a
+   collapsible drawer on mobile. #}
+{% macro nav(current) %}
+{% set groups = ["tutorials", "guides", "reference", "explanation", "migration"] %}
+<details class="docs-nav" open>
+  <summary>Documentation</summary>
+  <div class="docs-nav-search" data-search-slot></div>
+  <nav aria-label="Documentation sections">
+    {% for group in groups %}
+    {% set sec = get_section(path=group ~ "/_index.md") %}
+    {% set in_section = current is starting_with(sec.permalink) %}
+    <details class="docs-nav-group"{% if in_section %} open{% endif %}>
+      <summary>
+        <a class="docs-nav-title{% if current == sec.permalink %} active{% endif %}" href="{{ sec.permalink }}">{{ sec.title }}</a>
+      </summary>
+      {% if sec.pages %}
+      <ul>
+        {% for p in sec.pages %}
+        <li><a{% if current == p.permalink %} class="active" aria-current="page"{% endif %} href="{{ p.permalink }}">{{ p.title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </details>
+    {% endfor %}
+    <div class="docs-nav-group docs-nav-leaf">
+      <a class="docs-nav-title{% if current == get_url(path='@/contributing.md') %} active{% endif %}" href="{{ get_url(path='@/contributing.md') }}">Contributing</a>
+    </div>
+  </nav>
+</details>
+{% endmacro %}
+
+{# Right table of contents from the page/section headings, two levels deep. Also a <details> so it
+   folds away on narrow screens. #}
+{% macro toc(entries) %}
+{% if entries %}
+<details class="docs-toc" open>
+  <summary>On this page</summary>
+  <nav aria-label="On this page">
+    <ul>
+      {% for h in entries %}
+      <li>
+        <a href="#{{ h.id }}">{{ h.title }}</a>
+        {% if h.children %}
+        <ul>
+          {% for c in h.children %}
+          <li><a href="#{{ c.id }}">{{ c.title }}</a></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </nav>
+</details>
+{% endif %}
+{% endmacro %}

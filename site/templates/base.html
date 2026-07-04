@@ -4,7 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ config.title }} — fast PyPI mirror and private index{% endblock title %}</title>
-  <meta name="description" content="{{ config.description }}">
+  {%- if page %}
+    {%- set seo_desc = page.description | default(value=config.description) %}
+    {%- set seo_url = page.permalink %}
+    {%- set seo_title = page.title ~ " — " ~ config.title %}
+  {%- elif section and section.title %}
+    {%- set seo_desc = section.description | default(value=config.description) %}
+    {%- set seo_url = section.permalink %}
+    {%- set seo_title = section.title ~ " — " ~ config.title %}
+  {%- else %}
+    {%- set seo_desc = config.description %}
+    {%- set seo_url = get_url(path="/") %}
+    {%- set seo_title = config.title ~ " — fast PyPI mirror and private index" %}
+  {%- endif %}
+  <meta name="description" content="{{ seo_desc }}">
+  <link rel="canonical" href="{{ seo_url | safe }}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.title }}">
+  <meta property="og:title" content="{{ seo_title }}">
+  <meta property="og:description" content="{{ seo_desc }}">
+  <meta property="og:url" content="{{ seo_url | safe }}">
+  <meta property="og:image" content="{{ get_url(path='mark.svg') }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ seo_title }}">
+  <meta name="twitter:description" content="{{ seo_desc }}">
+  <meta name="theme-color" content="#f74c00">
   <link rel="icon" type="image/svg+xml" href="{{ get_url(path='icon.svg') }}">
   <script>
     // Apply a saved theme before first paint so there is no flash; OS preference stays the default.
@@ -24,7 +48,8 @@
         <img src="{{ get_url(path='mark.svg') }}" alt="" width="36" height="24">
         <span>velodex</span>
       </a>
-      <div class="links">
+      <div class="nav-right">
+      <div class="links" id="site-nav">
         <a href="{{ get_url(path='@/tutorials/_index.md') }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5 10-5v6"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
           Tutorials</a>
@@ -46,15 +71,29 @@
         <a href="{{ config.extra.repo }}" rel="external">
           <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
           GitHub</a>
-        <button class="theme-toggle" type="button" aria-label="Switch color theme">
-          <span class="sun" aria-hidden="true">&#9728;</span><span class="moon" aria-hidden="true">&#9789;</span>
-        </button>
+      </div>
+        <div class="nav-controls">
+          <button class="search-trigger" type="button" aria-label="Search documentation" data-search-open>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <span class="search-kbd">⌘K</span>
+          </button>
+          <button class="theme-toggle" type="button" aria-label="Switch color theme">
+            <span class="sun" aria-hidden="true">&#9728;</span><span class="moon" aria-hidden="true">&#9789;</span>
+          </button>
+          <button class="nav-toggle" type="button" aria-label="Toggle menu" aria-controls="site-nav" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          </button>
+        </div>
       </div>
     </nav>
   </header>
   <main>
     {% block content %}{% endblock content %}
   </main>
+  <dialog class="search-modal" id="search-modal" aria-label="Search documentation">
+    <div id="pagefind-search"></div>
+  </dialog>
+  <script>window.__PAGEFIND_BASE = "{{ config.base_url | safe }}/pagefind/";</script>
   <footer class="site-footer">
     <div class="container footer-inner">
       <img src="{{ get_url(path='mark.svg') }}" alt="" width="30" height="20">
@@ -72,6 +111,93 @@
       localStorage.setItem("theme", next);
       if (window.velodexRenderMermaid) window.velodexRenderMermaid();
     });
+    (function () {
+      var modal = document.getElementById("search-modal");
+      if (!modal) return;
+      var loaded = false;
+      function load() {
+        if (loaded) return;
+        loaded = true;
+        var base = window.__PAGEFIND_BASE || "/pagefind/";
+        var css = document.createElement("link");
+        css.rel = "stylesheet";
+        css.href = base + "pagefind-ui.css";
+        document.head.appendChild(css);
+        var script = document.createElement("script");
+        script.src = base + "pagefind-ui.js";
+        script.onload = function () {
+          new PagefindUI({ element: "#pagefind-search", bundlePath: base, showSubResults: true, showImages: false, resetStyles: false });
+        };
+        document.body.appendChild(script);
+      }
+      function open() {
+        load();
+        if (!modal.open) modal.showModal();
+        setTimeout(function () {
+          var input = modal.querySelector("input");
+          if (input) input.focus();
+        }, 60);
+      }
+      document.querySelectorAll("[data-search-open]").forEach(function (btn) {
+        btn.addEventListener("click", open);
+      });
+      document.addEventListener("keydown", function (event) {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+          event.preventDefault();
+          open();
+        }
+      });
+      modal.addEventListener("click", function (event) {
+        if (event.target === modal) modal.close();
+      });
+    })();
+    var navToggle = document.querySelector(".nav-toggle");
+    var navLinks = document.getElementById("site-nav");
+    if (navToggle && navLinks) {
+      navToggle.addEventListener("click", function () {
+        var open = navLinks.classList.toggle("open");
+        navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    }
+    document.querySelectorAll(".docs article > table").forEach(function (table) {
+      var wrap = document.createElement("div");
+      wrap.className = "table-scroll";
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
+    });
+    var railQuery = window.matchMedia("(max-width: 52rem)");
+    function syncDocsRails() {
+      var collapsed = railQuery.matches;
+      document.querySelectorAll(".docs-nav, .docs-toc").forEach(function (rail) {
+        rail.open = !collapsed;
+      });
+    }
+    if (document.querySelector(".docs-nav")) {
+      syncDocsRails();
+      railQuery.addEventListener("change", syncDocsRails);
+    }
+    (function () {
+      var toc = document.querySelector(".docs-toc");
+      if (!toc || !("IntersectionObserver" in window)) return;
+      var links = {};
+      toc.querySelectorAll('a[href^="#"]').forEach(function (a) {
+        links[decodeURIComponent(a.getAttribute("href").slice(1))] = a;
+      });
+      var heads = Object.keys(links)
+        .map(function (id) { return document.getElementById(id); })
+        .filter(Boolean);
+      if (!heads.length) return;
+      var current = null;
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          if (current) current.classList.remove("active");
+          current = links[entry.target.id];
+          if (current) current.classList.add("active");
+        });
+      }, { rootMargin: "0px 0px -75% 0px" });
+      heads.forEach(function (head) { observer.observe(head); });
+    })();
     document.querySelectorAll("main pre").forEach(function (pre) {
       if (pre.classList.contains("mermaid")) return;
       var button = document.createElement("button");

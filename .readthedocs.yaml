@@ -12,3 +12,5 @@ build:
       | tar xz
     - ./zola --root site build --base-url "${READTHEDOCS_CANONICAL_URL}" --output-dir "${READTHEDOCS_OUTPUT}/html"
       --force
+    - python site/scripts/gen_llms.py --base-url "${READTHEDOCS_CANONICAL_URL}" --content site/content
+      --out "${READTHEDOCS_OUTPUT}/html/llms.txt"

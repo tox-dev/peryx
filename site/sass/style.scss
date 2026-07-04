@@ -51,10 +51,18 @@ body {
   background: var(--bg);
 }
 
+// One shell width, widened from the old 64rem (~50% more room on large screens) and fluid below it.
+// Prose stays readable because the docs layout caps its own text column; landing sections use the
+// full width for hero, bento cards, and tables.
 .container {
-  max-width: 64rem;
+  width: 100%;
+  max-width: 90rem;
   margin: 0 auto;
-  padding: 0 1.25rem;
+  padding: 0 1.5rem;
+
+  @media (max-width: 40rem) {
+    padding: 0 1.1rem;
+  }
 }
 
 a {
@@ -76,9 +84,11 @@ a {
   backdrop-filter: blur(10px);
 
   nav {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 1rem;
     padding-top: 0.8rem;
     padding-bottom: 0.8rem;
   }
@@ -123,6 +133,157 @@ a {
         text-decoration: none;
       }
     }
+  }
+}
+
+// Right cluster: nav links, then always-visible controls (theme toggle, search, hamburger).
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+}
+
+.nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-soft);
+  cursor: pointer;
+
+  svg {
+    width: 1.15rem;
+    height: 1.15rem;
+  }
+
+  &:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
+// Below the nav breakpoint the section links collapse into a drawer under the sticky header,
+// leaving brand + controls + hamburger on the bar itself.
+@media (max-width: 60rem) {
+  .nav-toggle {
+    display: inline-flex;
+  }
+
+  .site-header .links {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0.4rem 1.5rem 0.9rem;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.22);
+
+    &.open {
+      display: flex;
+    }
+
+    a {
+      padding: 0.7rem 0.2rem;
+      font-size: 1rem;
+      border-bottom: 1px solid var(--border);
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+  }
+}
+
+.search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.32rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+
+  svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  &:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
+.search-kbd {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 0.32rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+@media (max-width: 40rem) {
+  .search-kbd {
+    display: none;
+  }
+}
+
+// The search dialog and the Pagefind UI inside it, themed to the site palette so the accent, text,
+// surfaces, and borders match the rest of the chrome in both light and dark.
+.search-modal {
+  width: min(40rem, 92vw);
+  max-width: 92vw;
+  margin-top: 11vh;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+
+  --pagefind-ui-primary: var(--accent);
+  --pagefind-ui-text: var(--text);
+  --pagefind-ui-background: var(--bg);
+  --pagefind-ui-border: var(--border);
+  --pagefind-ui-tag: var(--bg-soft);
+  --pagefind-ui-border-width: 1px;
+  --pagefind-ui-border-radius: 10px;
+  --pagefind-ui-font: inherit;
+
+  // Pagefind's default match highlight is a hard yellow; tint it with the brand amber instead, and
+  // color result titles with the accent so the palette matches the rest of the site.
+  mark {
+    background: color-mix(in srgb, var(--brand-b) 32%, transparent);
+    color: inherit;
+    border-radius: 3px;
+  }
+
+  .pagefind-ui__result-title a {
+    color: var(--accent);
+  }
+
+  &::backdrop {
+    background: rgba(0, 0, 0, 0.5);
   }
 }
 
@@ -416,7 +577,7 @@ a {
 }
 
 .docs {
-  padding: 2.5rem 1.25rem 4rem;
+  min-width: 0;
 
   article {
     max-width: none;
@@ -468,6 +629,239 @@ a {
   }
 }
 
+// Docs shell: three columns on desktop (nav | content | on-this-page), following the proportions
+// the Material-based docs (uv/ruff) settle on — a ~16rem section tree, a readable content column
+// capped near 54rem, and a ~15rem table of contents. Below 72rem the TOC drops; below 52rem both
+// rails fold into <details> disclosures stacked above the content.
+$docs-break-toc: 72rem;
+$docs-break-nav: 52rem;
+$header-offset: 4.3rem;
+
+.docs-shell {
+  display: grid;
+  grid-template-columns: 16rem minmax(0, 1fr) 15rem;
+  gap: 2.75rem;
+  align-items: start;
+  padding-top: 2rem;
+  padding-bottom: 4rem;
+}
+
+.docs-main {
+  min-width: 0;
+
+  article {
+    max-width: 54rem;
+  }
+}
+
+.docs-nav,
+.docs-toc {
+  position: sticky;
+  top: $header-offset;
+  max-height: calc(100vh - #{$header-offset} - 1rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+
+  > summary {
+    list-style: none;
+    cursor: pointer;
+    font-weight: 700;
+    color: var(--text);
+    padding: 0.4rem 0;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+  }
+}
+
+.docs-nav {
+  font-size: 0.92rem;
+
+  .docs-nav-group {
+    margin-bottom: 0.55rem;
+  }
+
+  // Each section is a <details>: the summary row toggles its pages open and closed (the chevron is
+  // the drill-down control), while the title inside stays a link to the section landing. Only the
+  // current section renders open; the rest start collapsed.
+  .docs-nav-group > summary {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0;
+    cursor: pointer;
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+
+    &::after {
+      content: "";
+      margin-left: auto;
+      width: 0.42rem;
+      height: 0.42rem;
+      border-right: 1.5px solid var(--text-soft);
+      border-bottom: 1.5px solid var(--text-soft);
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
+    }
+
+    &:hover::after {
+      border-color: var(--accent);
+    }
+  }
+
+  .docs-nav-group[open] > summary::after {
+    transform: rotate(45deg);
+  }
+
+  .docs-nav-title {
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
+
+    &.active {
+      color: var(--accent);
+    }
+  }
+
+  .docs-nav-leaf {
+    padding: 0.25rem 0;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0.15rem 0 0.4rem;
+    padding: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  li a {
+    display: block;
+    margin-left: -1px;
+    padding: 0.28rem 0 0.28rem 0.9rem;
+    border-left: 2px solid transparent;
+    color: var(--text-soft);
+    font-size: 0.9rem;
+
+    &:hover {
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    &.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      font-weight: 600;
+    }
+  }
+}
+
+.docs-toc {
+  font-size: 0.85rem;
+
+  nav ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  a {
+    display: block;
+    padding: 0.25rem 0 0.25rem 0.8rem;
+    border-left: 2px solid var(--border);
+    color: var(--text-soft);
+
+    &:hover {
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    &.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+    }
+  }
+
+  ul ul a {
+    padding-left: 1.6rem;
+    font-size: 0.95em;
+  }
+}
+
+// Desktop keeps both rails open (JS holds the open attribute in sync with the breakpoint); the
+// summary reads as a static heading rather than a toggle.
+@media (min-width: #{$docs-break-nav + 0.01rem}) {
+  .docs-nav > summary,
+  .docs-toc > summary {
+    pointer-events: none;
+  }
+}
+
+@media (max-width: $docs-break-toc) {
+  .docs-shell {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+
+  .docs-toc {
+    display: none;
+  }
+}
+
+// Phone/tablet: the two rails sit side by side as collapsible cards above the content (each takes
+// half the row); opening one expands it to the full width and pushes the other to its own line.
+// align-items must be stretch here (the desktop grid sets it to start), otherwise the content
+// column sizes to its widest child — a wide table — instead of the viewport, and text stops
+// wrapping.
+@media (max-width: $docs-break-nav) {
+  .docs-shell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0.6rem;
+  }
+
+  .docs-nav,
+  .docs-toc {
+    display: block;
+    position: static;
+    flex: 1 1 0;
+    min-width: 0;
+    max-height: none;
+    overflow: visible;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.2rem 0.9rem;
+    background: var(--bg-soft);
+  }
+
+  .docs-nav {
+    order: 1;
+  }
+
+  .docs-toc {
+    order: 2;
+  }
+
+  .docs-nav[open],
+  .docs-toc[open] {
+    flex-basis: 100%;
+  }
+
+  .docs-main {
+    order: 3;
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .docs-nav > summary,
+  .docs-toc > summary {
+    padding: 0.6rem 0;
+  }
+}
+
 code {
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;
@@ -513,6 +907,26 @@ table {
   th {
     background: var(--bg-soft);
   }
+}
+
+// Wide comparison and bench tables must scroll inside their own box, never widen the page on a
+// phone. A script wraps each docs table in this container after load; the fallback keeps a raw
+// table scrollable on its own too.
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  margin: 1.25rem 0;
+
+  table {
+    margin: 0;
+  }
+}
+
+.docs article > table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 // ReDoc manages its own inner layout; give it the full viewport width and let the intro above it
@@ -649,6 +1063,17 @@ pre:hover .copy-snippet,
 }
 .tab-pane.active {
   display: block;
+}
+
+// The bench wrapper scrolls its wide table on narrow screens instead of stretching the page.
+.bench {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 1.25rem 0;
+
+  .bench-table {
+    margin: 0;
+  }
 }
 
 /* bench-table tints: best-in-row green ramping to worst-in-row red. The number carries the value,

@@ -1,28 +1,39 @@
 {% extends "base.html" %}
+{% import "macros/docs.html" as docs %}
 
 {% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
 
 {% block content %}
-<div class="container docs">
-  <nav class="breadcrumb">
-    {% for ancestor in page.ancestors %}
-      {% set section = get_section(path=ancestor) %}
-      <a href="{{ section.permalink }}">{{ section.title | default(value="Home") }}</a> /
-    {% endfor %}
-    <span>{{ page.title }}</span>
-  </nav>
-  <article>
-    <h1>
-      {%- if page.extra.logos %}
-      <span class="title-logos">
-        {%- for logo in page.extra.logos %}
-        <img src="{{ get_url(path=logo) }}" alt="" width="28" height="28">
-        {%- endfor %}
-      </span>
-      {%- endif %}
-      {{ page.title }}
-    </h1>
-    {{ page.content | safe }}
-  </article>
+<div class="container docs-shell">
+  {{ docs::nav(current=page.permalink) }}
+  {%- set section_slug = page.components | first | default(value="") %}
+  {%- if section_slug == "reference" %}{% set search_weight = "1.5" %}
+  {%- elif section_slug == "explanation" %}{% set search_weight = "1.3" %}
+  {%- elif section_slug == "migration" %}{% set search_weight = "0.6" %}
+  {%- elif section_slug == "tutorials" or section_slug == "guides" %}{% set search_weight = "1.1" %}
+  {%- else %}{% set search_weight = "1.0" %}{%- endif %}
+  <div class="docs-main docs">
+    <nav class="breadcrumb">
+      {% for ancestor in page.ancestors %}
+        {% set section = get_section(path=ancestor) %}
+        <a href="{{ section.permalink }}">{{ section.title | default(value="Home") }}</a> /
+      {% endfor %}
+      <span>{{ page.title }}</span>
+    </nav>
+    <article data-pagefind-body data-pagefind-weight="{{ search_weight }}">
+      <h1>
+        {%- if page.extra.logos %}
+        <span class="title-logos">
+          {%- for logo in page.extra.logos %}
+          <img src="{{ get_url(path=logo) }}" alt="" width="28" height="28">
+          {%- endfor %}
+        </span>
+        {%- endif %}
+        {{ page.title }}
+      </h1>
+      {{ page.content | safe }}
+    </article>
+  </div>
+  {{ docs::toc(entries=page.toc) }}
 </div>
 {% endblock content %}
