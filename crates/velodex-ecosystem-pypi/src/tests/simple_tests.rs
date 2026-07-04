@@ -499,10 +499,9 @@ fn test_parse_detail_rejects_invalid_api_version() {
 
 #[test]
 fn test_parse_meta_reads_project_status() {
-    let meta = crate::parse_meta(
-        br#"{"api-version":"1.4","project-status":"archived","project-status-reason":"read only"}"#,
-    )
-    .unwrap();
+    let meta =
+        crate::parse_meta(br#"{"api-version":"1.4","project-status":"archived","project-status-reason":"read only"}"#)
+            .unwrap();
     assert_eq!(meta.project_status.as_deref(), Some("archived"));
     assert_eq!(meta.project_status_reason.as_deref(), Some("read only"));
     assert_eq!(meta.status(), ProjectStatus::Archived);

@@ -116,7 +116,7 @@ fn test_config_snippet_renders_pip_conf() {
 #[test]
 fn test_config_snippet_redacts_upload_token() {
     let mut config = Config::default();
-    let IndexKind::Local { upload_token, .. } = &mut config.indexes[1].kind else {
+    let IndexKind::Hosted { upload_token, .. } = &mut config.indexes[1].kind else {
         panic!("expected local index");
     };
     *upload_token = Some("s3cret".to_owned());
@@ -138,7 +138,7 @@ fn test_config_snippet_redacts_upload_token() {
 #[test]
 fn test_config_snippet_renders_uv_toml_with_upload_url() {
     let mut config = Config::default();
-    let IndexKind::Local { upload_token, .. } = &mut config.indexes[1].kind else {
+    let IndexKind::Hosted { upload_token, .. } = &mut config.indexes[1].kind else {
         panic!("expected local index");
     };
     *upload_token = Some("s3cret".to_owned());

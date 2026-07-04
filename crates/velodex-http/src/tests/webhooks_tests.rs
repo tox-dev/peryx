@@ -14,10 +14,10 @@ use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 use super::http_tests::{fixture_wheel, multipart_body, request, upload_auth, upload_velodexpkg};
-use velodex_policy::Policy;
 use crate::router;
 use crate::state::{AppState, Index, IndexKind};
 use crate::webhook::{self, WebhookRuntime, WebhookTargetConfig};
+use velodex_policy::Policy;
 
 const SECRET: &str = "hook-secret";
 
@@ -49,7 +49,7 @@ impl Harness {
             vec![Index {
                 name: "local".to_owned(),
                 route: "local".to_owned(),
-                kind: IndexKind::Local {
+                kind: IndexKind::Hosted {
                     upload_token: Some("s3cret".to_owned()),
                     volatile: true,
                 },

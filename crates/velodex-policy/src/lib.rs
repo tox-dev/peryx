@@ -385,7 +385,7 @@ impl Policy {
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyAction {
     Upload,
-    Mirror,
+    Proxy,
     Serve,
 }
 
@@ -393,7 +393,7 @@ impl fmt::Display for PolicyAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Upload => "upload",
-            Self::Mirror => "mirror",
+            Self::Proxy => "proxy",
             Self::Serve => "serve",
         })
     }

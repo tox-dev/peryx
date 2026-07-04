@@ -705,13 +705,13 @@ fn target(config: &Config, state: &Arc<AppState>, repo: &str) -> anyhow::Result<
 
 fn target_mirror(state: &AppState, index: &Index) -> anyhow::Result<(String, UpstreamClient, bool)> {
     match &index.kind {
-        IndexKind::Mirror { client, offline } => Ok((index.name.clone(), client.clone(), *offline)),
-        IndexKind::Local { .. } => bail!("repository {:?} is local and has no upstream mirror", index.name),
-        IndexKind::Overlay { layers, .. } => {
+        IndexKind::Proxy { client, offline } => Ok((index.name.clone(), client.clone(), *offline)),
+        IndexKind::Hosted { .. } => bail!("repository {:?} is local and has no upstream mirror", index.name),
+        IndexKind::Virtual { layers, .. } => {
             let mut mirror = None;
             for &pos in layers {
                 let layer = state.index_at(pos);
-                if let IndexKind::Mirror { client, offline } = &layer.kind
+                if let IndexKind::Proxy { client, offline } = &layer.kind
                     && mirror.replace((layer.name.clone(), client.clone(), *offline)).is_some()
                 {
                     bail!("repository {:?} has more than one mirror layer", index.name);
@@ -727,7 +727,7 @@ fn mirror_prefetch<'a>(config: &'a Config, mirror: &str) -> anyhow::Result<&'a M
         .indexes
         .iter()
         .find_map(|index| match (index.name == mirror, &index.kind) {
-            (true, ConfigIndexKind::Mirror { prefetch, .. }) => Some(prefetch.as_ref()),
+            (true, ConfigIndexKind::Proxy { prefetch, .. }) => Some(prefetch.as_ref()),
             _ => None,
         })
         .context(format!("mirror config {mirror:?} not found"))

@@ -15,12 +15,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::detail_json;
 use super::{LogCapture, field};
-use velodex_policy::Policy;
 use crate::rate_limit::{
     DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits, route_class,
 };
 use crate::router;
 use crate::state::{AppState, Index, IndexKind};
+use velodex_policy::Policy;
 
 struct Harness {
     _dir: tempfile::TempDir,
@@ -42,7 +42,7 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -343,7 +343,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },

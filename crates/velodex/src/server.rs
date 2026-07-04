@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use axum::Router;
-use velodex_policy::Policy;
 use velodex_http::webhook::{WebhookRuntime, WebhookTargetConfig};
 use velodex_http::{AppState, Index, IndexKind, RuntimeOptions, path_safety, router, webhook};
+use velodex_policy::Policy;
 use velodex_storage::blob::BlobStore;
 use velodex_storage::meta::MetaStore;
 use velodex_upstream::{Auth, UpstreamClient, redact_url};
@@ -129,7 +129,7 @@ fn build_kind(
     global_offline: bool,
 ) -> anyhow::Result<IndexKind> {
     match &index.kind {
-        ConfigKind::Mirror {
+        ConfigKind::Proxy {
             upstream,
             username,
             password,
@@ -138,7 +138,7 @@ fn build_kind(
             ..
         } => {
             let auth = mirror_auth(token.as_deref(), username.as_deref(), password.as_deref());
-            Ok(IndexKind::Mirror {
+            Ok(IndexKind::Proxy {
                 client: UpstreamClient::with_auth(upstream, auth).with_context(|| {
                     format!(
                         "build mirror index {} with upstream {}",
@@ -149,17 +149,17 @@ fn build_kind(
                 offline: global_offline || *offline,
             })
         }
-        ConfigKind::Local { upload_token, volatile } => Ok(IndexKind::Local {
+        ConfigKind::Hosted { upload_token, volatile } => Ok(IndexKind::Hosted {
             upload_token: upload_token.clone(),
             volatile: *volatile,
         }),
-        ConfigKind::Overlay { layers, upload } => {
+        ConfigKind::Virtual { layers, upload } => {
             let layer_positions = layers
                 .iter()
                 .map(|name| resolve_name(&index.name, name, positions))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let upload_pos = resolve_upload(index, upload.as_deref(), &layer_positions, configs, positions)?;
-            Ok(IndexKind::Overlay {
+            Ok(IndexKind::Virtual {
                 layers: layer_positions,
                 upload: upload_pos,
             })
@@ -171,10 +171,10 @@ fn upstream_concurrency(configs: &[IndexConfig]) -> Vec<(String, usize)> {
     configs
         .iter()
         .filter_map(|index| match &index.kind {
-            ConfigKind::Mirror {
+            ConfigKind::Proxy {
                 upstream_concurrency, ..
             } => Some((index.name.clone(), *upstream_concurrency)),
-            ConfigKind::Local { .. } | ConfigKind::Overlay { .. } => None,
+            ConfigKind::Hosted { .. } | ConfigKind::Virtual { .. } => None,
         })
         .collect()
 }
@@ -197,7 +197,7 @@ fn resolve_upload(
     match upload {
         Some(name) => {
             let pos = resolve_name(&index.name, name, positions)?;
-            if !matches!(configs[pos].kind, ConfigKind::Local { .. }) {
+            if !matches!(configs[pos].kind, ConfigKind::Hosted { .. }) {
                 bail!("overlay {} upload target {name} is not a local index", index.name);
             }
             Ok(Some(pos))
@@ -205,7 +205,7 @@ fn resolve_upload(
         None => Ok(layers
             .iter()
             .copied()
-            .find(|&pos| matches!(configs[pos].kind, ConfigKind::Local { .. }))),
+            .find(|&pos| matches!(configs[pos].kind, ConfigKind::Hosted { .. }))),
     }
 }
 

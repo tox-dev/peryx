@@ -14,7 +14,7 @@ fn mirror(name: &str, upstream: &str) -> IndexConfig {
         route: name.to_owned(),
         policy: velodex_policy::PolicyConfig::default(),
         webhooks: Vec::new(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             upstream: upstream.to_owned(),
             username: None,
             password: None,
@@ -32,7 +32,7 @@ fn local(name: &str) -> IndexConfig {
         route: name.to_owned(),
         policy: velodex_policy::PolicyConfig::default(),
         webhooks: Vec::new(),
-        kind: IndexKind::Local {
+        kind: IndexKind::Hosted {
             upload_token: None,
             volatile: true,
         },
@@ -45,7 +45,7 @@ fn overlay(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         route: "team/dev".to_owned(),
         policy: velodex_policy::PolicyConfig::default(),
         webhooks: Vec::new(),
-        kind: IndexKind::Overlay {
+        kind: IndexKind::Virtual {
             layers: layers.iter().map(|&name| name.to_owned()).collect(),
             upload: upload.map(str::to_owned),
         },
@@ -87,7 +87,7 @@ fn test_build_state_opens_configured_data_dir() {
 fn test_build_state_applies_upstream_concurrency() {
     let dir = tempfile::tempdir().unwrap();
     let mut pypi = mirror("pypi", "https://pypi.org/simple/");
-    let IndexKind::Mirror {
+    let IndexKind::Proxy {
         upstream_concurrency, ..
     } = &mut pypi.kind
     else {
@@ -315,7 +315,7 @@ fn test_build_indexes_defaults_upload_to_first_local_layer() {
         overlay(&["pypi", "store"], None),
     ];
     let indexes = build_indexes(&configs, false).unwrap();
-    let RuntimeKind::Overlay { upload, layers } = &indexes[2].kind else {
+    let RuntimeKind::Virtual { upload, layers } = &indexes[2].kind else {
         panic!("expected overlay");
     };
     assert_eq!(*upload, Some(1)); // "store" is the first local layer
@@ -326,7 +326,7 @@ fn test_build_indexes_defaults_upload_to_first_local_layer() {
 fn test_build_indexes_overlay_without_local_layer_has_no_upload() {
     let configs = [mirror("pypi", "https://pypi.org/simple/"), overlay(&["pypi"], None)];
     let indexes = build_indexes(&configs, false).unwrap();
-    let RuntimeKind::Overlay { upload, .. } = &indexes[1].kind else {
+    let RuntimeKind::Virtual { upload, .. } = &indexes[1].kind else {
         panic!("expected overlay");
     };
     assert_eq!(*upload, None);

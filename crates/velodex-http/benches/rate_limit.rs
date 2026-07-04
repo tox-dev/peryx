@@ -13,9 +13,9 @@ use http_body_util::BodyExt as _;
 use tokio::runtime::Runtime;
 use tower::ServiceExt as _;
 use velodex_ecosystem_pypi::{Meta, ProjectDetail, to_json};
-use velodex_policy::Policy;
 use velodex_http::rate_limit::{RateLimitConfig, RouteLimit};
 use velodex_http::{AppState, Index, IndexKind, router};
+use velodex_policy::Policy;
 use velodex_storage::blob::BlobStore;
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::UpstreamClient;
@@ -57,7 +57,7 @@ fn mirror(rate_limit: RateLimitConfig) -> (tempfile::TempDir, Arc<AppState>) {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },

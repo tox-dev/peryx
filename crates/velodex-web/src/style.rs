@@ -108,9 +108,9 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; font-weight: 600;
   border: 1px solid var(--border); color: var(--text-soft);
 }
-.badge.kind-mirror { color: #2f81f7; border-color: #2f81f7; }
-.badge.kind-local { color: #34c496; border-color: #34c496; }
-.badge.kind-overlay { color: var(--accent); border-color: var(--accent); }
+.badge.kind-proxy { color: #2f81f7; border-color: #2f81f7; }
+.badge.kind-hosted { color: #34c496; border-color: #34c496; }
+.badge.kind-virtual { color: var(--accent); border-color: var(--accent); }
 .badge.source-uploaded { color: #34c496; border-color: #34c496; }
 .badge.source-cached { color: #2f81f7; border-color: #2f81f7; }
 .badge.source-override { color: #8b5cf6; border-color: #8b5cf6; }

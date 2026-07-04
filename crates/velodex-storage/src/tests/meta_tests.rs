@@ -37,7 +37,9 @@ fn test_serial_starts_at_zero_and_increments() {
 fn test_journal_appends_entries_and_reads_the_changelog() {
     let (_dir, store) = store();
     assert_eq!(
-        store.append_journal("add-file", "flask", Some("1.0"), Some("flask-1.0.whl")).unwrap(),
+        store
+            .append_journal("add-file", "flask", Some("1.0"), Some("flask-1.0.whl"))
+            .unwrap(),
         1
     );
     assert_eq!(store.append_journal("promote", "flask", None, None).unwrap(), 2);

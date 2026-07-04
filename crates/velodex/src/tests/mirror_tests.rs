@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use velodex_ecosystem_pypi::to_json;
-use velodex_policy::PolicyConfig;
 use velodex_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY;
+use velodex_policy::PolicyConfig;
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use wiremock::matchers::{method, path};
@@ -19,7 +19,7 @@ fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             route: "pypi".to_owned(),
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 upstream: upstream.to_owned(),
                 username: None,
                 password: None,
@@ -42,7 +42,7 @@ fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 route: "local".to_owned(),
                 policy: PolicyConfig::default(),
                 webhooks: Vec::new(),
-                kind: IndexKind::Local {
+                kind: IndexKind::Hosted {
                     upload_token: None,
                     volatile: true,
                 },
@@ -52,7 +52,7 @@ fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 route: "pypi".to_owned(),
                 policy: PolicyConfig::default(),
                 webhooks: Vec::new(),
-                kind: IndexKind::Mirror {
+                kind: IndexKind::Proxy {
                     upstream: upstream.to_owned(),
                     username: None,
                     password: None,
@@ -67,7 +67,7 @@ fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 route: "root/pypi".to_owned(),
                 policy: PolicyConfig::default(),
                 webhooks: Vec::new(),
-                kind: IndexKind::Overlay {
+                kind: IndexKind::Virtual {
                     layers: vec!["local".to_owned(), "pypi".to_owned()],
                     upload: Some("local".to_owned()),
                 },
@@ -423,7 +423,7 @@ async fn test_mirror_plan_reports_missing_and_upstream_failures() {
 async fn test_mirror_plan_offline_reads_cached_pages() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = mirror_config(dir.path(), "https://example.invalid/simple/");
-    let IndexKind::Mirror { offline, .. } = &mut config.indexes[0].kind else {
+    let IndexKind::Proxy { offline, .. } = &mut config.indexes[0].kind else {
         panic!("expected mirror");
     };
     *offline = true;
@@ -922,7 +922,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         route: "mirror-two".to_owned(),
         policy: PolicyConfig::default(),
         webhooks: Vec::new(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             upstream: format!("{}/simple/", server.uri()),
             username: None,
             password: None,
@@ -937,7 +937,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         route: "double".to_owned(),
         policy: PolicyConfig::default(),
         webhooks: Vec::new(),
-        kind: IndexKind::Overlay {
+        kind: IndexKind::Virtual {
             layers: vec!["pypi".to_owned(), "mirror-two".to_owned()],
             upload: None,
         },
@@ -947,7 +947,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         route: "local-overlay".to_owned(),
         policy: PolicyConfig::default(),
         webhooks: Vec::new(),
-        kind: IndexKind::Overlay {
+        kind: IndexKind::Virtual {
             layers: vec!["local".to_owned()],
             upload: Some("local".to_owned()),
         },

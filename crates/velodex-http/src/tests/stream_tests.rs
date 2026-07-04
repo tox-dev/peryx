@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use velodex_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
 
-use velodex_policy::{PackageType, Policy, PolicyConfig};
 use crate::stream::{PageContext, PageTransformer, Registration, page_context as build_page_context};
+use velodex_policy::{PackageType, Policy, PolicyConfig};
 
 fn upstream_page() -> String {
     r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0","2.0"],"files":[

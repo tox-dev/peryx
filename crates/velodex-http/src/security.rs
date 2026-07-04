@@ -142,7 +142,9 @@ impl<'a> Event<'a> {
 
 #[must_use]
 pub(crate) fn actor(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())?;
+    let value = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())?;
     let credentials = velodex_identity::parse_basic(value)?;
     Some(if credentials.user.is_empty() {
         UNKNOWN.to_owned()

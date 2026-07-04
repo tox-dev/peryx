@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use velodex_policy::PolicyConfig;
 use velodex_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use velodex_policy::PolicyConfig;
 
 /// A fully resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,33 +39,33 @@ pub struct IndexConfig {
     pub webhooks: Vec<WebhookConfig>,
 }
 
-/// The three composable index shapes: a read-through mirror, a writable local store, or an overlay
-/// that layers other indexes under one route.
+/// The three composable index roles: a read-through proxy, a writable hosted store, or a virtual
+/// index that aggregates other indexes under one route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexKind {
     /// Proxy and cache an upstream simple index.
-    Mirror {
+    Proxy {
         upstream: String,
         username: Option<String>,
         password: Option<String>,
         /// Bearer token; takes precedence over username/password.
         token: Option<String>,
-        /// Concurrent upstream fetches allowed for this mirror in this process; `0` disables the cap.
+        /// Concurrent upstream fetches allowed for this proxy in this process; `0` disables the cap.
         upstream_concurrency: usize,
-        /// Serve only cached data for this mirror.
+        /// Serve only cached data for this proxy.
         offline: bool,
         /// Optional package set and artifact filters for `velodex mirror`.
         prefetch: Box<MirrorPrefetchConfig>,
     },
     /// A hosted store that accepts uploads. `upload_token` is the Basic-auth password an upload must
     /// present (`None` disables uploads); `volatile` allows delete and overwrite.
-    Local {
+    Hosted {
         upload_token: Option<String>,
         volatile: bool,
     },
-    /// An ordered composition of other indexes (by name). Resolution merges layers first-match; a
-    /// file in an earlier layer shadows a later one. Uploads target `upload` (a local layer name).
-    Overlay {
+    /// An ordered aggregation of other indexes (its members, by name, in `layers`). Resolution merges
+    /// members first-match; a file in an earlier member shadows a later one. Uploads target `upload`.
+    Virtual {
         layers: Vec<String>,
         upload: Option<String>,
     },
@@ -186,7 +186,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "pypi".to_owned(),
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
                 password: None,
@@ -201,7 +201,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "local".to_owned(),
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,
             },
@@ -211,7 +211,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "root/pypi".to_owned(),
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec!["local".to_owned(), "pypi".to_owned()],
                 upload: Some("local".to_owned()),
             },
@@ -255,12 +255,12 @@ impl Config {
 fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
     let route = raw.route.clone().unwrap_or_else(|| raw.name.clone());
     let kind = if let Some(layers) = raw.layers {
-        IndexKind::Overlay {
+        IndexKind::Virtual {
             layers,
             upload: raw.upload,
         }
-    } else if let Some(upstream) = raw.mirror {
-        IndexKind::Mirror {
+    } else if let Some(upstream) = raw.proxy {
+        IndexKind::Proxy {
             upstream,
             username: raw.username,
             password: raw.password,
@@ -269,15 +269,15 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             offline: raw.offline.unwrap_or(false),
             prefetch: Box::new(raw.prefetch.unwrap_or_default().resolve()),
         }
-    } else if raw.local == Some(true) || raw.upload_token.is_some() {
-        IndexKind::Local {
+    } else if raw.hosted == Some(true) || raw.upload_token.is_some() {
+        IndexKind::Hosted {
             upload_token: raw.upload_token,
             volatile: raw.volatile.unwrap_or(true),
         }
     } else {
         return Err(ConfigError::Index {
             name: raw.name,
-            reason: "index needs one of `mirror`, `local`, or `layers`",
+            reason: "index needs one of `proxy`, `hosted`, or `layers`",
         });
     };
     Ok(IndexConfig {
@@ -401,7 +401,7 @@ pub struct PartialConfig {
     pub rate_limit: PartialRateLimitConfig,
 }
 
-/// A raw `[[index]]` table before classification. Exactly one of `mirror`, `local`, or `layers`
+/// A raw `[[index]]` table before classification. Exactly one of `proxy`, `hosted`, or `layers`
 /// selects the kind; [`classify_index`] enforces that.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -410,14 +410,14 @@ pub struct RawIndex {
     pub route: Option<String>,
     #[serde(default)]
     pub policy: PolicyConfig,
-    pub mirror: Option<String>,
+    pub proxy: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
     pub upstream_concurrency: Option<usize>,
     pub offline: Option<bool>,
     pub prefetch: Option<RawMirrorPrefetch>,
-    pub local: Option<bool>,
+    pub hosted: Option<bool>,
     pub upload_token: Option<String>,
     pub volatile: Option<bool>,
     pub layers: Option<Vec<String>>,

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use velodex_ecosystem_pypi::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
+use velodex_ecosystem_pypi::{
+    CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked,
+};
 
 use crate::{PackageType, Policy, PolicyAction, PolicyConfig, PolicyConfigError};
 
@@ -164,7 +166,7 @@ fn test_check_file_denies_wheel_platform_block_list() {
 
 #[test]
 fn test_policy_action_display_formats_mirror() {
-    assert_eq!(PolicyAction::Mirror.to_string(), "mirror");
+    assert_eq!(PolicyAction::Proxy.to_string(), "proxy");
 }
 
 #[test]

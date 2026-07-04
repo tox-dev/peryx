@@ -20,9 +20,9 @@ use velodex_storage::blob::Digest;
 use velodex_storage::meta::{CachedIndex, MetaScanError};
 
 use crate::path_safety::local_file_url;
-use velodex_policy::PolicyAction;
 use crate::state::{AppState, Index, IndexKind};
 use crate::upload::Uploaded;
+use velodex_policy::PolicyAction;
 
 const SUBSTRING_TOKENIZER: &str = "velodex_substring";
 const MIN_NGRAM: usize = 2;
@@ -517,7 +517,7 @@ fn tokenizers() -> TokenizerManager {
 
 fn collect_projects(state: &AppState, index: &Index, projects: &mut BTreeSet<String>) -> Result<(), SearchError> {
     match &index.kind {
-        IndexKind::Mirror { .. } => {
+        IndexKind::Proxy { .. } => {
             state.meta.scan_index_records(|key, _value| {
                 if let Some(project) = project_key(key, &index.name) {
                     projects.insert(project.to_owned());
@@ -525,7 +525,7 @@ fn collect_projects(state: &AppState, index: &Index, projects: &mut BTreeSet<Str
                 Ok(())
             })?;
         }
-        IndexKind::Local { .. } => {
+        IndexKind::Hosted { .. } => {
             state.meta.scan_upload_records(|key, _value| {
                 if let Some((project, _filename)) = upload_key(key, &index.name) {
                     projects.insert(project.to_owned());
@@ -533,7 +533,7 @@ fn collect_projects(state: &AppState, index: &Index, projects: &mut BTreeSet<Str
                 Ok(())
             })?;
         }
-        IndexKind::Overlay { layers, .. } => {
+        IndexKind::Virtual { layers, .. } => {
             for &position in layers {
                 collect_projects(state, state.index_at(position), projects)?;
             }
@@ -578,9 +578,9 @@ fn cached_detail(
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
     let detail = match &index.kind {
-        IndexKind::Mirror { .. } => mirror_detail(state, index, normalized, serve_route),
-        IndexKind::Local { .. } => local_detail(state, &index.name, normalized, serve_route),
-        IndexKind::Overlay { layers, upload } => overlay_detail(state, layers, *upload, normalized, serve_route),
+        IndexKind::Proxy { .. } => mirror_detail(state, index, normalized, serve_route),
+        IndexKind::Hosted { .. } => local_detail(state, &index.name, normalized, serve_route),
+        IndexKind::Virtual { layers, upload } => overlay_detail(state, layers, *upload, normalized, serve_route),
     }?;
     Ok(index
         .policy
@@ -736,9 +736,9 @@ fn apply_project_status(detail: &mut ProjectDetail) {
 
 fn package_source(state: &AppState, index: &Index, normalized: &str) -> Result<PackageSource, SearchError> {
     Ok(match &index.kind {
-        IndexKind::Local { .. } => PackageSource::Uploaded,
-        IndexKind::Mirror { .. } => PackageSource::Cached,
-        IndexKind::Overlay { upload, .. } => {
+        IndexKind::Hosted { .. } => PackageSource::Uploaded,
+        IndexKind::Proxy { .. } => PackageSource::Cached,
+        IndexKind::Virtual { upload, .. } => {
             let Some(upload) = upload else {
                 return Ok(PackageSource::Cached);
             };

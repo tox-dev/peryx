@@ -99,7 +99,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     runtime.block_on(async {
         let state = velodex::server::build_state(config)?;
         for index in &state.indexes {
-            if let velodex_http::IndexKind::Mirror { client, offline: false } = &index.kind {
+            if let velodex_http::IndexKind::Proxy { client, offline: false } = &index.kind {
                 let client = client.clone();
                 tokio::spawn(async move { client.warm().await });
             }

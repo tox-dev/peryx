@@ -108,7 +108,7 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
             <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
             <div class="stat"><strong>{data.metadata_requests}</strong><span>"metadata hits"</span></div>
             <div class="stat"><strong>{indexes.len()}</strong><span>"indexes"</span></div>
-            <div class="stat"><strong>{kind_count(&indexes, "overlay")}</strong><span>"overlays"</span></div>
+            <div class="stat"><strong>{kind_count(&indexes, "virtual")}</strong><span>"virtual"</span></div>
             <div class="stat"><strong>{project_count}</strong><span>"observed projects"</span></div>
             <div class="stat"><strong>{upload_count}</strong><span>"uploaded files"</span></div>
         </div>
@@ -209,7 +209,7 @@ fn TopologyCell(index: UiIndex, all: Vec<UiIndex>) -> impl IntoView {
 
 #[component]
 fn UploadCell(index: UiIndex) -> impl IntoView {
-    if index.kind == "mirror" {
+    if index.kind == "proxy" {
         return view! { <span class="dim">"none"</span> }.into_any();
     }
     let label = if index.uploads { "enabled" } else { "disabled" };

@@ -267,8 +267,8 @@ impl Velodex {
         let config = data.path().join("velodex.toml");
         // A mirror of the given upstream with a local store overlaid in front, served at root/pypi.
         let config_toml = format!(
-            "[[index]]\nname = \"upstream\"\nroute = \"upstream\"\nmirror = \"{upstream_url}\"\n\
-             [[index]]\nname = \"local\"\nlocal = true\nupload_token = \"{UPLOAD_TOKEN}\"\n\
+            "[[index]]\nname = \"upstream\"\nroute = \"upstream\"\nproxy = \"{upstream_url}\"\n\
+             [[index]]\nname = \"local\"\nhosted = true\nupload_token = \"{UPLOAD_TOKEN}\"\n\
              [[index]]\nname = \"root/pypi\"\nroute = \"root/pypi\"\nlayers = [\"local\", \"upstream\"]\nupload = \"local\"\n\
              [index.policy]\n{policy_toml}"
         );

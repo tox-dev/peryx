@@ -26,11 +26,11 @@ use crate::cache::{self, CacheError, PageOutcome};
 use crate::discovery::{self, BaseUrl};
 use crate::metrics::Event;
 use crate::path_safety::{self, PathSafetyError};
-use velodex_policy::{PolicyAction, PolicyDenial};
 use crate::search::{SearchError, SearchParams};
 use crate::state::{AppState, Index, IndexKind, describe_index};
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
 use crate::webhook::{WebhookEvent, WebhookEventKind};
+use velodex_policy::{PolicyAction, PolicyDenial};
 
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 const MIME_LEGACY_JSON: &str = "application/json";
@@ -1007,19 +1007,19 @@ fn removal_target<'a>(
 /// The writable local index behind `index`: itself if local, its upload layer if an overlay.
 fn upload_target<'a>(state: &'a AppState, index: &'a Index) -> Option<&'a Index> {
     match &index.kind {
-        IndexKind::Local { .. } => Some(index),
-        IndexKind::Overlay { upload: Some(pos), .. } => Some(state.index_at(*pos)),
-        IndexKind::Mirror { .. } | IndexKind::Overlay { upload: None, .. } => None,
+        IndexKind::Hosted { .. } => Some(index),
+        IndexKind::Virtual { upload: Some(pos), .. } => Some(state.index_at(*pos)),
+        IndexKind::Proxy { .. } | IndexKind::Virtual { upload: None, .. } => None,
     }
 }
 
 const fn is_volatile(local: &Index) -> bool {
-    matches!(local.kind, IndexKind::Local { volatile: true, .. })
+    matches!(local.kind, IndexKind::Hosted { volatile: true, .. })
 }
 
 /// Check the Basic-auth token of a local index, returning a ready response on any failure.
 fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
-    let IndexKind::Local { upload_token, .. } = &local.kind else {
+    let IndexKind::Hosted { upload_token, .. } = &local.kind else {
         return Err(not_found());
     };
     let actor = crate::security::actor(headers);

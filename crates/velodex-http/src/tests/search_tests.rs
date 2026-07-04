@@ -10,10 +10,10 @@ use velodex_upstream::UpstreamClient;
 use super::http_tests::{get, harness, harness_with_policies};
 use crate::cache;
 use crate::path_safety::local_file_url;
-use velodex_policy::{Policy, PolicyConfig};
 use crate::search::{PackageSearch, PackageSource, SearchError, SourceFilter};
 use crate::state::{AppState, Index, IndexKind};
 use crate::upload::Uploaded;
+use velodex_policy::{Policy, PolicyConfig};
 
 #[tokio::test]
 async fn test_search_indexes_uploaded_metadata_and_route_scope() {
@@ -622,7 +622,7 @@ fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: UpstreamClient::new("https://example.test/simple/").unwrap(),
                 offline: false,
             },
@@ -632,7 +632,7 @@ fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,
             },

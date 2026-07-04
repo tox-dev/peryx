@@ -10,10 +10,10 @@ use velodex_storage::meta::MetaStore;
 use velodex_upstream::UpstreamClient;
 
 use crate::metrics::Metrics;
-use velodex_policy::Policy;
 use crate::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, UpstreamLimits};
 use crate::search::{PackageSearch, SearchError};
 use crate::webhook::WebhookRuntime;
+use velodex_policy::Policy;
 
 /// A source of the current unix time, injectable so cache-freshness logic is deterministic in
 /// tests.
@@ -29,19 +29,19 @@ pub struct Index {
     pub policy: Policy,
 }
 
-/// The runtime shape of an index: a mirror owns its upstream client, a local store its upload
-/// policy, an overlay the resolved positions of its layers and upload target.
+/// The runtime shape of an index by role: a proxy owns its upstream client, a hosted store its
+/// upload policy, a virtual index the resolved positions of its members and upload target.
 #[derive(Debug)]
 pub enum IndexKind {
-    Mirror {
+    Proxy {
         client: UpstreamClient,
         offline: bool,
     },
-    Local {
+    Hosted {
         upload_token: Option<String>,
         volatile: bool,
     },
-    Overlay {
+    Virtual {
         layers: Vec<usize>,
         upload: Option<usize>,
     },
@@ -299,14 +299,14 @@ impl AppState {
         let upstream_limits = indexes
             .iter()
             .filter_map(|index| match &index.kind {
-                IndexKind::Mirror { .. } => Some((
+                IndexKind::Proxy { .. } => Some((
                     index.name.clone(),
                     configured
                         .get(&index.name)
                         .copied()
                         .unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
                 )),
-                IndexKind::Local { .. } | IndexKind::Overlay { .. } => None,
+                IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
             })
             .collect::<Vec<_>>();
         Self {
@@ -424,20 +424,20 @@ pub fn describe_indexes(indexes: &[Index]) -> Vec<IndexDescription> {
 pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
     let index = &indexes[position];
     let (kind, layers, uploads, volatile_deletes, upload_to) = match &index.kind {
-        IndexKind::Mirror { .. } => ("mirror", Vec::new(), false, false, None),
-        IndexKind::Local { upload_token, volatile } => (
-            "local",
+        IndexKind::Proxy { .. } => ("proxy", Vec::new(), false, false, None),
+        IndexKind::Hosted { upload_token, volatile } => (
+            "hosted",
             Vec::new(),
             upload_token.is_some(),
             upload_token.is_some() && *volatile,
             None,
         ),
-        IndexKind::Overlay { layers, upload } => {
+        IndexKind::Virtual { layers, upload } => {
             let names = layers.iter().map(|&pos| indexes[pos].name.clone()).collect();
             let uploads = upload.is_some_and(|pos| {
                 matches!(
                     &indexes[pos].kind,
-                    IndexKind::Local {
+                    IndexKind::Hosted {
                         upload_token: Some(_),
                         ..
                     }
@@ -446,18 +446,18 @@ pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescrip
             let volatile_deletes = upload.is_some_and(|pos| {
                 matches!(
                     &indexes[pos].kind,
-                    IndexKind::Local {
+                    IndexKind::Hosted {
                         upload_token: Some(_),
                         volatile: true,
                     }
                 )
             });
             let upload_to = upload.map(|pos| indexes[pos].name.clone());
-            ("overlay", names, uploads, volatile_deletes, upload_to)
+            ("virtual", names, uploads, volatile_deletes, upload_to)
         }
     };
     let (upstream, local) = match &index.kind {
-        IndexKind::Mirror { client, offline } => (
+        IndexKind::Proxy { client, offline } => (
             Some(UpstreamDescription {
                 url: client.redacted_base_url(),
                 auth: client.auth_status().as_str(),
@@ -465,14 +465,14 @@ pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescrip
             }),
             None,
         ),
-        IndexKind::Local { upload_token, volatile } => (
+        IndexKind::Hosted { upload_token, volatile } => (
             None,
             Some(LocalDescription {
                 volatile: *volatile,
                 upload_token: SecretDescription::new(upload_token.is_some()),
             }),
         ),
-        IndexKind::Overlay { .. } => (None, None),
+        IndexKind::Virtual { .. } => (None, None),
     };
     IndexDescription {
         name: index.name.clone(),

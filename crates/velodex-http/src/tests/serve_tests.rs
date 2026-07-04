@@ -13,8 +13,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::{detail_json, get, harness};
 use crate::cache::{self, PageOutcome};
-use velodex_policy::{Policy, PolicyAction, PolicyConfig};
 use crate::state::{AppState, Index, IndexKind};
+use velodex_policy::{Policy, PolicyAction, PolicyConfig};
 
 fn fresh_record(body: &[u8]) -> CachedIndex {
     CachedIndex {
@@ -402,7 +402,7 @@ async fn test_file_path_offline_mirror_miss_is_unavailable() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: true },
+            kind: IndexKind::Proxy { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -439,7 +439,7 @@ async fn test_refresh_stale_pages_skips_offline_mirrors() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: true },
+            kind: IndexKind::Proxy { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -472,7 +472,7 @@ async fn test_offline_metadata_fetches_are_unavailable() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: true },
+            kind: IndexKind::Proxy { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -502,7 +502,7 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: true },
+            kind: IndexKind::Proxy { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -530,7 +530,7 @@ async fn test_stream_detail_offline_cold_miss_falls_back() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: true },
+            kind: IndexKind::Proxy { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -548,13 +548,13 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                kind: IndexKind::Mirror { client, offline: true },
+                kind: IndexKind::Proxy { client, offline: true },
                 policy: velodex_policy::Policy::default(),
             },
             Index {
                 name: "root/pypi".to_owned(),
                 route: "root/pypi".to_owned(),
-                kind: IndexKind::Overlay {
+                kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
                 },
@@ -576,7 +576,7 @@ async fn test_offline_mirror_resolves_cached_page() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: true },
+            kind: IndexKind::Proxy { client, offline: true },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -631,7 +631,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
             Index {
                 name: "a".to_owned(),
                 route: "a".to_owned(),
-                kind: IndexKind::Mirror {
+                kind: IndexKind::Proxy {
                     client: client.clone(),
                     offline: false,
                 },
@@ -640,14 +640,14 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
             Index {
                 name: "b".to_owned(),
                 route: "b".to_owned(),
-                kind: IndexKind::Mirror { client, offline: false },
+                kind: IndexKind::Proxy { client, offline: false },
                 policy: velodex_policy::Policy::default(),
             },
             Index {
                 name: "both".to_owned(),
                 route: "both".to_owned(),
                 policy: velodex_policy::Policy::default(),
-                kind: IndexKind::Overlay {
+                kind: IndexKind::Virtual {
                     layers: vec![0, 1],
                     upload: None,
                 },
@@ -673,14 +673,14 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
             Index {
                 name: "a".to_owned(),
                 route: "a".to_owned(),
-                kind: IndexKind::Mirror { client, offline: false },
+                kind: IndexKind::Proxy { client, offline: false },
                 policy: velodex_policy::Policy::default(),
             },
             Index {
                 name: "inner".to_owned(),
                 route: "inner".to_owned(),
                 policy: velodex_policy::Policy::default(),
-                kind: IndexKind::Overlay {
+                kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
                 },
@@ -689,7 +689,7 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
                 name: "outer".to_owned(),
                 route: "outer".to_owned(),
                 policy: velodex_policy::Policy::default(),
-                kind: IndexKind::Overlay {
+                kind: IndexKind::Virtual {
                     layers: vec![1],
                     upload: None,
                 },
@@ -710,7 +710,7 @@ async fn test_overlay_without_a_mirror_serves_buffered() {
                 name: "local".to_owned(),
                 route: "local".to_owned(),
                 policy: velodex_policy::Policy::default(),
-                kind: IndexKind::Local {
+                kind: IndexKind::Hosted {
                     upload_token: None,
                     volatile: true,
                 },
@@ -719,7 +719,7 @@ async fn test_overlay_without_a_mirror_serves_buffered() {
                 name: "only".to_owned(),
                 route: "only".to_owned(),
                 policy: velodex_policy::Policy::default(),
-                kind: IndexKind::Overlay {
+                kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: Some(0),
                 },
@@ -817,7 +817,7 @@ async fn test_json_meta_preflight_streams_without_remainder() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: false },
+            kind: IndexKind::Proxy { client, offline: false },
             policy: velodex_policy::Policy::default(),
         }]
     });
@@ -1073,7 +1073,7 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror { client, offline: false },
+            kind: IndexKind::Proxy { client, offline: false },
             policy: velodex_policy::Policy::default(),
         }]
     });

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use velodex_policy::PackageType;
 use velodex_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use velodex_policy::PackageType;
 
 use crate::config::{
     self, Config, IndexKind, LogConfig, LogFormat, LogSink, MirrorPrefetchMode, PartialConfig, PartialLogConfig,
@@ -26,9 +26,9 @@ fn test_default_config() {
     // A pypi mirror with a local store overlaid in front, served at root/pypi.
     let routes: Vec<&str> = c.indexes.iter().map(|index| index.route.as_str()).collect();
     assert_eq!(routes, ["pypi", "local", "root/pypi"]);
-    assert!(matches!(&c.indexes[0].kind, IndexKind::Mirror { .. }));
-    assert!(matches!(&c.indexes[1].kind, IndexKind::Local { .. }));
-    assert!(matches!(&c.indexes[2].kind, IndexKind::Overlay { upload: Some(target), .. } if target == "local"));
+    assert!(matches!(&c.indexes[0].kind, IndexKind::Proxy { .. }));
+    assert!(matches!(&c.indexes[1].kind, IndexKind::Hosted { .. }));
+    assert!(matches!(&c.indexes[2].kind, IndexKind::Virtual { upload: Some(target), .. } if target == "local"));
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn test_mirror_prefetch_from_toml() {
 offline = true
 [[index]]
 name = \"pypi\"
-mirror = \"https://pypi.org/simple/\"
+proxy = \"https://pypi.org/simple/\"
 offline = true
 
 [index.prefetch]
@@ -100,7 +100,7 @@ max_file_size_bytes = 1048576
 ",
     );
     assert!(c.offline);
-    let IndexKind::Mirror { offline, prefetch, .. } = &c.indexes[0].kind else {
+    let IndexKind::Proxy { offline, prefetch, .. } = &c.indexes[0].kind else {
         panic!("expected mirror");
     };
     assert!(*offline);
@@ -119,9 +119,9 @@ max_file_size_bytes = 1048576
 #[test]
 fn test_indexes_from_toml_classify_all_kinds() {
     let text = "\
-[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\ntoken = \"bear\"\nupstream_concurrency = 3\n\
-[[index]]\nname = \"corp\"\nmirror = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
-[[index]]\nname = \"team-local\"\nlocal = true\nupload_token = \"s\"\nvolatile = false\n\
+[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\ntoken = \"bear\"\nupstream_concurrency = 3\n\
+[[index]]\nname = \"corp\"\nproxy = \"https://corp/simple/\"\nusername = \"u\"\npassword = \"p\"\n\
+[[index]]\nname = \"team-local\"\nhosted = true\nupload_token = \"s\"\nvolatile = false\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret_env = \"VELODEX_WEBHOOK_SECRET\"\nevents = [\"upload\", \"delete\"]\n\
 [[index]]\nname = \"secret\"\nupload_token = \"z\"\n\
 [[index]]\nname = \"team\"\nroute = \"team/dev\"\nlayers = [\"team-local\", \"pypi\"]\nupload = \"team-local\"\n";
@@ -129,18 +129,18 @@ fn test_indexes_from_toml_classify_all_kinds() {
     assert_eq!(c.indexes.len(), 5);
     assert_eq!(c.indexes[0].route, "pypi"); // route defaults to name
     assert!(
-        matches!(&c.indexes[0].kind, IndexKind::Mirror { token: Some(token), upstream_concurrency: 3, .. } if token == "bear")
+        matches!(&c.indexes[0].kind, IndexKind::Proxy { token: Some(token), upstream_concurrency: 3, .. } if token == "bear")
     );
     assert!(matches!(
         &c.indexes[1].kind,
-        IndexKind::Mirror {
+        IndexKind::Proxy {
             username: Some(_),
             password: Some(_),
             token: None,
             ..
         }
     ));
-    assert!(matches!(&c.indexes[2].kind, IndexKind::Local { volatile: false, .. })); // explicit local, non-volatile
+    assert!(matches!(&c.indexes[2].kind, IndexKind::Hosted { volatile: false, .. })); // explicit local, non-volatile
     assert_eq!(c.indexes[2].webhooks.len(), 1);
     assert_eq!(c.indexes[2].webhooks[0].name, "ci");
     assert_eq!(c.indexes[2].webhooks[0].url, "https://ci.example/hook");
@@ -149,10 +149,10 @@ fn test_indexes_from_toml_classify_all_kinds() {
         WebhookSecret::Env("VELODEX_WEBHOOK_SECRET".to_owned())
     );
     assert_eq!(c.indexes[2].webhooks[0].events, ["upload", "delete"]);
-    assert!(matches!(&c.indexes[3].kind, IndexKind::Local { volatile: true, .. })); // upload_token implies local, default volatile
+    assert!(matches!(&c.indexes[3].kind, IndexKind::Hosted { volatile: true, .. })); // upload_token implies local, default volatile
     assert_eq!(c.indexes[4].route, "team/dev");
     assert!(
-        matches!(&c.indexes[4].kind, IndexKind::Overlay { layers, upload: Some(upload) }
+        matches!(&c.indexes[4].kind, IndexKind::Virtual { layers, upload: Some(upload) }
             if layers == &["team-local".to_owned(), "pypi".to_owned()] && upload == "team-local")
     );
 }
@@ -179,10 +179,10 @@ fn test_rate_limits_from_toml_overlay_defaults() {
 
 #[test]
 fn test_mirror_upstream_concurrency_defaults() {
-    let c = toml_config("[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\n");
+    let c = toml_config("[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\n");
     assert!(matches!(
         &c.indexes[0].kind,
-        IndexKind::Mirror {
+        IndexKind::Proxy {
             upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
             ..
         }
@@ -192,7 +192,7 @@ fn test_mirror_upstream_concurrency_defaults() {
 #[test]
 fn test_index_policy_from_toml() {
     let text = "\
-[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\n\
+[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\n\
 [index.policy]\nallow_projects = [\"Flask\"]\nblock_projects = [\"bad-pkg\"]\nallow_versions = \">=1,<2\"\n\
 allow_package_types = [\"wheel\"]\nblock_package_types = [\"sdist\"]\n\
 allow_wheel_pythons = [\"py3\"]\nblock_wheel_pythons = [\"py2\"]\n\
@@ -223,7 +223,7 @@ fn test_index_without_kind_is_error() {
 #[test]
 fn test_index_webhook_accepts_literal_secret() {
     let text = "\
-[[index]]\nname = \"local\"\nlocal = true\n\
+[[index]]\nname = \"local\"\nhosted = true\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"signing-secret\"\n";
     let c = toml_config(text);
     assert_eq!(
@@ -235,7 +235,7 @@ fn test_index_webhook_accepts_literal_secret() {
 #[test]
 fn test_index_webhook_rejects_ambiguous_secret_source() {
     let text = "\
-[[index]]\nname = \"local\"\nlocal = true\n\
+[[index]]\nname = \"local\"\nhosted = true\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\nsecret_env = \"S\"\n";
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     let err = Config::default().apply(partial).unwrap_err();
@@ -245,7 +245,7 @@ fn test_index_webhook_rejects_ambiguous_secret_source() {
 #[test]
 fn test_index_webhook_rejects_empty_name() {
     let text = "\
-[[index]]\nname = \"local\"\nlocal = true\n\
+[[index]]\nname = \"local\"\nhosted = true\n\
 [[index.webhook]]\nname = \"\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\n";
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     let err = Config::default().apply(partial).unwrap_err();
@@ -255,7 +255,7 @@ fn test_index_webhook_rejects_empty_name() {
 #[test]
 fn test_index_webhook_rejects_empty_url() {
     let text = "\
-[[index]]\nname = \"local\"\nlocal = true\n\
+[[index]]\nname = \"local\"\nhosted = true\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"\"\nsecret = \"s\"\n";
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     let err = Config::default().apply(partial).unwrap_err();
@@ -277,7 +277,7 @@ fn test_from_toml_rejects_unknown_index_key() {
 fn test_from_toml_rejects_unknown_policy_key() {
     let err = config::from_toml(
         PathBuf::from("x.toml"),
-        "[[index]]\nname = \"pypi\"\nmirror = \"https://pypi.org/simple/\"\n[index.policy]\nbogus = 1\n",
+        "[[index]]\nname = \"pypi\"\nproxy = \"https://pypi.org/simple/\"\n[index.policy]\nbogus = 1\n",
     )
     .unwrap_err();
     assert!(err.to_string().contains("bogus"));

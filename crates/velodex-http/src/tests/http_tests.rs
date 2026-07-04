@@ -22,10 +22,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::{LogCapture, field};
 use crate::cache;
 use crate::path_safety::local_file_url;
-use velodex_policy::{PackageType, Policy, PolicyConfig};
 use crate::router;
 use crate::state::{AppState, Index, IndexKind};
 use crate::upload::Uploaded;
+use velodex_policy::{PackageType, Policy, PolicyConfig};
 
 pub(super) struct Harness {
     _dir: tempfile::TempDir,
@@ -58,7 +58,7 @@ pub(super) async fn harness_with_policies(
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -68,7 +68,7 @@ pub(super) async fn harness_with_policies(
             name: "local".to_owned(),
             route: "local".to_owned(),
             policy: local_policy,
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: token.then(|| "s3cret".to_owned()),
                 volatile,
             },
@@ -77,7 +77,7 @@ pub(super) async fn harness_with_policies(
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: overlay_policy,
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec![1, 0],
                 upload: Some(1),
             },
@@ -114,7 +114,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -123,7 +123,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "staging".to_owned(),
             route: "staging".to_owned(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
             },
@@ -132,7 +132,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "prod".to_owned(),
             route: "prod".to_owned(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
             },
@@ -141,7 +141,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "release".to_owned(),
             route: "release".to_owned(),
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec![2, 0],
                 upload: Some(2),
             },
@@ -610,7 +610,7 @@ async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -1084,7 +1084,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             client: upstream,
             offline: false,
         },
@@ -1123,7 +1123,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             client: upstream,
             offline: false,
         },
@@ -1150,7 +1150,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             client: upstream,
             offline: true,
         },
@@ -1195,7 +1195,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             client: upstream,
             offline: true,
         },
@@ -1279,7 +1279,7 @@ async fn test_file_download_status_store_error_is_server_error() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        kind: IndexKind::Mirror {
+        kind: IndexKind::Proxy {
             client: upstream,
             offline: false,
         },
@@ -2151,7 +2151,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -2161,7 +2161,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             name: "local".to_owned(),
             route: "local".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
             },
@@ -2170,7 +2170,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec![1, 0],
                 upload: Some(1),
             },
@@ -2784,7 +2784,7 @@ async fn test_upload_storage_failure_is_server_error() {
         name: "local".to_owned(),
         route: "local".to_owned(),
         policy: Policy::default(),
-        kind: IndexKind::Local {
+        kind: IndexKind::Hosted {
             upload_token: Some("s3cret".to_owned()),
             volatile: true,
         },
@@ -3019,7 +3019,7 @@ async fn test_longest_prefix_wins() {
             name: "a".to_owned(),
             route: "a".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,
             },
@@ -3028,7 +3028,7 @@ async fn test_longest_prefix_wins() {
             name: "ab".to_owned(),
             route: "a/b".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
             },
@@ -3088,7 +3088,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
         Index {
             name: "private".to_owned(),
             route: "private".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: UpstreamClient::with_auth(
                     "https://user:pass@example.invalid/simple/?token=url-secret#frag",
                     Auth::Bearer("bearer-secret".to_owned()),
@@ -3102,7 +3102,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             name: "local".to_owned(),
             route: "local".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Local {
+            kind: IndexKind::Hosted {
                 upload_token: Some("upload-secret".to_owned()),
                 volatile: false,
             },
@@ -3345,7 +3345,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -3355,7 +3355,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
             name: "ov".to_owned(),
             route: "ov".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: Some(0),
             },
@@ -4603,7 +4603,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            kind: IndexKind::Mirror {
+            kind: IndexKind::Proxy {
                 client: upstream,
                 offline: false,
             },
@@ -4613,7 +4613,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
             name: "ov".to_owned(),
             route: "ov".to_owned(),
             policy: Policy::default(),
-            kind: IndexKind::Overlay {
+            kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,
             },
