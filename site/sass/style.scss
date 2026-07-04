@@ -1242,53 +1242,51 @@ pre:hover .copy-snippet,
     padding-bottom: 0.4rem;
   }
   td { font-variant-numeric: tabular-nums; }
-  // Keep every cell on one line so the table holds its natural width and scrolls sideways (with the
-  // frozen columns below) instead of squishing the servers into unreadable slivers.
-  th,
-  td { white-space: nowrap; }
   .bench-ratio { color: var(--text-soft); font-size: 0.8rem; }
-  td.bench-faster { background: rgba(12, 163, 12, 0.28); }
-  td.bench-par { background: rgba(12, 163, 12, 0.14); }
-  td.bench-mild { background: rgba(250, 178, 25, 0.16); }
-  td.bench-slow { background: rgba(236, 131, 90, 0.2); }
-  td.bench-veryslow { background: rgba(208, 59, 59, 0.22); }
-  td.bench-worst { background: rgba(208, 59, 59, 0.38); }
+
+  // Opaque base for the frozen columns so a scrolled cell never shows through them. The tints below
+  // override it for cells that have one; a bench-none velodex cell keeps this solid fallback.
+  th:first-child,
+  td:first-child,
+  th:nth-child(2),
+  td:nth-child(2) { background: var(--bg); }
+  th:first-child,
+  td:first-child { background: var(--bg-soft); }
+
+  // best-in-row green ramping to worst-in-row red; opaque (mixed over the page background rather
+  // than a translucent overlay) so the same shade reads through a frozen, scrolled-over cell.
+  td.bench-faster { background: color-mix(in srgb, rgb(12, 163, 12) 28%, var(--bg)); }
+  td.bench-par { background: color-mix(in srgb, rgb(12, 163, 12) 14%, var(--bg)); }
+  td.bench-mild { background: color-mix(in srgb, rgb(250, 178, 25) 16%, var(--bg)); }
+  td.bench-slow { background: color-mix(in srgb, rgb(236, 131, 90) 20%, var(--bg)); }
+  td.bench-veryslow { background: color-mix(in srgb, rgb(208, 59, 59) 22%, var(--bg)); }
+  td.bench-worst { background: color-mix(in srgb, rgb(208, 59, 59) 38%, var(--bg)); }
   td.bench-none { color: var(--text-soft); }
 
-  // Freeze the label column and the velodex baseline column so both stay visible while the row
-  // scrolls sideways through the other servers. The velodex column takes a uniform, opaque baseline
-  // tint (so scrolled cells never show through it) in place of its per-cell best/worst shade.
+  // Freeze the label column and the velodex baseline column. They only engage when the table is
+  // wider than its container (narrow screens); at full width every server shows at once. --label-w
+  // is set by JS to the first column's width so velodex sits flush against the widest label.
   th:first-child,
   td:first-child {
     position: sticky;
     left: 0;
     z-index: 2;
-    white-space: nowrap;
-    background: var(--bg-soft);
   }
-
-  // --label-w is set by JS to the measured width of the first column, so the velodex column freezes
-  // flush against it whatever the longest label is.
   th:nth-child(2),
   td:nth-child(2) {
     position: sticky;
     left: var(--label-w, 9rem);
     z-index: 1;
-    background: color-mix(in srgb, var(--brand-a) 8%, var(--bg));
     box-shadow: 1px 0 0 var(--border);
   }
 }
 [data-theme="dark"] .bench-table {
-  td.bench-faster { background: rgba(12, 163, 12, 0.34); }
-  td.bench-par { background: rgba(12, 163, 12, 0.18); }
-  td.bench-mild { background: rgba(250, 178, 25, 0.2); }
-  td.bench-slow { background: rgba(236, 131, 90, 0.24); }
-  td.bench-veryslow { background: rgba(208, 59, 59, 0.28); }
-  td.bench-worst { background: rgba(208, 59, 59, 0.44); }
-  th:nth-child(2),
-  td:nth-child(2) {
-    background: color-mix(in srgb, var(--brand-a) 15%, var(--bg));
-  }
+  td.bench-faster { background: color-mix(in srgb, rgb(12, 163, 12) 34%, var(--bg)); }
+  td.bench-par { background: color-mix(in srgb, rgb(12, 163, 12) 18%, var(--bg)); }
+  td.bench-mild { background: color-mix(in srgb, rgb(250, 178, 25) 20%, var(--bg)); }
+  td.bench-slow { background: color-mix(in srgb, rgb(236, 131, 90) 24%, var(--bg)); }
+  td.bench-veryslow { background: color-mix(in srgb, rgb(208, 59, 59) 28%, var(--bg)); }
+  td.bench-worst { background: color-mix(in srgb, rgb(208, 59, 59) 44%, var(--bg)); }
 }
 
 
