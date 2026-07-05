@@ -15,8 +15,7 @@ pages live at `/stats`, `/stats?index={route}`, and `/stats?index={route}&projec
 
 {{ screen(alt="The usage drill-down for one index: totals up top, busiest projects first", name="stats-index") }}
 
-{{ screen(alt="One project drilled to file level: downloads, bytes, and metadata hits per artifact",
-name="stats-project") }}
+{{ screen(alt="One project drilled to file level: downloads, bytes, and metadata hits per artifact", name="stats-project") }}
 
 ## Query the counters
 
