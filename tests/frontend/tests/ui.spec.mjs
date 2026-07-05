@@ -15,7 +15,6 @@ test("dashboard shows identity, counters, and the topology", async ({ page }) =>
   await goto(page, "/");
   await expect(page.locator(".stat-row .stat")).toHaveCount(4);
   // The virtual index folds its member indexes into one card with an ordered layer stack.
-  await expect(page.locator(".index-grid .card")).toHaveCount(1);
   const virtualIndex = page.locator(".card", { hasText: "root/pypi" });
   await expect(virtualIndex.locator(".badge.kind-virtual")).toBeVisible();
   await expect(virtualIndex.locator(".layer")).toHaveCount(2);
@@ -26,6 +25,97 @@ test("dashboard shows identity, counters, and the topology", async ({ page }) =>
   await expect(hostedLayer).toContainText("uploads land here");
   await expect(virtualIndex.locator(".layer").nth(1).locator(".badge.kind-cached")).toBeVisible();
   await expect(virtualIndex.locator(".layer-hint")).toContainText("first file match wins");
+  // A non-member index renders as a standalone card under its own heading with its role badge.
+  await expect(page.locator("h2", { hasText: "Standalone indexes" })).toBeVisible();
+  const standalone = page.locator(".card", { hasText: "internal" });
+  await expect(standalone.locator(".badge.kind-hosted")).toBeVisible();
+  await expect(standalone.locator(".badge.uploads")).toBeVisible();
+});
+
+test("header nav links reach each in-app route", async ({ page }) => {
+  await goto(page, "/");
+  await page.locator(".nav-links a", { hasText: "Search" }).click();
+  await expect(page).toHaveURL(/\/search/);
+  await page.locator(".nav-links a", { hasText: "Status" }).click();
+  await expect(page).toHaveURL(/\/admin\/status$/);
+  await page.locator(".nav-links a", { hasText: "Dashboard" }).click();
+  await expect(page.locator(".card", { hasText: "root/pypi" })).toBeVisible();
+  // External links carry the right targets without being followed.
+  await expect(page.locator(".nav-links a", { hasText: "Docs" })).toHaveAttribute("href", /readthedocs/);
+  await expect(page.locator(".nav-links a", { hasText: "GitHub" })).toHaveAttribute("href", /github\.com/);
+});
+
+test("header search suggests packages live and opens one", async ({ page }) => {
+  await goto(page, "/");
+  await page.locator(".header-search input[name='q']").fill("velox");
+  const suggestions = page.locator(".suggestions");
+  await expect(suggestions).toBeVisible();
+  const item = suggestions.locator("a.suggestion", { hasText: "veloxdemo" }).first();
+  await expect(item).toBeVisible();
+  await expect(item.locator("[class*='source-']")).toBeVisible();
+  await expect(suggestions.locator("a.all-results")).toBeVisible();
+  await item.click();
+  await expect(page).toHaveURL(/project=veloxdemo/);
+  await expect(page.locator(".project-head h1")).toContainText("veloxdemo");
+});
+
+test("search reports no matches and honors the provenance facet", async ({ page }) => {
+  await goto(page, "/search?q=zzznotapackage");
+  await expect(page.locator(".search-page")).toContainText("No packages matched");
+  // veloxdemo is uploaded, so restricting to the cached facet excludes it.
+  await goto(page, "/search?q=veloxdemo&type=cached");
+  await expect(page.locator(".search-page")).toContainText("No packages matched");
+  await expect(page.locator(".search-controls select[name='type']")).toHaveValue("cached");
+});
+
+test("search form submission navigates with the query", async ({ page }) => {
+  await goto(page, "/search");
+  await page.locator(".search-controls input[name='q']").fill("veloxdemo");
+  await page.locator(".search-controls button[type='submit']").click();
+  await expect(page).toHaveURL(/q=veloxdemo/);
+  await expect(page.locator("table.search-results tbody tr", { hasText: "veloxdemo" }).first()).toBeVisible();
+});
+
+test("usage stats page lists indexes and drills into one", async ({ page }) => {
+  // Seed a page view so the counters have a row to show.
+  await page.request.get("/root/pypi/simple/veloxdemo/", {
+    headers: { accept: "application/vnd.pypi.simple.v1+json" },
+  });
+  await goto(page, "/stats");
+  await expect(page.locator(".breadcrumb")).toContainText("usage");
+  await expect.poll(async () => page.locator(".stats-table tbody tr").count()).toBeGreaterThan(0);
+  await page.locator(".stats-table a", { hasText: "root/pypi" }).first().click();
+  await expect(page).toHaveURL(/\/stats\?index=/);
+  await expect(page.locator(".breadcrumb")).toContainText("root/pypi");
+});
+
+test("project page copies the install snippet and downloads artifacts", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  await expect(page.locator(".install code")).toContainText("uv pip install");
+  await page.locator(".install button.copy").click(); // clicking must not throw
+  // The file's own link resolves to the real content-addressed artifact.
+  const href = await page
+    .locator("table.files tbody tr td a", { hasText: /\.whl$/ })
+    .first()
+    .getAttribute("href");
+  const download = await page.request.get(href);
+  expect(download.status()).toBe(200);
+});
+
+test("unknown routes render the not-found fallback", async ({ page }) => {
+  // An unmatched path never reaches the SPA shell — velodex answers with its own 404 body — so this
+  // one skips the hydration wait the other tests rely on.
+  const response = await page.goto("/does-not-exist");
+  expect(response.status()).toBe(404);
+  await expect(page.locator("body")).toContainText("not found");
+});
+
+test("admin table shows upstream and upload state per index", async ({ page }) => {
+  await goto(page, "/admin/status");
+  const table = page.locator(".ops-table").first();
+  // The cached index reports a configured upstream; a hosted index shows an upload badge.
+  await expect(table.locator(".badge.status-configured").first()).toBeVisible();
+  await expect(table.locator("[class*='badge upload-']").first()).toBeVisible();
 });
 
 test("admin status is read-only and tolerates failed stats fetches", async ({ page }) => {
@@ -41,7 +131,7 @@ test("admin status is read-only and tolerates failed stats fetches", async ({ pa
   // The topology table renders both axes: the pypi ecosystem and every role (cached/hosted/virtual).
   await expect(topology.locator(".badge.ecosystem-pypi").first()).toBeVisible();
   await expect(topology.locator(".badge.kind-cached")).toBeVisible();
-  await expect(topology.locator(".badge.kind-hosted")).toBeVisible();
+  await expect(topology.locator(".badge.kind-hosted").first()).toBeVisible();
   await expect(topology.locator(".badge.kind-virtual")).toBeVisible();
   await expect(page.locator(".ops-table", { hasText: "veloxdemo-1.0.0" })).toBeVisible();
   await expect(page.locator(".ops-table").first()).not.toContainText(TOKEN);

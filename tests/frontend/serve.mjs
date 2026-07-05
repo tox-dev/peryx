@@ -27,6 +27,10 @@ name = "hosted"
 upload_token = "playwright-secret"
 
 [[index]]
+name = "internal"
+upload_token = "playwright-secret"
+
+[[index]]
 name = "root/pypi"
 layers = ["hosted", "pypi"]
 upload = "hosted"
