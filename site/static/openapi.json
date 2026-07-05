@@ -129,7 +129,7 @@
           "operations"
         ],
         "summary": "Usage statistics",
-        "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. Counters cover pages, downloads (with bytes), metadata, uploads, refreshes, upstream changes, stale fallbacks, upstream errors, and rejected downloads.",
+        "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. Counters are grouped by the role that owns them: a neutral `base` group every index reports, a `cached` group only a caching index fills, a `hosted` group only an upload store fills, and an `ecosystem` map of the driver's own counters (PyPI's PEP 658 sibling under `metadata`).",
         "parameters": [
           {
             "name": "index",
@@ -153,16 +153,24 @@
               "application/json": {
                 "example": {
                   "root/pypi": {
-                    "bytes": 64733247,
-                    "changed": 1,
-                    "downloads": 6,
-                    "metadata": 6,
-                    "pages": 12,
-                    "refreshes": 2,
-                    "rejected": 0,
-                    "stale_served": 0,
-                    "uploads": 0,
-                    "upstream_errors": 0
+                    "base": {
+                      "bytes": 64733247,
+                      "downloads": 6,
+                      "pages": 12,
+                      "rejected": 0
+                    },
+                    "cached": {
+                      "changed": 1,
+                      "refreshes": 2,
+                      "stale_served": 0,
+                      "upstream_errors": 0
+                    },
+                    "ecosystem": {
+                      "metadata": 6
+                    },
+                    "hosted": {
+                      "uploads": 0
+                    }
                   }
                 }
               }
@@ -193,6 +201,19 @@
             "content": {
               "application/json": {
                 "example": {
+                  "by_ecosystem": [
+                    {
+                      "bytes": 64733247,
+                      "downloads": 6,
+                      "ecosystem": "pypi",
+                      "families": {
+                        "metadata": 37
+                      },
+                      "pages": 128,
+                      "rejected": 0,
+                      "uploads": 4
+                    }
+                  ],
                   "indexes": [
                     {
                       "hosted": null,
@@ -262,7 +283,17 @@
                       "volatile_deletes": true
                     }
                   ],
-                  "metadata_requests": 37,
+                  "metric_families": [
+                    {
+                      "key": "metadata",
+                      "label": "PEP 658 metadata hits",
+                      "roles": [
+                        "cached",
+                        "hosted",
+                        "virtual"
+                      ]
+                    }
+                  ],
                   "requests": 128,
                   "serial": 42,
                   "version": "0.0.1"
@@ -300,7 +331,7 @@
             "description": "Prometheus text exposition",
             "content": {
               "text/plain; version=0.0.4": {
-                "example": "# HELP velodex_requests_total Total HTTP requests served.\n# TYPE velodex_requests_total counter\nvelodex_requests_total 128\n# HELP velodex_metadata_requests_total PEP 658 .metadata siblings served.\n# TYPE velodex_metadata_requests_total counter\nvelodex_metadata_requests_total 37\n"
+                "example": "# HELP velodex_requests_total Total HTTP requests served.\n# TYPE velodex_requests_total counter\nvelodex_requests_total 128\n# HELP velodex_index_metadata_total PEP 658 metadata siblings served.\n# TYPE velodex_index_metadata_total counter\nvelodex_index_metadata_total{index=\"root/pypi\",ecosystem=\"pypi\",role=\"virtual\"} 37\n"
               }
             }
           }

@@ -55,6 +55,13 @@ fn test_unconfigured_serving_classifies_index_routes_as_listing() {
     );
 }
 
+#[test]
+fn test_unconfigured_serving_publishes_no_metric_families() {
+    use crate::serving::{EcosystemServing as _, UnconfiguredServing};
+
+    assert!(UnconfiguredServing.metric_families().is_empty());
+}
+
 #[tokio::test]
 async fn test_unwired_state_search_returns_empty() {
     let (_dir, state) = unwired_state();

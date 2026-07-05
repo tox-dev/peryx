@@ -1070,7 +1070,14 @@ fn status() -> OperationBuilder {
                         "version": env!("CARGO_PKG_VERSION"),
                         "serial": 42,
                         "requests": 128,
-                        "metadata_requests": 37,
+                        "by_ecosystem": [
+                            {"ecosystem": "pypi", "pages": 128, "downloads": 6, "bytes": 64_733_247,
+                             "rejected": 0, "uploads": 4, "families": {"metadata": 37}}
+                        ],
+                        "metric_families": [
+                            {"key": "metadata", "label": "PEP 658 metadata hits",
+                             "roles": ["cached", "hosted", "virtual"]}
+                        ],
                         "indexes": [
                             {"name": "pypi", "route": "pypi", "kind": "cached", "layers": [],
                              "uploads": false, "volatile_deletes": false, "upload_to": null,
@@ -1101,8 +1108,10 @@ fn stats() -> OperationBuilder {
         .description(Some(
             "Counters aggregated off the request path, drillable: no parameters for per-index totals, \
              `?index={route}` for one index's projects, `&project={name}` for one project's files. \
-             Counters cover pages, downloads (with bytes), metadata, uploads, refreshes, upstream \
-             changes, stale fallbacks, upstream errors, and rejected downloads.",
+             Counters are grouped by the role that owns them: a neutral `base` group every index \
+             reports, a `cached` group only a caching index fills, a `hosted` group only an upload \
+             store fills, and an `ecosystem` map of the driver's own counters (PyPI's PEP 658 \
+             sibling under `metadata`).",
         ))
         .parameter(
             ParameterBuilder::new()
@@ -1127,9 +1136,10 @@ fn stats() -> OperationBuilder {
                     ContentBuilder::new()
                         .example(Some(json!({
                             "root/pypi": {
-                                "pages": 12, "downloads": 6, "metadata": 6, "uploads": 0,
-                                "bytes": 64_733_247, "refreshes": 2, "changed": 1,
-                                "stale_served": 0, "upstream_errors": 0, "rejected": 0
+                                "base": {"pages": 12, "downloads": 6, "bytes": 64_733_247, "rejected": 0},
+                                "cached": {"refreshes": 2, "changed": 1, "stale_served": 0, "upstream_errors": 0},
+                                "hosted": {"uploads": 0},
+                                "ecosystem": {"metadata": 6}
                             }
                         })))
                         .build(),
@@ -1149,9 +1159,9 @@ fn metrics() -> OperationBuilder {
                 "# HELP velodex_requests_total Total HTTP requests served.\n\
                  # TYPE velodex_requests_total counter\n\
                  velodex_requests_total 128\n\
-                 # HELP velodex_metadata_requests_total PEP 658 .metadata siblings served.\n\
-                 # TYPE velodex_metadata_requests_total counter\n\
-                 velodex_metadata_requests_total 37\n",
+                 # HELP velodex_index_metadata_total PEP 658 metadata siblings served.\n\
+                 # TYPE velodex_index_metadata_total counter\n\
+                 velodex_index_metadata_total{index=\"root/pypi\",ecosystem=\"pypi\",role=\"virtual\"} 37\n",
             ),
         )
 }

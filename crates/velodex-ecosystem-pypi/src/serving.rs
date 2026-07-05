@@ -22,12 +22,12 @@ use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use velodex_format::Ecosystem;
 use velodex_http::handlers::{Format, negotiate, not_found, search_error_response, search_response};
-use velodex_http::metrics::Event;
+use velodex_http::metrics::{Event, MetricFamily};
 use velodex_http::path_safety::{self, PathSafetyError};
 use velodex_http::rate_limit::RouteClass;
 use velodex_http::search::SearchParams;
 use velodex_http::serving::EcosystemServing;
-use velodex_http::state::{AppState, Index, IndexKind, describe_index};
+use velodex_http::state::{AppState, Index, IndexKind, Role, describe_index};
 use velodex_http::webhook::{WebhookEvent, WebhookEventKind};
 use velodex_policy::{PolicyAction, PolicyDenial};
 use velodex_storage::blob::Digest;
@@ -52,6 +52,18 @@ const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
 /// The `PyPI` ecosystem serving driver.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PypiServing;
+
+/// The PEP 658 `.metadata` sibling: a resolver reads a distribution's `METADATA` without downloading
+/// the whole wheel. Any role that serves files can serve it, so it is not role-scoped.
+const METADATA_FAMILY: MetricFamily = MetricFamily {
+    key: "metadata",
+    prom_name: "velodex_index_metadata_total",
+    help: "PEP 658 metadata siblings served.",
+    ui_label: "PEP 658 metadata hits",
+    roles: &[Role::Cached, Role::Hosted, Role::Virtual],
+};
+
+const PYPI_FAMILIES: &[MetricFamily] = &[METADATA_FAMILY];
 
 #[async_trait]
 impl EcosystemServing for PypiServing {
@@ -87,6 +99,10 @@ impl EcosystemServing for PypiServing {
         } else {
             RouteClass::Listing
         }
+    }
+
+    fn metric_families(&self) -> &'static [MetricFamily] {
+        PYPI_FAMILIES
     }
 }
 
@@ -401,12 +417,12 @@ async fn file_route(state: &Arc<AppState>, index: &Index, file: &str) -> Respons
         }
     }
     if filename.ends_with(".metadata") {
-        state.metadata_requests.fetch_add(1, Ordering::Relaxed);
         let digest_hex = digest.as_str().to_owned();
-        state.metrics.record(Event::Metadata {
+        state.metrics.record(Event::Ecosystem {
             route: route.clone(),
             project: crate::project_of_filename(&filename),
-            filename: filename.clone(),
+            filename: Some(filename.clone()),
+            family: METADATA_FAMILY.key,
         });
         return file_response(
             cache::metadata_bytes(state, &digest, &route, &filename).await,

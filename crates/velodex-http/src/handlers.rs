@@ -216,10 +216,68 @@ pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<Stat
         "version": env!("CARGO_PKG_VERSION"),
         "serial": serial,
         "requests": state.requests.load(Ordering::Relaxed),
-        "metadata_requests": state.metadata_requests.load(Ordering::Relaxed),
+        "by_ecosystem": ecosystem_summaries(&state),
+        "metric_families": family_descriptors(&state),
         "indexes": indexes,
     }))
     .into_response()
+}
+
+/// Per-index totals joined to each index's ecosystem and role.
+///
+/// The join lets the render layer scope role-only and ecosystem-only counters. Indexes with no
+/// activity yet report zeros.
+fn per_index_metrics(state: &AppState) -> Vec<(crate::state::IndexDescription, crate::metrics::Counters)> {
+    let totals = state.metrics.index_totals();
+    state
+        .describe_indexes()
+        .into_iter()
+        .map(|index| {
+            let counters = totals.get(&index.route).cloned().unwrap_or_default();
+            (index, counters)
+        })
+        .collect()
+}
+
+/// The per-ecosystem rollup for `/+status` and the dashboard.
+///
+/// Activity is summed across every index of an ecosystem, with that ecosystem's own counter
+/// families folded in under `families`. Ordered by ecosystem name so the output is stable.
+#[must_use]
+pub fn ecosystem_summaries(state: &AppState) -> Vec<crate::metrics::EcosystemSummary> {
+    let mut summaries: std::collections::BTreeMap<&'static str, crate::metrics::EcosystemSummary> =
+        std::collections::BTreeMap::new();
+    for (index, counters) in per_index_metrics(state) {
+        let summary = summaries.entry(index.ecosystem).or_insert_with(|| crate::metrics::EcosystemSummary {
+            ecosystem: index.ecosystem.to_owned(),
+            ..Default::default()
+        });
+        summary.pages += counters.base.pages;
+        summary.downloads += counters.base.downloads;
+        summary.bytes += counters.base.bytes;
+        summary.rejected += counters.base.rejected;
+        summary.uploads += counters.hosted.uploads;
+        for (family, value) in counters.ecosystem {
+            *summary.families.entry(family.to_owned()).or_default() += value;
+        }
+    }
+    summaries.into_values().collect()
+}
+
+/// The driver's counter families, so the dashboard labels ecosystem counters without hardcoding any
+/// ecosystem's vocabulary.
+#[must_use]
+pub fn family_descriptors(state: &AppState) -> Vec<crate::metrics::FamilyDescriptor> {
+    state
+        .serving
+        .metric_families()
+        .iter()
+        .map(|family| crate::metrics::FamilyDescriptor {
+            key: family.key.to_owned(),
+            label: family.ui_label.to_owned(),
+            roles: family.roles.iter().map(|role| role.as_str().to_owned()).collect(),
+        })
+        .collect()
 }
 
 /// The `/+stats` drill-down selectors.
@@ -239,66 +297,118 @@ pub async fn stats(
     axum::Json(tree).into_response()
 }
 
-/// One per-index counter family: metric name, help text, and the counter it reads.
-type CounterOf = fn(&crate::metrics::Counters) -> u64;
+/// A neutral per-index counter family: name, help, the role it is scoped to (`None` = every role),
+/// and the counter it reads.
+struct NeutralFamily {
+    name: &'static str,
+    help: &'static str,
+    role: Option<&'static str>,
+    read: fn(&crate::metrics::Counters) -> u64,
+}
 
-/// `GET /metrics` — Prometheus text exposition: the two global counters plus every per-index
-/// counter the stats tree tracks, labelled by index route.
+/// The neutral per-index families: a base group every role reports, a caching group only a cached
+/// index fills, and an upload group only a hosted index fills.
+const NEUTRAL_FAMILIES: &[NeutralFamily] = &[
+    NeutralFamily {
+        name: "velodex_index_pages_total",
+        help: "Index listings served.",
+        role: None,
+        read: |c| c.base.pages,
+    },
+    NeutralFamily {
+        name: "velodex_index_downloads_total",
+        help: "Artifacts served.",
+        role: None,
+        read: |c| c.base.downloads,
+    },
+    NeutralFamily {
+        name: "velodex_index_download_bytes_total",
+        help: "Artifact bytes served.",
+        role: None,
+        read: |c| c.base.bytes,
+    },
+    NeutralFamily {
+        name: "velodex_index_rejected_total",
+        help: "Downloads failing digest verification.",
+        role: None,
+        read: |c| c.base.rejected,
+    },
+    NeutralFamily {
+        name: "velodex_index_refreshes_total",
+        help: "Upstream revalidations.",
+        role: Some("cached"),
+        read: |c| c.cached.refreshes,
+    },
+    NeutralFamily {
+        name: "velodex_index_pages_changed_total",
+        help: "Revalidations that found upstream changed.",
+        role: Some("cached"),
+        read: |c| c.cached.changed,
+    },
+    NeutralFamily {
+        name: "velodex_index_stale_served_total",
+        help: "Pages served stale with upstream down.",
+        role: Some("cached"),
+        read: |c| c.cached.stale_served,
+    },
+    NeutralFamily {
+        name: "velodex_index_upstream_errors_total",
+        help: "Upstream failures with nothing cached.",
+        role: Some("cached"),
+        read: |c| c.cached.upstream_errors,
+    },
+    NeutralFamily {
+        name: "velodex_index_uploads_total",
+        help: "Distributions uploaded.",
+        role: Some("hosted"),
+        read: |c| c.hosted.uploads,
+    },
+];
+
+/// `GET /metrics` — Prometheus text exposition.
+///
+/// The global request counter plus every per-index counter the stats tree tracks, each labelled by
+/// index route, ecosystem, and role. Role-scoped families emit only for the role that owns them;
+/// ecosystem families come from the driver.
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
     let requests = state.requests.load(Ordering::Relaxed);
-    let metadata = state.metadata_requests.load(Ordering::Relaxed);
     let mut body = format!(
         "# HELP velodex_requests_total Total HTTP requests served.\n\
          # TYPE velodex_requests_total counter\n\
-         velodex_requests_total {requests}\n\
-         # HELP velodex_metadata_requests_total PEP 658 .metadata siblings served.\n\
-         # TYPE velodex_metadata_requests_total counter\n\
-         velodex_metadata_requests_total {metadata}\n"
+         velodex_requests_total {requests}\n"
     );
     write_rate_limit_metrics(&mut body, &state);
-    let mut totals: Vec<_> = state.metrics.index_totals().into_iter().collect();
-    totals.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let families: [(&str, &str, CounterOf); 10] = [
-        ("velodex_index_pages_total", "Simple pages served.", |c| c.pages),
-        ("velodex_index_downloads_total", "Artifacts served.", |c| c.downloads),
-        ("velodex_index_download_bytes_total", "Artifact bytes served.", |c| {
-            c.bytes
-        }),
-        ("velodex_index_metadata_total", "PEP 658 siblings served.", |c| {
-            c.metadata
-        }),
-        ("velodex_index_uploads_total", "Distributions uploaded.", |c| c.uploads),
-        ("velodex_index_refreshes_total", "Upstream revalidations.", |c| {
-            c.refreshes
-        }),
-        (
-            "velodex_index_pages_changed_total",
-            "Revalidations that found upstream changed.",
-            |c| c.changed,
-        ),
-        (
-            "velodex_index_stale_served_total",
-            "Pages served stale with upstream down.",
-            |c| c.stale_served,
-        ),
-        (
-            "velodex_index_upstream_errors_total",
-            "Upstream failures with nothing cached.",
-            |c| c.upstream_errors,
-        ),
-        (
-            "velodex_index_rejected_total",
-            "Downloads failing digest verification.",
-            |c| c.rejected,
-        ),
-    ];
-    for (name, help, value) in families {
-        let _ = writeln!(body, "# HELP {name} {help}\n# TYPE {name} counter");
-        for (route, counters) in &totals {
-            let _ = writeln!(body, "{name}{{index=\"{route}\"}} {}", value(counters));
+    let mut indexes = per_index_metrics(&state);
+    indexes.sort_by(|(a, _), (b, _)| a.route.cmp(&b.route));
+    for family in NEUTRAL_FAMILIES {
+        let _ = writeln!(body, "# HELP {} {}", family.name, family.help);
+        let _ = writeln!(body, "# TYPE {} counter", family.name);
+        for (index, counters) in &indexes {
+            if family.role.is_none_or(|role| role == index.kind) {
+                write_metric(&mut body, family.name, index, (family.read)(counters));
+            }
+        }
+    }
+    for family in state.serving.metric_families() {
+        let _ = writeln!(body, "# HELP {} {}", family.prom_name, family.help);
+        let _ = writeln!(body, "# TYPE {} counter", family.prom_name);
+        for (index, counters) in &indexes {
+            if family.roles.iter().any(|role| role.as_str() == index.kind) {
+                let value = counters.ecosystem.get(family.key).copied().unwrap_or(0);
+                write_metric(&mut body, family.prom_name, index, value);
+            }
         }
     }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
+}
+
+/// One Prometheus sample line, labelled by index route, ecosystem, and role.
+fn write_metric(body: &mut String, name: &str, index: &crate::state::IndexDescription, value: u64) {
+    let _ = writeln!(
+        body,
+        "{name}{{index=\"{}\",ecosystem=\"{}\",role=\"{}\"}} {value}",
+        index.route, index.ecosystem, index.kind
+    );
 }
 
 fn write_rate_limit_metrics(body: &mut String, state: &AppState) {

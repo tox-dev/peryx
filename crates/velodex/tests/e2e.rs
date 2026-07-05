@@ -314,11 +314,12 @@ impl Velodex {
         format!("http://127.0.0.1:{}/root/pypi/", self.port)
     }
 
-    /// Read velodex's `velodex_metadata_requests_total` counter — the PEP 658 siblings it has served.
+    /// Sum velodex's per-index `velodex_index_metadata_total` counters — the PEP 658 siblings it has
+    /// served across every index.
     fn metadata_requests(&self) -> u64 {
         let (status, body) = http_get(self.port, "/metrics").expect("metrics");
         assert_eq!(status, 200);
-        parse_counter(&body, "velodex_metadata_requests_total")
+        sum_labeled_counter(&body, "velodex_index_metadata_total")
     }
 }
 
@@ -448,11 +449,12 @@ fn html_get(port: u16, path: &str) -> String {
 }
 
 /// Pull the value off a Prometheus `# TYPE ... counter` line like `name 3`.
-fn parse_counter(metrics: &str, name: &str) -> u64 {
+/// Sum every labelled sample of a per-index counter family, e.g. `name{index="a",…} 3`.
+fn sum_labeled_counter(metrics: &str, name: &str) -> u64 {
     metrics
         .lines()
-        .find_map(|line| line.strip_prefix(name)?.trim().parse().ok())
-        .unwrap_or_else(|| panic!("metric {name} not found"))
+        .filter_map(|line| line.strip_prefix(name)?.rsplit_once('}')?.1.trim().parse::<u64>().ok())
+        .sum()
 }
 
 /// Create an isolated, empty virtualenv with `uv venv` (~15ms, no seed packages). Both clients

@@ -9,9 +9,10 @@ visual style as this site.
 
 ## Dashboard
 
-`http://<host>:<port>/` shows the version, the change serial, live request counters (including PEP 658 metadata hits),
-and a card per configured index with its kind, route, layers, whether it accepts uploads, and its usage: pages served,
-downloads, and bytes. The counters refresh every few seconds.
+`http://<host>:<port>/` shows the version, the change serial, and the counters in two groups: a **Global** group with
+the instance-wide request count, then one group per ecosystem (labelled with its badge) holding that ecosystem's scoped
+counters, such as PyPI's listings, artifacts, and PEP 658 metadata hits. Below the counters sits a card per configured
+index with its kind, route, layers, whether it accepts uploads, and its usage. The counters refresh every few seconds.
 
 {{ screen(alt="The dashboard: counters on top, one card per index with its layer stack and usage", name="dashboard") }}
 

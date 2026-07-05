@@ -182,8 +182,8 @@ HTTP byte ranges, fetches only the `METADATA` member, and records the generated 
 index does not satisfy range requests, velodex remembers that for the process and streams the artifact into the blob
 store before extracting metadata from the cached file. Sdist backfill uses the same cached-file path and buffers only
 capped `PKG-INFO` content. For hosted uploads, velodex writes the sibling from verified wheel `METADATA` or sdist
-`PKG-INFO`. The `velodex_metadata_requests_total` metric counts these; the end-to-end tests assert on it to prove real
-clients take this path. Few third-party indexes serve PEP 658 yet, so fronting one with velodex can make resolution
+`PKG-INFO`. The per-index `velodex_index_metadata_total` metric counts these; the end-to-end tests assert on it to prove
+real clients take this path. Few third-party indexes serve PEP 658 yet, so fronting one with velodex can make resolution
 faster than the upstream itself once metadata is cached.
 
 ## Usage metrics

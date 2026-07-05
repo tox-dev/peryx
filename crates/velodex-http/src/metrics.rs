@@ -3,17 +3,26 @@
 //! Handlers record events with one non-blocking channel send; a dedicated OS thread aggregates them
 //! into a tree (index → project → file) that the dashboard and `/+stats` read. The request path
 //! never takes the aggregation lock for writing.
+//!
+//! Counters are grouped by the role that owns them: a neutral [`BaseCounters`] every index reports,
+//! a [`CachedCounters`] group only a caching index fills, a [`HostedCounters`] group only an upload
+//! store fills, and an open [`EcosystemCounters`] map whose keys each ecosystem driver declares
+//! through [`MetricFamily`]. The core stays ecosystem-neutral: a driver names and describes its own
+//! families (`PyPI`'s PEP 658 sibling today), and the render layer scopes each family to the roles
+//! and ecosystem that emit it, so a hosted index never reports a caching counter.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::state::Role;
 
 /// One request-path observation.
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// A simple page was served.
+    /// An index listing was served.
     Page { route: String, project: String },
     /// An artifact was served, with its size. `filename` keys the per-file breakdown; `project` is
     /// the pre-normalized owning project (the ecosystem driver derives it, so this stays neutral).
@@ -23,11 +32,14 @@ pub enum Event {
         filename: String,
         bytes: u64,
     },
-    /// A PEP 658 sibling was served.
-    Metadata {
+    /// An ecosystem-specific counter fired. `family` is a static key the ecosystem driver declares
+    /// through [`MetricFamily`] (`PyPI`'s `metadata` PEP 658 sibling today); `filename` keys the
+    /// per-file breakdown when the observation is about one artifact.
+    Ecosystem {
         route: String,
         project: String,
-        filename: String,
+        filename: Option<String>,
+        family: &'static str,
     },
     /// A distribution was uploaded.
     Upload { route: String, project: String },
@@ -46,36 +58,99 @@ pub enum Event {
     BlobRejected { route: String, project: String },
 }
 
-/// Counters at one level of the tree.
+/// Counters every index reports, whatever its role or ecosystem.
 #[derive(Debug, Default, Clone, Serialize)]
-pub struct Counters {
+pub struct BaseCounters {
     pub pages: u64,
     pub downloads: u64,
-    pub metadata: u64,
-    pub uploads: u64,
     pub bytes: u64,
+    /// Downloads whose bytes failed digest verification and were not cached.
+    pub rejected: u64,
+}
+
+/// Counters only a caching index fills: everything about revalidating against an upstream.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct CachedCounters {
     pub refreshes: u64,
     /// Refreshes that found the upstream page changed.
     pub changed: u64,
     /// Pages served from cache because upstream was unavailable.
     pub stale_served: u64,
     pub upstream_errors: u64,
-    /// Downloads whose bytes failed digest verification and were not cached.
+}
+
+/// Counters only a hosted index fills.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct HostedCounters {
+    pub uploads: u64,
+}
+
+/// Ecosystem-specific counters, keyed by the family key its driver declares. Open by construction so
+/// a new ecosystem adds keys without touching the neutral core.
+pub type EcosystemCounters = BTreeMap<&'static str, u64>;
+
+/// One counter family an ecosystem driver publishes: how to store, expose, and scope it.
+///
+/// The core renders `/metrics`, `/+status`, and the dashboard from these descriptors instead of
+/// hardcoding any ecosystem's vocabulary.
+#[derive(Debug, Clone, Copy)]
+pub struct MetricFamily {
+    /// The [`EcosystemCounters`] key this family accumulates under.
+    pub key: &'static str,
+    /// The Prometheus metric name, e.g. `velodex_index_metadata_total`.
+    pub prom_name: &'static str,
+    /// The Prometheus `# HELP` line.
+    pub help: &'static str,
+    /// The dashboard label, e.g. `PEP 658 metadata hits`.
+    pub ui_label: &'static str,
+    /// The roles that emit this family; the render layer skips it for any other role.
+    pub roles: &'static [Role],
+}
+
+/// One ecosystem's activity rolled up across all its indexes, for the `/+status` summary and the
+/// dashboard. `families` holds that ecosystem's own counters keyed by family key.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EcosystemSummary {
+    pub ecosystem: String,
+    pub pages: u64,
+    pub downloads: u64,
+    pub bytes: u64,
     pub rejected: u64,
+    pub uploads: u64,
+    pub families: BTreeMap<String, u64>,
+}
+
+/// A driver's counter family as the dashboard needs it: the storage key, its human label, and the
+/// roles that report it.
+///
+/// Lets the neutral UI label ecosystem counters without hardcoding any ecosystem's vocabulary.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FamilyDescriptor {
+    pub key: String,
+    pub label: String,
+    pub roles: Vec<String>,
+}
+
+/// Counters at one level of the tree, grouped by the role that owns each group.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct Counters {
+    pub base: BaseCounters,
+    pub cached: CachedCounters,
+    pub hosted: HostedCounters,
+    pub ecosystem: EcosystemCounters,
 }
 
 /// Per-file counters.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct FileStats {
     pub downloads: u64,
-    pub metadata: u64,
     pub bytes: u64,
+    pub ecosystem: EcosystemCounters,
 }
 
 /// Per-project counters plus the files underneath.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ProjectStats {
-    #[serde(flatten)]
     pub totals: Counters,
     pub files: HashMap<String, FileStats>,
 }
@@ -83,7 +158,6 @@ pub struct ProjectStats {
 /// Per-index counters plus the projects underneath.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct IndexStats {
-    #[serde(flatten)]
     pub totals: Counters,
     pub projects: HashMap<String, ProjectStats>,
 }
@@ -120,7 +194,7 @@ impl Metrics {
         let _ = self.sender.send(event);
     }
 
-    /// A snapshot of one index's totals per route, for the dashboard cards.
+    /// A snapshot of one index's totals per route, for the dashboard cards and Prometheus.
     ///
     /// # Panics
     /// Panics if the aggregator thread panicked and poisoned the tree lock.
@@ -180,8 +254,8 @@ fn apply(tree: &mut StatsTree, event: Event) {
     match event {
         Event::Page { route, project } => {
             let index = tree.entry(route).or_default();
-            index.totals.pages += 1;
-            index.projects.entry(project).or_default().totals.pages += 1;
+            index.totals.base.pages += 1;
+            index.projects.entry(project).or_default().totals.base.pages += 1;
         }
         Event::Download {
             route,
@@ -190,30 +264,33 @@ fn apply(tree: &mut StatsTree, event: Event) {
             bytes,
         } => {
             let index = tree.entry(route).or_default();
-            index.totals.downloads += 1;
-            index.totals.bytes += bytes;
+            index.totals.base.downloads += 1;
+            index.totals.base.bytes += bytes;
             let project = index.projects.entry(project).or_default();
-            project.totals.downloads += 1;
-            project.totals.bytes += bytes;
+            project.totals.base.downloads += 1;
+            project.totals.base.bytes += bytes;
             let file = project.files.entry(filename).or_default();
             file.downloads += 1;
             file.bytes += bytes;
         }
-        Event::Metadata {
+        Event::Ecosystem {
             route,
             project,
             filename,
+            family,
         } => {
             let index = tree.entry(route).or_default();
-            index.totals.metadata += 1;
+            *index.totals.ecosystem.entry(family).or_default() += 1;
             let project = index.projects.entry(project).or_default();
-            project.totals.metadata += 1;
-            project.files.entry(filename).or_default().metadata += 1;
+            *project.totals.ecosystem.entry(family).or_default() += 1;
+            if let Some(filename) = filename {
+                *project.files.entry(filename).or_default().ecosystem.entry(family).or_default() += 1;
+            }
         }
         Event::Upload { route, project } => {
             let index = tree.entry(route).or_default();
-            index.totals.uploads += 1;
-            index.projects.entry(project).or_default().totals.uploads += 1;
+            index.totals.hosted.uploads += 1;
+            index.projects.entry(project).or_default().totals.hosted.uploads += 1;
         }
         Event::Refresh {
             route,
@@ -221,28 +298,28 @@ fn apply(tree: &mut StatsTree, event: Event) {
             changed,
         } => {
             let index = tree.entry(route).or_default();
-            index.totals.refreshes += 1;
+            index.totals.cached.refreshes += 1;
             let project = index.projects.entry(project).or_default();
-            project.totals.refreshes += 1;
+            project.totals.cached.refreshes += 1;
             if changed {
-                index.totals.changed += 1;
-                project.totals.changed += 1;
+                index.totals.cached.changed += 1;
+                project.totals.cached.changed += 1;
             }
         }
         Event::StaleServed { route, project } => {
             let index = tree.entry(route).or_default();
-            index.totals.stale_served += 1;
-            index.projects.entry(project).or_default().totals.stale_served += 1;
+            index.totals.cached.stale_served += 1;
+            index.projects.entry(project).or_default().totals.cached.stale_served += 1;
         }
         Event::UpstreamError { route, project } => {
             let index = tree.entry(route).or_default();
-            index.totals.upstream_errors += 1;
-            index.projects.entry(project).or_default().totals.upstream_errors += 1;
+            index.totals.cached.upstream_errors += 1;
+            index.projects.entry(project).or_default().totals.cached.upstream_errors += 1;
         }
         Event::BlobRejected { route, project } => {
             let index = tree.entry(route).or_default();
-            index.totals.rejected += 1;
-            index.projects.entry(project).or_default().totals.rejected += 1;
+            index.totals.base.rejected += 1;
+            index.projects.entry(project).or_default().totals.base.rejected += 1;
         }
     }
 }

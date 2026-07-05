@@ -38,6 +38,13 @@ pub trait EcosystemServing: Send + Sync {
     /// own service endpoints are classified before this by
     /// [`service_route_class`](crate::rate_limit::service_route_class).
     fn classify_route(&self, path: &str) -> crate::rate_limit::RouteClass;
+
+    /// The ecosystem-specific counter families this driver publishes, so the neutral render layer
+    /// exposes and scopes them without knowing any ecosystem's vocabulary. Empty by default; a
+    /// driver declares its own (`PyPI`'s PEP 658 sibling today).
+    fn metric_families(&self) -> &'static [crate::metrics::MetricFamily] {
+        &[]
+    }
 }
 
 /// The driver installed when no ecosystem is wired into [`AppState`]: every request gets a `503`.

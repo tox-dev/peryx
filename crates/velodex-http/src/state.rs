@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use serde::Serialize;
 use velodex_format::Ecosystem;
 use velodex_policy::Policy;
 use velodex_storage::blob::BlobStore;
@@ -49,6 +50,27 @@ pub enum IndexKind {
     },
 }
 
+/// An index's role, without the payload [`IndexKind`] carries. Metric families scope themselves to
+/// the roles that emit them, and the render layer gates counters by matching this against an index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Cached,
+    Hosted,
+    Virtual,
+}
+
+impl Role {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::Hosted => "hosted",
+            Self::Virtual => "virtual",
+        }
+    }
+}
+
 struct StateParts {
     meta: MetaStore,
     blobs: BlobStore,
@@ -73,10 +95,6 @@ pub struct AppState {
     pub ttl_secs: i64,
     pub clock: Clock,
     pub requests: AtomicU64,
-    /// PEP 658/714 `.metadata` sibling requests served, exposed via `/metrics`. Downstream clients
-    /// only hit this when they take the metadata-only resolution fast path, so it is the server-side
-    /// proof that pip and uv resolve through velodex without downloading whole wheels.
-    pub metadata_requests: AtomicU64,
     pub indexes: Vec<Index>,
     /// One async lock per project being fetched from upstream, so concurrent cache misses for the
     /// same page share a single upstream fetch instead of each downloading and storing it.
@@ -320,7 +338,6 @@ impl AppState {
             ttl_secs,
             clock,
             requests: AtomicU64::new(0),
-            metadata_requests: AtomicU64::new(0),
             indexes,
             inflight: Mutex::new(HashMap::new()),
             downloads: Mutex::new(HashMap::new()),

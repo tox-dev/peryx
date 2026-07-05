@@ -20,8 +20,10 @@ async fn mount_page(server: &MockServer, body: String, template: ResponseTemplat
 }
 
 fn drilled(state: &Arc<velodex_http::state::AppState>, field: &str) -> u64 {
-    state.metrics.drill(Some("pypi"), None)["totals"][field]
-        .as_u64()
+    let totals = state.metrics.drill(Some("pypi"), None);
+    ["base", "cached", "hosted", "ecosystem"]
+        .into_iter()
+        .find_map(|group| totals["totals"][group][field].as_u64())
         .unwrap_or(0)
 }
 

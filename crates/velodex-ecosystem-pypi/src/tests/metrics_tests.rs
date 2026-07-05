@@ -36,30 +36,31 @@ fn test_events_aggregate_by_index_project_and_file() {
         filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl".into(),
         bytes: 50,
     });
-    metrics.record(Event::Metadata {
+    metrics.record(Event::Ecosystem {
         route: "root/pypi".into(),
         project: "pandas".into(),
-        filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl.metadata".into(),
+        filename: Some("pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl.metadata".into()),
+        family: "metadata",
     });
     metrics.record(Event::Upload {
         route: "root/pypi".into(),
         project: "velodexpkg".into(),
     });
     settle(&metrics, |m| {
-        m.index_totals().get("root/pypi").is_some_and(|t| t.uploads == 1)
+        m.index_totals().get("root/pypi").is_some_and(|t| t.hosted.uploads == 1)
     });
 
     let totals = metrics.index_totals();
     let index = &totals["root/pypi"];
-    assert_eq!(index.pages, 1);
-    assert_eq!(index.downloads, 2);
-    assert_eq!(index.bytes, 150);
-    assert_eq!(index.metadata, 1);
-    assert_eq!(index.uploads, 1);
+    assert_eq!(index.base.pages, 1);
+    assert_eq!(index.base.downloads, 2);
+    assert_eq!(index.base.bytes, 150);
+    assert_eq!(index.ecosystem["metadata"], 1);
+    assert_eq!(index.hosted.uploads, 1);
 
     let projects = metrics.drill(Some("root/pypi"), None);
-    assert_eq!(projects["projects"]["pandas"]["downloads"], 2);
-    assert_eq!(projects["projects"]["velodexpkg"]["uploads"], 1);
+    assert_eq!(projects["projects"]["pandas"]["base"]["downloads"], 2);
+    assert_eq!(projects["projects"]["velodexpkg"]["hosted"]["uploads"], 1);
 
     let files = metrics.drill(Some("root/pypi"), Some("pandas"));
     let file = &files["files"]["pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl"];
@@ -78,7 +79,7 @@ fn test_drill_unknown_levels_are_empty() {
     assert_eq!(metrics.drill(Some("ghost"), None), serde_json::json!({}));
     assert_eq!(metrics.drill(Some("pypi"), Some("ghost")), serde_json::json!({}));
     let top = metrics.drill(None, None);
-    assert!(top["pypi"]["pages"].as_u64().unwrap() >= 1);
+    assert!(top["pypi"]["base"]["pages"].as_u64().unwrap() >= 1);
 }
 
 #[test]
@@ -107,20 +108,20 @@ fn test_operational_events_aggregate() {
         project: "flask".into(),
     });
     settle(&metrics, |m| {
-        m.index_totals().get("pypi").is_some_and(|t| t.rejected == 1)
+        m.index_totals().get("pypi").is_some_and(|t| t.base.rejected == 1)
     });
 
     let totals = metrics.index_totals();
     let index = &totals["pypi"];
-    assert_eq!(index.refreshes, 2);
-    assert_eq!(index.changed, 1);
-    assert_eq!(index.stale_served, 1);
-    assert_eq!(index.upstream_errors, 1);
-    assert_eq!(index.rejected, 1);
+    assert_eq!(index.cached.refreshes, 2);
+    assert_eq!(index.cached.changed, 1);
+    assert_eq!(index.cached.stale_served, 1);
+    assert_eq!(index.cached.upstream_errors, 1);
+    assert_eq!(index.base.rejected, 1);
 
     let projects = metrics.drill(Some("pypi"), None);
-    assert_eq!(projects["projects"]["flask"]["refreshes"], 2);
-    assert_eq!(projects["projects"]["flask"]["rejected"], 1);
+    assert_eq!(projects["projects"]["flask"]["cached"]["refreshes"], 2);
+    assert_eq!(projects["projects"]["flask"]["base"]["rejected"], 1);
 }
 
 #[tokio::test]
@@ -165,7 +166,10 @@ async fn test_router_paths_feed_stats_and_prometheus_metrics() {
     assert_eq!(file_status, StatusCode::OK);
     settle(&harness.state.metrics, |metrics| {
         metrics.index_totals().get("pypi").is_some_and(|totals| {
-            totals.pages == 1 && totals.metadata == 1 && totals.downloads == 1 && totals.bytes == wheel.len() as u64
+            totals.base.pages == 1
+                && totals.ecosystem.get("metadata").copied() == Some(1)
+                && totals.base.downloads == 1
+                && totals.base.bytes == wheel.len() as u64
         })
     });
 
@@ -175,19 +179,15 @@ async fn test_router_paths_feed_stats_and_prometheus_metrics() {
     assert_eq!(
         stats_json,
         serde_json::json!({
-            "pages": 1,
-            "downloads": 1,
-            "metadata": 1,
-            "uploads": 0,
-            "bytes": wheel.len() as u64,
-            "refreshes": 0,
-            "changed": 0,
-            "stale_served": 0,
-            "upstream_errors": 0,
-            "rejected": 0,
+            "totals": {
+                "base": {"pages": 1, "downloads": 1, "bytes": wheel.len() as u64, "rejected": 0},
+                "cached": {"refreshes": 0, "changed": 0, "stale_served": 0, "upstream_errors": 0},
+                "hosted": {"uploads": 0},
+                "ecosystem": {"metadata": 1}
+            },
             "files": {
-                filename: {"downloads": 1, "metadata": 0, "bytes": wheel.len() as u64},
-                format!("{filename}.metadata"): {"downloads": 0, "metadata": 1, "bytes": 0}
+                filename: {"downloads": 1, "bytes": wheel.len() as u64, "ecosystem": {}},
+                format!("{filename}.metadata"): {"downloads": 0, "bytes": 0, "ecosystem": {"metadata": 1}}
             }
         })
     );
@@ -195,11 +195,27 @@ async fn test_router_paths_feed_stats_and_prometheus_metrics() {
     let (metrics_status, _, metrics_body) = get(&harness.state, "/metrics", None).await;
     assert_eq!(metrics_status, StatusCode::OK);
     for line in [
-        "velodex_index_pages_total{index=\"pypi\"} 1",
-        "velodex_index_downloads_total{index=\"pypi\"} 1",
-        "velodex_index_download_bytes_total{index=\"pypi\"} 12",
-        "velodex_index_metadata_total{index=\"pypi\"} 1",
+        "velodex_index_pages_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1",
+        "velodex_index_downloads_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1",
+        "velodex_index_download_bytes_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 12",
+        "velodex_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1",
     ] {
         assert!(metrics_body.contains(line), "{line} missing from:\n{metrics_body}");
     }
+
+    // `/+status` rolls the same counters up per ecosystem and carries the driver's family labels, so
+    // the dashboard can separate the global request count from the PyPI-scoped ones.
+    let (code, _, doc) = get(&harness.state, "/+status", None).await;
+    assert_eq!(code, StatusCode::OK);
+    let status: serde_json::Value = serde_json::from_str(&doc).unwrap();
+    let pypi = status["by_ecosystem"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|summary| summary["ecosystem"] == "pypi")
+        .unwrap();
+    assert_eq!(pypi["pages"], 1);
+    assert_eq!(pypi["families"]["metadata"], 1);
+    assert_eq!(status["metric_families"][0]["key"], "metadata");
+    assert_eq!(status["metric_families"][0]["label"], "PEP 658 metadata hits");
 }

@@ -1388,7 +1388,7 @@ async fn test_metadata_served_verified_and_counted() {
     assert_eq!(body2, body);
 
     let (_, _, metrics) = get(&h.state, "/metrics", None).await;
-    assert!(metrics.contains("velodex_metadata_requests_total 2"));
+    assert!(metrics.contains("velodex_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 2"));
 }
 
 #[tokio::test]
@@ -3159,7 +3159,7 @@ async fn test_metrics_exposes_counters() {
     let (status, _, body) = get(&h.state, "/metrics", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("velodex_requests_total"));
-    assert!(body.contains("velodex_metadata_requests_total 0"));
+    assert!(body.contains("velodex_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 0"));
 }
 
 #[tokio::test]
@@ -3188,10 +3188,13 @@ async fn test_metrics_exposes_per_index_counters() {
     }
     let (status, _, body) = get(&h.state, "/metrics", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("velodex_index_pages_total{index=\"hosted\"} 1"));
-    assert!(body.contains("velodex_index_pages_total{index=\"pypi\"} 1"));
-    assert!(body.contains("velodex_index_refreshes_total{index=\"pypi\"} 0"));
-    assert!(body.contains("velodex_index_rejected_total{index=\"pypi\"} 0"));
+    assert!(body.contains("velodex_index_pages_total{index=\"hosted\",ecosystem=\"pypi\",role=\"hosted\"} 1"));
+    assert!(body.contains("velodex_index_pages_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1"));
+    assert!(body.contains("velodex_index_refreshes_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 0"));
+    assert!(body.contains("velodex_index_rejected_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 0"));
+    // A caching-only counter never appears for the hosted index, and uploads never for the cache.
+    assert!(!body.contains("velodex_index_refreshes_total{index=\"hosted\""));
+    assert!(!body.contains("velodex_index_uploads_total{index=\"pypi\""));
 }
 
 #[tokio::test]
@@ -3288,13 +3291,13 @@ async fn test_file_digest_mismatch_fails_the_body_and_never_persists() {
     // sleep would starve it on the single-threaded test runtime.
     for _ in 0..500 {
         let totals = h.state.metrics.index_totals();
-        if totals.get("pypi").is_some_and(|t| t.rejected == 1) {
+        if totals.get("pypi").is_some_and(|t| t.base.rejected == 1) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     assert!(!h.state.blobs.exists(&digest));
-    assert_eq!(h.state.metrics.index_totals()["pypi"].rejected, 1);
+    assert_eq!(h.state.metrics.index_totals()["pypi"].base.rejected, 1);
 }
 
 #[tokio::test]

@@ -3,16 +3,40 @@
 //! The server builds them from `AppState`; the browser rebuilds them from velodex's own JSON API
 //! (`/+status` and the PEP 691 simple endpoints), so both sides render identical pages.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-/// The dashboard snapshot: identity, counters, and the configured indexes.
+/// The dashboard snapshot: identity, the global request count, per-ecosystem activity, the driver's
+/// counter-family labels, and the configured indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiSnapshot {
     pub version: String,
     pub serial: u64,
     pub requests: u64,
-    pub metadata_requests: u64,
+    pub ecosystems: Vec<UiEcosystemSummary>,
+    pub families: Vec<UiMetricFamily>,
     pub indexes: Vec<UiIndex>,
+}
+
+/// One ecosystem's activity rolled up across its indexes; mirrors velodex's `/+status` summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiEcosystemSummary {
+    pub ecosystem: String,
+    pub pages: u64,
+    pub downloads: u64,
+    pub bytes: u64,
+    pub rejected: u64,
+    pub uploads: u64,
+    pub families: BTreeMap<String, u64>,
+}
+
+/// A counter family the ecosystem driver publishes: its storage key and human label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiMetricFamily {
+    pub key: String,
+    pub label: String,
+    pub roles: Vec<String>,
 }
 
 /// One configured index as the dashboard shows it.
@@ -107,7 +131,8 @@ impl UiSnapshot {
             version: string_at(value, "version"),
             serial: u64_at(value, "serial"),
             requests: u64_at(value, "requests"),
-            metadata_requests: u64_at(value, "metadata_requests"),
+            ecosystems: serde_json::from_value(value["by_ecosystem"].clone()).unwrap_or_default(),
+            families: serde_json::from_value(value["metric_families"].clone()).unwrap_or_default(),
             indexes,
         }
     }
@@ -319,22 +344,35 @@ pub struct UiCounters {
 }
 
 impl UiCounters {
-    /// Read the counters present in one stats JSON object; absent fields stay zero.
+    /// Read the counters present in one stats JSON object; absent fields stay zero. Index and
+    /// project totals group counters by owning role (`base`/`cached`/`hosted`/`ecosystem`); file
+    /// entries carry `downloads`/`bytes` flat and their ecosystem counters under `ecosystem`, so
+    /// each field falls back to the flat location.
     #[must_use]
     pub fn from_value(value: &serde_json::Value) -> Self {
         Self {
-            pages: u64_at(value, "pages"),
-            downloads: u64_at(value, "downloads"),
-            metadata: u64_at(value, "metadata"),
-            uploads: u64_at(value, "uploads"),
-            bytes: u64_at(value, "bytes"),
-            refreshes: u64_at(value, "refreshes"),
-            changed: u64_at(value, "changed"),
-            stale_served: u64_at(value, "stale_served"),
-            upstream_errors: u64_at(value, "upstream_errors"),
-            rejected: u64_at(value, "rejected"),
+            pages: grouped(value, "base", "pages"),
+            downloads: grouped(value, "base", "downloads"),
+            metadata: grouped(value, "ecosystem", "metadata"),
+            uploads: grouped(value, "hosted", "uploads"),
+            bytes: grouped(value, "base", "bytes"),
+            refreshes: grouped(value, "cached", "refreshes"),
+            changed: grouped(value, "cached", "changed"),
+            stale_served: grouped(value, "cached", "stale_served"),
+            upstream_errors: grouped(value, "cached", "upstream_errors"),
+            rejected: grouped(value, "base", "rejected"),
         }
     }
+}
+
+/// Read `value[group][field]`, falling back to a flat `value[field]` for file-level entries.
+fn grouped(value: &serde_json::Value, group: &str, field: &str) -> u64 {
+    value
+        .get(group)
+        .and_then(|group| group.get(field))
+        .or_else(|| value.get(field))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
 }
 
 /// One drill depth of `/+stats`: the aggregate at this level plus the named rows underneath
@@ -385,11 +423,11 @@ pub fn stats_index(value: &serde_json::Value) -> UiStats {
     }
 }
 
-/// Parse one project's drill document: its (flattened) totals plus one row per file.
+/// Parse one project's drill document: its totals plus one row per file.
 #[must_use]
 pub fn stats_project(value: &serde_json::Value) -> UiStats {
     UiStats {
-        totals: UiCounters::from_value(value),
+        totals: UiCounters::from_value(&value["totals"]),
         rows: sorted_rows(&value["files"]),
     }
 }

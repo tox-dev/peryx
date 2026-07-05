@@ -97,6 +97,12 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .badge.upload-enabled { color: #34c496; border-color: #34c496; }
 .badge.upload-disabled { color: var(--text-soft); border-color: var(--border); }
 .badge.status-configured { color: #34c496; border-color: #34c496; }
+.metrics-group { margin: 0.75rem 0; }
+.metrics-label {
+  display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem;
+  font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-soft);
+}
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; }
 .stat {
   border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.2rem; background: var(--bg-soft);

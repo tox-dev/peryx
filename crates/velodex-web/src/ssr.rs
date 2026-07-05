@@ -14,7 +14,8 @@ use velodex_http::search::{SearchParams, SourceFilter};
 use velodex_storage::blob::Digest;
 
 use crate::model::{
-    UiHosted, UiIndex, UiMember, UiMemberChunk, UiProject, UiRecentUpload, UiSearchPage, UiSnapshot, UiUpstream,
+    UiEcosystemSummary, UiHosted, UiIndex, UiMember, UiMemberChunk, UiMetricFamily, UiProject, UiRecentUpload,
+    UiSearchPage, UiSnapshot, UiUpstream,
 };
 use crate::{App, shell};
 
@@ -160,7 +161,26 @@ fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         serial: app.meta.current_serial().unwrap_or(0),
         requests: app.requests.load(std::sync::atomic::Ordering::Relaxed),
-        metadata_requests: app.metadata_requests.load(std::sync::atomic::Ordering::Relaxed),
+        ecosystems: velodex_http::handlers::ecosystem_summaries(&app)
+            .into_iter()
+            .map(|summary| UiEcosystemSummary {
+                ecosystem: summary.ecosystem,
+                pages: summary.pages,
+                downloads: summary.downloads,
+                bytes: summary.bytes,
+                rejected: summary.rejected,
+                uploads: summary.uploads,
+                families: summary.families,
+            })
+            .collect(),
+        families: velodex_http::handlers::family_descriptors(&app)
+            .into_iter()
+            .map(|family| UiMetricFamily {
+                key: family.key,
+                label: family.label,
+                roles: family.roles,
+            })
+            .collect(),
         indexes,
     }
 }

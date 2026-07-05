@@ -13,7 +13,14 @@ async function goto(page, url) {
 
 test("dashboard shows identity, counters, and the topology", async ({ page }) => {
   await goto(page, "/");
-  await expect(page.locator(".stat-row .stat")).toHaveCount(4);
+  // Metrics are split into a global group and a per-ecosystem group, so a reader can tell the
+  // instance-wide request count from PyPI-scoped counters like PEP 658 hits.
+  const globalGroup = page.locator(".metrics-group", { hasText: "Global" });
+  await expect(globalGroup.locator(".stat", { hasText: "requests served" })).toBeVisible();
+  const pypiGroup = page.locator(".metrics-group", { has: page.locator(".badge.ecosystem-pypi") });
+  await expect(pypiGroup.locator(".stat", { hasText: "listings served" })).toBeVisible();
+  await expect(pypiGroup.locator(".stat", { hasText: "PEP 658 metadata hits" })).toBeVisible();
+  await expect(globalGroup).not.toContainText("PEP 658");
   // The virtual index folds its member indexes into one card with an ordered layer stack.
   const virtualIndex = page.locator(".card", { hasText: "root/pypi" });
   await expect(virtualIndex.locator(".badge.kind-virtual")).toBeVisible();

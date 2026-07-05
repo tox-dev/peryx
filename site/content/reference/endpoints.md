@@ -177,12 +177,20 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 
 `GET /metrics` exposes Prometheus counters:
 
-- `velodex_requests_total`: HTTP requests served.
-- `velodex_metadata_requests_total`: PEP 658/714 `.metadata` siblings served; a rising value proves clients resolve via
-  the metadata fast path rather than by downloading artifacts.
+- `velodex_requests_total`: HTTP requests served. This is the one global counter; everything else below is per index.
 - `velodex_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
 - `velodex_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
 - `velodex_upstream_rate_limit_denied_total{index="<name>"}`: cached index concurrency cap denials.
 - `velodex_upstream_inflight_fetches{index="<name>"}`: current upstream fetches holding a concurrency slot.
-- `velodex_index_*_total{index="<route>"}`: the `/+stats` counter set per index route (`pages`, `downloads`,
-  `download_bytes`, `metadata`, `uploads`, `refreshes`, `pages_changed`, `stale_served`, `upstream_errors`, `rejected`).
+
+Every per-index counter carries `{index="<route>",ecosystem="<ecosystem>",role="<role>"}` labels, and each family is
+scoped to the role that reports it:
+
+- Base (every role): `velodex_index_pages_total`, `velodex_index_downloads_total`, `velodex_index_download_bytes_total`,
+  `velodex_index_rejected_total`.
+- Caching indexes only: `velodex_index_refreshes_total`, `velodex_index_pages_changed_total`,
+  `velodex_index_stale_served_total`, `velodex_index_upstream_errors_total`.
+- Hosted indexes only: `velodex_index_uploads_total`.
+- Ecosystem families (declared by the ecosystem driver): `velodex_index_metadata_total` is PyPI's PEP 658/714
+  `.metadata` sibling counter; a rising value proves clients resolve via the metadata fast path rather than by
+  downloading artifacts. Sum it across indexes for the instance-wide total.

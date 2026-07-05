@@ -15,7 +15,8 @@ pages live at `/stats`, `/stats?index={route}`, and `/stats?index={route}&projec
 
 {{ screen(alt="The usage drill-down for one index: totals up top, busiest projects first", name="stats-index") }}
 
-{{ screen(alt="One project drilled to file level: downloads, bytes, and metadata hits per artifact", name="stats-project") }}
+{{ screen(alt="One project drilled to file level: downloads, bytes, and metadata hits per artifact",
+name="stats-project") }}
 
 ## Query the counters
 
@@ -26,7 +27,8 @@ curl -s 'http://127.0.0.1:4433/+stats?index=root/pypi&project=numpy' | jq .files
 ```
 
 Counters live in memory and reset on restart; for durable time series, scrape `/metrics`, which exposes the same set per
-index (`velodex_index_downloads_total{index="root/pypi"}` and friends) alongside the global request counters.
+index (`velodex_index_downloads_total{index="root/pypi",ecosystem="pypi",role="virtual"}` and friends) alongside the
+global request counter.
 
 ## Check operational status
 

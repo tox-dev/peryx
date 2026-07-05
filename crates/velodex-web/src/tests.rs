@@ -9,7 +9,13 @@ fn test_snapshot_from_status_roundtrip() {
         "version": "0.0.1",
         "serial": 7,
         "requests": 12,
-        "metadata_requests": 3,
+        "by_ecosystem": [
+            {"ecosystem": "pypi", "pages": 12, "downloads": 4, "bytes": 900, "rejected": 0,
+             "uploads": 0, "families": {"metadata": 3}}
+        ],
+        "metric_families": [
+            {"key": "metadata", "label": "PEP 658 metadata hits", "roles": ["cached", "hosted", "virtual"]}
+        ],
         "indexes": [{
             "name": "pypi",
             "route": "pypi",
@@ -26,6 +32,11 @@ fn test_snapshot_from_status_roundtrip() {
     let snapshot = UiSnapshot::from_status(&value);
     assert_eq!(snapshot.version, "0.0.1");
     assert_eq!(snapshot.serial, 7);
+    assert_eq!(snapshot.requests, 12);
+    assert_eq!(snapshot.ecosystems.len(), 1);
+    assert_eq!(snapshot.ecosystems[0].ecosystem, "pypi");
+    assert_eq!(snapshot.ecosystems[0].families["metadata"], 3);
+    assert_eq!(snapshot.families[0].label, "PEP 658 metadata hits");
     assert_eq!(snapshot.indexes.len(), 1);
     assert_eq!(snapshot.indexes[0].kind, "cached");
     assert_eq!(snapshot.indexes[0].project_count, 2);
@@ -117,8 +128,11 @@ fn test_render_description_plain_text_preformatted() {
 #[test]
 fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
     let value = serde_json::json!({
-        "hosted": {"pages": 1, "downloads": 0, "bytes": 10, "uploads": 2},
-        "root/pypi": {"pages": 5, "downloads": 3, "bytes": 900, "refreshes": 2, "changed": 1},
+        "hosted": {"base": {"pages": 1, "downloads": 0, "bytes": 10}, "hosted": {"uploads": 2}},
+        "root/pypi": {
+            "base": {"pages": 5, "downloads": 3, "bytes": 900},
+            "cached": {"refreshes": 2, "changed": 1}
+        },
     });
     let stats = crate::model::stats_routes(&value);
     assert_eq!(stats.totals.pages, 6);
@@ -132,10 +146,13 @@ fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
 #[test]
 fn test_stats_index_reads_totals_and_projects() {
     let value = serde_json::json!({
-        "totals": {"pages": 4, "downloads": 2, "stale_served": 1, "upstream_errors": 1, "rejected": 1},
+        "totals": {
+            "base": {"pages": 4, "downloads": 2, "rejected": 1},
+            "cached": {"stale_served": 1, "upstream_errors": 1}
+        },
         "projects": {
-            "pandas": {"pages": 3, "downloads": 2, "bytes": 500},
-            "six": {"pages": 1, "downloads": 0},
+            "pandas": {"base": {"pages": 3, "downloads": 2, "bytes": 500}},
+            "six": {"base": {"pages": 1, "downloads": 0}},
         },
     });
     let stats = crate::model::stats_index(&value);
@@ -147,15 +164,20 @@ fn test_stats_index_reads_totals_and_projects() {
 }
 
 #[test]
-fn test_stats_project_reads_flattened_totals_and_files() {
+fn test_stats_project_reads_grouped_totals_and_files() {
     let value = serde_json::json!({
-        "pages": 3, "downloads": 2, "metadata": 2, "uploads": 0, "bytes": 500,
+        "totals": {
+            "base": {"pages": 3, "downloads": 2, "bytes": 500},
+            "ecosystem": {"metadata": 2}
+        },
         "files": {
-            "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl": {"downloads": 2, "metadata": 2, "bytes": 500},
+            "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl":
+                {"downloads": 2, "bytes": 500, "ecosystem": {"metadata": 2}},
         },
     });
     let stats = crate::model::stats_project(&value);
     assert_eq!(stats.totals.downloads, 2);
+    assert_eq!(stats.totals.metadata, 2);
     assert_eq!(stats.rows.len(), 1);
     assert_eq!(stats.rows[0].1.metadata, 2);
 }

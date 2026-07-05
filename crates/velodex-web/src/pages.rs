@@ -102,16 +102,19 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
             <a href="/+stats"><code>"/+stats"</code></a>
             <a href="/metrics"><code>"/metrics"</code></a>
         </div>
-        <div class="stat-row">
-            <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
-            <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
-            <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
-            <div class="stat"><strong>{data.metadata_requests}</strong><span>"metadata hits"</span></div>
-            <div class="stat"><strong>{indexes.len()}</strong><span>"indexes"</span></div>
-            <div class="stat"><strong>{kind_count(&indexes, "virtual")}</strong><span>"virtual"</span></div>
-            <div class="stat"><strong>{project_count}</strong><span>"observed projects"</span></div>
-            <div class="stat"><strong>{upload_count}</strong><span>"uploaded files"</span></div>
+        <div class="metrics-group">
+            <div class="metrics-label">"Global"</div>
+            <div class="stat-row">
+                <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
+                <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
+                <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
+                <div class="stat"><strong>{indexes.len()}</strong><span>"indexes"</span></div>
+                <div class="stat"><strong>{kind_count(&indexes, "virtual")}</strong><span>"virtual"</span></div>
+                <div class="stat"><strong>{project_count}</strong><span>"observed projects"</span></div>
+                <div class="stat"><strong>{upload_count}</strong><span>"uploaded files"</span></div>
+            </div>
         </div>
+        {ecosystem_stats(&data)}
         <h2>"Indexes"</h2>
         <AdminIndexTable indexes=indexes.clone() all=indexes.clone() />
         {empty.then(|| view! { <p class="dim">"No indexes configured."</p> })}
@@ -125,6 +128,37 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
 
 fn kind_count(indexes: &[UiIndex], kind: &str) -> usize {
     indexes.iter().filter(|index| index.kind == kind).count()
+}
+
+/// The per-ecosystem metric groups: one labelled block per ecosystem, so the reader can tell a
+/// PyPI-scoped counter (its listings, artifacts, and PEP 658 hits) from the global request count.
+fn ecosystem_stats(data: &UiSnapshot) -> impl IntoView + use<> {
+    let families = data.families.clone();
+    data.ecosystems
+        .clone()
+        .into_iter()
+        .map(move |summary| {
+            let badge = format!("badge ecosystem-{}", summary.ecosystem);
+            let named = families
+                .iter()
+                .map(|family| {
+                    let total = summary.families.get(&family.key).copied().unwrap_or(0);
+                    view! { <div class="stat"><strong>{total}</strong><span>{family.label.clone()}</span></div> }
+                })
+                .collect_view();
+            view! {
+                <div class="metrics-group">
+                    <div class="metrics-label"><span class=badge>{summary.ecosystem.clone()}</span>" activity"</div>
+                    <div class="stat-row">
+                        <div class="stat"><strong>{summary.pages}</strong><span>"listings served"</span></div>
+                        <div class="stat"><strong>{summary.downloads}</strong><span>"artifacts served"</span></div>
+                        <div class="stat"><strong>{summary.uploads}</strong><span>"uploads"</span></div>
+                        {named}
+                    </div>
+                </div>
+            }
+        })
+        .collect_view()
 }
 
 #[component]
@@ -417,12 +451,15 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
         }
     });
     view! {
-        <div class="stat-row">
-            <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
-            <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
-            <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
-            <div class="stat"><strong>{data.metadata_requests}</strong><span>"PEP 658 metadata hits"</span></div>
+        <div class="metrics-group">
+            <div class="metrics-label">"Global"</div>
+            <div class="stat-row">
+                <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
+                <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
+                <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
+            </div>
         </div>
+        {ecosystem_stats(&data)}
         <h2>"Indexes"</h2>
         <div class="index-grid">{overlay_cards}</div>
         {standalone_cards}
