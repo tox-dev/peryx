@@ -516,6 +516,8 @@ pub enum ConfigError {
     Index { name: String, reason: &'static str },
     #[error("webhook {name}: {reason}")]
     Webhook { name: String, reason: &'static str },
+    #[error("invalid environment variable {var}: {reason}")]
+    Env { var: &'static str, reason: String },
 }
 
 /// Parse a TOML document into a [`PartialConfig`].
@@ -525,6 +527,61 @@ pub enum ConfigError {
 /// for the error message.
 pub fn from_toml(path: PathBuf, text: &str) -> Result<PartialConfig, ConfigError> {
     toml::from_str(text).map_err(|source| ConfigError::Parse { path, source })
+}
+
+/// The overlay sourced from `VELODEX_*` environment variables — the tier between file and CLI.
+///
+/// Only scalar settings are environment-configurable; the `[[index]]` topology and rate limits stay
+/// file- and CLI-configured, since neither maps cleanly to flat variables.
+///
+/// # Errors
+/// Returns [`ConfigError::Env`] when a variable holds a value its target type rejects (a `PORT` that
+/// is not a `u16`, a `LOG_FORMAT` that names no known format, and so on).
+pub fn from_env() -> Result<PartialConfig, ConfigError> {
+    from_env_source(|var| std::env::var(var).ok())
+}
+
+pub(crate) fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialConfig, ConfigError> {
+    let get = |var: &str| get(var).filter(|value| !value.is_empty());
+    Ok(PartialConfig {
+        host: get("VELODEX_HOST"),
+        port: parse_env(&get, "VELODEX_PORT")?,
+        data_dir: get("VELODEX_DATA_DIR").map(PathBuf::from),
+        offline: parse_env(&get, "VELODEX_OFFLINE")?,
+        cache_ttl_secs: parse_env(&get, "VELODEX_CACHE_TTL_SECS")?,
+        indexes: None,
+        log: PartialLogConfig {
+            level: get("VELODEX_LOG_LEVEL"),
+            format: parse_env_enum(&get, "VELODEX_LOG_FORMAT")?,
+            sink: parse_env_enum(&get, "VELODEX_LOG_SINK")?,
+            file: get("VELODEX_LOG_FILE").map(PathBuf::from),
+        },
+        rate_limit: PartialRateLimitConfig::default(),
+    })
+}
+
+fn parse_env<T>(get: &impl Fn(&str) -> Option<String>, var: &'static str) -> Result<Option<T>, ConfigError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    get(var)
+        .map(|value| {
+            value.parse::<T>().map_err(|err| ConfigError::Env {
+                var,
+                reason: err.to_string(),
+            })
+        })
+        .transpose()
+}
+
+fn parse_env_enum<T: clap::ValueEnum>(
+    get: &impl Fn(&str) -> Option<String>,
+    var: &'static str,
+) -> Result<Option<T>, ConfigError> {
+    get(var)
+        .map(|value| T::from_str(&value, true).map_err(|reason| ConfigError::Env { var, reason }))
+        .transpose()
 }
 
 /// Read a config file from disk into a [`PartialConfig`].

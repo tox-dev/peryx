@@ -336,3 +336,102 @@ fn test_unknown_ecosystem_is_rejected() {
     let err = Config::default().apply(partial).unwrap_err();
     assert!(err.to_string().contains("unknown ecosystem"), "{err}");
 }
+
+fn env_partial(pairs: &[(&str, &str)]) -> Result<PartialConfig, config::ConfigError> {
+    let map: std::collections::HashMap<&str, &str> = pairs.iter().copied().collect();
+    config::from_env_source(|var| map.get(var).map(|value| (*value).to_owned()))
+}
+
+#[test]
+fn test_env_overlays_scalar_and_log_fields() {
+    let partial = env_partial(&[
+        ("VELODEX_HOST", "0.0.0.0"),
+        ("VELODEX_PORT", "8080"),
+        ("VELODEX_DATA_DIR", "/srv/velodex"),
+        ("VELODEX_OFFLINE", "true"),
+        ("VELODEX_CACHE_TTL_SECS", "42"),
+        ("VELODEX_LOG_LEVEL", "debug"),
+        ("VELODEX_LOG_FORMAT", "json"),
+        ("VELODEX_LOG_SINK", "file"),
+        ("VELODEX_LOG_FILE", "/var/log/velodex.log"),
+    ])
+    .unwrap();
+    assert_eq!(partial.host.as_deref(), Some("0.0.0.0"));
+    assert_eq!(partial.port, Some(8080));
+    assert_eq!(partial.data_dir, Some(PathBuf::from("/srv/velodex")));
+    assert_eq!(partial.offline, Some(true));
+    assert_eq!(partial.cache_ttl_secs, Some(42));
+    assert_eq!(partial.log.level.as_deref(), Some("debug"));
+    assert_eq!(partial.log.format, Some(LogFormat::Json));
+    assert_eq!(partial.log.sink, Some(LogSink::File));
+    assert_eq!(partial.log.file, Some(PathBuf::from("/var/log/velodex.log")));
+    assert_eq!(partial.indexes, None);
+}
+
+#[test]
+fn test_env_absent_yields_empty_overlay() {
+    assert_eq!(env_partial(&[]).unwrap(), PartialConfig::default());
+}
+
+#[test]
+fn test_env_empty_string_is_unset() {
+    let partial = env_partial(&[("VELODEX_HOST", ""), ("VELODEX_PORT", "")]).unwrap();
+    assert_eq!(partial.host, None);
+    assert_eq!(partial.port, None);
+}
+
+#[test]
+fn test_env_invalid_port_is_rejected() {
+    let err = env_partial(&[("VELODEX_PORT", "seventy")]).unwrap_err();
+    assert!(err.to_string().contains("VELODEX_PORT"), "{err}");
+}
+
+#[test]
+fn test_env_invalid_ttl_is_rejected() {
+    let err = env_partial(&[("VELODEX_CACHE_TTL_SECS", "soon")]).unwrap_err();
+    assert!(err.to_string().contains("VELODEX_CACHE_TTL_SECS"), "{err}");
+}
+
+#[test]
+fn test_env_invalid_offline_is_rejected() {
+    let err = env_partial(&[("VELODEX_OFFLINE", "maybe")]).unwrap_err();
+    assert!(err.to_string().contains("VELODEX_OFFLINE"), "{err}");
+}
+
+#[test]
+fn test_env_invalid_log_format_is_rejected() {
+    let err = env_partial(&[("VELODEX_LOG_FORMAT", "xml")]).unwrap_err();
+    assert!(err.to_string().contains("VELODEX_LOG_FORMAT"), "{err}");
+}
+
+#[test]
+fn test_env_invalid_log_sink_is_rejected() {
+    let err = env_partial(&[("VELODEX_LOG_SINK", "pigeon")]).unwrap_err();
+    assert!(err.to_string().contains("VELODEX_LOG_SINK"), "{err}");
+}
+
+#[test]
+fn test_env_sits_between_file_and_cli() {
+    let resolved = Config::default()
+        .apply(config::from_toml(PathBuf::from("x.toml"), "port = 1000\nhost = \"filehost\"\n").unwrap())
+        .unwrap()
+        .apply(env_partial(&[("VELODEX_PORT", "2000")]).unwrap())
+        .unwrap()
+        .apply(PartialConfig {
+            port: Some(3000),
+            ..PartialConfig::default()
+        })
+        .unwrap();
+    assert_eq!(resolved.port, 3000);
+    assert_eq!(resolved.host, "filehost");
+}
+
+#[test]
+fn test_env_overrides_file_when_cli_is_silent() {
+    let resolved = Config::default()
+        .apply(config::from_toml(PathBuf::from("x.toml"), "port = 1000\n").unwrap())
+        .unwrap()
+        .apply(env_partial(&[("VELODEX_PORT", "2000")]).unwrap())
+        .unwrap();
+    assert_eq!(resolved.port, 2000);
+}

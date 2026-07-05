@@ -24,6 +24,7 @@ type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync>;
 
 fn resolve_config(args: &velodex::cli::RuntimeArgs) -> anyhow::Result<Config> {
     let mut cfg = resolve_config_file(args.config.as_deref())?;
+    cfg = cfg.apply(config::from_env()?)?;
     cfg = cfg.apply(args.overlay())?;
     Ok(cfg)
 }
