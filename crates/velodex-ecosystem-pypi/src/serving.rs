@@ -31,9 +31,9 @@ use velodex_http::webhook::{WebhookEvent, WebhookEventKind};
 use velodex_policy::{PolicyAction, PolicyDenial};
 use velodex_storage::blob::Digest;
 
-use crate::policy::PypiPolicy;
 use crate::cache::{self, CacheError, PageOutcome};
 use crate::discovery::{self, BaseUrl};
+use crate::policy::PypiPolicy;
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
 use crate::{
     DistributionFilenameError, ProjectDetail, ProjectList, ProjectStatus, Yanked, normalize_name, render_detail_html,
@@ -1829,4 +1829,3 @@ mod tests {
         MetaError::Decode(serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
     }
 }
-

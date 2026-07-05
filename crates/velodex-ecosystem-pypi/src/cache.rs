@@ -6,24 +6,24 @@ use std::io::{Cursor, Read as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use crate::file_matches_version;
 use crate::policy::PypiPolicy;
 use crate::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Yanked, parse_detail,
     parse_detail_html, parse_distribution_filename, project_of_filename, to_json,
 };
+use bytes::Bytes;
 use velodex_storage::blob::Digest;
 use velodex_storage::meta::CachedIndex;
 use velodex_upstream::{RangeError, SimpleResponse, UpstreamClient};
 
+use crate::stream::{PageSummary, PageTransformer, Registration};
+use crate::upload::{self, PreparedUpload, Uploaded};
 use velodex_http::download::{DownloadHandle, DownloadProgress};
 use velodex_http::metrics::Event;
 use velodex_http::path_safety::local_file_url;
 use velodex_http::rate_limit::UpstreamPermit;
 use velodex_http::state::{AppState, Index, IndexKind};
-use crate::stream::{PageSummary, PageTransformer, Registration};
-use crate::upload::{self, PreparedUpload, Uploaded};
 use velodex_policy::{PolicyAction, PolicyDenial};
 
 const NEGATIVE_TTL_SECS: i64 = 30;

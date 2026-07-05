@@ -11,9 +11,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{CoreMetadata, File, Yanked, parse_meta, to_json};
 
+use crate::policy::PypiPolicy;
 use velodex_http::path_safety::local_file_url;
 use velodex_policy::{Policy, PolicyAction};
-use crate::policy::PypiPolicy;
 
 /// Per-request configuration: how to rewrite and merge one page.
 #[derive(Debug, Default, Clone)]

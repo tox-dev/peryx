@@ -6,12 +6,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
 use crate::{
     CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
     is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
     parse_version_specifiers, to_json,
 };
+use serde::{Deserialize, Serialize};
 use velodex_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
 use velodex_storage::meta::{MetaError, MetaStore};
 

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::{CoreMetadata, File, Provenance, Yanked, to_json};
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use base64::Engine as _;
@@ -12,7 +13,6 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
-use crate::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::{Auth, UpstreamClient};
@@ -21,10 +21,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{LogCapture, field};
 use crate::cache;
+use crate::upload::Uploaded;
 use velodex_http::path_safety::local_file_url;
 use velodex_http::router;
 use velodex_http::state::{AppState, Index, IndexKind};
-use crate::upload::Uploaded;
 use velodex_policy::{PackageType, Policy, PolicyConfig};
 
 pub(super) struct Harness {
@@ -3186,7 +3186,7 @@ async fn test_metrics_exposes_per_index_counters() {
 async fn test_index_response_error_is_bad_gateway() {
     use crate::cache::CacheError;
     use crate::serving::index_response;
-use velodex_http::handlers::Format;
+    use velodex_http::handlers::Format;
     let response = index_response(Err(CacheError::Unavailable), Format::Json, "pypi");
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = response.into_body().collect().await.unwrap().to_bytes();

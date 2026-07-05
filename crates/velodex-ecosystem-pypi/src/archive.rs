@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
+use crate::{DistributionKind, parse_distribution_filename};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Sha256, Sha384, Sha512};
-use crate::{DistributionKind, parse_distribution_filename};
 use zip::read::HasZipMetadata;
 
 /// Default amount of one archive member returned by the inspect endpoint.

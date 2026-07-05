@@ -63,7 +63,9 @@ impl PypiPolicy for Policy {
         if !self.active() {
             return Ok(detail);
         }
-        detail.files.retain(|file| self.check_file(action, project, file).is_ok());
+        detail
+            .files
+            .retain(|file| self.check_file(action, project, file).is_ok());
         if let Some(limit) = self.max_project_size() {
             apply_project_size_limit(action, project, limit, &detail)?;
         }
@@ -170,7 +172,10 @@ fn project_size_denial<'a>(
                 None,
                 "max-project-size",
                 "size",
-                format!("project size is unknown because file {:?} has no declared size", file.filename),
+                format!(
+                    "project size is unknown because file {:?} has no declared size",
+                    file.filename
+                ),
             ));
         };
         total = total.saturating_add(size);

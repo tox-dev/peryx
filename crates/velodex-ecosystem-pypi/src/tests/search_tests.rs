@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::http::StatusCode;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
+use axum::http::StatusCode;
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaError, MetaScanError, MetaStore};
 use velodex_upstream::UpstreamClient;
 
 use super::http_tests::{get, harness, harness_with_policies};
 use crate::cache;
+use crate::upload::Uploaded;
 use velodex_http::path_safety::local_file_url;
 use velodex_http::search::{PackageSearch, PackageSource, SearchError, SourceFilter};
 use velodex_http::state::{AppState, Index, IndexKind};
-use crate::upload::Uploaded;
 use velodex_policy::{Policy, PolicyConfig};
 
 #[tokio::test]

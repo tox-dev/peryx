@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use crate::SimpleError;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
-use crate::SimpleError;
 use velodex_storage::blob::{BlobError, BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaError, MetaStore};
 use velodex_upstream::UpstreamClient;

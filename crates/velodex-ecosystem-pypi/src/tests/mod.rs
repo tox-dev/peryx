@@ -10,6 +10,7 @@ mod http_tests;
 mod metadata_tests;
 mod metrics_tests;
 mod name_tests;
+mod policy_tests;
 mod rate_limit_tests;
 mod refresh_tests;
 mod search_tests;

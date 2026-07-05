@@ -53,13 +53,7 @@ impl EcosystemServing for UnconfiguredServing {
         Self::unavailable()
     }
 
-    async fn post(
-        &self,
-        _state: Arc<AppState>,
-        _path: String,
-        _headers: HeaderMap,
-        _multipart: Multipart,
-    ) -> Response {
+    async fn post(&self, _state: Arc<AppState>, _path: String, _headers: HeaderMap, _multipart: Multipart) -> Response {
         Self::unavailable()
     }
 

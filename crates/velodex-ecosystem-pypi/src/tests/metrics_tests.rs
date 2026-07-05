@@ -1,5 +1,5 @@
-use velodex_http::metrics::{Event, Metrics};
 use axum::http::StatusCode;
+use velodex_http::metrics::{Event, Metrics};
 use velodex_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};

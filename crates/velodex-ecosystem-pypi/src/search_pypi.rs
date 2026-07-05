@@ -8,20 +8,18 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use crate::{
-    CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata,
-};
-use velodex_policy::PolicyAction;
 use crate::policy::PypiPolicy;
+use crate::{CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata};
+use velodex_policy::PolicyAction;
 use velodex_storage::blob::Digest;
 use velodex_storage::meta::CachedIndex;
 
+use crate::upload::Uploaded;
 use velodex_http::path_safety::local_file_url;
 use velodex_http::search::{
     INDEXED_TEXT_BYTES, PackageDocument, PackageIndexer, PackageSource, SearchError, truncate_to_chars,
 };
 use velodex_http::state::{AppState, Index, IndexKind};
-use crate::upload::Uploaded;
 
 /// Produces `PyPI` search documents for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]

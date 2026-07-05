@@ -11,8 +11,8 @@ use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use velodex_ecosystem_pypi::{DistributionFilename, DistributionFilenameError, parse_distribution_filename};
 use velodex_ecosystem_pypi::upload::{self, StagedUpload, UploadError, UploadForm};
+use velodex_ecosystem_pypi::{DistributionFilename, DistributionFilenameError, parse_distribution_filename};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::MetaStore;
 

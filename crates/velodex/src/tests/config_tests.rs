@@ -435,3 +435,10 @@ fn test_env_overrides_file_when_cli_is_silent() {
         .unwrap();
     assert_eq!(resolved.port, 2000);
 }
+
+#[test]
+fn test_from_env_reads_process_environment() {
+    // The process-reading wrapper delegates to the injectable source; with the current environment it
+    // must parse without error (no test sets a malformed VELODEX_* variable).
+    assert!(config::from_env().is_ok());
+}

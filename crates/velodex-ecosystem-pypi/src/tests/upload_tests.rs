@@ -1,6 +1,8 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 
+use crate::CoreMetadata;
+use crate::DistributionFilenameError;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use blake2::Blake2bVar;
@@ -8,8 +10,6 @@ use blake2::digest::{Update as _, VariableOutput as _};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
-use crate::CoreMetadata;
-use crate::DistributionFilenameError;
 use velodex_storage::blob::{BlobStore, Digest};
 
 use crate::upload::{StagedUpload, UploadError, UploadForm, prepare};
