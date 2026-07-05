@@ -152,7 +152,7 @@ fn put_cached_page(data_dir: &Path, key: &str, name: &str, files: Vec<serde_json
     let project = key.split_once('/').map_or(key, |(_, project)| project);
     MetaStore::open(data_dir.join("velodex.redb"))
         .unwrap()
-        .put_mirror_page(
+        .put_cached_page(
             key,
             &CachedIndex {
                 etag: None,
@@ -1029,7 +1029,7 @@ async fn test_mirror_verify_reports_missing_blob() {
     let metadata_digest = Digest::of(&metadata);
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let body = wheel_page(&server, &wheel, &metadata).into_bytes();
-    meta.put_mirror_page(
+    meta.put_cached_page(
         "pypi/flask",
         &CachedIndex {
             etag: None,

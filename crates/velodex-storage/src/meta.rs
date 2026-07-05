@@ -13,9 +13,9 @@ use redb::{Database, ReadableDatabase as _, ReadableTable as _, TableDefinition}
 use serde::{Deserialize, Serialize};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
-const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("simple_index");
-const FILE: TableDefinition<&str, &str> = TableDefinition::new("file_url");
-const METADATA: TableDefinition<&str, &str> = TableDefinition::new("metadata");
+const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("index_document");
+const FILE: TableDefinition<&str, &str> = TableDefinition::new("artifact_source");
+const METADATA: TableDefinition<&str, &str> = TableDefinition::new("metadata_sidecar");
 const PROJECTS: TableDefinition<&str, &str> = TableDefinition::new("projects");
 const PROJECT_STATUS: TableDefinition<&str, &[u8]> = TableDefinition::new("project_status");
 const UPLOAD: TableDefinition<&str, &[u8]> = TableDefinition::new("uploads");
@@ -597,7 +597,7 @@ impl MetaStore {
         clippy::too_many_arguments,
         reason = "one transaction needs every table's rows together"
     )]
-    pub fn put_mirror_page(
+    pub fn put_cached_page(
         &self,
         key: &str,
         record: &CachedIndex,

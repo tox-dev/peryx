@@ -288,10 +288,10 @@ fn test_put_and_get_file_url() {
 }
 
 #[test]
-fn test_put_mirror_page_records_file_url_size() {
+fn test_put_cached_page_records_file_url_size() {
     let (_dir, store) = store();
     store
-        .put_mirror_page(
+        .put_cached_page(
             "pypi/pkg",
             &record(),
             "pypi",
@@ -345,7 +345,7 @@ fn test_get_metadata_digests_skips_missing_and_malformed_records() {
     drop(store);
     {
         let db = redb::Database::create(dir.path().join("velodex.redb")).unwrap();
-        let table: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("metadata");
+        let table: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("metadata_sidecar");
         let txn = db.begin_write().unwrap();
         txn.open_table(table).unwrap().insert("broken", "only-url").unwrap();
         txn.commit().unwrap();
@@ -615,7 +615,7 @@ fn test_list_index_pages_reads_legacy_records() {
     // A record written by a version that stored the whole struct as plain JSON.
     let legacy = serde_json::to_vec(&record()).unwrap();
     let db = redb::Database::create(&path).unwrap();
-    let table: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("simple_index");
+    let table: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("index_document");
     let txn = db.begin_write().unwrap();
     txn.open_table(table)
         .unwrap()
@@ -724,7 +724,7 @@ fn test_count_and_delete_project_cache_purge() {
     let file_digests = vec!["a".repeat(64)];
     let metadata_digests = vec!["b".repeat(64)];
     store
-        .put_mirror_page(
+        .put_cached_page(
             "pypi/flask",
             &record(),
             "pypi",

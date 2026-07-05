@@ -609,7 +609,7 @@ fn persist_streamed(
     let display = summary.name.as_deref().unwrap_or(project);
     state
         .meta
-        .put_mirror_page(
+        .put_cached_page(
             key,
             record,
             name,
@@ -657,7 +657,7 @@ pub(crate) fn persist_page(
     let display = if parsed.name.is_empty() { project } else { &parsed.name };
     state
         .meta
-        .put_mirror_page(
+        .put_cached_page(
             key,
             record,
             name,

@@ -801,7 +801,7 @@ fn test_cache_fsck_reports_corrupt_index_record() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("velodex.redb");
     MetaStore::open(&db_path).unwrap();
-    raw_insert_bytes(&db_path, "simple_index", "pypi/corrupt", b"not json");
+    raw_insert_bytes(&db_path, "index_document", "pypi/corrupt", b"not json");
     let config = Config {
         data_dir: dir.path().to_path_buf(),
         ..Config::default()
@@ -946,7 +946,7 @@ fn test_cache_purge_project_reports_corrupt_target_record() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("velodex.redb");
     MetaStore::open(&db_path).unwrap();
-    raw_insert_bytes(&db_path, "simple_index", "pypi/flask", b"not json");
+    raw_insert_bytes(&db_path, "index_document", "pypi/flask", b"not json");
     let config = Config {
         data_dir: dir.path().to_path_buf(),
         ..Config::default()
@@ -964,7 +964,7 @@ fn test_cache_purge_project_reports_corrupt_shared_record() {
     let (_dir, config, _digest) = cache_fixture();
     raw_insert_bytes(
         &config.data_dir.join("velodex.redb"),
-        "simple_index",
+        "index_document",
         "pypi/other",
         b"not json",
     );
@@ -1129,7 +1129,7 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_metadata_references() {
         let meta = MetaStore::open(&db_path).unwrap();
         if let Some(raw) = raw {
             drop(meta);
-            raw_insert_str(&db_path, "metadata", &wheel, raw);
+            raw_insert_str(&db_path, "metadata_sidecar", &wheel, raw);
         } else {
             meta.put_metadata(&wheel, "https://files.example/pkg.whl.metadata", &metadata, "pypi")
                 .unwrap();
