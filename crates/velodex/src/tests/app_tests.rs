@@ -467,13 +467,13 @@ fn test_cache_size_counts_uploads_and_overrides() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     meta.put_upload(
-        "local",
+        "hosted",
         "pkg",
         "pkg-1.0.whl",
         &uploaded_record_json(&Digest::of(b"pkg")),
     )
     .unwrap();
-    meta.put_override("local", "pkg", "pkg-1.0.whl", "hidden").unwrap();
+    meta.put_override("hosted", "pkg", "pkg-1.0.whl", "hidden").unwrap();
     drop(meta);
     let config = Config {
         data_dir: dir.path().to_path_buf(),
@@ -525,11 +525,11 @@ fn test_cache_fsck_reports_metadata_problems() {
     meta.put_metadata("bad", "https://files.example/pkg.whl.metadata", "also-bad", "pypi")
         .unwrap();
     meta.put_project("", "", "").unwrap();
-    meta.put_upload("local", "pkg", "bad.whl", b"not json").unwrap();
+    meta.put_upload("hosted", "pkg", "bad.whl", b"not json").unwrap();
     meta.put_upload("", "", "", &uploaded_record_json(&Digest::of(b"missing")))
         .unwrap();
     meta.put_upload(
-        "local",
+        "hosted",
         "pkg",
         "pkg-1.0.whl",
         &uploaded_record_json(&Digest::of(b"missing")),
@@ -556,9 +556,9 @@ fn test_cache_fsck_reports_metadata_problems() {
         "metadata\tfile-url\tbad\tinvalid record\n",
         "metadata\tpep658\tbad\tinvalid record\n",
         "metadata\tproject\t/\tinvalid record\n",
-        "metadata\tupload\tlocal/pkg/bad.whl\tinvalid record\n",
+        "metadata\tupload\thosted/pkg/bad.whl\tinvalid record\n",
         "metadata\tupload\t//\tinvalid key\n",
-        "metadata\tupload\tlocal/pkg/pkg-1.0.whl\tmissing blob ",
+        "metadata\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob ",
         "metadata\toverride\t//\tinvalid record\n",
         "problems\t8\n",
     ] {
@@ -573,7 +573,7 @@ fn test_cache_fsck_reports_missing_metadata_blob() {
     let digest = Digest::of(b"wheel");
     let metadata_digest = Digest::of(b"metadata");
     meta.put_upload(
-        "local",
+        "hosted",
         "pkg",
         "pkg-1.0.whl",
         &uploaded_record_json_with_metadata(&digest, &metadata_digest),
@@ -595,11 +595,11 @@ fn test_cache_fsck_reports_missing_metadata_blob() {
     .unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(&format!(
-        "metadata\tupload\tlocal/pkg/pkg-1.0.whl\tmissing blob {}",
+        "metadata\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob {}",
         digest.as_str()
     )));
     assert!(text.contains(&format!(
-        "metadata\tupload\tlocal/pkg/pkg-1.0.whl\tmissing blob {}",
+        "metadata\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob {}",
         metadata_digest.as_str()
     )));
 }
@@ -610,9 +610,9 @@ fn test_cache_fsck_accepts_valid_upload_and_override() {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let digest = blobs.write(b"pkg").unwrap();
-    meta.put_upload("local", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
+    meta.put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
-    meta.put_override("local", "pkg", "pkg-1.0.whl", "hidden").unwrap();
+    meta.put_override("hosted", "pkg", "pkg-1.0.whl", "hidden").unwrap();
     drop(meta);
     let config = Config {
         data_dir: dir.path().to_path_buf(),
@@ -817,7 +817,7 @@ fn test_cache_purge_project_preserves_shared_and_uploaded_blobs() {
     )
     .unwrap();
     meta.put_upload(
-        "local",
+        "hosted",
         "pkg",
         "pkg-1.0.whl",
         &uploaded_record_json(&Digest::of(b"uploaded")),
@@ -871,7 +871,7 @@ fn test_cache_purge_project_reports_corrupt_upload_record() {
     raw_insert_bytes(
         &config.data_dir.join("velodex.redb"),
         "uploads",
-        "local/pkg/bad.whl",
+        "hosted/pkg/bad.whl",
         b"not json",
     );
     let mut out = Vec::new();
@@ -1041,7 +1041,7 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_metadata_references() {
 fn test_cache_purge_orphaned_blobs_rejects_invalid_upload_references() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
-    meta.put_upload("local", "pkg", "bad.whl", b"not json").unwrap();
+    meta.put_upload("hosted", "pkg", "bad.whl", b"not json").unwrap();
     drop(meta);
     let config = Config {
         data_dir: dir.path().to_path_buf(),
@@ -1058,7 +1058,7 @@ fn test_cache_purge_orphaned_blobs_keeps_referenced_upload_blobs() {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let digest = blobs.write(b"pkg").unwrap();
-    meta.put_upload("local", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
+    meta.put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
     drop(meta);
     let config = Config {
@@ -1160,7 +1160,7 @@ fn test_policy_dry_run_reports_blocked_upload() {
     let (_dir, mut config, digest) = cache_fixture();
     MetaStore::open(config.data_dir.join("velodex.redb"))
         .unwrap()
-        .put_upload("local", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
+        .put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
     config.indexes[1].policy.max_file_size_bytes = Some(2);
     let mut out = Vec::new();
@@ -1169,7 +1169,7 @@ fn test_policy_dry_run_reports_blocked_upload() {
         &config,
         &PolicyCommand::DryRun(PolicyDryRunArgs {
             runtime: runtime_args(),
-            index: Some("local".to_owned()),
+            index: Some("hosted".to_owned()),
             project: Some("pkg".to_owned()),
         }),
         &mut out,
@@ -1178,7 +1178,7 @@ fn test_policy_dry_run_reports_blocked_upload() {
 
     let text = String::from_utf8(out).unwrap();
     assert!(
-        text.contains("upload\tlocal\tpkg\tpkg-1.0.whl\t\tmax-file-size\tsize\tfile size 3 exceeds limit 2\n"),
+        text.contains("upload\thosted\tpkg\tpkg-1.0.whl\t\tmax-file-size\tsize\tfile size 3 exceeds limit 2\n"),
         "{text}"
     );
 }
@@ -1188,7 +1188,7 @@ fn test_policy_dry_run_skips_allowed_upload() {
     let (_dir, config, digest) = cache_fixture();
     MetaStore::open(config.data_dir.join("velodex.redb"))
         .unwrap()
-        .put_upload("local", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
+        .put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
     let mut out = Vec::new();
 
@@ -1196,7 +1196,7 @@ fn test_policy_dry_run_skips_allowed_upload() {
         &config,
         &PolicyCommand::DryRun(PolicyDryRunArgs {
             runtime: runtime_args(),
-            index: Some("local".to_owned()),
+            index: Some("hosted".to_owned()),
             project: Some("pkg".to_owned()),
         }),
         &mut out,
@@ -1244,7 +1244,7 @@ fn test_policy_dry_run_skips_unmatched_upload_records() {
         "foreign/pkg/pkg-1.0.whl",
         &uploaded_record_json(&digest),
     );
-    raw_insert_bytes(&db_path, "uploads", "local/pkg/pkg-1.0.whl", b"not json");
+    raw_insert_bytes(&db_path, "uploads", "hosted/pkg/pkg-1.0.whl", b"not json");
     let mut out = Vec::new();
 
     app::policy(
@@ -1269,7 +1269,7 @@ fn test_policy_dry_run_reports_upload_write_errors() {
     let (_dir, mut config, digest) = cache_fixture();
     MetaStore::open(config.data_dir.join("velodex.redb"))
         .unwrap()
-        .put_upload("local", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
+        .put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
     config.indexes[1].policy.max_file_size_bytes = Some(2);
     let mut out = FailOnText {
@@ -1281,7 +1281,7 @@ fn test_policy_dry_run_reports_upload_write_errors() {
         &config,
         &PolicyCommand::DryRun(PolicyDryRunArgs {
             runtime: runtime_args(),
-            index: Some("local".to_owned()),
+            index: Some("hosted".to_owned()),
             project: Some("pkg".to_owned()),
         }),
         &mut out,

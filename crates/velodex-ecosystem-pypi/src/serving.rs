@@ -512,16 +512,16 @@ pub(crate) async fn pypi_dispatch_post(
                     .emit();
                 return not_found();
             }
-            let Some(local) = upload_target(&state, index) else {
+            let Some(hosted) = upload_target(&state, index) else {
                 security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
                     .reason(Some("index does not accept uploads"))
                     .emit();
                 return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
             };
-            if let Err(response) = authorize(local, &headers) {
+            if let Err(response) = authorize(hosted, &headers) {
                 return response;
             }
-            accept_upload(&state, index, local, &headers, actor.as_deref(), multipart).await
+            accept_upload(&state, index, hosted, &headers, actor.as_deref(), multipart).await
         }
     }
 }
@@ -529,7 +529,7 @@ pub(crate) async fn pypi_dispatch_post(
 async fn accept_upload(
     state: &Arc<AppState>,
     index: &Index,
-    local: &Index,
+    hosted: &Index,
     headers: &HeaderMap,
     actor: Option<&str>,
     multipart: Multipart,
@@ -537,7 +537,7 @@ async fn accept_upload(
     let (form, staged) = match collect_form(multipart, &state.blobs).await {
         Ok(form) => form,
         Err(response) => {
-            security_upload_event(headers, actor, &index.route, Some(&local.name), "failure")
+            security_upload_event(headers, actor, &index.route, Some(&hosted.name), "failure")
                 .reason(Some("multipart body rejected"))
                 .emit();
             return response;
@@ -546,7 +546,7 @@ async fn accept_upload(
     let Some(staged) = staged else {
         let err = UploadError::Missing("content");
         let (_, reason) = upload_error_message(&err);
-        security_upload_event(headers, actor, &index.route, Some(&local.name), "denied")
+        security_upload_event(headers, actor, &index.route, Some(&hosted.name), "denied")
             .project(form.name.as_deref().map(normalize_name).as_deref())
             .version(form.version.as_deref())
             .reason(Some(&reason))
@@ -561,7 +561,7 @@ async fn accept_upload(
         Ok(prepared) => prepared,
         Err(err) => {
             let (_, reason) = upload_error_message(&err);
-            security_upload_event(headers, actor, &index.route, Some(&local.name), "denied")
+            security_upload_event(headers, actor, &index.route, Some(&hosted.name), "denied")
                 .project(form_project.as_deref())
                 .version(form_version.as_deref())
                 .filename(form_filename.as_deref())
@@ -581,7 +581,7 @@ async fn accept_upload(
         created_at_unix: upload_time_unix,
         index: &index.name,
         route: &index.route,
-        local: &local.name,
+        hosted: &hosted.name,
         project: &project,
         version: &version,
         filename: &filename,
@@ -590,8 +590,8 @@ async fn accept_upload(
     if let Some(block) = upload_policy_response(index, &prepared, &audit) {
         return block;
     }
-    if local.name != index.name
-        && let Some(block) = upload_policy_response(local, &prepared, &audit)
+    if hosted.name != index.name
+        && let Some(block) = upload_policy_response(hosted, &prepared, &audit)
     {
         return block;
     }
@@ -603,7 +603,7 @@ async fn accept_upload(
         emit_upload_status_event(&audit, &block);
         return block.response;
     }
-    upload_store_response(state, &audit, cache::store_upload(state, &local.name, prepared))
+    upload_store_response(state, &audit, cache::store_upload(state, &hosted.name, prepared))
 }
 
 fn upload_policy_response(
@@ -620,7 +620,7 @@ fn upload_policy_response(
                 audit.headers,
                 audit.actor.as_deref(),
                 audit.route,
-                Some(audit.local),
+                Some(audit.hosted),
                 "denied",
             )
             .project(Some(audit.project))
@@ -640,7 +640,7 @@ struct UploadAudit<'a> {
     created_at_unix: i64,
     index: &'a str,
     route: &'a str,
-    local: &'a str,
+    hosted: &'a str,
     project: &'a str,
     version: &'a str,
     filename: &'a str,
@@ -662,7 +662,7 @@ fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result:
                         created_at_unix: audit.created_at_unix,
                         index: audit.index.to_owned(),
                         route: audit.route.to_owned(),
-                        local_index: audit.local.to_owned(),
+                        hosted_index: audit.hosted.to_owned(),
                         project: audit.project.to_owned(),
                         version: Some(audit.version.to_owned()),
                         filename: Some(audit.filename.to_owned()),
@@ -677,7 +677,7 @@ fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result:
                 audit.headers,
                 audit.actor.as_deref(),
                 audit.route,
-                Some(audit.local),
+                Some(audit.hosted),
                 if stored { "success" } else { "noop" },
             )
             .project(Some(audit.project))
@@ -694,7 +694,7 @@ fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result:
                 audit.headers,
                 audit.actor.as_deref(),
                 audit.route,
-                Some(audit.local),
+                Some(audit.hosted),
                 "denied",
             )
             .project(Some(audit.project))
@@ -715,7 +715,7 @@ fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result:
                 audit.headers,
                 audit.actor.as_deref(),
                 audit.route,
-                Some(audit.local),
+                Some(audit.hosted),
                 "failure",
             )
             .project(Some(audit.project))
@@ -735,7 +735,7 @@ fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) 
         audit.headers,
         audit.actor.as_deref(),
         audit.route,
-        Some(audit.local),
+        Some(audit.hosted),
         block.result,
     )
     .project(Some(audit.project))
@@ -752,7 +752,7 @@ struct PromotionAudit<'a> {
     actor: Option<&'a str>,
     repository: &'a str,
     source_index: &'a str,
-    local_index: &'a str,
+    hosted_index: &'a str,
     project: &'a str,
     version: &'a str,
 }
@@ -762,7 +762,7 @@ fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusB
         .actor(audit.actor)
         .index(audit.repository)
         .source_index(audit.source_index)
-        .local_index(audit.local_index)
+        .hosted_index(audit.hosted_index)
         .project(Some(audit.project))
         .version(Some(audit.version))
         .reason(Some(&block.reason))
@@ -829,20 +829,20 @@ pub(crate) async fn pypi_dispatch_put(state: Arc<AppState>, uri: axum::http::Uri
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
     let actor = velodex_http::security::actor(&headers);
-    let (index, local, spec) = match removal_target(&state, path, &headers) {
+    let (index, hosted, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
     };
     match index.ecosystem {
         Ecosystem::Pypi => {
             if let Some(spec) = strip_action_segment(spec, "promote") {
-                return promote_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
+                return promote_request(&state, index, hosted, spec, uri.query(), &headers, actor.as_deref()).await;
             }
             if let Some(spec) = strip_action_segment(spec, "yank") {
-                return yank_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
+                return yank_request(&state, index, hosted, spec, uri.query(), &headers, actor.as_deref()).await;
             }
             if let Some(spec) = strip_action_segment(spec, "restore") {
-                return restore_request(&state, index, local, spec, &headers, actor.as_deref());
+                return restore_request(&state, index, hosted, spec, &headers, actor.as_deref());
             }
             not_found()
         }
@@ -852,7 +852,7 @@ pub(crate) async fn pypi_dispatch_put(state: Arc<AppState>, uri: axum::http::Uri
 async fn promote_request(
     state: &Arc<AppState>,
     index: &Index,
-    local: &Index,
+    hosted: &Index,
     spec: &str,
     query: Option<&str>,
     headers: &HeaderMap,
@@ -869,7 +869,7 @@ async fn promote_request(
     let Some(source_local) = upload_target(state, source) else {
         return (
             StatusCode::METHOD_NOT_ALLOWED,
-            format!("source index {source_route:?} has no local upload layer"),
+            format!("source index {source_route:?} has no hosted upload layer"),
         )
             .into_response();
     };
@@ -883,7 +883,7 @@ async fn promote_request(
         actor,
         repository: &index.route,
         source_index: &source.route,
-        local_index: &local.name,
+        hosted_index: &hosted.name,
         project: &project,
         version: &version,
     };
@@ -895,7 +895,14 @@ async fn promote_request(
         emit_promotion_status_event(&audit, &block);
         return block.response;
     }
-    let result = cache::promote_release(state, &source_local.name, &local.name, &index.route, &project, &version);
+    let result = cache::promote_release(
+        state,
+        &source_local.name,
+        &hosted.name,
+        &index.route,
+        &project,
+        &version,
+    );
     security_promotion_event(audit, &result);
     promotion_response(result)
 }
@@ -903,7 +910,7 @@ async fn promote_request(
 async fn yank_request(
     state: &Arc<AppState>,
     index: &Index,
-    local: &Index,
+    hosted: &Index,
     spec: &str,
     query: Option<&str>,
     headers: &HeaderMap,
@@ -916,7 +923,7 @@ async fn yank_request(
     let result = cache::set_yanked(
         state,
         index,
-        &local.name,
+        &hosted.name,
         &project,
         version.as_deref(),
         yank_marker(query),
@@ -928,7 +935,7 @@ async fn yank_request(
         actor,
         index: &index.name,
         repository: &index.route,
-        local_index: &local.name,
+        hosted_index: &hosted.name,
         project: &project,
         version: version.as_deref(),
         request_id: request_id(headers),
@@ -941,7 +948,7 @@ async fn yank_request(
 fn restore_request(
     state: &Arc<AppState>,
     index: &Index,
-    local: &Index,
+    hosted: &Index,
     spec: &str,
     headers: &HeaderMap,
     actor: Option<&str>,
@@ -950,14 +957,14 @@ fn restore_request(
         Ok(parsed) => parsed,
         Err(response) => return response,
     };
-    let result = cache::restore_files(state, &local.name, &project, version.as_deref());
+    let result = cache::restore_files(state, &hosted.name, &project, version.as_deref());
     let audit = MutationAudit {
         headers,
         action: "restore",
         actor,
         index: &index.name,
         repository: &index.route,
-        local_index: &local.name,
+        hosted_index: &hosted.name,
         project: &project,
         version: version.as_deref(),
         request_id: request_id(headers),
@@ -973,7 +980,7 @@ pub(crate) async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
     let actor = velodex_http::security::actor(&headers);
-    let (index, local, spec) = match removal_target(&state, path, &headers) {
+    let (index, hosted, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
     };
@@ -985,14 +992,14 @@ pub(crate) async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::
                     Err(response) => return response,
                 };
                 let result =
-                    cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), Yanked::No).await;
+                    cache::set_yanked(&state, index, &hosted.name, &project, version.as_deref(), Yanked::No).await;
                 let audit = MutationAudit {
                     headers: &headers,
                     action: "unyank",
                     actor: actor.as_deref(),
                     index: &index.name,
                     repository: &index.route,
-                    local_index: &local.name,
+                    hosted_index: &hosted.name,
                     project: &project,
                     version: version.as_deref(),
                     request_id: request_id(&headers),
@@ -1005,15 +1012,15 @@ pub(crate) async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::
                 Ok(parsed) => parsed,
                 Err(response) => return response,
             };
-            let volatile = is_volatile(local);
-            let result = cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await;
+            let volatile = is_volatile(hosted);
+            let result = cache::remove_files(&state, index, &hosted.name, volatile, &project, version.as_deref()).await;
             let audit = MutationAudit {
                 headers: &headers,
                 action: "delete",
                 actor: actor.as_deref(),
                 index: &index.name,
                 repository: &index.route,
-                local_index: &local.name,
+                hosted_index: &hosted.name,
                 project: &project,
                 version: version.as_deref(),
                 request_id: request_id(&headers),
@@ -1025,21 +1032,21 @@ pub(crate) async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::
     }
 }
 
-/// Resolve the writable local index for a mutation request and authorize it, returning the serving
-/// index, its local layer, and the path remainder (the `{project}/...` part).
+/// Resolve the writable hosted index for a mutation request and authorize it, returning the serving
+/// index, its hosted layer, and the path remainder (the `{project}/...` part).
 fn removal_target<'a>(
     state: &'a AppState,
     path: &'a str,
     headers: &HeaderMap,
 ) -> Result<(&'a Index, &'a Index, &'a str), Response> {
     let (index, rest) = state.resolve(path).ok_or_else(not_found)?;
-    let local = upload_target(state, index)
+    let hosted = upload_target(state, index)
         .ok_or_else(|| (StatusCode::METHOD_NOT_ALLOWED, "index is read-only").into_response())?;
-    authorize(local, headers)?;
-    Ok((index, local, rest))
+    authorize(hosted, headers)?;
+    Ok((index, hosted, rest))
 }
 
-/// The writable local index behind `index`: itself if local, its upload layer if an overlay.
+/// The writable hosted index behind `index`: itself if hosted, its upload layer if an overlay.
 fn upload_target<'a>(state: &'a AppState, index: &'a Index) -> Option<&'a Index> {
     match &index.kind {
         IndexKind::Hosted { .. } => Some(index),
@@ -1048,26 +1055,38 @@ fn upload_target<'a>(state: &'a AppState, index: &'a Index) -> Option<&'a Index>
     }
 }
 
-const fn is_volatile(local: &Index) -> bool {
-    matches!(local.kind, IndexKind::Hosted { volatile: true, .. })
+const fn is_volatile(hosted: &Index) -> bool {
+    matches!(hosted.kind, IndexKind::Hosted { volatile: true, .. })
 }
 
-/// Check the Basic-auth token of a local index, returning a ready response on any failure.
-fn authorize(local: &Index, headers: &HeaderMap) -> Result<(), Response> {
-    let IndexKind::Hosted { upload_token, .. } = &local.kind else {
+/// Check the Basic-auth token of a hosted index, returning a ready response on any failure.
+fn authorize(hosted: &Index, headers: &HeaderMap) -> Result<(), Response> {
+    let IndexKind::Hosted { upload_token, .. } = &hosted.kind else {
         return Err(not_found());
     };
     let actor = velodex_http::security::actor(headers);
     let Some(token) = upload_token.as_deref() else {
-        security_token_event(headers, actor.as_deref(), &local.name, "denied", "uploads are disabled");
+        security_token_event(
+            headers,
+            actor.as_deref(),
+            &hosted.name,
+            "denied",
+            "uploads are disabled",
+        );
         return Err((StatusCode::FORBIDDEN, "uploads are disabled").into_response());
     };
     let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
     if velodex_identity::authorized(auth, token) {
-        security_token_event(headers, actor.as_deref(), &local.name, "success", "");
+        security_token_event(headers, actor.as_deref(), &hosted.name, "success", "");
         Ok(())
     } else {
-        security_token_event(headers, actor.as_deref(), &local.name, "denied", "invalid upload token");
+        security_token_event(
+            headers,
+            actor.as_deref(),
+            &hosted.name,
+            "denied",
+            "invalid upload token",
+        );
         Err((
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"velodex\"")],
@@ -1088,15 +1107,15 @@ fn security_upload_event<'a>(
     headers: &'a HeaderMap,
     actor: Option<&'a str>,
     repository: &'a str,
-    local_index: Option<&'a str>,
+    hosted_index: Option<&'a str>,
     result: &'static str,
 ) -> velodex_http::security::Event<'a> {
     let event = velodex_http::security::Event::new("upload", result)
         .actor(actor)
         .index(repository)
         .request(headers);
-    if let Some(local_index) = local_index {
-        event.local_index(local_index)
+    if let Some(hosted_index) = hosted_index {
+        event.hosted_index(hosted_index)
     } else {
         event
     }
@@ -1126,7 +1145,7 @@ struct MutationAudit<'a> {
     actor: Option<&'a str>,
     index: &'a str,
     repository: &'a str,
-    local_index: &'a str,
+    hosted_index: &'a str,
     project: &'a str,
     version: Option<&'a str>,
     request_id: Option<String>,
@@ -1142,7 +1161,7 @@ fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, Cac
     velodex_http::security::Event::new(audit.action, security_result)
         .actor(audit.actor)
         .index(audit.repository)
-        .local_index(audit.local_index)
+        .hosted_index(audit.hosted_index)
         .project(Some(audit.project))
         .version(audit.version)
         .count(count)
@@ -1164,7 +1183,7 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
         .actor(audit.actor)
         .index(audit.repository)
         .source_index(audit.source_index)
-        .local_index(audit.local_index)
+        .hosted_index(audit.hosted_index)
         .project(Some(audit.project))
         .version(Some(audit.version))
         .count(count)
@@ -1193,7 +1212,7 @@ fn emit_mutation_webhook(
             created_at_unix,
             index: audit.index.to_owned(),
             route: audit.repository.to_owned(),
-            local_index: audit.local_index.to_owned(),
+            hosted_index: audit.hosted_index.to_owned(),
             project: audit.project.to_owned(),
             version: audit.version.map(str::to_owned),
             filename: None,

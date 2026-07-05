@@ -241,7 +241,7 @@ async fn test_file_whose_source_is_not_a_mirror_is_not_found() {
     let digest = Digest::of(b"wheel");
     h.state
         .meta
-        .put_file_url(digest.as_str(), "https://up.example/x.whl", "local")
+        .put_file_url(digest.as_str(), "https://up.example/x.whl", "hosted")
         .unwrap();
     let uri = format!("/pypi/files/{}/x.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
@@ -721,8 +721,8 @@ async fn test_overlay_without_a_mirror_serves_buffered() {
     let state = custom_state(&dir, "https://unused.invalid/simple/", |_| {
         vec![
             Index {
-                name: "local".to_owned(),
-                route: "local".to_owned(),
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
                 policy: velodex_policy::Policy::default(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {

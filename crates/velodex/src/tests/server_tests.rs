@@ -27,7 +27,7 @@ fn mirror(name: &str, upstream: &str) -> IndexConfig {
     }
 }
 
-fn local(name: &str) -> IndexConfig {
+fn hosted(name: &str) -> IndexConfig {
     IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
@@ -145,7 +145,7 @@ fn test_build_state_reports_index_errors() {
 #[test]
 fn test_build_state_reports_webhook_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let mut index = local("local");
+    let mut index = hosted("hosted");
     index.webhooks.push(WebhookConfig {
         name: "ci".to_owned(),
         url: "ftp://ci.example/hook".to_owned(),
@@ -168,7 +168,7 @@ fn test_build_state_reports_webhook_errors() {
 #[test]
 fn test_build_state_reports_missing_webhook_secret_env() {
     let dir = tempfile::tempdir().unwrap();
-    let mut index = local("local");
+    let mut index = hosted("hosted");
     index.webhooks.push(WebhookConfig {
         name: "ci".to_owned(),
         url: "https://ci.example/hook".to_owned(),
@@ -194,7 +194,7 @@ fn test_build_state_reports_missing_webhook_secret_env() {
 #[tokio::test]
 async fn test_build_state_starts_webhook_runtime() {
     let dir = tempfile::tempdir().unwrap();
-    let mut index = local("local");
+    let mut index = hosted("hosted");
     index.webhooks.push(WebhookConfig {
         name: "ci".to_owned(),
         url: "https://ci.example/hook".to_owned(),
@@ -266,21 +266,21 @@ fn test_build_indexes_rejects_invalid_policy() {
 
 #[test]
 fn test_build_indexes_rejects_duplicate_name() {
-    let err = build_indexes(&[local("a"), local("a")], false).unwrap_err();
+    let err = build_indexes(&[hosted("a"), hosted("a")], false).unwrap_err();
     assert!(err.to_string().contains("duplicate index name"));
 }
 
 #[test]
 fn test_build_indexes_rejects_duplicate_route() {
-    let mut second = local("b");
+    let mut second = hosted("b");
     second.route = "a".to_owned();
-    let err = build_indexes(&[local("a"), second], false).unwrap_err();
+    let err = build_indexes(&[hosted("a"), second], false).unwrap_err();
     assert!(err.to_string().contains("duplicate index route"));
 }
 
 #[test]
 fn test_build_indexes_rejects_unsafe_route() {
-    let mut index = local("safe");
+    let mut index = hosted("safe");
     index.route = "root/../pypi".to_owned();
     let err = build_indexes(&[index], false).unwrap_err();
     assert!(err.to_string().contains("invalid index route root/../pypi"));
@@ -288,7 +288,7 @@ fn test_build_indexes_rejects_unsafe_route() {
 
 #[test]
 fn test_build_indexes_rejects_reserved_route() {
-    let mut index = local("safe");
+    let mut index = hosted("safe");
     index.route = "browse/private".to_owned();
     let err = build_indexes(&[index], false).unwrap_err();
     assert!(err.to_string().contains("invalid index route browse/private"));
@@ -296,7 +296,7 @@ fn test_build_indexes_rejects_reserved_route() {
 
 #[test]
 fn test_build_indexes_rejects_unknown_layer() {
-    let err = build_indexes(&[local("x"), overlay(&["ghost"], None)], false).unwrap_err();
+    let err = build_indexes(&[hosted("x"), overlay(&["ghost"], None)], false).unwrap_err();
     assert!(err.to_string().contains("unknown index ghost"));
 }
 
@@ -307,14 +307,14 @@ fn test_build_indexes_rejects_non_local_upload_target() {
         overlay(&["pypi"], Some("pypi")),
     ];
     let err = build_indexes(&configs, false).unwrap_err();
-    assert!(err.to_string().contains("not a local index"));
+    assert!(err.to_string().contains("not a hosted index"));
 }
 
 #[test]
 fn test_build_indexes_defaults_upload_to_first_local_layer() {
     let configs = [
         mirror("pypi", "https://pypi.org/simple/"),
-        local("store"),
+        hosted("store"),
         overlay(&["pypi", "store"], None),
     ];
     let indexes = build_indexes(&configs, false).unwrap();

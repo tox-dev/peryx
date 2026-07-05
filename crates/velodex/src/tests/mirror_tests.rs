@@ -41,8 +41,8 @@ fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
         data_dir: data_dir.to_path_buf(),
         indexes: vec![
             IndexConfig {
-                name: "local".to_owned(),
-                route: "local".to_owned(),
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
                 policy: PolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
@@ -74,8 +74,8 @@ fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
-                    layers: vec!["local".to_owned(), "pypi".to_owned()],
-                    upload: Some("local".to_owned()),
+                    layers: vec!["hosted".to_owned(), "pypi".to_owned()],
+                    upload: Some("hosted".to_owned()),
                 },
             },
         ],
@@ -957,13 +957,13 @@ async fn test_mirror_rejects_non_mirror_targets() {
         webhooks: Vec::new(),
         ecosystem: velodex_format::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
-            layers: vec!["local".to_owned()],
-            upload: Some("local".to_owned()),
+            layers: vec!["hosted".to_owned()],
+            upload: Some("hosted".to_owned()),
         },
     });
     let commands = [
         ("unknown", "unknown cached index"),
-        ("local", "is hosted and has no upstream"),
+        ("hosted", "is hosted and has no upstream"),
         ("double", "has more than one cached member"),
         ("local-overlay", "has no cached member"),
     ];

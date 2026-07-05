@@ -10,7 +10,7 @@ pub struct Event<'a> {
     actor: Option<&'a str>,
     index: Option<&'a str>,
     source_index: Option<&'a str>,
-    local_index: Option<&'a str>,
+    hosted_index: Option<&'a str>,
     project: Option<&'a str>,
     version: Option<&'a str>,
     filename: Option<&'a str>,
@@ -31,7 +31,7 @@ impl<'a> Event<'a> {
             actor: None,
             index: None,
             source_index: None,
-            local_index: None,
+            hosted_index: None,
             project: None,
             version: None,
             filename: None,
@@ -63,8 +63,8 @@ impl<'a> Event<'a> {
     }
 
     #[must_use]
-    pub const fn local_index(mut self, local_index: &'a str) -> Self {
-        self.local_index = Some(local_index);
+    pub const fn hosted_index(mut self, hosted_index: &'a str) -> Self {
+        self.hosted_index = Some(hosted_index);
         self
     }
 
@@ -121,7 +121,7 @@ impl<'a> Event<'a> {
         let actor = text(self.actor);
         let index = text(self.index);
         let source_index = text(self.source_index);
-        let local_index = text(self.local_index);
+        let hosted_index = text(self.hosted_index);
         let project = text(self.project);
         let version = text(self.version);
         let filename = text(self.filename);
@@ -138,7 +138,7 @@ impl<'a> Event<'a> {
             actor,
             index,
             source_index,
-            local_index,
+            hosted_index,
             project,
             version,
             filename,

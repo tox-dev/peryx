@@ -27,14 +27,14 @@ async fn test_search_indexes_uploaded_metadata_and_route_scope() {
 
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=package%20cache&type=uploaded&page_size=25",
+        "/hosted/+search?q=package%20cache&type=uploaded&page_size=25",
         Some("application/json"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let value: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(value["total"], 1);
-    assert_eq!(value["route"], "local");
+    assert_eq!(value["route"], "hosted");
     assert_eq!(value["results"][0]["display_name"], "VelodexPkg");
     assert_eq!(value["results"][0]["normalized_name"], "velodexpkg");
     assert_eq!(value["results"][0]["type"], "uploaded");
@@ -104,7 +104,7 @@ async fn test_search_collects_direct_mirror_and_local_projects() {
 
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=local-only&type=uploaded&page_size=25",
+        "/hosted/+search?q=local-only&type=uploaded&page_size=25",
         Some("application/json"),
     )
     .await;
@@ -147,7 +147,7 @@ async fn test_search_handles_empty_queries_and_fallback_params() {
 #[tokio::test]
 async fn test_search_reports_invalid_type_filters() {
     let h = harness().await;
-    for uri in ["/+search?type=blocked", "/local/+search?type=blocked"] {
+    for uri in ["/+search?type=blocked", "/hosted/+search?type=blocked"] {
         let (status, _headers, body) = get(&h.state, uri, Some("application/json")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("invalid package source type"));
@@ -185,7 +185,7 @@ async fn test_search_matches_single_character_literal_queries() {
     let h = harness().await;
     put_uploaded_package(&h.state, "Velodex.Core", "velodex-core", "literal dot package");
 
-    let (status, _headers, body) = get(&h.state, "/local/+search?q=.&page_size=25", Some("application/json")).await;
+    let (status, _headers, body) = get(&h.state, "/hosted/+search?q=.&page_size=25", Some("application/json")).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["total"], 1);
@@ -197,7 +197,7 @@ async fn test_search_rebuilds_after_delete() {
     put_uploaded_package(&h.state, "VelodexPkg", "velodexpkg", "Temporary upload");
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=temporary&page_size=25",
+        "/hosted/+search?q=temporary&page_size=25",
         Some("application/json"),
     )
     .await;
@@ -206,12 +206,12 @@ async fn test_search_rebuilds_after_delete() {
 
     h.state
         .meta
-        .delete_upload("local", "velodexpkg", "velodexpkg-1.0-py3-none-any.whl")
+        .delete_upload("hosted", "velodexpkg", "velodexpkg-1.0-py3-none-any.whl")
         .unwrap();
     h.state.bump_epoch();
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=temporary&page_size=25",
+        "/hosted/+search?q=temporary&page_size=25",
         Some("application/json"),
     )
     .await;
@@ -226,7 +226,7 @@ async fn test_search_uses_cached_epoch_until_mutation() {
 
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=temporary&page_size=25",
+        "/hosted/+search?q=temporary&page_size=25",
         Some("application/json"),
     )
     .await;
@@ -235,7 +235,7 @@ async fn test_search_uses_cached_epoch_until_mutation() {
 
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=temporary&page_size=25",
+        "/hosted/+search?q=temporary&page_size=25",
         Some("application/json"),
     )
     .await;
@@ -272,7 +272,7 @@ async fn test_search_rebuilds_after_yank_and_hide_overrides() {
     )
     .unwrap();
 
-    cache::set_yanked(&h.state, h.state.index_at(2), "local", "flask", None, Yanked::Yes)
+    cache::set_yanked(&h.state, h.state.index_at(2), "hosted", "flask", None, Yanked::Yes)
         .await
         .unwrap();
     let (status, _headers, body) = get(
@@ -286,7 +286,7 @@ async fn test_search_rebuilds_after_yank_and_hide_overrides() {
     assert_eq!(value["total"], 1);
     assert_eq!(value["results"][0]["type"], "override");
 
-    cache::remove_files(&h.state, h.state.index_at(2), "local", true, "flask", None)
+    cache::remove_files(&h.state, h.state.index_at(2), "hosted", true, "flask", None)
         .await
         .unwrap();
     let (status, _headers, body) = get(
@@ -501,7 +501,7 @@ async fn test_search_indexes_metadata_field_lists_and_long_text() {
 
     let (status, _headers, body) = get(
         &h.state,
-        "/local/+search?q=docs.example&page_size=25",
+        "/hosted/+search?q=docs.example&page_size=25",
         Some("application/json"),
     )
     .await;
@@ -558,7 +558,7 @@ fn put_uploaded_package(state: &velodex_http::state::AppState, display: &str, no
         &format!("Metadata-Version: 2.1\nName: {display}\nVersion: 1.0\nSummary: {summary}\n"),
         None,
     );
-    state.meta.put_project("local", normalized, display).unwrap();
+    state.meta.put_project("hosted", normalized, display).unwrap();
 }
 
 fn put_uploaded_package_with_metadata(
@@ -572,13 +572,13 @@ fn put_uploaded_package_with_metadata(
     let metadata_digest = state.blobs.write(metadata.as_bytes()).unwrap();
     state
         .meta
-        .put_metadata(artifact_digest.as_str(), "uploaded", metadata_digest.as_str(), "local")
+        .put_metadata(artifact_digest.as_str(), "uploaded", metadata_digest.as_str(), "hosted")
         .unwrap();
     let uploaded = Uploaded {
         version: "1.0".to_owned(),
         file: File {
             filename: filename.clone(),
-            url: local_file_url("local", artifact_digest.as_str(), &filename),
+            url: local_file_url("hosted", artifact_digest.as_str(), &filename),
             hashes: BTreeMap::from([("sha256".to_owned(), artifact_digest.as_str().to_owned())]),
             requires_python: requires_python.map(str::to_owned),
             size: Some(10),
@@ -598,9 +598,9 @@ fn put_uploaded_package_with_metadata(
     };
     state
         .meta
-        .put_upload("local", normalized, &filename, to_json(&uploaded).as_bytes())
+        .put_upload("hosted", normalized, &filename, to_json(&uploaded).as_bytes())
         .unwrap();
-    state.meta.put_project("local", normalized, normalized).unwrap();
+    state.meta.put_project("hosted", normalized, normalized).unwrap();
     state.bump_epoch();
 }
 

@@ -37,8 +37,8 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 },
             },
             IndexConfig {
-                name: "local".to_owned(),
-                route: "local".to_owned(),
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
                 policy: velodex_policy::PolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
@@ -54,8 +54,8 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
-                    layers: vec!["local".to_owned(), "pypi".to_owned()],
-                    upload: Some("local".to_owned()),
+                    layers: vec!["hosted".to_owned(), "pypi".to_owned()],
+                    upload: Some("hosted".to_owned()),
                 },
             },
         ],
@@ -147,7 +147,7 @@ fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8
         version: "1.0.0".to_owned(),
         file: File {
             filename: filename.to_owned(),
-            url: local_file_url("local", digest.as_str(), filename),
+            url: local_file_url("hosted", digest.as_str(), filename),
             hashes: std::collections::BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
             requires_python: None,
             size: Some(content.len() as u64),
@@ -161,9 +161,9 @@ fn put_legacy_file(state: &velodex_http::AppState, filename: &str, content: &[u8
     };
     state
         .meta
-        .put_upload("local", "veloxdemo", filename, &to_json(&uploaded).into_bytes())
+        .put_upload("hosted", "veloxdemo", filename, &to_json(&uploaded).into_bytes())
         .unwrap();
-    state.meta.put_project("local", "veloxdemo", "veloxdemo").unwrap();
+    state.meta.put_project("hosted", "veloxdemo", "veloxdemo").unwrap();
     digest
 }
 
@@ -200,7 +200,7 @@ async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
     assert!(body.contains("read-only"));
     assert!(body.contains("root/pypi"));
     assert!(body.contains("/root/pypi/simple/"));
-    assert!(body.contains("/browse?index=local"));
+    assert!(body.contains("/browse?index=hosted"));
     assert!(body.contains("Usage and health"));
     assert!(body.contains("Recent uploads"));
     assert!(body.contains("No uploads recorded yet."));
@@ -243,7 +243,7 @@ async fn test_ui_browse_lists_projects_after_upload() {
     let dir = tempfile::tempdir().unwrap();
     let router = build_router(&ui_config(&dir)).unwrap();
     upload_fixture(&router).await;
-    let (status, body) = get(&router, "/browse?index=local").await;
+    let (status, body) = get(&router, "/browse?index=hosted").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("veloxdemo"));
     assert!(body.contains("Filter projects"));
@@ -253,7 +253,7 @@ async fn test_ui_browse_lists_projects_after_upload() {
 async fn test_ui_browse_empty_index_hint() {
     let dir = tempfile::tempdir().unwrap();
     let router = build_router(&ui_config(&dir)).unwrap();
-    let (status, body) = get(&router, "/browse?index=local").await;
+    let (status, body) = get(&router, "/browse?index=hosted").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("No projects observed"));
 }
@@ -263,10 +263,10 @@ async fn test_ui_project_page_renders_metadata() {
     let dir = tempfile::tempdir().unwrap();
     let router = build_router(&ui_config(&dir)).unwrap();
     upload_fixture(&router).await;
-    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("A demonstration package for the velox web UI"));
-    assert!(body.contains("uv pip install --index-url /local/simple/ veloxdemo"));
+    assert!(body.contains("uv pip install --index-url /hosted/simple/ veloxdemo"));
     assert!(body.contains("A demo package served by <strong>velox</strong>"));
     assert!(body.contains("requests&gt;=2"));
     assert!(body.contains("Development Status"));
@@ -282,7 +282,7 @@ async fn test_ui_project_page_filters_files_by_substring() {
     put_filter_files(&state);
     let router = router_for(state);
 
-    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo&filename=cp312").await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo&filename=cp312").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("1 of 3 files"));
     let table = first_files_table(&body);
@@ -300,7 +300,7 @@ async fn test_ui_project_page_filters_files_by_regex() {
 
     let (status, body) = get(
         &router,
-        "/browse?index=local&project=veloxdemo&filename=cp31%5B12%5D.*whl&filename_match=regex",
+        "/browse?index=hosted&project=veloxdemo&filename=cp31%5B12%5D.*whl&filename_match=regex",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -320,7 +320,7 @@ async fn test_ui_project_page_invalid_regex_keeps_full_table() {
 
     let (status, body) = get(
         &router,
-        "/browse?index=local&project=veloxdemo&filename=%5B&filename_match=regex",
+        "/browse?index=hosted&project=veloxdemo&filename=%5B&filename_match=regex",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -336,7 +336,7 @@ async fn test_ui_project_page_invalid_regex_keeps_full_table() {
 async fn test_ui_project_page_missing_project() {
     let dir = tempfile::tempdir().unwrap();
     let router = build_router(&ui_config(&dir)).unwrap();
-    let (status, body) = get(&router, "/browse?index=local&project=ghost").await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=ghost").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Project not found on this index."));
 }
@@ -356,13 +356,13 @@ async fn test_ui_project_page_shows_contents_for_zipped_eggs() {
     }
     let digest = put_legacy_file(&state, "veloxdemo-1.0.0.egg", &egg);
     let router = router_for(state);
-    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("veloxdemo-1.0.0.egg"));
     assert!(body.contains("class=\"inspect\""));
 
     let url = format!(
-        "/browse?index=local&project=veloxdemo&sha256={}&file=veloxdemo-1.0.0.egg",
+        "/browse?index=hosted&project=veloxdemo&sha256={}&file=veloxdemo-1.0.0.egg",
         digest.as_str()
     );
     let (status, body) = get(&router, &url).await;
@@ -376,7 +376,7 @@ async fn test_ui_project_page_hides_contents_for_unsupported_legacy_tar() {
     let state = build_state(&ui_config(&dir)).unwrap();
     put_legacy_file(&state, "veloxdemo-1.0.0.tar.bz2", b"legacy tarball");
     let router = router_for(state);
-    let (status, body) = get(&router, "/browse?index=local&project=veloxdemo").await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("veloxdemo-1.0.0.tar.bz2"));
     assert!(!body.contains("class=\"inspect\""));
@@ -387,7 +387,7 @@ async fn test_ui_archive_listing_and_member() {
     let dir = tempfile::tempdir().unwrap();
     let router = build_router(&ui_config(&dir)).unwrap();
     upload_fixture(&router).await;
-    let (_, detail) = get(&router, "/local/simple/veloxdemo/").await;
+    let (_, detail) = get(&router, "/hosted/simple/veloxdemo/").await;
     let sha = detail
         .split("files/")
         .nth(1)
@@ -398,7 +398,7 @@ async fn test_ui_archive_listing_and_member() {
         .to_owned();
 
     let file = "veloxdemo-1.0.0-py3-none-any.whl";
-    let listing_url = format!("/browse?index=local&project=veloxdemo&sha256={sha}&file={file}");
+    let listing_url = format!("/browse?index=hosted&project=veloxdemo&sha256={sha}&file={file}");
     let (status, listing) = get(&router, &listing_url).await;
     assert_eq!(status, StatusCode::OK);
     assert!(listing.contains("dist-info/METADATA"));
@@ -451,7 +451,7 @@ async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() 
         zip.finish().unwrap();
     }
     upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;
-    let (_, detail) = get(&router, "/local/simple/veloxdemo/").await;
+    let (_, detail) = get(&router, "/hosted/simple/veloxdemo/").await;
     let sha = detail
         .split("files/")
         .nth(1)
@@ -462,7 +462,7 @@ async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() 
         .to_owned();
 
     let file = "veloxdemo-1.0.0-py3-none-any.whl";
-    let listing_url = format!("/browse?index=local&project=veloxdemo&sha256={sha}&file={file}");
+    let listing_url = format!("/browse?index=hosted&project=veloxdemo&sha256={sha}&file={file}");
     let (status, listing) = get(&router, &listing_url).await;
     assert_eq!(status, StatusCode::OK);
     assert!(listing.contains("class=\"archive-tree\""));

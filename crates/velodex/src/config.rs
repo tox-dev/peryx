@@ -199,8 +199,8 @@ fn default_indexes() -> Vec<IndexConfig> {
             },
         },
         IndexConfig {
-            name: "local".to_owned(),
-            route: "local".to_owned(),
+            name: "hosted".to_owned(),
+            route: "hosted".to_owned(),
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
@@ -216,8 +216,8 @@ fn default_indexes() -> Vec<IndexConfig> {
             policy: PolicyConfig::default(),
             webhooks: Vec::new(),
             kind: IndexKind::Virtual {
-                layers: vec!["local".to_owned(), "pypi".to_owned()],
-                upload: Some("local".to_owned()),
+                layers: vec!["hosted".to_owned(), "pypi".to_owned()],
+                upload: Some("hosted".to_owned()),
             },
         },
     ]

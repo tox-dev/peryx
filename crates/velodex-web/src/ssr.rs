@@ -14,7 +14,7 @@ use velodex_http::search::{SearchParams, SourceFilter};
 use velodex_storage::blob::Digest;
 
 use crate::model::{
-    UiIndex, UiLocal, UiMember, UiMemberChunk, UiProject, UiRecentUpload, UiSearchPage, UiSnapshot, UiUpstream,
+    UiHosted, UiIndex, UiMember, UiMemberChunk, UiProject, UiRecentUpload, UiSearchPage, UiSnapshot, UiUpstream,
 };
 use crate::{App, shell};
 
@@ -115,10 +115,10 @@ fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
                     auth_redacted: (upstream.auth != "none").then(|| "<redacted>".to_owned()),
                     status: "configured".to_owned(),
                 }),
-                local: index.local.map(|local| UiLocal {
-                    volatile: local.volatile,
-                    token_configured: local.upload_token.configured,
-                    token_redacted: local.upload_token.redacted.map(str::to_owned),
+                hosted: index.hosted.map(|hosted| UiHosted {
+                    volatile: hosted.volatile,
+                    token_configured: hosted.upload_token.configured,
+                    token_redacted: hosted.upload_token.redacted.map(str::to_owned),
                 }),
                 project_count: summary.project_count,
                 upload_count: summary.upload_count,

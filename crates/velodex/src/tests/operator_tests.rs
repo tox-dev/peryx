@@ -28,8 +28,8 @@ fn test_backup_restore_roundtrip_restores_metadata_and_blobs() {
     operator::restore(&backup, &restored, false, &mut out).unwrap();
 
     let meta = MetaStore::open_existing(restored.join("velodex.redb")).unwrap();
-    assert_eq!(meta.list_projects("local").unwrap(), vec!["Flask"]);
-    assert_eq!(meta.list_upload_entries("local", "flask").unwrap().len(), 1);
+    assert_eq!(meta.list_projects("hosted").unwrap(), vec!["Flask"]);
+    assert_eq!(meta.list_upload_entries("hosted", "flask").unwrap().len(), 1);
     let blobs = BlobStore::new(restored.join("blobs"));
     assert_eq!(blobs.read(&content_digest).unwrap(), b"wheel bytes");
     assert_eq!(blobs.read(&metadata_digest).unwrap(), b"metadata bytes");
@@ -423,8 +423,8 @@ fn test_import_dir_validates_and_reports_files() {
     assert!(text.contains("summary\t\t\t\timported=2 skipped=1 rejected=1"));
 
     let meta = MetaStore::open_existing(config.data_dir.join("velodex.redb")).unwrap();
-    assert_eq!(meta.list_upload_entries("local", "demo").unwrap().len(), 1);
-    assert_eq!(meta.list_upload_entries("local", "flask").unwrap().len(), 1);
+    assert_eq!(meta.list_upload_entries("hosted", "demo").unwrap().len(), 1);
+    assert_eq!(meta.list_upload_entries("hosted", "flask").unwrap().len(), 1);
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn test_import_dir_accepts_local_repository_route() {
     };
 
     let mut out = Vec::new();
-    operator::import_dir(&config, "local", &import, &mut out).unwrap();
+    operator::import_dir(&config, "hosted", &import, &mut out).unwrap();
 
     assert!(
         String::from_utf8(out)
@@ -624,15 +624,15 @@ fn backup_fixture() -> (tempfile::TempDir, Config, Digest, Digest) {
     let metadata_digest = blobs.write(b"metadata bytes").unwrap();
     let meta = MetaStore::open(data_dir.join("velodex.redb")).unwrap();
     meta.put_upload(
-        "local",
+        "hosted",
         "flask",
         "Flask-1.0-py3-none-any.whl",
         &uploaded_record_json(&content_digest, &metadata_digest),
     )
     .unwrap();
-    meta.put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), "local")
+    meta.put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), "hosted")
         .unwrap();
-    meta.put_project("local", "flask", "Flask").unwrap();
+    meta.put_project("hosted", "flask", "Flask").unwrap();
     drop(meta);
     (
         dir,

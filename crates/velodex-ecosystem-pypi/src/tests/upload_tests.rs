@@ -34,7 +34,7 @@ fn test_prepare_builds_content_addressed_record() {
     let wheel = wheel_metadata("Flask", "1.0");
     let (_dir, staged) = staged_upload(&wheel);
 
-    let prepared = prepare(staged_form(&wheel), staged, "root/local", 1000).unwrap();
+    let prepared = prepare(staged_form(&wheel), staged, "root/hosted", 1000).unwrap();
     let digest = Digest::of(&wheel);
 
     assert_eq!(prepared.normalized, "flask");
@@ -43,7 +43,7 @@ fn test_prepare_builds_content_addressed_record() {
     assert_eq!(prepared.record.version, "1.0");
     assert_eq!(
         prepared.record.file.url,
-        format!("/root/local/files/{}/Flask-1.0-py3-none-any.whl", digest.as_str())
+        format!("/root/hosted/files/{}/Flask-1.0-py3-none-any.whl", digest.as_str())
     );
     assert_eq!(
         prepared.record.file.hashes.get("sha256").map(String::as_str),
@@ -70,7 +70,7 @@ fn test_prepare_accepts_matching_declared_digests() {
     form.sha256_digest = Some(Digest::of(&wheel).as_str().to_owned());
     form.blake2_256_digest = Some(staged.blake2_256.clone());
 
-    assert!(prepare(form, staged, "root/local", 1000).is_ok());
+    assert!(prepare(form, staged, "root/hosted", 1000).is_ok());
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn test_prepare_accepts_valid_sdist() {
     form.filetype = Some("sdist".to_owned());
     form.requires_python = None;
 
-    let prepared = prepare(form, staged, "root/local", 1000).unwrap();
+    let prepared = prepare(form, staged, "root/hosted", 1000).unwrap();
 
     assert_eq!(prepared.record.file.requires_python.as_deref(), Some(">=3.9"));
     assert!(
@@ -99,7 +99,7 @@ fn test_prepare_rejects_wrong_action() {
     form.action = Some("submit".to_owned());
 
     assert_eq!(
-        prepare(form, staged, "root/local", 1000).unwrap_err(),
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
         UploadError::NotFileUpload
     );
 }
@@ -121,7 +121,7 @@ fn test_prepare_rejects_invalid_form_identity() {
         let wheel = wheel_metadata("Flask", "1.0");
         let (_dir, staged) = staged_upload(&wheel);
         form.filename = Some("Flask-1.0-py3-none-any.whl".to_owned());
-        assert_eq!(prepare(form, staged, "root/local", 1000).unwrap_err(), expected);
+        assert_eq!(prepare(form, staged, "root/hosted", 1000).unwrap_err(), expected);
     }
 }
 
@@ -152,7 +152,7 @@ fn test_prepare_rejects_digest_problems() {
         let mut form = staged_form(&wheel);
         configure(&mut form);
 
-        assert_eq!(prepare(form, staged, "root/local", 1000).unwrap_err(), expected);
+        assert_eq!(prepare(form, staged, "root/hosted", 1000).unwrap_err(), expected);
     }
 }
 
@@ -194,7 +194,7 @@ fn test_prepare_rejects_filename_problems() {
         let mut form = staged_form(&wheel);
         form.filename = Some(filename.to_owned());
 
-        assert_eq!(prepare(form, staged, "root/local", 1000).unwrap_err(), expected);
+        assert_eq!(prepare(form, staged, "root/hosted", 1000).unwrap_err(), expected);
     }
 }
 
@@ -221,7 +221,7 @@ fn test_prepare_rejects_filename_form_mismatches() {
         let mut form = staged_form(&wheel);
         form.filename = Some(filename.to_owned());
 
-        assert_eq!(prepare(form, staged, "root/local", 1000).unwrap_err(), expected);
+        assert_eq!(prepare(form, staged, "root/hosted", 1000).unwrap_err(), expected);
     }
 }
 
@@ -233,7 +233,7 @@ fn test_prepare_rejects_filetype_mismatch() {
     form.filetype = Some("sdist".to_owned());
 
     assert_eq!(
-        prepare(form, staged, "root/local", 1000).unwrap_err(),
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
         UploadError::FiletypeMismatch {
             expected: "bdist_wheel".to_owned(),
             actual: "sdist".to_owned(),
@@ -257,7 +257,7 @@ fn test_prepare_rejects_archive_content_problems() {
         let (_dir, staged) = staged_upload(&bytes);
 
         assert_eq!(
-            prepare(full_form("Flask-1.0-py3-none-any.whl"), staged, "root/local", 1000).unwrap_err(),
+            prepare(full_form("Flask-1.0-py3-none-any.whl"), staged, "root/hosted", 1000).unwrap_err(),
             expected
         );
     }
@@ -267,7 +267,7 @@ fn test_prepare_rejects_archive_content_problems() {
     let mut form = full_form("Flask-1.0.tar.gz");
     form.filetype = Some("sdist".to_owned());
     assert_eq!(
-        prepare(form, staged, "root/local", 1000).unwrap_err(),
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
         UploadError::MetadataNameMismatch {
             metadata: "Other".to_owned(),
             form: "flask".to_owned(),
@@ -361,7 +361,7 @@ fn test_prepare_accepts_wheel_with_directory_entries() {
     );
     let (_dir, staged) = staged_upload(&bytes);
 
-    let prepared = prepare(staged_form(&bytes), staged, "root/local", 1000).unwrap();
+    let prepared = prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap();
 
     assert_eq!(prepared.metadata.as_slice(), metadata);
 }
@@ -608,7 +608,7 @@ fn test_prepare_accepts_record_entry_without_size() {
     );
     let (_dir, staged) = staged_upload(&bytes);
 
-    let prepared = prepare(staged_form(&bytes), staged, "root/local", 1000).unwrap();
+    let prepared = prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap();
 
     assert_eq!(prepared.metadata.as_slice(), entries[1].1);
 }
@@ -710,7 +710,7 @@ fn test_prepare_accepts_record_self_size_and_stronger_hashes() {
     );
     let (_dir, staged) = staged_upload(&bytes);
 
-    let prepared = prepare(staged_form(&bytes), staged, "root/local", 1000).unwrap();
+    let prepared = prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap();
 
     assert_eq!(prepared.metadata.as_slice(), metadata);
 }
@@ -768,7 +768,7 @@ fn test_prepare_rejects_invalid_entry_points() {
     );
     let (_dir, staged) = staged_upload(&bytes);
 
-    assert!(prepare(staged_form(&bytes), staged, "root/local", 1000).is_ok());
+    assert!(prepare(staged_form(&bytes), staged, "root/hosted", 1000).is_ok());
 }
 
 #[test]
@@ -799,7 +799,7 @@ fn test_prepare_rejects_sdist_archive_read_errors() {
     let mut form = full_form("Flask-1.0.tar.gz");
     form.filetype = Some("sdist".to_owned());
 
-    let err = prepare(form, staged, "root/local", 1000).unwrap_err();
+    let err = prepare(form, staged, "root/hosted", 1000).unwrap_err();
 
     assert!(matches!(err, UploadError::InvalidContent(message) if message.starts_with("archive read failed: ")));
 }
@@ -832,7 +832,7 @@ fn test_prepare_rejects_metadata_mismatches() {
         let (_dir, staged) = staged_upload(&bytes);
 
         assert_eq!(
-            prepare(full_form("Flask-1.0-py3-none-any.whl"), staged, "root/local", 1000).unwrap_err(),
+            prepare(full_form("Flask-1.0-py3-none-any.whl"), staged, "root/hosted", 1000).unwrap_err(),
             expected
         );
     }
@@ -904,7 +904,7 @@ fn test_prepare_rejects_metadata_field_mismatches() {
         let mut form = staged_form(&bytes);
         configure(&mut form);
 
-        assert_eq!(prepare(form, staged, "root/local", 1000).unwrap_err(), expected);
+        assert_eq!(prepare(form, staged, "root/hosted", 1000).unwrap_err(), expected);
     }
 }
 
@@ -923,7 +923,7 @@ fn test_prepare_accepts_matching_metadata_form_fields() {
     form.project_urls.push("Source, https://example.test/source".to_owned());
     form.home_page = Some("https://example.test/home".to_owned());
 
-    let prepared = prepare(form, staged, "root/local", 1000).unwrap();
+    let prepared = prepare(form, staged, "root/hosted", 1000).unwrap();
 
     assert_eq!(prepared.display_name, "Flask");
 }
@@ -935,13 +935,13 @@ fn test_prepare_rejects_invalid_requires_python_and_clock() {
     let mut form = staged_form(&wheel);
     form.requires_python = Some("=>3".to_owned());
     assert_eq!(
-        prepare(form, staged, "root/local", 1000).unwrap_err(),
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
         UploadError::InvalidRequiresPython("=>3".to_owned())
     );
 
     let (_dir, staged) = staged_upload(&wheel);
     assert_eq!(
-        prepare(staged_form(&wheel), staged, "root/local", i64::MAX).unwrap_err(),
+        prepare(staged_form(&wheel), staged, "root/hosted", i64::MAX).unwrap_err(),
         UploadError::InvalidUploadTime
     );
 }
@@ -962,7 +962,7 @@ fn test_prepare_requires_each_field() {
         let mut form = staged_form(&wheel);
         clear(&mut form);
         assert_eq!(
-            prepare(form, staged, "root/local", 1000).unwrap_err(),
+            prepare(form, staged, "root/hosted", 1000).unwrap_err(),
             UploadError::Missing(missing)
         );
     }
@@ -1127,7 +1127,7 @@ fn assert_wheel_invalid(bytes: &[u8], expected: &str) {
 
 fn assert_wheel_invalid_for(filename: &str, bytes: &[u8], expected: &str) {
     let (_dir, staged) = staged_upload(bytes);
-    let err = prepare(full_form(filename), staged, "root/local", 1000)
+    let err = prepare(full_form(filename), staged, "root/hosted", 1000)
         .expect_err(&format!("upload unexpectedly succeeded; expected {expected:?}"));
     assert!(
         matches!(err, UploadError::InvalidContent(ref message) if message.contains(expected)),

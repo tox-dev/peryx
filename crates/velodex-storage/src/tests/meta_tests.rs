@@ -108,7 +108,7 @@ fn test_webhook_delivery_queue_orders_due_records() {
     let (_dir, store) = store();
     let later = store
         .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "local",
+            index: "hosted",
             target: "ci",
             event: "upload",
             payload: r#"{"event":"upload"}"#,
@@ -117,7 +117,7 @@ fn test_webhook_delivery_queue_orders_due_records() {
         .unwrap();
     let earlier = store
         .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "local",
+            index: "hosted",
             target: "ci",
             event: "delete",
             payload: r#"{"event":"delete"}"#,
@@ -138,7 +138,7 @@ fn test_webhook_delivery_update_reschedules_and_finishes() {
     let (_dir, store) = store();
     let id = store
         .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "local",
+            index: "hosted",
             target: "ci",
             event: "upload",
             payload: r#"{"event":"upload"}"#,
@@ -191,7 +191,7 @@ fn test_webhook_delivery_update_handles_record_without_due_key() {
     let (_dir, store) = store();
     let id = store
         .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "local",
+            index: "hosted",
             target: "ci",
             event: "upload",
             payload: r#"{"event":"upload"}"#,
@@ -371,26 +371,26 @@ fn test_put_and_list_projects() {
 #[test]
 fn test_put_and_list_upload_entries() {
     let (_dir, store) = store();
-    assert!(store.list_upload_entries("root/local", "flask").unwrap().is_empty());
+    assert!(store.list_upload_entries("root/hosted", "flask").unwrap().is_empty());
     store
-        .put_upload("root/local", "flask", "flask-2.0.whl", b"two")
+        .put_upload("root/hosted", "flask", "flask-2.0.whl", b"two")
         .unwrap();
     store
-        .put_upload("root/local", "flask", "flask-1.0.whl", b"one")
+        .put_upload("root/hosted", "flask", "flask-1.0.whl", b"one")
         .unwrap();
     store
-        .put_upload("root/local", "django", "django-4.0.whl", b"other")
+        .put_upload("root/hosted", "django", "django-4.0.whl", b"other")
         .unwrap();
     // Sorted by filename, scoped to the one project, filename returned alongside the record.
     assert_eq!(
-        store.list_upload_entries("root/local", "flask").unwrap(),
+        store.list_upload_entries("root/hosted", "flask").unwrap(),
         vec![
             ("flask-1.0.whl".to_owned(), b"one".to_vec()),
             ("flask-2.0.whl".to_owned(), b"two".to_vec())
         ]
     );
     assert_eq!(
-        store.list_upload_entries("root/local", "django").unwrap(),
+        store.list_upload_entries("root/hosted", "django").unwrap(),
         vec![("django-4.0.whl".to_owned(), b"other".to_vec())]
     );
 }
@@ -418,11 +418,11 @@ fn test_put_uploads_stores_records_and_project_display() {
 #[test]
 fn test_summarize_indexes_counts_projects_and_recent_uploads() {
     let (_dir, store) = store();
-    store.put_project("local", "flask", "Flask").unwrap();
-    store.put_project("root/local", "django", "Django").unwrap();
+    store.put_project("hosted", "flask", "Flask").unwrap();
+    store.put_project("root/hosted", "django", "Django").unwrap();
     store
         .put_upload(
-            "local",
+            "hosted",
             "flask",
             "flask-1.0.whl",
             br#"{"version":"1.0","file":{"filename":"flask-1.0.whl","upload-time":"2026-01-01T00:00:00Z","size":10}}"#,
@@ -430,7 +430,7 @@ fn test_summarize_indexes_counts_projects_and_recent_uploads() {
         .unwrap();
     store
         .put_upload(
-            "root/local",
+            "root/hosted",
             "django",
             "django-4.0.whl",
             br#"{"version":"4.0","file":{"filename":"django-4.0.whl","upload-time":"2026-02-01T00:00:00Z","size":20}}"#,
@@ -438,7 +438,7 @@ fn test_summarize_indexes_counts_projects_and_recent_uploads() {
         .unwrap();
     store
         .put_upload(
-            "root/local",
+            "root/hosted",
             "django",
             "django-4.1.whl",
             br#"{"version":"4.1","file":{"filename":"django-4.1.whl","upload-time":"2026-02-01T00:00:00Z","size":21}}"#,
@@ -446,7 +446,7 @@ fn test_summarize_indexes_counts_projects_and_recent_uploads() {
         .unwrap();
     store
         .put_upload(
-            "root/local",
+            "root/hosted",
             "django",
             "django-3.2.whl",
             br#"{"version":"3.2","file":{"filename":"django-3.2.whl","upload-time":"2025-12-01T00:00:00Z","size":15}}"#,
@@ -456,31 +456,31 @@ fn test_summarize_indexes_counts_projects_and_recent_uploads() {
         .put_upload("foreign", "flask", "ignored.whl", br#"{"version":"1.0"}"#)
         .unwrap();
 
-    let indexes = vec!["local".to_owned(), "root/local".to_owned()];
+    let indexes = vec!["hosted".to_owned(), "root/hosted".to_owned()];
     let summary = store.summarize_indexes(&indexes, 1).unwrap();
 
-    assert_eq!(summary["local"].project_count, 1);
-    assert_eq!(summary["local"].upload_count, 1);
-    assert_eq!(summary["root/local"].project_count, 1);
-    assert_eq!(summary["root/local"].upload_count, 3);
-    assert_eq!(summary["root/local"].recent_uploads[0].filename, "django-4.0.whl");
+    assert_eq!(summary["hosted"].project_count, 1);
+    assert_eq!(summary["hosted"].upload_count, 1);
+    assert_eq!(summary["root/hosted"].project_count, 1);
+    assert_eq!(summary["root/hosted"].upload_count, 3);
+    assert_eq!(summary["root/hosted"].recent_uploads[0].filename, "django-4.0.whl");
 
     let summary = store.summarize_indexes(&indexes, 0).unwrap();
-    assert_eq!(summary["root/local"].upload_count, 3);
-    assert!(summary["root/local"].recent_uploads.is_empty());
+    assert_eq!(summary["root/hosted"].upload_count, 3);
+    assert!(summary["root/hosted"].recent_uploads.is_empty());
 }
 
 #[test]
 fn test_put_upload_overwrites_same_filename() {
     let (_dir, store) = store();
     store
-        .put_upload("root/local", "flask", "flask-1.0.whl", b"first")
+        .put_upload("root/hosted", "flask", "flask-1.0.whl", b"first")
         .unwrap();
     store
-        .put_upload("root/local", "flask", "flask-1.0.whl", b"second")
+        .put_upload("root/hosted", "flask", "flask-1.0.whl", b"second")
         .unwrap();
     assert_eq!(
-        store.list_upload_entries("root/local", "flask").unwrap(),
+        store.list_upload_entries("root/hosted", "flask").unwrap(),
         vec![("flask-1.0.whl".to_owned(), b"second".to_vec())]
     );
 }
@@ -489,18 +489,18 @@ fn test_put_upload_overwrites_same_filename() {
 fn test_get_upload_fetches_one_entry() {
     let (_dir, store) = store();
     store
-        .put_upload("root/local", "flask", "flask-1.0.whl", b"one")
+        .put_upload("root/hosted", "flask", "flask-1.0.whl", b"one")
         .unwrap();
     assert_eq!(
         store
-            .get_upload("root/local", "flask", "flask-1.0.whl")
+            .get_upload("root/hosted", "flask", "flask-1.0.whl")
             .unwrap()
             .as_deref(),
         Some(b"one".as_slice())
     );
     assert!(
         store
-            .get_upload("root/local", "flask", "missing.whl")
+            .get_upload("root/hosted", "flask", "missing.whl")
             .unwrap()
             .is_none()
     );
@@ -510,11 +510,11 @@ fn test_get_upload_fetches_one_entry() {
 fn test_delete_upload() {
     let (_dir, store) = store();
     store
-        .put_upload("root/local", "flask", "flask-1.0.whl", b"one")
+        .put_upload("root/hosted", "flask", "flask-1.0.whl", b"one")
         .unwrap();
-    assert!(store.delete_upload("root/local", "flask", "flask-1.0.whl").unwrap());
-    assert!(!store.delete_upload("root/local", "flask", "flask-1.0.whl").unwrap());
-    assert!(store.list_upload_entries("root/local", "flask").unwrap().is_empty());
+    assert!(store.delete_upload("root/hosted", "flask", "flask-1.0.whl").unwrap());
+    assert!(!store.delete_upload("root/hosted", "flask", "flask-1.0.whl").unwrap());
+    assert!(store.list_upload_entries("root/hosted", "flask").unwrap().is_empty());
 }
 
 #[test]
@@ -530,28 +530,36 @@ fn test_cached_index_decode_rejects_garbage() {
 #[test]
 fn test_put_list_and_delete_overrides() {
     let (_dir, store) = store();
-    assert!(store.list_overrides("local", "flask").unwrap().is_empty());
-    store.put_override("local", "flask", "flask-1.0.whl", "yanked").unwrap();
-    store.put_override("local", "flask", "flask-2.0.whl", "hidden").unwrap();
-    store.put_override("local", "other", "x.whl", "hidden").unwrap();
+    assert!(store.list_overrides("hosted", "flask").unwrap().is_empty());
+    store
+        .put_override("hosted", "flask", "flask-1.0.whl", "yanked")
+        .unwrap();
+    store
+        .put_override("hosted", "flask", "flask-2.0.whl", "hidden")
+        .unwrap();
+    store.put_override("hosted", "other", "x.whl", "hidden").unwrap();
     assert_eq!(
-        store.list_overrides("local", "flask").unwrap(),
+        store.list_overrides("hosted", "flask").unwrap(),
         vec![
             ("flask-1.0.whl".to_owned(), "yanked".to_owned()),
             ("flask-2.0.whl".to_owned(), "hidden".to_owned())
         ]
     );
-    assert!(store.delete_override("local", "flask", "flask-1.0.whl").unwrap());
-    assert!(!store.delete_override("local", "flask", "flask-1.0.whl").unwrap());
+    assert!(store.delete_override("hosted", "flask", "flask-1.0.whl").unwrap());
+    assert!(!store.delete_override("hosted", "flask", "flask-1.0.whl").unwrap());
 }
 
 #[test]
 fn test_put_override_replaces_kind() {
     let (_dir, store) = store();
-    store.put_override("local", "flask", "flask-1.0.whl", "yanked").unwrap();
-    store.put_override("local", "flask", "flask-1.0.whl", "hidden").unwrap();
+    store
+        .put_override("hosted", "flask", "flask-1.0.whl", "yanked")
+        .unwrap();
+    store
+        .put_override("hosted", "flask", "flask-1.0.whl", "hidden")
+        .unwrap();
     assert_eq!(
-        store.list_overrides("local", "flask").unwrap(),
+        store.list_overrides("hosted", "flask").unwrap(),
         vec![("flask-1.0.whl".to_owned(), "hidden".to_owned())]
     );
 }
@@ -674,8 +682,10 @@ fn test_scan_store_error_reports_source() {
 #[test]
 fn test_scan_upload_and_override_records_visit_rows() {
     let (_dir, store) = store();
-    store.put_upload("local", "flask", "flask-1.0.whl", b"upload").unwrap();
-    store.put_override("local", "flask", "flask-1.0.whl", "hidden").unwrap();
+    store.put_upload("hosted", "flask", "flask-1.0.whl", b"upload").unwrap();
+    store
+        .put_override("hosted", "flask", "flask-1.0.whl", "hidden")
+        .unwrap();
 
     let mut uploads = Vec::new();
     store
@@ -686,7 +696,7 @@ fn test_scan_upload_and_override_records_visit_rows() {
         .unwrap();
     assert_eq!(
         uploads,
-        vec![("local/flask/flask-1.0.whl".to_owned(), b"upload".to_vec())]
+        vec![("hosted/flask/flask-1.0.whl".to_owned(), b"upload".to_vec())]
     );
 
     let mut overrides = Vec::new();
@@ -698,7 +708,7 @@ fn test_scan_upload_and_override_records_visit_rows() {
         .unwrap();
     assert_eq!(
         overrides,
-        vec![("local/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
+        vec![("hosted/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
     );
 }
 

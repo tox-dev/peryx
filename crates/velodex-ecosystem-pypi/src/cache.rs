@@ -235,10 +235,10 @@ async fn overlay_detail(
     Ok(Some(detail))
 }
 
-/// Apply the `hidden`/`yanked` overrides stored on `local` to a merged file list.
-fn apply_overrides(state: &AppState, local: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
+/// Apply the `hidden`/`yanked` overrides stored on `hosted` to a merged file list.
+fn apply_overrides(state: &AppState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
     let overrides: std::collections::HashMap<String, String> =
-        state.meta.list_overrides(local, project)?.into_iter().collect();
+        state.meta.list_overrides(hosted, project)?.into_iter().collect();
     if overrides.is_empty() {
         return Ok(());
     }
@@ -478,7 +478,7 @@ pub struct RefreshSummary {
 /// counted through the same events as the on-demand path.
 ///
 /// # Errors
-/// Returns [`CacheError`] when the local store fails; upstream failures do not error (a page with
+/// Returns [`CacheError`] when the hosted store fails; upstream failures do not error (a page with
 /// a cached copy serves stale and is retried next sweep).
 pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary, CacheError> {
     let now = (state.clock)();
@@ -733,7 +733,7 @@ fn known_metadata(state: &AppState, files: &[File]) -> Result<std::collections::
     Ok(state.meta.get_metadata_digests(artifact_sha256s)?)
 }
 
-/// Build a local (uploaded) project's detail from its stored file records. Yank markers are kept, so
+/// Build a hosted (uploaded) project's detail from its stored file records. Yank markers are kept, so
 /// yanked files stay downloadable but are skipped by resolvers.
 fn local_detail(state: &AppState, name: &str, project: &str) -> Result<Option<ProjectDetail>, CacheError> {
     let entries = state.meta.list_upload_entries(name, project)?;
@@ -803,7 +803,7 @@ async fn fetch_from_source(state: &AppState, source: &str, url: &str) -> Result<
     Ok(client.fetch_bytes(url).await?)
 }
 
-/// Resolve a file to a local blob path. A cache miss is fetched through the same streaming path as
+/// Resolve a file to a hosted blob path. A cache miss is fetched through the same streaming path as
 /// downloads, so the archive inspector never buffers the whole artifact in memory.
 ///
 /// # Errors
@@ -1134,10 +1134,10 @@ async fn zip_data_start(client: &UpstreamClient, url: &str, local_header_offset:
         .fetch_range(url, local_header_offset, local_header_offset + 29)
         .await?;
     if !header.starts_with(&ZIP_LOCAL_SIGNATURE) {
-        return Err(RangeError::Invalid("local file header signature mismatch".to_owned()));
+        return Err(RangeError::Invalid("hosted file header signature mismatch".to_owned()));
     }
-    let name_len = u64::from(read_u16(&header, 26).expect("fixed local header range is complete"));
-    let extra_len = u64::from(read_u16(&header, 28).expect("fixed local header range is complete"));
+    let name_len = u64::from(read_u16(&header, 26).expect("fixed hosted header range is complete"));
+    let extra_len = u64::from(read_u16(&header, 28).expect("fixed hosted header range is complete"));
     Ok(local_header_offset + 30 + name_len + extra_len)
 }
 
@@ -1227,7 +1227,7 @@ fn metadata_negative_key(artifact_digest: &Digest) -> String {
     format!("metadata\0{}", artifact_digest.as_str())
 }
 
-/// Persist a prepared upload into the local store `name`: commit the staged blob, record the file
+/// Persist a prepared upload into the hosted store `name`: commit the staged blob, record the file
 /// and its project, and bump the serial. Returns `false` for a same-bytes duplicate.
 ///
 /// # Errors
@@ -1240,10 +1240,10 @@ pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> R
     Ok(stored)
 }
 
-/// Copy one uploaded release from one local layer to another without touching blob bytes.
+/// Copy one uploaded release from one hosted layer to another without touching blob bytes.
 ///
 /// # Errors
-/// Returns [`CacheError::NoPromotableFiles`] when the source local layer has no matching upload,
+/// Returns [`CacheError::NoPromotableFiles`] when the source hosted layer has no matching upload,
 /// [`CacheError::FileExists`] when a target filename exists with different bytes, or another
 /// [`CacheError`] on metadata-store or decode failures.
 pub fn promote_release(
@@ -1305,28 +1305,28 @@ const HIDDEN: &str = "hidden";
 /// Set or clear the yank state of a project's files as served by `index`.
 ///
 /// Uploaded files get their stored record rewritten; read-only upstream files get a `yanked`
-/// override on `local`. Returns how many files changed.
+/// override on `hosted`. Returns how many files changed.
 ///
 /// # Errors
 /// Returns [`CacheError`] on a store, decode, or resolution failure.
 pub async fn set_yanked(
     state: &AppState,
     index: &Index,
-    local: &str,
+    hosted: &str,
     normalized: &str,
     version: Option<&str>,
     yanked: Yanked,
 ) -> Result<usize, CacheError> {
-    let uploaded = upload_filenames(state, local, normalized)?;
-    let mut changed = yank_uploads(state, local, normalized, version, &yanked)?;
+    let uploaded = upload_filenames(state, hosted, normalized)?;
+    let mut changed = yank_uploads(state, hosted, normalized, version, &yanked)?;
     for filename in served_filenames(state, index, normalized, version).await? {
         if uploaded.contains(&filename) {
             continue;
         }
         if let Some(value) = yank_override_value(&yanked)? {
-            state.meta.put_override(local, normalized, &filename, &value)?;
+            state.meta.put_override(hosted, normalized, &filename, &value)?;
             changed += 1;
-        } else if state.meta.delete_override(local, normalized, &filename)? {
+        } else if state.meta.delete_override(hosted, normalized, &filename)? {
             changed += 1;
         }
     }
@@ -1350,20 +1350,20 @@ fn yank_override_value(yanked: &Yanked) -> Result<Option<String>, CacheError> {
 /// Remove a project's files as served by `index`.
 ///
 /// Uploaded files are deleted outright (requires `volatile`); read-only upstream files get a
-/// reversible `hidden` override on `local`. Returns how many files were affected.
+/// reversible `hidden` override on `hosted`. Returns how many files were affected.
 ///
 /// # Errors
-/// Returns [`CacheError::NotVolatile`] when uploaded files match but the local store is not
+/// Returns [`CacheError::NotVolatile`] when uploaded files match but the hosted store is not
 /// volatile, or another [`CacheError`] on a store or resolution failure.
 pub async fn remove_files(
     state: &AppState,
     index: &Index,
-    local: &str,
+    hosted: &str,
     volatile: bool,
     normalized: &str,
     version: Option<&str>,
 ) -> Result<usize, CacheError> {
-    let uploaded = upload_filenames(state, local, normalized)?;
+    let uploaded = upload_filenames(state, hosted, normalized)?;
     let mut affected = 0;
     let mut matched_upload = false;
     for filename in served_filenames(state, index, normalized, version).await? {
@@ -1372,11 +1372,11 @@ pub async fn remove_files(
             if !volatile {
                 return Err(CacheError::NotVolatile);
             }
-            if state.meta.delete_upload(local, normalized, &filename)? {
+            if state.meta.delete_upload(hosted, normalized, &filename)? {
                 affected += 1;
             }
         } else {
-            state.meta.put_override(local, normalized, &filename, HIDDEN)?;
+            state.meta.put_override(hosted, normalized, &filename, HIDDEN)?;
             affected += 1;
         }
     }
@@ -1384,7 +1384,7 @@ pub async fn remove_files(
     // fall back to matching the version stored in the upload records. A project-level delete never
     // needs this: every upload is on the served page.
     if !matched_upload && let Some(version) = version {
-        affected += delete_uploads_of_version(state, local, normalized, version)?;
+        affected += delete_uploads_of_version(state, hosted, normalized, version)?;
     }
     if affected > 0 {
         state.bump_epoch();
@@ -1399,19 +1399,19 @@ pub async fn remove_files(
 /// Returns [`CacheError`] on a store failure.
 pub fn restore_files(
     state: &AppState,
-    local: &str,
+    hosted: &str,
     normalized: &str,
     version: Option<&str>,
 ) -> Result<usize, CacheError> {
     let mut restored = 0;
-    for (filename, kind) in state.meta.list_overrides(local, normalized)? {
+    for (filename, kind) in state.meta.list_overrides(hosted, normalized)? {
         if kind != HIDDEN {
             continue;
         }
         if version.is_some_and(|version| !file_matches_version(&filename, version)) {
             continue;
         }
-        if state.meta.delete_override(local, normalized, &filename)? {
+        if state.meta.delete_override(hosted, normalized, &filename)? {
             restored += 1;
         }
     }
@@ -1493,10 +1493,10 @@ async fn served_filenames(
         .collect())
 }
 
-fn upload_filenames(state: &AppState, local: &str, normalized: &str) -> Result<HashSet<String>, CacheError> {
+fn upload_filenames(state: &AppState, hosted: &str, normalized: &str) -> Result<HashSet<String>, CacheError> {
     Ok(state
         .meta
-        .list_upload_entries(local, normalized)?
+        .list_upload_entries(hosted, normalized)?
         .into_iter()
         .map(|(filename, _)| filename)
         .collect())
@@ -1833,7 +1833,7 @@ async fn buffer_html_page(
     Ok(record)
 }
 
-/// The streaming ingredients for an index: its single mirror layer with its client, plus the local
+/// The streaming ingredients for an index: its single mirror layer with its client, plus the hosted
 /// overlay context. `None` when the index has no mirror or more than one (the buffered path
 /// handles those).
 fn streaming_parts(

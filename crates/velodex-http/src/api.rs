@@ -63,7 +63,7 @@ pub fn openapi() -> OpenApi {
                         HttpBuilder::new()
                             .scheme(HttpAuthScheme::Basic)
                             .description(Some(
-                                "Any username; the password is the local index's `upload_token` \
+                                "Any username; the password is the hosted index's `upload_token` \
                                  (the pypi.org `__token__` convention)",
                             ))
                             .build(),
@@ -369,9 +369,9 @@ fn index_discovery() -> OperationBuilder {
                         "name": "root/pypi",
                         "route": "root/pypi",
                         "kind": "virtual",
-                        "layers": ["local", "pypi"],
+                        "layers": ["hosted", "pypi"],
                         "uploads": true,
-                        "upload_to": "local",
+                        "upload_to": "hosted",
                         "capabilities": {
                             "simple_html": true,
                             "simple_json": true,
@@ -1075,17 +1075,17 @@ fn status() -> OperationBuilder {
                             {"name": "pypi", "route": "pypi", "kind": "mirror", "layers": [],
                              "uploads": false, "volatile_deletes": false, "upload_to": null,
                              "upstream": {"url": "https://pypi.org/simple/", "auth": {"kind": "none", "redacted": null}, "status": "configured", "offline": false},
-                             "local": null, "project_count": 128, "upload_count": 0, "recent_uploads": []},
-                            {"name": "local", "route": "local", "kind": "local", "layers": [],
+                             "hosted": null, "project_count": 128, "upload_count": 0, "recent_uploads": []},
+                            {"name": "hosted", "route": "hosted", "kind": "hosted", "layers": [],
                              "uploads": true, "volatile_deletes": true, "upload_to": null, "upstream": null,
-                             "local": {"volatile": true, "upload_token": {"configured": true, "redacted": "<redacted>"}},
+                             "hosted": {"volatile": true, "upload_token": {"configured": true, "redacted": "<redacted>"}},
                              "project_count": 2, "upload_count": 4,
                              "recent_uploads": [{"project": "velodexpkg", "filename": "velodexpkg-1.0-py3-none-any.whl",
                                                 "version": "1.0", "uploaded_at": "2026-01-01T00:00:00Z", "size": 1832}]},
                             {"name": "root/pypi", "route": "root/pypi", "kind": "overlay",
-                             "layers": ["local", "pypi"], "uploads": true, "volatile_deletes": true,
-                             "upload_to": "local",
-                             "upstream": null, "local": null, "project_count": 0, "upload_count": 0,
+                             "layers": ["hosted", "pypi"], "uploads": true, "volatile_deletes": true,
+                             "upload_to": "hosted",
+                             "upstream": null, "hosted": null, "project_count": 0, "upload_count": 0,
                              "recent_uploads": []}
                         ]
                     })))

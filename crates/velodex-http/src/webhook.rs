@@ -211,7 +211,7 @@ pub struct WebhookEvent {
     pub created_at_unix: i64,
     pub index: String,
     pub route: String,
-    pub local_index: String,
+    pub hosted_index: String,
     pub project: String,
     pub version: Option<String>,
     pub filename: Option<String>,
@@ -228,7 +228,7 @@ impl WebhookEvent {
             created_at: self.created_at_unix,
             index: &self.index,
             route: &self.route,
-            local_index: &self.local_index,
+            hosted_index: &self.hosted_index,
             project: &self.project,
             version: self.version.as_deref(),
             file: self.filename.as_deref().map(|filename| WebhookFile {
@@ -248,7 +248,7 @@ struct WebhookPayload<'a> {
     created_at: i64,
     index: &'a str,
     route: &'a str,
-    local_index: &'a str,
+    hosted_index: &'a str,
     project: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<&'a str>,
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn test_runtime_matches_all_events_when_no_filter_is_set() {
         let runtime = WebhookRuntime::new(vec![WebhookTargetConfig {
-            index: "local".to_owned(),
+            index: "hosted".to_owned(),
             name: "ci".to_owned(),
             url: "https://ci.example/hook".to_owned(),
             secret: "secret".to_owned(),
@@ -630,8 +630,8 @@ mod tests {
         }])
         .unwrap();
 
-        assert_eq!(runtime.target_names("local", WebhookEventKind::Upload), ["ci"]);
-        assert_eq!(runtime.target_names("local", WebhookEventKind::Management), ["ci"]);
+        assert_eq!(runtime.target_names("hosted", WebhookEventKind::Upload), ["ci"]);
+        assert_eq!(runtime.target_names("hosted", WebhookEventKind::Management), ["ci"]);
         assert!(runtime.target_names("other", WebhookEventKind::Upload).is_empty());
     }
 
@@ -639,7 +639,7 @@ mod tests {
     fn test_runtime_rejects_invalid_target_config() {
         assert!(matches!(
             WebhookRuntime::new(vec![WebhookTargetConfig {
-                index: "local".to_owned(),
+                index: "hosted".to_owned(),
                 name: String::new(),
                 url: "https://ci.example/hook".to_owned(),
                 secret: "secret".to_owned(),
@@ -649,7 +649,7 @@ mod tests {
         ));
         assert!(matches!(
             WebhookRuntime::new(vec![WebhookTargetConfig {
-                index: "local".to_owned(),
+                index: "hosted".to_owned(),
                 name: "ci".to_owned(),
                 url: "https://ci.example/hook".to_owned(),
                 secret: String::new(),
@@ -660,14 +660,14 @@ mod tests {
         assert!(matches!(
             WebhookRuntime::new(vec![
                 WebhookTargetConfig {
-                    index: "local".to_owned(),
+                    index: "hosted".to_owned(),
                     name: "ci".to_owned(),
                     url: "https://ci.example/hook".to_owned(),
                     secret: "secret".to_owned(),
                     events: Vec::new(),
                 },
                 WebhookTargetConfig {
-                    index: "local".to_owned(),
+                    index: "hosted".to_owned(),
                     name: "ci".to_owned(),
                     url: "https://ci.example/other".to_owned(),
                     secret: "secret".to_owned(),
@@ -678,7 +678,7 @@ mod tests {
         ));
         assert!(matches!(
             WebhookRuntime::new(vec![WebhookTargetConfig {
-                index: "local".to_owned(),
+                index: "hosted".to_owned(),
                 name: "ci".to_owned(),
                 url: "not a url".to_owned(),
                 secret: "secret".to_owned(),
@@ -688,7 +688,7 @@ mod tests {
         ));
         assert!(matches!(
             WebhookRuntime::new(vec![WebhookTargetConfig {
-                index: "local".to_owned(),
+                index: "hosted".to_owned(),
                 name: "ci".to_owned(),
                 url: "https://ci.example/hook?token=secret".to_owned(),
                 secret: "secret".to_owned(),
@@ -702,7 +702,7 @@ mod tests {
     fn test_runtime_rejects_unknown_event() {
         assert!(matches!(
             WebhookRuntime::new(vec![WebhookTargetConfig {
-                index: "local".to_owned(),
+                index: "hosted".to_owned(),
                 name: "ci".to_owned(),
                 url: "https://ci.example/hook".to_owned(),
                 secret: "secret".to_owned(),
@@ -718,9 +718,9 @@ mod tests {
         let event = WebhookEvent {
             kind: WebhookEventKind::Upload,
             created_at_unix: 1,
-            index: "local".to_owned(),
-            route: "local".to_owned(),
-            local_index: "local".to_owned(),
+            index: "hosted".to_owned(),
+            route: "hosted".to_owned(),
+            hosted_index: "hosted".to_owned(),
             project: "demo".to_owned(),
             version: None,
             filename: None,
@@ -741,7 +741,7 @@ mod tests {
 
         let record = WebhookDeliveryRecord {
             id: "wd_1".to_owned(),
-            index: "local".to_owned(),
+            index: "hosted".to_owned(),
             target: "ci".to_owned(),
             event: "upload".to_owned(),
             payload: "{}".to_owned(),

@@ -35,7 +35,7 @@ impl Harness {
         let clock = Arc::new(AtomicI64::new(1000));
         let ticks = clock.clone();
         let webhooks = WebhookRuntime::new(vec![WebhookTargetConfig {
-            index: "local".to_owned(),
+            index: "hosted".to_owned(),
             name: "ci".to_owned(),
             url,
             secret: SECRET.to_owned(),
@@ -47,8 +47,8 @@ impl Harness {
             blobs,
             60,
             vec![Index {
-                name: "local".to_owned(),
-                route: "local".to_owned(),
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
                     upload_token: Some("s3cret".to_owned()),
@@ -217,7 +217,7 @@ async fn test_upload_webhook_is_signed_and_skips_duplicate_upload() {
     let h = Harness::new(sink.url.clone(), &["upload"]);
     let wheel = fixture_wheel();
 
-    assert_eq!(upload_velodexpkg(&h.state, "/local/", &wheel).await, StatusCode::OK);
+    assert_eq!(upload_velodexpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
 
     let request = sink.wait_for_requests(1).await.remove(0);
     let delivery = wait_for_delivery(&h.state, WebhookDeliveryStatus::Delivered, 1).await;
@@ -228,9 +228,9 @@ async fn test_upload_webhook_is_signed_and_skips_duplicate_upload() {
         json!({
             "event": "upload",
             "created_at": 1000,
-            "index": "local",
-            "route": "local",
-            "local_index": "local",
+            "index": "hosted",
+            "route": "hosted",
+            "hosted_index": "hosted",
             "project": "velodexpkg",
             "version": "1.0",
             "file": {
@@ -242,7 +242,7 @@ async fn test_upload_webhook_is_signed_and_skips_duplicate_upload() {
         })
     );
 
-    assert_eq!(upload_velodexpkg(&h.state, "/local/", &wheel).await, StatusCode::OK);
+    assert_eq!(upload_velodexpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(sink.request_count(), 1);
     assert_eq!(h.state.meta.list_webhook_deliveries().unwrap().len(), 1);
@@ -269,7 +269,7 @@ async fn test_webhook_worker_wakes_after_idle() {
     let h = Harness::new(sink.url.clone(), &["upload"]);
 
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
     sink.wait_for_requests(1).await;
@@ -280,7 +280,7 @@ async fn test_webhook_worker_wakes_after_idle() {
         .state
         .meta
         .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "local",
+            index: "hosted",
             target: "ci",
             event: "upload",
             payload: r#"{"event":"upload"}"#,
@@ -301,7 +301,7 @@ async fn test_webhook_delivery_retries_failed_request() {
     let h = Harness::new(sink.url.clone(), &["upload"]);
 
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
 
@@ -326,7 +326,7 @@ async fn test_webhook_delivery_marks_terminal_failure() {
     let h = Harness::new(sink.url.clone(), &["upload"]);
 
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
 
@@ -352,7 +352,7 @@ async fn test_webhook_delivery_records_request_error() {
     let h = Harness::new(closed_url().await, &["upload"]);
 
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
 
@@ -370,7 +370,7 @@ async fn test_webhook_delivery_records_removed_target() {
         .state
         .meta
         .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "local",
+            index: "hosted",
             target: "removed",
             event: "upload",
             payload: r#"{"event":"upload"}"#,
@@ -394,12 +394,12 @@ async fn test_delete_webhook_emits_index_change() {
     let h = Harness::new(sink.url.clone(), &["delete"]);
 
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
     assert_eq!(sink.request_count(), 0);
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/", Some(&upload_auth())).await,
         StatusCode::OK
     );
 
@@ -412,9 +412,9 @@ async fn test_delete_webhook_emits_index_change() {
         json!({
             "event": "delete",
             "created_at": 1000,
-            "index": "local",
-            "route": "local",
-            "local_index": "local",
+            "index": "hosted",
+            "route": "hosted",
+            "hosted_index": "hosted",
             "project": "velodexpkg",
             "count": 1,
             "actor": "__token__",
@@ -440,7 +440,7 @@ async fn upload_with_request_id(state: &Arc<AppState>, wheel: &[u8], request_id:
     ];
     let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0-py3-none-any.whl", wheel)));
     let mut request = axum::http::Request::builder()
-        .uri("/local/")
+        .uri("/hosted/")
         .method("POST")
         .header(header::CONTENT_TYPE, content_type)
         .header(header::AUTHORIZATION, upload_auth())

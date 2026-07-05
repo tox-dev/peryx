@@ -232,9 +232,9 @@ fn empty_detail(normalized: &str) -> ProjectDetail {
     }
 }
 
-fn apply_overrides(state: &AppState, local: &str, normalized: &str, files: &mut Vec<File>) -> Result<(), SearchError> {
+fn apply_overrides(state: &AppState, hosted: &str, normalized: &str, files: &mut Vec<File>) -> Result<(), SearchError> {
     let overrides: std::collections::HashMap<String, String> =
-        state.meta.list_overrides(local, normalized)?.into_iter().collect();
+        state.meta.list_overrides(hosted, normalized)?.into_iter().collect();
     if overrides.is_empty() {
         return Ok(());
     }

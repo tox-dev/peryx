@@ -176,12 +176,12 @@ pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<Stat
                     }))),
                 ),
                 (
-                    "local".to_owned(),
-                    serde_json::json!(index.local.map(|local| serde_json::json!({
-                        "volatile": local.volatile,
+                    "hosted".to_owned(),
+                    serde_json::json!(index.hosted.map(|hosted| serde_json::json!({
+                        "volatile": hosted.volatile,
                         "upload_token": {
-                            "configured": local.upload_token.configured,
-                            "redacted": local.upload_token.redacted,
+                            "configured": hosted.upload_token.configured,
+                            "redacted": hosted.upload_token.redacted,
                         },
                     }))),
                 ),
@@ -304,7 +304,7 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
     let _ = writeln!(
         body,
-        "# HELP velodex_rate_limit_allowed_total HTTP requests allowed by the local rate limiter.\n\
+        "# HELP velodex_rate_limit_allowed_total HTTP requests allowed by the hosted rate limiter.\n\
          # TYPE velodex_rate_limit_allowed_total counter"
     );
     for counter in state.rate_limits.counters() {
@@ -316,7 +316,7 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
     }
     let _ = writeln!(
         body,
-        "# HELP velodex_rate_limit_denied_total HTTP requests denied by the local rate limiter.\n\
+        "# HELP velodex_rate_limit_denied_total HTTP requests denied by the hosted rate limiter.\n\
          # TYPE velodex_rate_limit_denied_total counter"
     );
     for counter in state.rate_limits.counters() {
@@ -328,7 +328,7 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
     }
     let _ = writeln!(
         body,
-        "# HELP velodex_upstream_rate_limit_denied_total Upstream fetches denied by the local concurrency cap.\n\
+        "# HELP velodex_upstream_rate_limit_denied_total Upstream fetches denied by the hosted concurrency cap.\n\
          # TYPE velodex_upstream_rate_limit_denied_total counter"
     );
     for counter in state.upstream_limits.snapshots() {
@@ -340,7 +340,7 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
     }
     let _ = writeln!(
         body,
-        "# HELP velodex_upstream_inflight_fetches Current upstream fetches held by the local concurrency cap.\n\
+        "# HELP velodex_upstream_inflight_fetches Current upstream fetches held by the hosted concurrency cap.\n\
          # TYPE velodex_upstream_inflight_fetches gauge"
     );
     for counter in state.upstream_limits.snapshots() {

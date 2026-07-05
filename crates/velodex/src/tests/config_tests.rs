@@ -25,10 +25,10 @@ fn test_default_config() {
     assert_eq!(c.rate_limit, RateLimitConfig::default());
     // A pypi mirror with a local store overlaid in front, served at root/pypi.
     let routes: Vec<&str> = c.indexes.iter().map(|index| index.route.as_str()).collect();
-    assert_eq!(routes, ["pypi", "local", "root/pypi"]);
+    assert_eq!(routes, ["pypi", "hosted", "root/pypi"]);
     assert!(matches!(&c.indexes[0].kind, IndexKind::Cached { .. }));
     assert!(matches!(&c.indexes[1].kind, IndexKind::Hosted { .. }));
-    assert!(matches!(&c.indexes[2].kind, IndexKind::Virtual { upload: Some(target), .. } if target == "local"));
+    assert!(matches!(&c.indexes[2].kind, IndexKind::Virtual { upload: Some(target), .. } if target == "hosted"));
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn test_index_without_kind_is_error() {
 #[test]
 fn test_index_webhook_accepts_literal_secret() {
     let text = "\
-[[index]]\nname = \"local\"\nhosted = true\n\
+[[index]]\nname = \"hosted\"\nhosted = true\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"signing-secret\"\n";
     let c = toml_config(text);
     assert_eq!(
@@ -235,7 +235,7 @@ fn test_index_webhook_accepts_literal_secret() {
 #[test]
 fn test_index_webhook_rejects_ambiguous_secret_source() {
     let text = "\
-[[index]]\nname = \"local\"\nhosted = true\n\
+[[index]]\nname = \"hosted\"\nhosted = true\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\nsecret_env = \"S\"\n";
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     let err = Config::default().apply(partial).unwrap_err();
@@ -245,7 +245,7 @@ fn test_index_webhook_rejects_ambiguous_secret_source() {
 #[test]
 fn test_index_webhook_rejects_empty_name() {
     let text = "\
-[[index]]\nname = \"local\"\nhosted = true\n\
+[[index]]\nname = \"hosted\"\nhosted = true\n\
 [[index.webhook]]\nname = \"\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\n";
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     let err = Config::default().apply(partial).unwrap_err();
@@ -255,7 +255,7 @@ fn test_index_webhook_rejects_empty_name() {
 #[test]
 fn test_index_webhook_rejects_empty_url() {
     let text = "\
-[[index]]\nname = \"local\"\nhosted = true\n\
+[[index]]\nname = \"hosted\"\nhosted = true\n\
 [[index.webhook]]\nname = \"ci\"\nurl = \"\"\nsecret = \"s\"\n";
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
     let err = Config::default().apply(partial).unwrap_err();

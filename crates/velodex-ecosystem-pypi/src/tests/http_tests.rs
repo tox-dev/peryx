@@ -66,8 +66,8 @@ pub(super) async fn harness_with_policies(
             policy: mirror_policy,
         },
         Index {
-            name: "local".to_owned(),
-            route: "local".to_owned(),
+            name: "hosted".to_owned(),
+            route: "hosted".to_owned(),
             policy: local_policy,
             ecosystem: velodex_format::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
@@ -1332,7 +1332,7 @@ async fn test_file_download_rejects_encoded_path_filename() {
 async fn test_file_download_allows_literal_percent_filename() {
     let h = harness().await;
     let digest = put_local_file(&h.state, "velodexpkg%2F.whl", b"PKpercent", "1.0");
-    let uri = format!("/local/files/{}/velodexpkg%252F.whl", digest.as_str());
+    let uri = format!("/hosted/files/{}/velodexpkg%252F.whl", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, "PKpercent");
@@ -2069,14 +2069,14 @@ async fn test_security_logs_upload_success_without_token_secret() {
         field(event, "action") == Some("token_use")
             && field(event, "result") == Some("success")
             && field(event, "actor") == Some("__token__")
-            && field(event, "index") == Some("local")
+            && field(event, "index") == Some("hosted")
     }));
     let upload = events
         .iter()
         .find(|event| field(event, "action") == Some("upload") && field(event, "result") == Some("success"))
         .unwrap();
     assert_eq!(field(upload, "index"), Some("root/pypi"));
-    assert_eq!(field(upload, "local_index"), Some("local"));
+    assert_eq!(field(upload, "hosted_index"), Some("hosted"));
     assert_eq!(field(upload, "project"), Some("velodexpkg"));
     assert_eq!(field(upload, "version"), Some("1.0"));
     assert_eq!(field(upload, "filename"), Some("velodexpkg-1.0-py3-none-any.whl"));
@@ -2107,7 +2107,7 @@ async fn test_security_logs_invalid_token_without_secret() {
         .find(|event| field(event, "action") == Some("token_use") && field(event, "result") == Some("denied"))
         .unwrap();
     assert_eq!(field(token, "actor"), Some("alice"));
-    assert_eq!(field(token, "index"), Some("local"));
+    assert_eq!(field(token, "index"), Some("hosted"));
     assert_eq!(field(token, "reason"), Some("invalid upload token"));
 }
 
@@ -2172,8 +2172,8 @@ async fn test_overlay_tolerates_unavailable_layer() {
             policy: Policy::default(),
         },
         Index {
-            name: "local".to_owned(),
-            route: "local".to_owned(),
+            name: "hosted".to_owned(),
+            route: "hosted".to_owned(),
             policy: Policy::default(),
             ecosystem: velodex_format::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
@@ -2204,10 +2204,10 @@ async fn test_overlay_tolerates_unavailable_layer() {
 async fn test_upload_direct_to_local_route() {
     let h = harness().await;
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
-    let (status, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (status, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(detail.contains("velodexpkg"));
 }
@@ -2224,16 +2224,16 @@ async fn test_upload_sdist_gains_metadata_sibling() {
     ];
     let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0.tar.gz", &sdist)));
     assert_eq!(
-        post_upload(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await,
+        post_upload(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await,
         StatusCode::OK
     );
 
     let digest = Digest::of(&sdist);
-    let (_, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (_, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert!(detail.contains("\"core-metadata\":{\"sha256\""));
     let (status, _, body) = get(
         &h.state,
-        &format!("/local/files/{}/velodexpkg-1.0.tar.gz.metadata", digest.as_str()),
+        &format!("/hosted/files/{}/velodexpkg-1.0.tar.gz.metadata", digest.as_str()),
         None,
     )
     .await;
@@ -2252,7 +2252,7 @@ async fn test_upload_sdist_missing_pkg_info_is_bad_request() {
         ("filetype", "sdist"),
     ];
     let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0.tar.gz", &sdist)));
-    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("uploaded content does not match the filename format: invalid sdist: missing required"));
@@ -2262,10 +2262,10 @@ async fn test_upload_sdist_missing_pkg_info_is_bad_request() {
 async fn test_upload_same_file_is_idempotent() {
     let h = harness().await;
     let wheel = fixture_wheel();
-    assert_eq!(upload_velodexpkg(&h.state, "/local/", &wheel).await, StatusCode::OK);
-    assert_eq!(upload_velodexpkg(&h.state, "/local/", &wheel).await, StatusCode::OK);
+    assert_eq!(upload_velodexpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
+    assert_eq!(upload_velodexpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
 
-    let (status, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (status, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail["files"].as_array().unwrap().len(), 1);
@@ -2275,13 +2275,13 @@ async fn test_upload_same_file_is_idempotent() {
 async fn test_upload_same_filename_with_different_bytes_is_bad_request() {
     let h = harness().await;
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await,
+        upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await,
         StatusCode::OK
     );
     let wheel = fixture_wheel_with_body("1.0", b"VALUE = 2\n");
     let (ct, body) = multipart_body(&upload_fields(), Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
 
-    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &ct, body).await;
+    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &ct, body).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -2301,7 +2301,7 @@ async fn test_upload_duplicate_content_field_is_bad_request() {
             ("velodexpkg-1.0-py3-none-any.whl", &wheel),
         ],
     );
-    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, "bad upload: duplicate content field");
@@ -2326,7 +2326,7 @@ async fn test_upload_unknown_route_is_not_found() {
 async fn test_upload_to_subpath_is_not_found() {
     let h = harness().await;
     assert_eq!(
-        upload_velodexpkg(&h.state, "/local/simple/", b"x").await,
+        upload_velodexpkg(&h.state, "/hosted/simple/", b"x").await,
         StatusCode::NOT_FOUND
     );
 }
@@ -2646,7 +2646,7 @@ async fn test_upload_metadata_form_fields_are_validated() {
     );
     let (content_type, body) = multipart_body(&fields, Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
     assert_eq!(
-        post_upload(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await,
+        post_upload(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await,
         StatusCode::OK
     );
 
@@ -2797,8 +2797,8 @@ async fn test_upload_storage_failure_is_server_error() {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let indexes = vec![Index {
-        name: "local".to_owned(),
-        route: "local".to_owned(),
+        name: "hosted".to_owned(),
+        route: "hosted".to_owned(),
         policy: Policy::default(),
         ecosystem: velodex_format::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
@@ -2808,7 +2808,7 @@ async fn test_upload_storage_failure_is_server_error() {
     }];
     let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     assert_eq!(
-        upload_velodexpkg(&state, "/local/", b"data").await,
+        upload_velodexpkg(&state, "/hosted/", b"data").await,
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }
@@ -2818,15 +2818,15 @@ async fn test_upload_corrupt_existing_record_is_server_error() {
     let h = harness().await;
     h.state
         .meta
-        .put_upload("local", "velodexpkg", "velodexpkg-1.0-py3-none-any.whl", b"not-json")
+        .put_upload("hosted", "velodexpkg", "velodexpkg-1.0-py3-none-any.whl", b"not-json")
         .unwrap();
     let wheel = fixture_wheel();
     let (content_type, body) = multipart_body(&upload_fields(), Some(("velodexpkg-1.0-py3-none-any.whl", &wheel)));
 
-    let (status, body) = post_upload_response(&h.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(body.contains("upload storage on index \"local\" for project \"velodexpkg\""));
+    assert!(body.contains("upload storage on index \"hosted\" for project \"velodexpkg\""));
     assert!(body.contains("simple API document could not be parsed"));
 }
 
@@ -2875,30 +2875,30 @@ async fn test_yank_and_unyank_and_delete() {
 #[tokio::test]
 async fn test_delete_specific_version() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
+    upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await;
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/1.0/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/1.0/", Some(&upload_auth())).await,
         StatusCode::OK
     );
-    let (status, ..) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (status, ..) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn test_admin_routes_decode_safe_project_and_version_segments() {
     let h = harness().await;
-    upload_version(&h.state, "/local/", "1.0+local", b"PKlocal").await;
+    upload_version(&h.state, "/hosted/", "1.0+local", b"PKlocal").await;
     assert_eq!(
         request(
             &h.state,
             "DELETE",
-            "/local/velodexpkg/1.0%2Blocal/",
+            "/hosted/velodexpkg/1.0%2Blocal/",
             Some(&upload_auth())
         )
         .await,
         StatusCode::OK
     );
-    let (status, ..) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (status, ..) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -2906,31 +2906,43 @@ async fn test_admin_routes_decode_safe_project_and_version_segments() {
 async fn test_admin_routes_reject_decoded_separators() {
     let h = harness().await;
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velo%2Fdexpkg/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velo%2Fdexpkg/", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/1.0%2Fbad/", Some(&upload_auth())).await,
+        request(
+            &h.state,
+            "DELETE",
+            "/hosted/velodexpkg/1.0%2Fbad/",
+            Some(&upload_auth())
+        )
+        .await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velo%xxdexpkg/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velo%xxdexpkg/", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/1.0%xxbad/", Some(&upload_auth())).await,
+        request(
+            &h.state,
+            "DELETE",
+            "/hosted/velodexpkg/1.0%xxbad/",
+            Some(&upload_auth())
+        )
+        .await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(&h.state, "PUT", "/local/velo%2Fdexpkg/yank", Some(&upload_auth())).await,
+        request(&h.state, "PUT", "/hosted/velo%2Fdexpkg/yank", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(&h.state, "PUT", "/local/velo%2Fdexpkg/restore", Some(&upload_auth())).await,
+        request(&h.state, "PUT", "/hosted/velo%2Fdexpkg/restore", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velo%2Fdexpkg/yank", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velo%2Fdexpkg/yank", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
 }
@@ -2939,7 +2951,7 @@ async fn test_admin_routes_reject_decoded_separators() {
 async fn test_delete_nonexistent_is_not_found() {
     let h = harness().await;
     assert_eq!(
-        request(&h.state, "DELETE", "/local/ghost/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/ghost/", Some(&upload_auth())).await,
         StatusCode::NOT_FOUND
     );
 }
@@ -2947,9 +2959,9 @@ async fn test_delete_nonexistent_is_not_found() {
 #[tokio::test]
 async fn test_delete_requires_auth() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
+    upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await;
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/", None).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/", None).await,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -2957,8 +2969,8 @@ async fn test_delete_requires_auth() {
 #[tokio::test]
 async fn test_delete_on_non_volatile_is_forbidden() {
     let h = harness_with(true, false).await;
-    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
-    let (status, body) = request_response(&h.state, "DELETE", "/local/velodexpkg/", Some(&upload_auth())).await;
+    upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await;
+    let (status, body) = request_response(&h.state, "DELETE", "/hosted/velodexpkg/", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body, "file removal: index is not volatile; delete is disabled");
 }
@@ -2966,12 +2978,12 @@ async fn test_delete_on_non_volatile_is_forbidden() {
 #[tokio::test(flavor = "current_thread")]
 async fn test_security_logs_delete_policy_denial() {
     let h = harness_with(true, false).await;
-    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
+    upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await;
     let logs = LogCapture::default();
     let guard = logs.install();
 
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/", Some(&upload_auth())).await,
         StatusCode::FORBIDDEN
     );
 
@@ -2982,8 +2994,8 @@ async fn test_security_logs_delete_policy_denial() {
         .find(|event| field(event, "action") == Some("delete") && field(event, "result") == Some("denied"))
         .unwrap();
     assert_eq!(field(delete, "actor"), Some("__token__"));
-    assert_eq!(field(delete, "index"), Some("local"));
-    assert_eq!(field(delete, "local_index"), Some("local"));
+    assert_eq!(field(delete, "index"), Some("hosted"));
+    assert_eq!(field(delete, "hosted_index"), Some("hosted"));
     assert_eq!(field(delete, "project"), Some("velodexpkg"));
     assert_eq!(
         field(delete, "reason"),
@@ -3004,7 +3016,7 @@ async fn test_delete_on_mirror_route_is_method_not_allowed() {
 async fn test_put_without_yank_suffix_is_not_found() {
     let h = harness().await;
     assert_eq!(
-        request(&h.state, "PUT", "/local/velodexpkg/1.0/", Some(&upload_auth())).await,
+        request(&h.state, "PUT", "/hosted/velodexpkg/1.0/", Some(&upload_auth())).await,
         StatusCode::NOT_FOUND
     );
 }
@@ -3013,7 +3025,7 @@ async fn test_put_without_yank_suffix_is_not_found() {
 async fn test_put_suffix_inside_segment_is_not_an_action() {
     let h = harness().await;
     assert_eq!(
-        request(&h.state, "PUT", "/local/velodexpkg/1.0/notyank", Some(&upload_auth())).await,
+        request(&h.state, "PUT", "/hosted/velodexpkg/1.0/notyank", Some(&upload_auth())).await,
         StatusCode::NOT_FOUND
     );
 }
@@ -3119,8 +3131,8 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             policy: Policy::default(),
         },
         Index {
-            name: "local".to_owned(),
-            route: "local".to_owned(),
+            name: "hosted".to_owned(),
+            route: "hosted".to_owned(),
             policy: Policy::default(),
             ecosystem: velodex_format::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
@@ -3165,7 +3177,7 @@ async fn test_metrics_exposes_per_index_counters() {
     }
     // A second route makes the exposition ordering observable.
     h.state.metrics.record(velodex_http::metrics::Event::Page {
-        route: "local".to_owned(),
+        route: "hosted".to_owned(),
         project: "veloxpkg".to_owned(),
     });
     for _ in 0..500 {
@@ -3176,7 +3188,7 @@ async fn test_metrics_exposes_per_index_counters() {
     }
     let (status, _, body) = get(&h.state, "/metrics", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("velodex_index_pages_total{index=\"local\"} 1"));
+    assert!(body.contains("velodex_index_pages_total{index=\"hosted\"} 1"));
     assert!(body.contains("velodex_index_pages_total{index=\"pypi\"} 1"));
     assert!(body.contains("velodex_index_refreshes_total{index=\"pypi\"} 0"));
     assert!(body.contains("velodex_index_rejected_total{index=\"pypi\"} 0"));
@@ -3244,7 +3256,7 @@ async fn test_file_source_not_a_mirror_is_not_found() {
     let digest = Digest::of(b"orphan");
     h.state
         .meta
-        .put_file_url(digest.as_str(), "http://x/orphan.whl", "local")
+        .put_file_url(digest.as_str(), "http://x/orphan.whl", "hosted")
         .unwrap();
     let uri = format!("/pypi/files/{}/orphan.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
@@ -3288,13 +3300,13 @@ async fn test_file_digest_mismatch_fails_the_body_and_never_persists() {
 #[tokio::test]
 async fn test_delete_one_of_two_versions() {
     let h = harness().await;
-    upload_version(&h.state, "/local/", "1.0", b"PKv1").await;
-    upload_version(&h.state, "/local/", "2.0", b"PKv2").await;
+    upload_version(&h.state, "/hosted/", "1.0", b"PKv1").await;
+    upload_version(&h.state, "/hosted/", "2.0", b"PKv2").await;
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/1.0/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/1.0/", Some(&upload_auth())).await,
         StatusCode::OK
     );
-    let (_, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (_, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert!(detail.contains("2.0"));
     assert!(!detail.contains("velodexpkg-1.0"));
 }
@@ -3302,13 +3314,13 @@ async fn test_delete_one_of_two_versions() {
 #[tokio::test]
 async fn test_yank_one_of_two_versions() {
     let h = harness().await;
-    upload_version(&h.state, "/local/", "1.0", b"PKv1").await;
-    upload_version(&h.state, "/local/", "2.0", b"PKv2").await;
+    upload_version(&h.state, "/hosted/", "1.0", b"PKv1").await;
+    upload_version(&h.state, "/hosted/", "2.0", b"PKv2").await;
     assert_eq!(
-        request(&h.state, "PUT", "/local/velodexpkg/1.0/yank", Some(&upload_auth())).await,
+        request(&h.state, "PUT", "/hosted/velodexpkg/1.0/yank", Some(&upload_auth())).await,
         StatusCode::OK
     );
-    let (_, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (_, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     // Only the 1.0 file carries the yank marker.
     assert_eq!(detail.matches("\"yanked\":true").count(), 1);
 }
@@ -3337,8 +3349,8 @@ async fn test_get_route_without_trailing_slash_is_not_found() {
 #[tokio::test]
 async fn test_project_list_html() {
     let h = harness().await;
-    upload_velodexpkg(&h.state, "/local/", &fixture_wheel()).await;
-    let (status, headers, body) = get(&h.state, "/local/simple/", Some("text/html")).await;
+    upload_velodexpkg(&h.state, "/hosted/", &fixture_wheel()).await;
+    let (status, headers, body) = get(&h.state, "/hosted/simple/", Some("text/html")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
     assert!(body.contains("velodexpkg"));
@@ -3349,10 +3361,10 @@ async fn test_removal_storage_error_is_server_error() {
     let h = harness().await;
     h.state
         .meta
-        .put_upload("local", "velodexpkg", "velodexpkg-1.0.whl", b"{ not json")
+        .put_upload("hosted", "velodexpkg", "velodexpkg-1.0.whl", b"{ not json")
         .unwrap();
     // A versioned delete must decode each record to filter, so the corrupt record errors.
-    let status = request(&h.state, "DELETE", "/local/velodexpkg/1.0/", Some(&upload_auth())).await;
+    let status = request(&h.state, "DELETE", "/hosted/velodexpkg/1.0/", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -4110,7 +4122,7 @@ fn record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {
 }
 
 async fn upload_wheel(state: &Arc<AppState>, filename: &str, bytes: &[u8]) -> Digest {
-    upload_wheel_to(state, "/local/", filename, "1.0", bytes).await
+    upload_wheel_to(state, "/hosted/", filename, "1.0", bytes).await
 }
 
 async fn upload_wheel_to(state: &Arc<AppState>, uri: &str, filename: &str, version: &str, bytes: &[u8]) -> Digest {
@@ -4171,15 +4183,15 @@ fn put_local_file(state: &AppState, filename: &str, bytes: &[u8], version: &str)
     let uploaded = upload_record(
         filename,
         version,
-        local_file_url("local", digest.as_str(), filename),
+        local_file_url("hosted", digest.as_str(), filename),
         BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
         Some(bytes.len() as u64),
     );
     state
         .meta
-        .put_upload("local", "velodexpkg", filename, &to_json(&uploaded).into_bytes())
+        .put_upload("hosted", "velodexpkg", filename, &to_json(&uploaded).into_bytes())
         .unwrap();
-    state.meta.put_project("local", "velodexpkg", "velodexpkg").unwrap();
+    state.meta.put_project("hosted", "velodexpkg", "velodexpkg").unwrap();
     digest
 }
 
@@ -4187,7 +4199,7 @@ fn put_local_file(state: &AppState, filename: &str, bytes: &[u8], version: &str)
 async fn test_inspect_lists_wheel_members() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
-    let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
+    let uri = format!("/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::OK);
     let listing: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -4213,7 +4225,7 @@ async fn test_inspect_reads_member_content() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
     let uri = format!(
-        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl/velodexpkg-1.0.dist-info/METADATA",
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl/velodexpkg-1.0.dist-info/METADATA",
         digest.as_str()
     );
     let (status, headers, body) = get(&h.state, &uri, None).await;
@@ -4227,7 +4239,7 @@ async fn test_inspect_reads_query_member_content() {
     let h = harness().await;
     let digest = put_local_file(&h.state, "velodexpkg 1.0#x?.whl", &fixture_wheel(), "1.0");
     let uri = format!(
-        "/local/inspect/{}/velodexpkg%201.0%23x%3F.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
+        "/hosted/inspect/{}/velodexpkg%201.0%23x%3F.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
         digest.as_str()
     );
     let (status, headers, body) = get(&h.state, &uri, None).await;
@@ -4241,7 +4253,7 @@ async fn test_inspect_query_without_member_lists_archive() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
     let uri = format!(
-        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?ignored=1",
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl?ignored=1",
         digest.as_str()
     );
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -4253,7 +4265,10 @@ async fn test_inspect_query_without_member_lists_archive() {
 async fn test_inspect_legacy_member_rejects_invalid_encoding() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
-    let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl/%FF", digest.as_str());
+    let uri = format!(
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl/%FF",
+        digest.as_str()
+    );
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("invalid percent-encoded path segment"));
@@ -4264,7 +4279,7 @@ async fn test_inspect_missing_member_is_not_found() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
     let uri = format!(
-        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl/nope.py",
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl/nope.py",
         digest.as_str()
     );
     let (status, ..) = get(&h.state, &uri, None).await;
@@ -4276,7 +4291,7 @@ async fn test_inspect_rejects_bad_member_chunk_parameters() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
     let uri = format!(
-        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl?member=velodexpkg-1.0.dist-info%2FMETADATA",
         digest.as_str()
     );
 
@@ -4306,7 +4321,7 @@ async fn test_inspect_rejects_bad_member_chunk_parameters() {
 async fn test_inspect_unsupported_type() {
     let h = harness().await;
     let digest = put_local_file(&h.state, "velodexpkg-1.0.txt", b"not an archive", "1.0");
-    let uri = format!("/local/inspect/{}/velodexpkg-1.0.txt", digest.as_str());
+    let uri = format!("/hosted/inspect/{}/velodexpkg-1.0.txt", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
@@ -4315,7 +4330,7 @@ async fn test_inspect_unsupported_type() {
 async fn test_inspect_corrupt_archive_is_unprocessable() {
     let h = harness().await;
     let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", b"PK corrupt bytes", "1.0");
-    let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
+    let uri = format!("/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
@@ -4346,7 +4361,7 @@ async fn test_inspect_tarball_and_size_limit() {
     }
     let digest = put_local_file(&h.state, "velodexpkg-1.0.tar.gz", &tarball, "1.0");
 
-    let uri = format!("/local/inspect/{}/velodexpkg-1.0.tar.gz", digest.as_str());
+    let uri = format!("/hosted/inspect/{}/velodexpkg-1.0.tar.gz", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("setup.py"));
@@ -4393,7 +4408,7 @@ async fn test_inspect_binary_member_rejected_for_inline_preview() {
     }
     let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf, "1.0");
     let uri = format!(
-        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl/data.bin",
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl/data.bin",
         digest.as_str()
     );
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -4423,7 +4438,7 @@ async fn test_inspect_nested_archive_lists_selected_container_only() {
     }
     let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf, "1.0");
     let uri = format!(
-        "/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?container=vendor%2Finner.zip",
+        "/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl?container=vendor%2Finner.zip",
         digest.as_str()
     );
 
@@ -4440,7 +4455,7 @@ async fn test_inspect_nested_archive_lists_selected_container_only() {
 async fn test_inspect_nested_archive_depth_limit_is_bad_request() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
-    let mut uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl?", digest.as_str());
+    let mut uri = format!("/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl?", digest.as_str());
     for position in 0..=crate::archive::MAX_CONTAINER_DEPTH {
         if position > 0 {
             uri.push('&');
@@ -4467,7 +4482,7 @@ async fn test_inspect_archive_listing_limit_is_payload_too_large() {
         zip.finish().unwrap();
     }
     let digest = put_local_file(&h.state, "velodexpkg-1.0-py3-none-any.whl", &buf, "1.0");
-    let uri = format!("/local/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
+    let uri = format!("/hosted/inspect/{}/velodexpkg-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
@@ -4477,16 +4492,16 @@ async fn test_inspect_archive_listing_limit_is_payload_too_large() {
 #[tokio::test]
 async fn test_inspect_bad_digest_and_missing_paths() {
     let h = harness().await;
-    let (status, _, body) = get(&h.state, "/local/inspect/nothex/x.whl", None).await;
+    let (status, _, body) = get(&h.state, "/hosted/inspect/nothex/x.whl", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("expected 64 lowercase hex sha256"));
-    let (status, ..) = get(&h.state, "/local/inspect/onlyonesegment", None).await;
+    let (status, ..) = get(&h.state, "/hosted/inspect/onlyonesegment", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let uri = format!("/local/inspect/{}/pkg%2Fname.whl", "a".repeat(64));
+    let uri = format!("/hosted/inspect/{}/pkg%2Fname.whl", "a".repeat(64));
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("filenames must be relative path segments"));
-    let uri = format!("/local/inspect/{}/ghost.whl", "a".repeat(64));
+    let uri = format!("/hosted/inspect/{}/ghost.whl", "a".repeat(64));
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -4496,10 +4511,10 @@ async fn test_upload_wheel_gains_metadata_sibling() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "velodexpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
     // The simple page advertises the extracted PEP 658 sibling, and it is servable.
-    let (_, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (_, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert!(detail.contains("\"core-metadata\":{\"sha256\""));
     let uri = format!(
-        "/local/files/{}/velodexpkg-1.0-py3-none-any.whl.metadata",
+        "/hosted/files/{}/velodexpkg-1.0-py3-none-any.whl.metadata",
         digest.as_str()
     );
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -4561,10 +4576,10 @@ async fn test_versioned_delete_matches_upload_record_when_filename_lacks_version
     // record-based fallback deletes by the version stored at upload time.
     put_local_file(&h.state, "velodexpkg.whl", b"payload", "9.9");
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/9.9/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/9.9/", Some(&upload_auth())).await,
         StatusCode::OK
     );
-    let (status, ..) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (status, ..) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -4576,10 +4591,10 @@ async fn test_versioned_delete_fallback_skips_other_versions() {
         put_local_file(&h.state, filename, format!("payload {version}").as_bytes(), version);
     }
     assert_eq!(
-        request(&h.state, "DELETE", "/local/velodexpkg/1.5/", Some(&upload_auth())).await,
+        request(&h.state, "DELETE", "/hosted/velodexpkg/1.5/", Some(&upload_auth())).await,
         StatusCode::OK
     );
-    let (_, _, detail) = get(&h.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (_, _, detail) = get(&h.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     assert!(detail.contains("velodexpkg-two.whl"));
     assert!(!detail.contains("velodexpkg-one.whl"));
 }
@@ -4589,11 +4604,11 @@ async fn test_restore_skips_yanked_overrides_and_other_versions() {
     let h = harness().await;
     h.state
         .meta
-        .put_override("local", "flask", "flask-1.0-py3-none-any.whl", "yanked")
+        .put_override("hosted", "flask", "flask-1.0-py3-none-any.whl", "yanked")
         .unwrap();
     h.state
         .meta
-        .put_override("local", "flask", "flask-2.0-py3-none-any.whl", "hidden")
+        .put_override("hosted", "flask", "flask-2.0-py3-none-any.whl", "hidden")
         .unwrap();
     // Restoring 1.0 touches nothing: its override is a yank, and the hidden file is another version.
     let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/restore", Some(&upload_auth())).await;
@@ -4608,9 +4623,9 @@ async fn test_yank_with_corrupt_record_is_server_error() {
     let h = harness().await;
     h.state
         .meta
-        .put_upload("local", "velodexpkg", "velodexpkg-1.0.whl", b"{ not json")
+        .put_upload("hosted", "velodexpkg", "velodexpkg-1.0.whl", b"{ not json")
         .unwrap();
-    let status = request(&h.state, "PUT", "/local/velodexpkg/1.0/yank", Some(&upload_auth())).await;
+    let status = request(&h.state, "PUT", "/hosted/velodexpkg/1.0/yank", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 

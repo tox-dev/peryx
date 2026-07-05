@@ -268,8 +268,8 @@ impl Velodex {
         // A mirror of the given upstream with a local store overlaid in front, served at root/pypi.
         let config_toml = format!(
             "[[index]]\nname = \"upstream\"\nroute = \"upstream\"\ncached = \"{upstream_url}\"\n\
-             [[index]]\nname = \"local\"\nhosted = true\nupload_token = \"{UPLOAD_TOKEN}\"\n\
-             [[index]]\nname = \"root/pypi\"\nroute = \"root/pypi\"\nlayers = [\"local\", \"upstream\"]\nupload = \"local\"\n\
+             [[index]]\nname = \"hosted\"\nhosted = true\nupload_token = \"{UPLOAD_TOKEN}\"\n\
+             [[index]]\nname = \"root/pypi\"\nroute = \"root/pypi\"\nlayers = [\"hosted\", \"upstream\"]\nupload = \"hosted\"\n\
              [index.policy]\n{policy_toml}"
         );
         std::fs::write(&config, config_toml).expect("write config");

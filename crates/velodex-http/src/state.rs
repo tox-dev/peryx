@@ -117,7 +117,7 @@ impl AppState {
         Self::with_clock(meta, blobs, ttl_secs, indexes, Arc::new(system_now))
     }
 
-    /// Build the state with system time plus local abuse-control settings.
+    /// Build the state with system time plus hosted abuse-control settings.
     #[must_use]
     pub fn with_rate_limits(
         meta: MetaStore,
@@ -174,7 +174,7 @@ impl AppState {
         )
     }
 
-    /// Build the state with an on-disk search index and local abuse-control settings.
+    /// Build the state with an on-disk search index and hosted abuse-control settings.
     ///
     /// # Errors
     /// Returns an error if the search index cannot be opened.
@@ -229,7 +229,7 @@ impl AppState {
         ))
     }
 
-    /// Build the state with an injected clock plus local abuse-control settings.
+    /// Build the state with an injected clock plus hosted abuse-control settings.
     #[must_use]
     pub fn with_limits(
         meta: MetaStore,
@@ -476,7 +476,7 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
             ("virtual", names, uploads, volatile_deletes, upload_to)
         }
     };
-    let (upstream, local) = match &index.kind {
+    let (upstream, hosted) = match &index.kind {
         IndexKind::Cached { client, offline } => (
             Some(UpstreamDescription {
                 url: client.redacted_base_url(),
@@ -487,7 +487,7 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
         ),
         IndexKind::Hosted { upload_token, volatile } => (
             None,
-            Some(LocalDescription {
+            Some(HostedDescription {
                 volatile: *volatile,
                 upload_token: SecretDescription::new(upload_token.is_some()),
             }),
@@ -504,7 +504,7 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
         volatile_deletes,
         upload_to,
         upstream,
-        local,
+        hosted,
     }
 }
 
@@ -521,7 +521,7 @@ pub struct IndexDescription {
     /// For an overlay: the layer uploads land in, whether or not a token currently enables them.
     pub upload_to: Option<String>,
     pub upstream: Option<UpstreamDescription>,
-    pub local: Option<LocalDescription>,
+    pub hosted: Option<HostedDescription>,
 }
 
 /// Mirror status data that excludes credential material.
@@ -534,7 +534,7 @@ pub struct UpstreamDescription {
 
 /// Local-store status data that excludes upload-token values.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalDescription {
+pub struct HostedDescription {
     pub volatile: bool,
     pub upload_token: SecretDescription,
 }

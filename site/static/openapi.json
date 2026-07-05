@@ -195,9 +195,9 @@
                 "example": {
                   "indexes": [
                     {
+                      "hosted": null,
                       "kind": "mirror",
                       "layers": [],
-                      "local": null,
                       "name": "pypi",
                       "project_count": 128,
                       "recent_uploads": [],
@@ -217,16 +217,16 @@
                       "volatile_deletes": false
                     },
                     {
-                      "kind": "local",
-                      "layers": [],
-                      "local": {
+                      "hosted": {
                         "upload_token": {
                           "configured": true,
                           "redacted": "<redacted>"
                         },
                         "volatile": true
                       },
-                      "name": "local",
+                      "kind": "hosted",
+                      "layers": [],
+                      "name": "hosted",
                       "project_count": 2,
                       "recent_uploads": [
                         {
@@ -237,7 +237,7 @@
                           "version": "1.0"
                         }
                       ],
-                      "route": "local",
+                      "route": "hosted",
                       "upload_count": 4,
                       "upload_to": null,
                       "uploads": true,
@@ -245,18 +245,18 @@
                       "volatile_deletes": true
                     },
                     {
+                      "hosted": null,
                       "kind": "overlay",
                       "layers": [
-                        "local",
+                        "hosted",
                         "pypi"
                       ],
-                      "local": null,
                       "name": "root/pypi",
                       "project_count": 0,
                       "recent_uploads": [],
                       "route": "root/pypi",
                       "upload_count": 0,
-                      "upload_to": "local",
+                      "upload_to": "hosted",
                       "uploads": true,
                       "upstream": null,
                       "volatile_deletes": true
@@ -429,12 +429,12 @@
                     },
                     "kind": "virtual",
                     "layers": [
-                      "local",
+                      "hosted",
                       "pypi"
                     ],
                     "name": "root/pypi",
                     "route": "root/pypi",
-                    "upload_to": "local",
+                    "upload_to": "hosted",
                     "uploads": true,
                     "urls": {
                       "api": "http://127.0.0.1:4433/root/pypi/+api",
@@ -1542,7 +1542,7 @@
       "uploadToken": {
         "type": "http",
         "scheme": "basic",
-        "description": "Any username; the password is the local index's `upload_token` (the pypi.org `__token__` convention)"
+        "description": "Any username; the password is the hosted index's `upload_token` (the pypi.org `__token__` convention)"
       }
     }
   }

@@ -241,9 +241,9 @@ fn StatusCell(index: UiIndex) -> impl IntoView {
         }
         .into_any();
     }
-    if let Some(local) = index.local {
-        let mode = if local.volatile { "volatile" } else { "non-volatile" };
-        let token = if local.token_configured {
+    if let Some(hosted) = index.hosted {
+        let mode = if hosted.volatile { "volatile" } else { "non-volatile" };
+        let token = if hosted.token_configured {
             "token configured"
         } else {
             "no upload token"
@@ -252,7 +252,7 @@ fn StatusCell(index: UiIndex) -> impl IntoView {
             <p class="ops-detail">
                 <span>{mode}</span>
                 <span>{token}</span>
-                {local.token_redacted.map(|value| view! { <code>{value}</code> })}
+                {hosted.token_redacted.map(|value| view! { <code>{value}</code> })}
             </p>
         }
         .into_any();
@@ -649,7 +649,7 @@ fn SearchResults(query: String, source_type: String, page_data: UiSearchPage) ->
                             let href = browse_project_url(&result.route, &result.normalized_name);
                             let source_class = format!("badge source-{}", result.source_type);
                             let source_title = (result.source_type == "override")
-                                .then_some("Hosted files or local overrides affect this upstream package");
+                                .then_some("Hosted files or hosted overrides affect this upstream package");
                             view! {
                                 <tr>
                                     <td><a href=href>{result.display_name}</a></td>
@@ -1556,7 +1556,7 @@ fn ClassifierGroups(classifiers: Vec<String>) -> impl IntoView {
     })
 }
 
-/// Yank, un-yank, and delete for the index's local layer, driven from the browser with the upload
+/// Yank, un-yank, and delete for the index's hosted layer, driven from the browser with the upload
 /// token. The buttons only act once hydrated; the server renders them inert.
 #[component]
 fn AdminPanel(
@@ -1593,7 +1593,7 @@ fn AdminPanel(
     view! {
         <details class="admin">
             <summary>"Manage uploads"</summary>
-            <p class="dim">"Actions apply to files uploaded to this index's local layer and need its upload token."</p>
+            <p class="dim">"Actions apply to files uploaded to this index's hosted layer and need its upload token."</p>
             <input
                 class="token"
                 type="password"

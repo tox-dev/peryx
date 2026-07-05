@@ -42,7 +42,7 @@ fn test_project_from_detail_maps_files() {
         "versions": ["1.0"],
         "files": [{
             "filename": "veloxdemo-1.0-py3-none-any.whl",
-            "url": "/local/files/aa/veloxdemo-1.0-py3-none-any.whl",
+            "url": "/hosted/files/aa/veloxdemo-1.0-py3-none-any.whl",
             "hashes": {"sha256": "aa"},
             "size": 10,
             "upload-time": "2026-01-01T00:00:00Z",
@@ -118,7 +118,7 @@ fn test_render_description_plain_text_preformatted() {
 #[test]
 fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
     let value = serde_json::json!({
-        "local": {"pages": 1, "downloads": 0, "bytes": 10, "uploads": 2},
+        "hosted": {"pages": 1, "downloads": 0, "bytes": 10, "uploads": 2},
         "root/pypi": {"pages": 5, "downloads": 3, "bytes": 900, "refreshes": 2, "changed": 1},
     });
     let stats = crate::model::stats_routes(&value);
@@ -127,7 +127,7 @@ fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
     assert_eq!(stats.totals.uploads, 2);
     assert_eq!(stats.totals.changed, 1);
     assert_eq!(stats.rows[0].0, "root/pypi");
-    assert_eq!(stats.rows[1].0, "local");
+    assert_eq!(stats.rows[1].0, "hosted");
 }
 
 #[test]

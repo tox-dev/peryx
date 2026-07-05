@@ -199,7 +199,10 @@ fn resolve_upload(
         Some(name) => {
             let pos = resolve_name(&index.name, name, positions)?;
             if !matches!(configs[pos].kind, ConfigKind::Hosted { .. }) {
-                bail!("overlay {} upload target {name} is not a local index", index.name);
+                bail!(
+                    "virtual index {} upload target {name} is not a hosted index",
+                    index.name
+                );
             }
             Ok(Some(pos))
         }

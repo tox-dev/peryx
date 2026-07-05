@@ -26,12 +26,12 @@ pub struct UiIndex {
     pub kind: String,
     /// Member names for a virtual index; empty otherwise.
     pub layers: Vec<String>,
-    /// Whether uploads are enabled (a local layer with a token).
+    /// Whether uploads are enabled (a hosted layer with a token).
     pub uploads: bool,
     /// For an overlay: the layer uploads land in.
     pub upload_to: Option<String>,
     pub upstream: Option<UiUpstream>,
-    pub local: Option<UiLocal>,
+    pub hosted: Option<UiHosted>,
     pub project_count: u64,
     pub upload_count: u64,
     pub recent_uploads: Vec<UiRecentUpload>,
@@ -48,7 +48,7 @@ pub struct UiUpstream {
 
 /// Local status data with upload-token values redacted by the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiLocal {
+pub struct UiHosted {
     pub volatile: bool,
     pub token_configured: bool,
     pub token_redacted: Option<String>,
@@ -86,7 +86,7 @@ impl UiSnapshot {
                 uploads: index["uploads"].as_bool().unwrap_or(false),
                 upload_to: index["upload_to"].as_str().map(str::to_owned),
                 upstream: upstream_from_status(index),
-                local: local_from_status(index),
+                hosted: hosted_from_status(index),
                 project_count: u64_at(index, "project_count"),
                 upload_count: u64_at(index, "upload_count"),
                 recent_uploads: index["recent_uploads"]
@@ -123,12 +123,12 @@ fn upstream_from_status(index: &serde_json::Value) -> Option<UiUpstream> {
     })
 }
 
-fn local_from_status(index: &serde_json::Value) -> Option<UiLocal> {
-    let local = index["local"].as_object()?;
-    Some(UiLocal {
-        volatile: local["volatile"].as_bool().unwrap_or(false),
-        token_configured: local["upload_token"]["configured"].as_bool().unwrap_or(false),
-        token_redacted: local["upload_token"]["redacted"].as_str().map(str::to_owned),
+fn hosted_from_status(index: &serde_json::Value) -> Option<UiHosted> {
+    let hosted = index["hosted"].as_object()?;
+    Some(UiHosted {
+        volatile: hosted["volatile"].as_bool().unwrap_or(false),
+        token_configured: hosted["upload_token"]["configured"].as_bool().unwrap_or(false),
+        token_redacted: hosted["upload_token"]["redacted"].as_str().map(str::to_owned),
     })
 }
 

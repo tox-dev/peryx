@@ -27,11 +27,11 @@ async fn test_upload_conformance_accepts_wheel_and_sdist_with_metadata() {
             Some((filename, bytes)),
         );
         let (status, text) =
-            post_upload_response(&harness.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+            post_upload_response(&harness.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
         assert_eq!((status, text.as_str()), (StatusCode::OK, "upload accepted"));
     }
 
-    let (status, _, body) = get(&harness.state, "/local/simple/velodexpkg/", Some("application/json")).await;
+    let (status, _, body) = get(&harness.state, "/hosted/simple/velodexpkg/", Some("application/json")).await;
     let detail: serde_json::Value = serde_json::from_str(&body).unwrap();
     let files = detail["files"].as_array().unwrap();
 
@@ -52,7 +52,7 @@ async fn test_upload_conformance_accepts_wheel_and_sdist_with_metadata() {
         assert_eq!(file["dist-info-metadata"]["sha256"], metadata_digest);
 
         let artifact_digest = Digest::of(bytes);
-        let uri = format!("/local/files/{}/{filename}.metadata", artifact_digest.as_str());
+        let uri = format!("/hosted/files/{}/{filename}.metadata", artifact_digest.as_str());
         let (status, _, metadata) = get(&harness.state, &uri, None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(metadata.starts_with(metadata_prefix));
@@ -90,7 +90,7 @@ async fn test_upload_conformance_rejects_legacy_and_weak_uploads() {
         let (content_type, body) = multipart_body(&fields, Some((filename, &wheel)));
 
         let (status, text) =
-            post_upload_response(&harness.state, "/local/", Some(&upload_auth()), &content_type, body).await;
+            post_upload_response(&harness.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(text.contains(expected), "{text}");
