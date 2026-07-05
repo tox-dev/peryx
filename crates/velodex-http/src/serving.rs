@@ -15,6 +15,14 @@ use axum::response::{IntoResponse, Response};
 
 use crate::state::AppState;
 
+/// The outcome of one background refresh sweep: how many cached pages a driver revalidated and how
+/// many it found changed upstream.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RefreshSweep {
+    pub checked: usize,
+    pub changed: usize,
+}
+
 /// How one ecosystem serves requests routed to an index of its kind.
 #[async_trait]
 pub trait EcosystemServing: Send + Sync {
@@ -44,6 +52,12 @@ pub trait EcosystemServing: Send + Sync {
     /// driver declares its own (`PyPI`'s PEP 658 sibling today).
     fn metric_families(&self) -> &'static [crate::metrics::MetricFamily] {
         &[]
+    }
+
+    /// Revalidate stale cached pages once, invoked from the server's background sweep. A driver
+    /// without a read-through cache sweeps nothing, so the default is a no-op.
+    async fn refresh_stale(&self, _state: Arc<AppState>) -> Result<RefreshSweep, String> {
+        Ok(RefreshSweep::default())
     }
 }
 

@@ -113,16 +113,17 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                match velodex_ecosystem_pypi::cache::refresh_stale_pages(&refresher).await {
-                    Ok(summary) if summary.checked > 0 => {
+                let serving = refresher.serving.clone();
+                match serving.refresh_stale(refresher.clone()).await {
+                    Ok(sweep) if sweep.checked > 0 => {
                         tracing::info!(
-                            checked = summary.checked,
-                            changed = summary.changed,
+                            checked = sweep.checked,
+                            changed = sweep.changed,
                             "background refresh sweep"
                         );
                     }
                     Ok(_) => {}
-                    Err(err) => tracing::error!(error = ?err, "background refresh sweep failed"),
+                    Err(err) => tracing::error!(error = %err, "background refresh sweep failed"),
                 }
             }
         });

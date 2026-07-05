@@ -77,6 +77,64 @@ async fn test_refresh_sweep_detects_changed_page() {
     assert!(body.contains(new_digest.as_str()));
 }
 
+#[tokio::test]
+async fn test_serving_refresh_stale_reports_the_sweep() {
+    use velodex_http::serving::EcosystemServing as _;
+
+    let h = harness().await;
+    let digest = Digest::of(b"wheel-v1");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_page(
+        &h.server,
+        detail_json(digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    let new_digest = Digest::of(b"wheel-v2");
+    mount_page(
+        &h.server,
+        detail_json(new_digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+
+    let sweep = crate::serving::PypiServing
+        .refresh_stale(h.state.clone())
+        .await
+        .unwrap();
+    assert_eq!((sweep.checked, sweep.changed), (1, 1));
+}
+
+#[tokio::test]
+async fn test_serving_refresh_stale_surfaces_errors_as_strings() {
+    use velodex_http::serving::EcosystemServing as _;
+
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_page(
+        &h.server,
+        detail_json(digest.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    mount_page(&h.server, "invalid".to_owned(), ResponseTemplate::new(200)).await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+
+    let err = crate::serving::PypiServing
+        .refresh_stale(h.state.clone())
+        .await
+        .unwrap_err();
+    assert!(err.contains("simple API document could not be parsed"));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_refresh_sweep_skips_policy_denied_project() {
     let mirror_policy = policy(|policy| {

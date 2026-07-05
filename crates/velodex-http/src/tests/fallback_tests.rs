@@ -63,6 +63,17 @@ fn test_unconfigured_serving_publishes_no_metric_families() {
 }
 
 #[tokio::test]
+async fn test_unconfigured_serving_sweeps_nothing() {
+    use crate::serving::{EcosystemServing as _, RefreshSweep, UnconfiguredServing};
+
+    let (_dir, state) = unwired_state();
+    assert_eq!(
+        UnconfiguredServing.refresh_stale(state).await.unwrap(),
+        RefreshSweep::default()
+    );
+}
+
+#[tokio::test]
 async fn test_unwired_state_search_returns_empty() {
     let (_dir, state) = unwired_state();
     let app = crate::router(state);

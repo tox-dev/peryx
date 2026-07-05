@@ -26,7 +26,7 @@ use velodex_http::metrics::{Event, MetricFamily};
 use velodex_http::path_safety::{self, PathSafetyError};
 use velodex_http::rate_limit::RouteClass;
 use velodex_http::search::SearchParams;
-use velodex_http::serving::EcosystemServing;
+use velodex_http::serving::{EcosystemServing, RefreshSweep};
 use velodex_http::state::{AppState, Index, IndexKind, Role, describe_index};
 use velodex_http::webhook::{WebhookEvent, WebhookEventKind};
 use velodex_policy::{PolicyAction, PolicyDenial};
@@ -124,6 +124,16 @@ impl EcosystemServing for PypiServing {
 
     fn metric_families(&self) -> &'static [MetricFamily] {
         PYPI_FAMILIES
+    }
+
+    async fn refresh_stale(&self, state: Arc<AppState>) -> Result<RefreshSweep, String> {
+        cache::refresh_stale_pages(&state)
+            .await
+            .map(|summary| RefreshSweep {
+                checked: summary.checked,
+                changed: summary.changed,
+            })
+            .map_err(|err| err.user_message())
     }
 }
 
