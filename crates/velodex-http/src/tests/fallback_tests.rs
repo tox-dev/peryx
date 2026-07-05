@@ -43,6 +43,18 @@ async fn test_unwired_state_serves_503_on_every_method() {
     }
 }
 
+#[test]
+fn test_unconfigured_serving_classifies_index_routes_as_listing() {
+    use crate::rate_limit::RouteClass;
+    use crate::serving::{EcosystemServing as _, UnconfiguredServing};
+
+    assert_eq!(UnconfiguredServing.classify_route("/pypi/simple/"), RouteClass::Listing);
+    assert_eq!(
+        UnconfiguredServing.classify_route("/pypi/files/abc/x.whl"),
+        RouteClass::Listing
+    );
+}
+
 #[tokio::test]
 async fn test_unwired_state_search_returns_empty() {
     let (_dir, state) = unwired_state();
