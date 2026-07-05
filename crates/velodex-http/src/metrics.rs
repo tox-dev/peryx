@@ -284,7 +284,13 @@ fn apply(tree: &mut StatsTree, event: Event) {
             let project = index.projects.entry(project).or_default();
             *project.totals.ecosystem.entry(family).or_default() += 1;
             if let Some(filename) = filename {
-                *project.files.entry(filename).or_default().ecosystem.entry(family).or_default() += 1;
+                *project
+                    .files
+                    .entry(filename)
+                    .or_default()
+                    .ecosystem
+                    .entry(family)
+                    .or_default() += 1;
             }
         }
         Event::Upload { route, project } => {

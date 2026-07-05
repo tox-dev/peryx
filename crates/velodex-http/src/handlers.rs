@@ -239,10 +239,12 @@ pub fn ecosystem_summaries(state: &AppState) -> Vec<crate::metrics::EcosystemSum
     let mut summaries: std::collections::BTreeMap<&'static str, crate::metrics::EcosystemSummary> =
         std::collections::BTreeMap::new();
     for (index, counters) in per_index_metrics(state) {
-        let summary = summaries.entry(index.ecosystem).or_insert_with(|| crate::metrics::EcosystemSummary {
-            ecosystem: index.ecosystem.to_owned(),
-            ..Default::default()
-        });
+        let summary = summaries
+            .entry(index.ecosystem)
+            .or_insert_with(|| crate::metrics::EcosystemSummary {
+                ecosystem: index.ecosystem.to_owned(),
+                ..Default::default()
+            });
         summary.pages += counters.base.pages;
         summary.downloads += counters.base.downloads;
         summary.bytes += counters.base.bytes;
