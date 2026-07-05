@@ -20,7 +20,7 @@ writeFileSync(
   config,
   `[[index]]
 name = "pypi"
-mirror = "https://pypi.org/simple/"
+cached = "https://pypi.org/simple/"
 
 [[index]]
 name = "local"

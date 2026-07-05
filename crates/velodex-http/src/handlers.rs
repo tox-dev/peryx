@@ -20,6 +20,7 @@ use velodex_ecosystem_pypi::{
     DistributionFilenameError, ProjectDetail, ProjectList, ProjectStatus, Yanked, normalize_name, render_detail_html,
     render_index_html, render_legacy_json, to_json,
 };
+use velodex_format::Ecosystem;
 use velodex_storage::blob::Digest;
 
 use crate::cache::{self, CacheError, PageOutcome};
@@ -83,6 +84,21 @@ pub async fn dispatch_get(
         params.route = Some(index.route.clone());
         return search_response(&state, params);
     }
+    match index.ecosystem {
+        Ecosystem::Pypi => pypi_get(&state, position, rest, &headers, &uri).await,
+    }
+}
+
+/// `PyPI` GET routing within an index: the Simple index and project detail (HTML, PEP 691 JSON, legacy
+/// JSON), release files, and archive inspection.
+async fn pypi_get(
+    state: &Arc<AppState>,
+    position: usize,
+    rest: &str,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Response {
+    let index = state.index_at(position);
     match legacy_json_target(rest) {
         Ok(Some(target)) => {
             state.metrics.record(Event::Page {
@@ -90,7 +106,7 @@ pub async fn dispatch_get(
                 project: target.project.clone(),
             });
             return legacy_json_response(
-                cache::resolve_detail(&state, index, &target.project, &index.route).await,
+                cache::resolve_detail(state, index, &target.project, &index.route).await,
                 &index.route,
                 &target.project,
                 target.version.as_deref(),
@@ -100,7 +116,7 @@ pub async fn dispatch_get(
         Err(response) => return response,
     }
     if rest == "simple/" {
-        return index_response(cache::resolve_list(&state, index), negotiate(&headers), &index.route);
+        return index_response(cache::resolve_list(state, index), negotiate(headers), &index.route);
     }
     if let Some(project) = rest.strip_prefix("simple/").and_then(|rest| rest.strip_suffix('/')) {
         let normalized = normalize_name(project);
@@ -108,7 +124,7 @@ pub async fn dispatch_get(
             route: index.route.clone(),
             project: normalized.clone(),
         });
-        if matches!(negotiate(&headers), Format::Json) {
+        if matches!(negotiate(headers), Format::Json) {
             match cache::stream_detail(state.clone(), position, normalized.clone()).await {
                 Ok(PageOutcome::Ready(bytes)) => {
                     return ([(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")], bytes).into_response();
@@ -133,11 +149,11 @@ pub async fn dispatch_get(
             }
         }
         let index = state.index_at(position);
-        let detail = cache::resolve_detail(&state, index, &normalized, &index.route).await;
-        return detail_response(detail, negotiate(&headers), &index.route, &normalized);
+        let detail = cache::resolve_detail(state, index, &normalized, &index.route).await;
+        return detail_response(detail, negotiate(headers), &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
-        return file_route(&state, index, file).await;
+        return file_route(state, index, file).await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
         return inspect_route(state.clone(), index.route.clone(), target, uri.query()).await;
@@ -474,22 +490,26 @@ pub async fn dispatch_post(
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
     };
-    if !rest.is_empty() {
-        security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
-            .reason(Some("upload path must target an index root"))
-            .emit();
-        return not_found();
+    match index.ecosystem {
+        Ecosystem::Pypi => {
+            if !rest.is_empty() {
+                security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
+                    .reason(Some("upload path must target an index root"))
+                    .emit();
+                return not_found();
+            }
+            let Some(local) = upload_target(&state, index) else {
+                security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
+                    .reason(Some("index does not accept uploads"))
+                    .emit();
+                return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
+            };
+            if let Err(response) = authorize(local, &headers) {
+                return response;
+            }
+            accept_upload(&state, index, local, &headers, actor.as_deref(), multipart).await
+        }
     }
-    let Some(local) = upload_target(&state, index) else {
-        security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
-            .reason(Some("index does not accept uploads"))
-            .emit();
-        return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
-    };
-    if let Err(response) = authorize(local, &headers) {
-        return response;
-    }
-    accept_upload(&state, index, local, &headers, actor.as_deref(), multipart).await
 }
 
 async fn accept_upload(
@@ -803,16 +823,20 @@ pub async fn dispatch_put(
         Ok(target) => target,
         Err(response) => return response,
     };
-    if let Some(spec) = strip_action_segment(spec, "promote") {
-        return promote_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
+    match index.ecosystem {
+        Ecosystem::Pypi => {
+            if let Some(spec) = strip_action_segment(spec, "promote") {
+                return promote_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
+            }
+            if let Some(spec) = strip_action_segment(spec, "yank") {
+                return yank_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
+            }
+            if let Some(spec) = strip_action_segment(spec, "restore") {
+                return restore_request(&state, index, local, spec, &headers, actor.as_deref());
+            }
+            not_found()
+        }
     }
-    if let Some(spec) = strip_action_segment(spec, "yank") {
-        return yank_request(&state, index, local, spec, uri.query(), &headers, actor.as_deref()).await;
-    }
-    if let Some(spec) = strip_action_segment(spec, "restore") {
-        return restore_request(&state, index, local, spec, &headers, actor.as_deref());
-    }
-    not_found()
 }
 
 async fn promote_request(
@@ -947,47 +971,52 @@ pub async fn dispatch_delete(
         Ok(target) => target,
         Err(response) => return response,
     };
-    if let Some(spec) = strip_action_segment(spec, "yank") {
-        let (project, version) = match parse_project_version(spec) {
-            Ok(parsed) => parsed,
-            Err(response) => return response,
-        };
-        let result = cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), Yanked::No).await;
-        let audit = MutationAudit {
-            headers: &headers,
-            action: "unyank",
-            actor: actor.as_deref(),
-            index: &index.name,
-            repository: &index.route,
-            local_index: &local.name,
-            project: &project,
-            version: version.as_deref(),
-            request_id: request_id(&headers),
-        };
-        security_mutation_event(&audit, &result);
-        emit_mutation_webhook(state.clone(), WebhookEventKind::Unyank, &audit, &result);
-        return count_response(result);
+    match index.ecosystem {
+        Ecosystem::Pypi => {
+            if let Some(spec) = strip_action_segment(spec, "yank") {
+                let (project, version) = match parse_project_version(spec) {
+                    Ok(parsed) => parsed,
+                    Err(response) => return response,
+                };
+                let result =
+                    cache::set_yanked(&state, index, &local.name, &project, version.as_deref(), Yanked::No).await;
+                let audit = MutationAudit {
+                    headers: &headers,
+                    action: "unyank",
+                    actor: actor.as_deref(),
+                    index: &index.name,
+                    repository: &index.route,
+                    local_index: &local.name,
+                    project: &project,
+                    version: version.as_deref(),
+                    request_id: request_id(&headers),
+                };
+                security_mutation_event(&audit, &result);
+                emit_mutation_webhook(state.clone(), WebhookEventKind::Unyank, &audit, &result);
+                return count_response(result);
+            }
+            let (project, version) = match parse_project_version(spec) {
+                Ok(parsed) => parsed,
+                Err(response) => return response,
+            };
+            let volatile = is_volatile(local);
+            let result = cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await;
+            let audit = MutationAudit {
+                headers: &headers,
+                action: "delete",
+                actor: actor.as_deref(),
+                index: &index.name,
+                repository: &index.route,
+                local_index: &local.name,
+                project: &project,
+                version: version.as_deref(),
+                request_id: request_id(&headers),
+            };
+            security_mutation_event(&audit, &result);
+            emit_mutation_webhook(state.clone(), WebhookEventKind::Delete, &audit, &result);
+            count_response(result)
+        }
     }
-    let (project, version) = match parse_project_version(spec) {
-        Ok(parsed) => parsed,
-        Err(response) => return response,
-    };
-    let volatile = is_volatile(local);
-    let result = cache::remove_files(&state, index, &local.name, volatile, &project, version.as_deref()).await;
-    let audit = MutationAudit {
-        headers: &headers,
-        action: "delete",
-        actor: actor.as_deref(),
-        index: &index.name,
-        repository: &index.route,
-        local_index: &local.name,
-        project: &project,
-        version: version.as_deref(),
-        request_id: request_id(&headers),
-    };
-    security_mutation_event(&audit, &result);
-    emit_mutation_webhook(state.clone(), WebhookEventKind::Delete, &audit, &result);
-    count_response(result)
 }
 
 /// Resolve the writable local index for a mutation request and authorize it, returning the serving

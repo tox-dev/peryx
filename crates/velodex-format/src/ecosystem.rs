@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 /// The package ecosystem an index serves. Immutable once an index is created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-#[non_exhaustive]
 pub enum Ecosystem {
     /// The Python Package Index: the PEP 503/691 simple API, wheels, and sdists.
     #[default]
