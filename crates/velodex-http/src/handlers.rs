@@ -72,6 +72,18 @@ pub fn search_response(state: &AppState, params: SearchParams) -> Response {
     }
 }
 
+/// Run [`search_response`] on the blocking pool. A tantivy query is mmap I/O plus CPU scoring, so
+/// keeping it off the async workers stops a burst of searches from stalling concurrent serving.
+///
+/// # Panics
+/// Panics if the blocking task panics; [`search_response`] returns every error as a response, so it
+/// does not.
+pub async fn search_response_offloaded(state: Arc<AppState>, params: SearchParams) -> Response {
+    tokio::task::spawn_blocking(move || search_response(&state, params))
+        .await
+        .expect("search task never panics")
+}
+
 /// Map a [`SearchError`] to a JSON error response.
 #[must_use]
 pub fn search_error_response(err: &SearchError) -> Response {
@@ -105,7 +117,7 @@ pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalU
 /// `GET /+search` — search cached packages across configured indexes.
 pub async fn search(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri) -> Response {
     match SearchParams::from_query(uri.query()) {
-        Ok(params) => search_response(&state, params),
+        Ok(params) => search_response_offloaded(state, params).await,
         Err(err) => search_error_response(&err),
     }
 }

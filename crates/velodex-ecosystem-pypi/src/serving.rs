@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use velodex_format::Ecosystem;
-use velodex_http::handlers::{not_found, search_error_response, search_response};
+use velodex_http::handlers::{not_found, search_error_response, search_response_offloaded};
 use velodex_http::metrics::{Event, MetricFamily};
 use velodex_http::path_safety::{self, PathSafetyError};
 use velodex_http::rate_limit::RouteClass;
@@ -145,7 +145,7 @@ pub(crate) async fn pypi_dispatch_get(state: Arc<AppState>, uri: axum::http::Uri
             Err(err) => return search_error_response(&err),
         };
         params.route = Some(index.route.clone());
-        return search_response(&state, params);
+        return search_response_offloaded(Arc::clone(&state), params).await;
     }
     match index.ecosystem {
         Ecosystem::Pypi => pypi_get(&state, position, rest, &headers, &uri).await,
