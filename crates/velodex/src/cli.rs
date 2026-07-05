@@ -56,8 +56,8 @@ pub enum Command {
     /// Preview index policy decisions against cached records.
     #[command(subcommand)]
     Policy(PolicyCommand),
-    /// Plan, sync, and verify a configured prefetch set.
-    #[command(subcommand)]
+    /// Plan, sync, and verify a cached index's mirror working set.
+    #[command(subcommand, name = "mirror")]
     Prefetch(PrefetchCommand),
     /// Print the `OpenAPI` description of the HTTP API as JSON.
     Openapi,

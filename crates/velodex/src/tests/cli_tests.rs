@@ -331,7 +331,7 @@ fn test_policy_commands_expose_runtime_args() {
 fn test_parse_prefetch_plan_options() {
     let cli = parse(&[
         "velodex",
-        "prefetch",
+        "mirror",
         "plan",
         "--data-dir",
         "/d",
@@ -376,9 +376,9 @@ fn test_parse_prefetch_plan_options() {
 #[test]
 fn test_prefetch_commands_expose_runtime_args() {
     for cli in [
-        parse(&["velodex", "prefetch", "plan", "--data-dir", "/plan", "pypi"]),
-        parse(&["velodex", "prefetch", "sync", "--data-dir", "/sync", "pypi"]),
-        parse(&["velodex", "prefetch", "verify", "--data-dir", "/verify", "pypi"]),
+        parse(&["velodex", "mirror", "plan", "--data-dir", "/plan", "pypi"]),
+        parse(&["velodex", "mirror", "sync", "--data-dir", "/sync", "pypi"]),
+        parse(&["velodex", "mirror", "verify", "--data-dir", "/verify", "pypi"]),
     ] {
         let Command::Prefetch(command) = cli.command else {
             panic!("expected prefetch command");
