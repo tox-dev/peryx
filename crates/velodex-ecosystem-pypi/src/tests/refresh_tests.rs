@@ -19,13 +19,13 @@ async fn mount_page(server: &MockServer, body: String, template: ResponseTemplat
         .await;
 }
 
-fn drilled(state: &Arc<crate::state::AppState>, field: &str) -> u64 {
+fn drilled(state: &Arc<velodex_http::state::AppState>, field: &str) -> u64 {
     state.metrics.drill(Some("pypi"), None)["totals"][field]
         .as_u64()
         .unwrap_or(0)
 }
 
-fn settle(state: &Arc<crate::state::AppState>, field: &str, want: u64) {
+fn settle(state: &Arc<velodex_http::state::AppState>, field: &str, want: u64) {
     for _ in 0..500 {
         if drilled(state, field) >= want {
             return;

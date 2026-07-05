@@ -23,6 +23,7 @@ ssr = [
     "dep:axum",
     "dep:tower-http",
     "dep:tokio",
+    "velodex-ecosystem-pypi/serving",
 ]
 # The browser half: compiled to wasm32 by cargo-leptos, hydrates the server-rendered page.
 hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:gloo-net", "dep:base64", "dep:console_error_panic_hook", "dep:send_wrapper", "dep:web-sys"]
@@ -46,7 +47,7 @@ base64 = { workspace = true, optional = true }
 pulldown-cmark.workspace = true
 regex.workspace = true
 velodex-format.workspace = true
-velodex-ecosystem-pypi.workspace = true
+velodex-ecosystem-pypi = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 

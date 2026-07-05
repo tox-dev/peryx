@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::Multipart;
-use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 
 use crate::state::AppState;
 
@@ -29,27 +29,49 @@ pub trait EcosystemServing: Send + Sync {
 
     /// Serve a DELETE (remove or un-yank).
     async fn delete(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response;
+
+    /// Serve `GET /+api` — API discovery and copyable client configuration for configured indexes.
+    async fn discover(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response;
 }
 
-/// The `PyPI` ecosystem serving driver.
+/// The driver installed when no ecosystem is wired into [`AppState`]: every request gets a `503`.
+///
+/// A build that forgot to inject a driver fails loudly rather than silently serving nothing. The
+/// binary replaces this with a real driver at startup.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PypiServing;
+pub struct UnconfiguredServing;
+
+impl UnconfiguredServing {
+    fn unavailable() -> Response {
+        (StatusCode::SERVICE_UNAVAILABLE, "no ecosystem driver configured").into_response()
+    }
+}
 
 #[async_trait]
-impl EcosystemServing for PypiServing {
-    async fn get(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
-        crate::handlers::pypi_dispatch_get(state, uri, headers).await
+impl EcosystemServing for UnconfiguredServing {
+    async fn get(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
+        Self::unavailable()
     }
 
-    async fn post(&self, state: Arc<AppState>, path: String, headers: HeaderMap, multipart: Multipart) -> Response {
-        crate::handlers::pypi_dispatch_post(state, path, headers, multipart).await
+    async fn post(
+        &self,
+        _state: Arc<AppState>,
+        _path: String,
+        _headers: HeaderMap,
+        _multipart: Multipart,
+    ) -> Response {
+        Self::unavailable()
     }
 
-    async fn put(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
-        crate::handlers::pypi_dispatch_put(state, uri, headers).await
+    async fn put(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
+        Self::unavailable()
     }
 
-    async fn delete(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
-        crate::handlers::pypi_dispatch_delete(state, uri, headers).await
+    async fn delete(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
+        Self::unavailable()
+    }
+
+    async fn discover(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
+        Self::unavailable()
     }
 }

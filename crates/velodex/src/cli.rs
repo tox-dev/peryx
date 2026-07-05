@@ -406,7 +406,7 @@ pub enum SnippetFormat {
     Pypirc,
 }
 
-impl From<SnippetFormat> for velodex_http::discovery::SnippetKind {
+impl From<SnippetFormat> for velodex_ecosystem_pypi::discovery::SnippetKind {
     fn from(value: SnippetFormat) -> Self {
         match value {
             SnippetFormat::PipConf => Self::PipConf,

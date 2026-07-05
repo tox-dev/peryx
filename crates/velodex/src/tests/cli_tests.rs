@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser as _;
-use velodex_http::discovery::SnippetKind;
+use velodex_ecosystem_pypi::discovery::SnippetKind;
 
 use crate::cli::{
     BackupCommand, CacheCommand, CachePurgeCommand, Cli, Command, PolicyCommand, PrefetchCommand, RuntimeArgs,

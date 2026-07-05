@@ -113,7 +113,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                match velodex_http::cache::refresh_stale_pages(&refresher).await {
+                match velodex_ecosystem_pypi::cache::refresh_stale_pages(&refresher).await {
                     Ok(summary) if summary.checked > 0 => {
                         tracing::info!(
                             checked = summary.checked,

@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
 use velodex_ecosystem_pypi::{CoreMetadata, ProjectDetail, normalize_name, parse_detail};
-use velodex_http::discovery::{BaseUrl, SnippetKind, snippet_text};
-use velodex_http::upload::Uploaded;
+use velodex_ecosystem_pypi::discovery::{BaseUrl, SnippetKind, snippet_text};
+use velodex_ecosystem_pypi::upload::Uploaded;
+use velodex_ecosystem_pypi::policy::PypiPolicy;
 use velodex_policy::{PolicyAction, PolicyDenial};
 use velodex_storage::blob::{BlobEntry, BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore, ProjectCachePurgeCounts};

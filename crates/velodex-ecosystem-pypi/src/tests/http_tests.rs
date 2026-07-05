@@ -12,7 +12,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
-use velodex_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
+use crate::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 use velodex_upstream::{Auth, UpstreamClient};
@@ -21,9 +21,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{LogCapture, field};
 use crate::cache;
-use crate::path_safety::local_file_url;
-use crate::router;
-use crate::state::{AppState, Index, IndexKind};
+use velodex_http::path_safety::local_file_url;
+use velodex_http::router;
+use velodex_http::state::{AppState, Index, IndexKind};
 use crate::upload::Uploaded;
 use velodex_policy::{PackageType, Policy, PolicyConfig};
 
@@ -86,7 +86,7 @@ pub(super) async fn harness_with_policies(
             },
         },
     ];
-    let state = Arc::new(AppState::with_clock(
+    let state = super::wired(AppState::with_clock(
         meta,
         blobs,
         60,
@@ -155,7 +155,7 @@ async fn promotion_harness() -> Harness {
             policy: Policy::default(),
         },
     ];
-    let state = Arc::new(AppState::with_clock(
+    let state = super::wired(AppState::with_clock(
         meta,
         blobs,
         60,
@@ -610,7 +610,7 @@ async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
-    let state = Arc::new(AppState::new(
+    let state = super::wired(AppState::new(
         meta,
         blobs,
         60,
@@ -1053,8 +1053,8 @@ async fn test_mirror_detail_revalidate_304_serves_cached() {
 #[tokio::test]
 async fn test_mirror_detail_stale_on_5xx() {
     let h = harness().await;
-    let body = velodex_ecosystem_pypi::to_json(&velodex_ecosystem_pypi::ProjectDetail {
-        meta: velodex_ecosystem_pypi::Meta::default(),
+    let body = crate::to_json(&crate::ProjectDetail {
+        meta: crate::Meta::default(),
         name: "flask".to_owned(),
         versions: vec!["1.0".to_owned()],
         files: vec![],
@@ -1099,7 +1099,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
         },
         policy: Policy::default(),
     }];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     let (status, ..) = get(&state, "/pypi/simple/flask/", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
@@ -1110,8 +1110,8 @@ async fn test_mirror_detail_stale_on_upstream_error() {
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
-    let body = velodex_ecosystem_pypi::to_json(&velodex_ecosystem_pypi::ProjectDetail {
-        meta: velodex_ecosystem_pypi::Meta::default(),
+    let body = crate::to_json(&crate::ProjectDetail {
+        meta: crate::Meta::default(),
         name: "flask".to_owned(),
         versions: vec![],
         files: vec![],
@@ -1139,7 +1139,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
         },
         policy: Policy::default(),
     }];
-    let state = Arc::new(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 100_000)));
+    let state = super::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 100_000)));
     let (status, _, served) = get(&state, "/pypi/simple/flask/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(served.contains("flask"));
@@ -1167,7 +1167,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
         },
         policy: Policy::default(),
     }];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     let (status, _, body) = get(&state, "/pypi/simple/flask/", None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body.contains("offline mode has no cached project page"));
@@ -1184,8 +1184,8 @@ async fn test_offline_mirror_serves_stale_cached_page() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let body = velodex_ecosystem_pypi::to_json(&velodex_ecosystem_pypi::ProjectDetail {
-        meta: velodex_ecosystem_pypi::Meta::default(),
+    let body = crate::to_json(&crate::ProjectDetail {
+        meta: crate::Meta::default(),
         name: "flask".to_owned(),
         versions: vec!["1.0".to_owned()],
         files: vec![],
@@ -1213,7 +1213,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
         },
         policy: Policy::default(),
     }];
-    let state = Arc::new(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 100_000)));
+    let state = super::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 100_000)));
     let (status, _, body) = get(&state, "/pypi/simple/flask/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("\"name\":\"flask\""));
@@ -1298,7 +1298,7 @@ async fn test_file_download_status_store_error_is_server_error() {
         },
         policy: Policy::default(),
     }];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
 
     let uri = format!(
         "/pypi/files/{}/flask-1.0-py3-none-any.whl",
@@ -2192,7 +2192,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             },
         },
     ];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     upload_velodexpkg(&state, "/root/pypi/", &fixture_wheel()).await;
     // The mirror layer is unreachable, but the local layer still serves the upload.
     let (status, _, detail) = get(&state, "/root/pypi/simple/velodexpkg/", Some("application/json")).await;
@@ -2806,7 +2806,7 @@ async fn test_upload_storage_failure_is_server_error() {
             volatile: true,
         },
     }];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     assert_eq!(
         upload_velodexpkg(&state, "/local/", b"data").await,
         StatusCode::INTERNAL_SERVER_ERROR
@@ -3053,7 +3053,7 @@ async fn test_longest_prefix_wins() {
             },
         },
     ];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     // Uploading requires a token; only "a/b" has one, so a 401-vs-200 proves which matched.
     assert_eq!(
         upload_velodexpkg(&state, "/a/b/", &fixture_wheel()).await,
@@ -3129,7 +3129,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             },
         },
     ];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     let (status, _, body) = get(&state, "/+status", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("https://example.invalid/simple/"));
@@ -3164,7 +3164,7 @@ async fn test_metrics_exposes_per_index_counters() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     // A second route makes the exposition ordering observable.
-    h.state.metrics.record(crate::metrics::Event::Page {
+    h.state.metrics.record(velodex_http::metrics::Event::Page {
         route: "local".to_owned(),
         project: "veloxpkg".to_owned(),
     });
@@ -3185,7 +3185,8 @@ async fn test_metrics_exposes_per_index_counters() {
 #[tokio::test]
 async fn test_index_response_error_is_bad_gateway() {
     use crate::cache::CacheError;
-    use crate::handlers::{Format, index_response};
+    use crate::serving::index_response;
+use velodex_http::handlers::Format;
     let response = index_response(Err(CacheError::Unavailable), Format::Json, "pypi");
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -3384,7 +3385,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
             },
         },
     ];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     assert_eq!(upload_velodexpkg(&state, "/ov/", b"x").await, StatusCode::NOT_FOUND);
 }
 
@@ -4644,7 +4645,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
             },
         },
     ];
-    let state = Arc::new(AppState::new(meta, blobs, 60, indexes));
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     let (status, _, body) = get(&state, "/ov/simple/flask/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("flask-1.0-py3-none-any.whl"));

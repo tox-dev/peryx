@@ -8,7 +8,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest as _, Sha256};
 use velodex_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
-use velodex_http::upload::Uploaded;
+use velodex_ecosystem_pypi::upload::Uploaded;
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::MetaStore;
 

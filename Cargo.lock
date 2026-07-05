@@ -4667,13 +4667,48 @@ dependencies = [
 name = "velodex-ecosystem-pypi"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "blake2",
+ "bytes",
+ "codspeed-criterion-compat",
+ "csv",
+ "flate2",
+ "futures-util",
+ "http",
+ "http-body-util",
  "insta",
+ "moka",
  "pep440_rs",
+ "redb",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "tantivy",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
  "tl",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-subscriber",
  "url",
+ "utoipa",
  "velodex-format",
+ "velodex-http",
+ "velodex-identity",
+ "velodex-policy",
+ "velodex-storage",
+ "velodex-upstream",
+ "wiremock",
+ "zip",
 ]
 
 [[package]]
@@ -4692,7 +4727,6 @@ dependencies = [
  "base64",
  "blake2",
  "bytes",
- "codspeed-criterion-compat",
  "csv",
  "flate2",
  "futures-util",
@@ -4718,7 +4752,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "utoipa",
- "velodex-ecosystem-pypi",
  "velodex-format",
  "velodex-identity",
  "velodex-policy",
@@ -4739,9 +4772,9 @@ dependencies = [
 name = "velodex-policy"
 version = "0.0.1"
 dependencies = [
+ "pep440_rs",
  "serde",
  "thiserror 2.0.18",
- "velodex-ecosystem-pypi",
 ]
 
 [[package]]

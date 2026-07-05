@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, header};
 
 const UNKNOWN: &str = "unknown";
 
-pub(crate) struct Event<'a> {
+pub struct Event<'a> {
     action: &'static str,
     result: &'static str,
     actor: Option<&'a str>,
@@ -23,7 +23,8 @@ pub(crate) struct Event<'a> {
 }
 
 impl<'a> Event<'a> {
-    pub(crate) const fn new(action: &'static str, result: &'static str) -> Self {
+    #[must_use]
+    pub const fn new(action: &'static str, result: &'static str) -> Self {
         Self {
             action,
             result,
@@ -43,68 +44,80 @@ impl<'a> Event<'a> {
         }
     }
 
-    pub(crate) const fn actor(mut self, actor: Option<&'a str>) -> Self {
+    #[must_use]
+    pub const fn actor(mut self, actor: Option<&'a str>) -> Self {
         self.actor = actor;
         self
     }
 
-    pub(crate) const fn index(mut self, index: &'a str) -> Self {
+    #[must_use]
+    pub const fn index(mut self, index: &'a str) -> Self {
         self.index = Some(index);
         self
     }
 
-    pub(crate) const fn source_index(mut self, source_index: &'a str) -> Self {
+    #[must_use]
+    pub const fn source_index(mut self, source_index: &'a str) -> Self {
         self.source_index = Some(source_index);
         self
     }
 
-    pub(crate) const fn local_index(mut self, local_index: &'a str) -> Self {
+    #[must_use]
+    pub const fn local_index(mut self, local_index: &'a str) -> Self {
         self.local_index = Some(local_index);
         self
     }
 
-    pub(crate) const fn project(mut self, project: Option<&'a str>) -> Self {
+    #[must_use]
+    pub const fn project(mut self, project: Option<&'a str>) -> Self {
         self.project = project;
         self
     }
 
-    pub(crate) const fn version(mut self, version: Option<&'a str>) -> Self {
+    #[must_use]
+    pub const fn version(mut self, version: Option<&'a str>) -> Self {
         self.version = version;
         self
     }
 
-    pub(crate) const fn filename(mut self, filename: Option<&'a str>) -> Self {
+    #[must_use]
+    pub const fn filename(mut self, filename: Option<&'a str>) -> Self {
         self.filename = filename;
         self
     }
 
-    pub(crate) const fn digest(mut self, digest: Option<&'a str>) -> Self {
+    #[must_use]
+    pub const fn digest(mut self, digest: Option<&'a str>) -> Self {
         self.digest = digest;
         self
     }
 
-    pub(crate) const fn count(mut self, count: usize) -> Self {
+    #[must_use]
+    pub const fn count(mut self, count: usize) -> Self {
         self.count = count;
         self
     }
 
-    pub(crate) const fn changed(mut self, changed: bool) -> Self {
+    #[must_use]
+    pub const fn changed(mut self, changed: bool) -> Self {
         self.changed = changed;
         self
     }
 
-    pub(crate) const fn reason(mut self, reason: Option<&'a str>) -> Self {
+    #[must_use]
+    pub const fn reason(mut self, reason: Option<&'a str>) -> Self {
         self.reason = reason;
         self
     }
 
-    pub(crate) fn request(mut self, headers: &'a HeaderMap) -> Self {
+    #[must_use]
+    pub fn request(mut self, headers: &'a HeaderMap) -> Self {
         self.request_id = request_id(headers);
         self.user_agent = user_agent(headers);
         self
     }
 
-    pub(crate) fn emit(&self) {
+    pub fn emit(&self) {
         let actor = text(self.actor);
         let index = text(self.index);
         let source_index = text(self.source_index);
@@ -141,7 +154,7 @@ impl<'a> Event<'a> {
 }
 
 #[must_use]
-pub(crate) fn actor(headers: &HeaderMap) -> Option<String> {
+pub fn actor(headers: &HeaderMap) -> Option<String> {
     let value = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())?;

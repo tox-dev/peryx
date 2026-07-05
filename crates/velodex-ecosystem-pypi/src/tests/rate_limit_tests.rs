@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
 use velodex_storage::blob::{BlobStore, Digest};
@@ -15,11 +15,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::detail_json;
 use super::{LogCapture, field};
-use crate::rate_limit::{
-    DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits, route_class,
+use velodex_http::rate_limit::{
+    DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits,
 };
-use crate::router;
-use crate::state::{AppState, Index, IndexKind};
+use velodex_http::router;
+use velodex_http::state::{AppState, Index, IndexKind};
 use velodex_policy::Policy;
 
 struct Harness {
@@ -35,7 +35,7 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let ticks = Arc::new(AtomicI64::new(1000));
-    let state = Arc::new(AppState::with_limits(
+    let state = super::wired(AppState::with_limits(
         meta,
         blobs,
         60,
@@ -99,15 +99,6 @@ fn test_rate_limit_config_returns_metadata_and_upload_limits() {
 
     assert_eq!(config.limit(RouteClass::Metadata), RouteLimit::new(1200, 60));
     assert_eq!(config.limit(RouteClass::Upload), RouteLimit::new(60, 60));
-}
-
-#[test]
-fn test_route_class_detects_writes_and_metadata() {
-    assert_eq!(route_class(&Method::POST, "/pypi/simple/"), RouteClass::Upload);
-    assert_eq!(
-        route_class(&Method::GET, "/pypi/files/abc/flask-1.0.whl.metadata"),
-        RouteClass::Metadata
-    );
 }
 
 #[tokio::test]

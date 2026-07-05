@@ -1,24 +1,26 @@
 //! The `PyPI` search-document mapping: how cached/hosted/virtual `PyPI` project metadata becomes the
-//! neutral [`PackageDocument`]s the [`PackageSearch`](crate::search::PackageSearch) index stores.
+//! neutral [`PackageDocument`]s the [`PackageSearch`](velodex_http::search::PackageSearch) index stores.
 //!
-//! The tantivy index, its schema, and querying are ecosystem-neutral and live in [`crate::search`];
-//! only the walk from an index's stored records to a project's searchable text is PyPI-shaped, so it
-//! sits behind the [`PackageIndexer`] seam here. A future ecosystem supplies its own indexer.
+//! The tantivy index, its schema, and querying are ecosystem-neutral and live in
+//! [`velodex_http::search`]; only the walk from an index's stored records to a project's searchable
+//! text is PyPI-shaped, so it sits behind the [`PackageIndexer`] seam here. A future ecosystem
+//! supplies its own indexer.
 
 use std::collections::{BTreeSet, HashSet};
 
-use velodex_ecosystem_pypi::{
+use crate::{
     CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata,
 };
 use velodex_policy::PolicyAction;
+use crate::policy::PypiPolicy;
 use velodex_storage::blob::Digest;
 use velodex_storage::meta::CachedIndex;
 
-use crate::path_safety::local_file_url;
-use crate::search::{
+use velodex_http::path_safety::local_file_url;
+use velodex_http::search::{
     INDEXED_TEXT_BYTES, PackageDocument, PackageIndexer, PackageSource, SearchError, truncate_to_chars,
 };
-use crate::state::{AppState, Index, IndexKind};
+use velodex_http::state::{AppState, Index, IndexKind};
 use crate::upload::Uploaded;
 
 /// Produces `PyPI` search documents for the neutral search index.

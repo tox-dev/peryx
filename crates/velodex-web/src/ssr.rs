@@ -9,7 +9,8 @@ use leptos::prelude::*;
 use leptos_axum::{LeptosRoutes as _, generate_route_list};
 use velodex_ecosystem_pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
 use velodex_http::search::{SearchParams, SourceFilter};
-use velodex_http::{AppState, cache};
+use velodex_ecosystem_pypi::cache;
+use velodex_http::AppState;
 use velodex_storage::blob::Digest;
 
 use crate::model::{
@@ -264,7 +265,7 @@ pub async fn members(
     let archive = filename.to_owned();
     let containers = containers.to_vec();
     let members = tokio::task::spawn_blocking(move || {
-        velodex_http::archive::list_members_nested_path(&archive, &path, &containers)
+        velodex_ecosystem_pypi::archive::list_members_nested_path(&archive, &path, &containers)
     })
     .await
     .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?
@@ -310,13 +311,13 @@ pub async fn member_chunk(
     let containers = containers.to_vec();
     let selected = member.to_owned();
     let chunk = tokio::task::spawn_blocking(move || {
-        velodex_http::archive::read_text_member_chunk_nested_path(
+        velodex_ecosystem_pypi::archive::read_text_member_chunk_nested_path(
             &archive,
             &path,
             &containers,
             &selected,
             offset,
-            velodex_http::archive::DEFAULT_MEMBER_CHUNK,
+            velodex_ecosystem_pypi::archive::DEFAULT_MEMBER_CHUNK,
         )
     })
     .await

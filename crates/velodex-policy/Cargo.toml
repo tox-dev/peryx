@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Repository policy engine for velodex: allow/deny, version, wheel-tag, and size rules."
 
 [dependencies]
-velodex-ecosystem-pypi.workspace = true
+pep440_rs.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

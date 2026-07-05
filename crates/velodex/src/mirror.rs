@@ -108,7 +108,7 @@ async fn sync(config: &Config, options: &PrefetchOptions, out: &mut Output) -> a
     write_count(out, &target.repo, "started_at", started_at)?;
     for project in &selection.projects {
         summary.projects += 1;
-        match velodex_http::cache::materialize_detail(state.clone(), target.position, project.clone()).await {
+        match velodex_ecosystem_pypi::cache::materialize_detail(state.clone(), target.position, project.clone()).await {
             Ok(Some(_)) => {
                 let detail = cached_detail(&state, &target, project)?;
                 write_row(out, Row::page(&target.repo, project, "synced", ""))?;
@@ -281,12 +281,12 @@ async fn sync_file(
     state: Arc<AppState>,
     target: &Target,
     file: &MirrorFile,
-) -> Result<SyncOutcome, velodex_http::cache::CacheError> {
-    let digest = Digest::from_hex(&file.digest).ok_or(velodex_http::cache::CacheError::FileNotFound)?;
+) -> Result<SyncOutcome, velodex_ecosystem_pypi::cache::CacheError> {
+    let digest = Digest::from_hex(&file.digest).ok_or(velodex_ecosystem_pypi::cache::CacheError::FileNotFound)?;
     if state.blobs.exists(&digest) {
         return Ok(SyncOutcome::Cached(blob_size(&state, &digest)));
     }
-    let path = velodex_http::cache::file_path(
+    let path = velodex_ecosystem_pypi::cache::file_path(
         state.clone(),
         digest.clone(),
         target.route.clone(),
@@ -304,14 +304,14 @@ async fn sync_metadata(
     metadata_filename: &str,
     artifact_digest: &str,
     metadata_digest: &str,
-) -> Result<SyncOutcome, velodex_http::cache::CacheError> {
-    let artifact = Digest::from_hex(artifact_digest).ok_or(velodex_http::cache::CacheError::FileNotFound)?;
-    let metadata = Digest::from_hex(metadata_digest).ok_or(velodex_http::cache::CacheError::FileNotFound)?;
+) -> Result<SyncOutcome, velodex_ecosystem_pypi::cache::CacheError> {
+    let artifact = Digest::from_hex(artifact_digest).ok_or(velodex_ecosystem_pypi::cache::CacheError::FileNotFound)?;
+    let metadata = Digest::from_hex(metadata_digest).ok_or(velodex_ecosystem_pypi::cache::CacheError::FileNotFound)?;
     if state.blobs.exists(&metadata) {
         return Ok(SyncOutcome::Cached(blob_size(state, &metadata)));
     }
     Ok(SyncOutcome::Downloaded(
-        velodex_http::cache::metadata_bytes(state, &artifact, route, metadata_filename)
+        velodex_ecosystem_pypi::cache::metadata_bytes(state, &artifact, route, metadata_filename)
             .await?
             .len() as u64,
     ))

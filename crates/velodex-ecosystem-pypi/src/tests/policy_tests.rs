@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use velodex_ecosystem_pypi::{
-    CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked,
-};
+use velodex_policy::{PackageType, Policy, PolicyAction, PolicyConfig, PolicyConfigError};
 
-use crate::{PackageType, Policy, PolicyAction, PolicyConfig, PolicyConfigError};
+use crate::policy::PypiPolicy;
+use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
 
 #[test]
 fn test_apply_list_filters_project_rules() {

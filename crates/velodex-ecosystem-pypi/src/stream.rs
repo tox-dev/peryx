@@ -9,10 +9,11 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use velodex_ecosystem_pypi::{CoreMetadata, File, Yanked, parse_meta, to_json};
+use crate::{CoreMetadata, File, Yanked, parse_meta, to_json};
 
-use crate::path_safety::local_file_url;
+use velodex_http::path_safety::local_file_url;
 use velodex_policy::{Policy, PolicyAction};
+use crate::policy::PypiPolicy;
 
 /// Per-request configuration: how to rewrite and merge one page.
 #[derive(Debug, Default, Clone)]
@@ -112,7 +113,7 @@ pub enum TransformError {
     #[error("upstream page is not valid JSON: {0}")]
     Parse(#[from] serde_json::Error),
     #[error(transparent)]
-    Simple(#[from] velodex_ecosystem_pypi::SimpleError),
+    Simple(#[from] crate::SimpleError),
     #[error("upstream page ended mid-token")]
     Truncated,
     #[error("upstream page carries data after the document root")]

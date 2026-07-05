@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
-use velodex_ecosystem_pypi::SimpleError;
+use crate::SimpleError;
 use velodex_storage::blob::{BlobError, BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaError, MetaStore};
 use velodex_upstream::UpstreamClient;
@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::{detail_json, get, harness};
 use crate::cache::{self, PageOutcome};
-use crate::state::{AppState, Index, IndexKind};
+use velodex_http::state::{AppState, Index, IndexKind};
 use velodex_policy::{Policy, PolicyAction, PolicyConfig};
 
 fn fresh_record(body: &[u8]) -> CachedIndex {
@@ -375,11 +375,11 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
 async fn test_file_path_abandoned_download_errors() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
-    let (sender, receiver) = tokio::sync::watch::channel(crate::download::DownloadProgress::default());
+    let (sender, receiver) = tokio::sync::watch::channel(velodex_http::download::DownloadProgress::default());
     drop(sender);
     h.state.downloads.lock().expect("downloads lock").insert(
         digest.as_str().to_owned(),
-        crate::download::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
+        velodex_http::download::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
     );
     let err = cache::file_path(
         h.state.clone(),
@@ -611,7 +611,7 @@ fn custom_state(dir: &tempfile::TempDir, upstream: &str, indexes: fn(UpstreamCli
     let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let client = UpstreamClient::new(upstream).unwrap();
-    Arc::new(AppState::with_clock(
+    super::wired(AppState::with_clock(
         meta,
         blobs,
         60,

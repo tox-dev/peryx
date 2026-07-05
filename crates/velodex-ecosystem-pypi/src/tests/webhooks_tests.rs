@@ -14,9 +14,9 @@ use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 use super::http_tests::{fixture_wheel, multipart_body, request, upload_auth, upload_velodexpkg};
-use crate::router;
-use crate::state::{AppState, Index, IndexKind};
-use crate::webhook::{self, WebhookRuntime, WebhookTargetConfig};
+use velodex_http::router;
+use velodex_http::state::{AppState, Index, IndexKind};
+use velodex_http::webhook::{self, WebhookRuntime, WebhookTargetConfig};
 use velodex_policy::Policy;
 
 const SECRET: &str = "hook-secret";
@@ -42,7 +42,7 @@ impl Harness {
             events: events.iter().map(|event| (*event).to_owned()).collect(),
         }])
         .unwrap();
-        let state = Arc::new(AppState::with_clock_and_webhooks(
+        let state = super::wired(AppState::with_clock_and_webhooks(
             meta,
             blobs,
             60,

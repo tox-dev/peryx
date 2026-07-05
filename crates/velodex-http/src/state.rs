@@ -340,8 +340,21 @@ impl AppState {
             rate_limits: RateLimiter::new(rate_limit),
             upstream_limits: UpstreamLimits::new(upstream_limits),
             webhooks,
-            serving: Arc::new(crate::serving::PypiServing),
+            serving: default_serving(),
         }
+    }
+
+    /// Wire in the ecosystem serving driver and its search indexer. The binary calls this once at
+    /// startup with the configured ecosystem's implementations; a state built without it serves the
+    /// neutral defaults ([`UnconfiguredServing`](crate::serving::UnconfiguredServing) and
+    /// [`EmptyIndexer`](crate::search::EmptyIndexer)).
+    pub fn set_ecosystem(
+        &mut self,
+        serving: Arc<dyn crate::serving::EcosystemServing>,
+        indexer: Arc<dyn crate::search::PackageIndexer>,
+    ) {
+        self.serving = serving;
+        self.search.set_indexer(indexer);
     }
 
     /// Find the index whose route is the longest segment-aligned prefix of `path` (which has no
@@ -427,7 +440,8 @@ pub fn describe_indexes(indexes: &[Index]) -> Vec<IndexDescription> {
         .collect()
 }
 
-pub(crate) fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
+#[must_use]
+pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
     let index = &indexes[position];
     let (kind, layers, uploads, volatile_deletes, upload_to) = match &index.kind {
         IndexKind::Cached { .. } => ("cached", Vec::new(), false, false, None),
@@ -555,4 +569,8 @@ fn system_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+fn default_serving() -> Arc<dyn crate::serving::EcosystemServing> {
+    Arc::new(crate::serving::UnconfiguredServing)
 }

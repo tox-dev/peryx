@@ -42,21 +42,21 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let indexes = build_indexes(&config.indexes, config.offline)?;
     let webhooks = build_webhooks(&config.indexes)?;
     let search_path = config.data_dir.join("search-v1");
-    let state = Arc::new(
-        AppState::with_search_path_and_runtime(
-            meta,
-            blobs,
-            config.cache_ttl_secs,
-            indexes,
-            &search_path,
-            RuntimeOptions {
-                rate_limit: config.rate_limit.clone(),
-                upstream_concurrency: upstream_concurrency(&config.indexes),
-                webhooks,
-            },
-        )
-        .context(format!("open search index {}", search_path.display()))?,
-    );
+    let mut state = AppState::with_search_path_and_runtime(
+        meta,
+        blobs,
+        config.cache_ttl_secs,
+        indexes,
+        &search_path,
+        RuntimeOptions {
+            rate_limit: config.rate_limit.clone(),
+            upstream_concurrency: upstream_concurrency(&config.indexes),
+            webhooks,
+        },
+    )
+    .context(format!("open search index {}", search_path.display()))?;
+    velodex_ecosystem_pypi::install(&mut state);
+    let state = Arc::new(state);
     if !state.webhooks.is_empty() {
         webhook::kick(state.clone());
     }

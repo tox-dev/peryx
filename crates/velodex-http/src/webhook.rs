@@ -268,7 +268,14 @@ struct WebhookFile<'a> {
     sha256: Option<&'a str>,
 }
 
-pub(crate) fn emit(state: Arc<AppState>, event: &WebhookEvent) {
+/// Enqueue signed webhook deliveries for `event` to every configured target subscribed to its kind.
+///
+/// A no-op when no webhooks are configured or none subscribe to the event's kind.
+///
+/// # Panics
+/// Panics only if the aggregation lock is poisoned; the payload is all JSON primitives and cannot
+/// fail to serialize.
+pub fn emit(state: Arc<AppState>, event: &WebhookEvent) {
     if state.webhooks.is_empty() {
         return;
     }

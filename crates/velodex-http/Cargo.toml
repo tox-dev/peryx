@@ -9,7 +9,6 @@ description = "HTTP layer for velodex: read-through simple-index serving and blo
 
 [dependencies]
 velodex-format.workspace = true
-velodex-ecosystem-pypi.workspace = true
 velodex-policy.workspace = true
 velodex-identity.workspace = true
 velodex-storage.workspace = true
@@ -46,14 +45,9 @@ time.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
-criterion = { workspace = true, features = ["async_tokio"] }
 wiremock.workspace = true
 tracing-subscriber.workspace = true
 redb.workspace = true
-
-[[bench]]
-name = "rate_limit"
-harness = false
 
 [lints]
 workspace = true

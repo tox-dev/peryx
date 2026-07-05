@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use velodex_ecosystem_pypi::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
+use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaError, MetaScanError, MetaStore};
 use velodex_upstream::UpstreamClient;
 
 use super::http_tests::{get, harness, harness_with_policies};
 use crate::cache;
-use crate::path_safety::local_file_url;
-use crate::search::{PackageSearch, PackageSource, SearchError, SourceFilter};
-use crate::state::{AppState, Index, IndexKind};
+use velodex_http::path_safety::local_file_url;
+use velodex_http::search::{PackageSearch, PackageSource, SearchError, SourceFilter};
+use velodex_http::state::{AppState, Index, IndexKind};
 use crate::upload::Uploaded;
 use velodex_policy::{Policy, PolicyConfig};
 
@@ -551,7 +551,7 @@ fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
     Policy::compile(&config).unwrap()
 }
 
-fn put_uploaded_package(state: &crate::state::AppState, display: &str, normalized: &str, summary: &str) {
+fn put_uploaded_package(state: &velodex_http::state::AppState, display: &str, normalized: &str, summary: &str) {
     put_uploaded_package_with_metadata(
         state,
         normalized,
@@ -562,7 +562,7 @@ fn put_uploaded_package(state: &crate::state::AppState, display: &str, normalize
 }
 
 fn put_uploaded_package_with_metadata(
-    state: &crate::state::AppState,
+    state: &velodex_http::state::AppState,
     normalized: &str,
     metadata: &str,
     requires_python: Option<&str>,
@@ -605,7 +605,7 @@ fn put_uploaded_package_with_metadata(
 }
 
 fn put_cached_package(
-    state: &crate::state::AppState,
+    state: &velodex_http::state::AppState,
     key: &str,
     index: &str,
     normalized: &str,
@@ -640,7 +640,7 @@ fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
             },
         },
     ];
-    (dir, Arc::new(AppState::new(meta, blobs, 60, indexes)))
+    (dir, super::wired(AppState::new(meta, blobs, 60, indexes)))
 }
 
 fn file_with_hash(filename: &str, sha256: &str, requires_python: Option<&str>) -> File {

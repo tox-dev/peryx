@@ -8,7 +8,7 @@ use serde::{Serialize, Serializer};
 use serde_json::json;
 use velodex_format::url_encoding::{push_component, push_path};
 
-use crate::state::{AppState, IndexDescription};
+use velodex_http::state::{AppState, IndexDescription};
 
 const TOKEN_PLACEHOLDER: &str = "<upload-token>";
 
@@ -229,7 +229,7 @@ where
     json!({
         "simple_html": true,
         "simple_json": true,
-        "simple_api_version": velodex_ecosystem_pypi::API_VERSION,
+        "simple_api_version": crate::API_VERSION,
         "metadata_siblings": true,
         "uploads": capabilities.writes,
         "yanking": capabilities.writes,

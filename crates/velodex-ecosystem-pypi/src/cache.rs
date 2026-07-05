@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use velodex_ecosystem_pypi::file_matches_version;
-use velodex_ecosystem_pypi::{
+use crate::file_matches_version;
+use crate::policy::PypiPolicy;
+use crate::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Yanked, parse_detail,
     parse_detail_html, parse_distribution_filename, project_of_filename, to_json,
 };
@@ -16,11 +17,11 @@ use velodex_storage::blob::Digest;
 use velodex_storage::meta::CachedIndex;
 use velodex_upstream::{RangeError, SimpleResponse, UpstreamClient};
 
-use crate::download::{DownloadHandle, DownloadProgress};
-use crate::metrics::Event;
-use crate::path_safety::local_file_url;
-use crate::rate_limit::UpstreamPermit;
-use crate::state::{AppState, Index, IndexKind};
+use velodex_http::download::{DownloadHandle, DownloadProgress};
+use velodex_http::metrics::Event;
+use velodex_http::path_safety::local_file_url;
+use velodex_http::rate_limit::UpstreamPermit;
+use velodex_http::state::{AppState, Index, IndexKind};
 use crate::stream::{PageSummary, PageTransformer, Registration};
 use crate::upload::{self, PreparedUpload, Uploaded};
 use velodex_policy::{PolicyAction, PolicyDenial};
@@ -39,7 +40,7 @@ pub enum CacheError {
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error(transparent)]
-    Simple(velodex_ecosystem_pypi::SimpleError),
+    Simple(crate::SimpleError),
     #[error(transparent)]
     Archive(#[from] crate::archive::ArchiveError),
     #[error("upstream unreachable and nothing cached")]
@@ -68,14 +69,14 @@ pub enum CacheError {
     Policy(#[from] PolicyDenial),
 }
 
-impl From<velodex_ecosystem_pypi::SimpleError> for CacheError {
-    fn from(err: velodex_ecosystem_pypi::SimpleError) -> Self {
+impl From<crate::SimpleError> for CacheError {
+    fn from(err: crate::SimpleError) -> Self {
         match err {
-            velodex_ecosystem_pypi::SimpleError::Json(err) => Self::Parse(err),
-            err @ (velodex_ecosystem_pypi::SimpleError::UnsupportedApiVersion(_)
-            | velodex_ecosystem_pypi::SimpleError::InvalidApiVersion(_)
-            | velodex_ecosystem_pypi::SimpleError::InvalidProjectStatus(_)
-            | velodex_ecosystem_pypi::SimpleError::Html(_)) => Self::Simple(err),
+            crate::SimpleError::Json(err) => Self::Parse(err),
+            err @ (crate::SimpleError::UnsupportedApiVersion(_)
+            | crate::SimpleError::InvalidApiVersion(_)
+            | crate::SimpleError::InvalidProjectStatus(_)
+            | crate::SimpleError::Html(_)) => Self::Simple(err),
         }
     }
 }
@@ -525,7 +526,7 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
 }
 
 fn log_mirror_sync(repository: &str, project: &str, result: &'static str, changed: bool, reason: Option<&str>) {
-    crate::security::Event::new("mirror_sync", result)
+    velodex_http::security::Event::new("mirror_sync", result)
         .index(repository)
         .project(Some(project))
         .changed(changed)
@@ -2435,7 +2436,7 @@ async fn tail_file(
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use velodex_ecosystem_pypi::Provenance;
+    use crate::Provenance;
     use velodex_storage::blob::BlobStore;
     use velodex_storage::meta::MetaStore;
 

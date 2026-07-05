@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use velodex_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
-use velodex_http::upload::Uploaded;
+use velodex_ecosystem_pypi::upload::Uploaded;
 use velodex_storage::blob::{BlobStore, Digest};
 use velodex_storage::meta::{CachedIndex, MetaStore};
 
@@ -104,7 +104,7 @@ fn test_config_snippet_renders_pip_conf() {
         &Config::default(),
         "root/pypi",
         "https://packages.example/cache",
-        velodex_http::discovery::SnippetKind::PipConf,
+        velodex_ecosystem_pypi::discovery::SnippetKind::PipConf,
     )
     .unwrap();
     assert_eq!(
@@ -125,7 +125,7 @@ fn test_config_snippet_redacts_upload_token() {
         &config,
         "root/pypi",
         "https://packages.example",
-        velodex_http::discovery::SnippetKind::Pypirc,
+        velodex_ecosystem_pypi::discovery::SnippetKind::Pypirc,
     )
     .unwrap();
 
@@ -147,7 +147,7 @@ fn test_config_snippet_renders_uv_toml_with_upload_url() {
         &config,
         "root/pypi",
         "https://packages.example",
-        velodex_http::discovery::SnippetKind::UvToml,
+        velodex_ecosystem_pypi::discovery::SnippetKind::UvToml,
     )
     .unwrap();
 
@@ -163,7 +163,7 @@ fn test_config_snippet_rejects_pypirc_for_read_only_index() {
         &Config::default(),
         "pypi",
         "https://packages.example",
-        velodex_http::discovery::SnippetKind::Pypirc,
+        velodex_ecosystem_pypi::discovery::SnippetKind::Pypirc,
     )
     .unwrap_err();
     assert!(err.to_string().contains("does not accept uploads"));
@@ -175,7 +175,7 @@ fn test_config_snippet_rejects_invalid_base_url() {
         &Config::default(),
         "root/pypi",
         "not a url",
-        velodex_http::discovery::SnippetKind::PipConf,
+        velodex_ecosystem_pypi::discovery::SnippetKind::PipConf,
     )
     .unwrap_err();
     assert!(err.to_string().contains("base URL"));
@@ -187,7 +187,7 @@ fn test_config_snippet_rejects_unknown_index_route() {
         &Config::default(),
         "missing",
         "https://packages.example",
-        velodex_http::discovery::SnippetKind::PipConf,
+        velodex_ecosystem_pypi::discovery::SnippetKind::PipConf,
     )
     .unwrap_err();
     assert!(err.to_string().contains("unknown index route"));
@@ -201,7 +201,7 @@ fn test_config_snippet_rejects_invalid_index_configuration() {
         &config,
         "root/pypi",
         "https://packages.example",
-        velodex_http::discovery::SnippetKind::PipConf,
+        velodex_ecosystem_pypi::discovery::SnippetKind::PipConf,
     )
     .unwrap_err();
     assert!(err.to_string().contains("duplicate index route"));

@@ -10,7 +10,7 @@ use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 use velodex_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use velodex_http::path_safety::local_file_url;
-use velodex_http::upload::Uploaded;
+use velodex_ecosystem_pypi::upload::Uploaded;
 use velodex_storage::blob::Digest;
 
 use crate::config::{Config, IndexConfig, IndexKind};

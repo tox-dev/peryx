@@ -1,13 +1,17 @@
 //! Repository policy checks compiled from configuration.
+//!
+//! The engine is ecosystem-neutral: it never names a package format. Callers turn one artifact into a
+//! neutral [`FileFacts`] (project, version, package type, wheel tags, size) and ask [`Policy`] whether
+//! the configured rules allow it. The `PyPI` mapping from Simple-API records to facts (and the
+//! detail/list filtering built on it) lives in `velodex-ecosystem-pypi`, so this crate carries no
+//! format dependency.
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
+use std::str::FromStr as _;
 
+use pep440_rs::{Version, VersionSpecifiers};
 use serde::{Deserialize, Serialize};
-use velodex_ecosystem_pypi::{
-    DistributionKind, File, ProjectDetail, ProjectList, normalize_name, parse_distribution_filename,
-    parse_version_specifiers,
-};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -48,15 +52,6 @@ impl PackageType {
     }
 }
 
-impl From<DistributionKind> for PackageType {
-    fn from(value: DistributionKind) -> Self {
-        match value {
-            DistributionKind::Wheel => Self::Wheel,
-            DistributionKind::SdistTarGz => Self::Sdist,
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyConfigError {
     #[error("invalid PEP 440 version specifier {0:?}")]
@@ -69,7 +64,7 @@ pub enum PolicyConfigError {
 pub struct Policy {
     allow_projects: HashSet<String>,
     block_projects: HashSet<String>,
-    allow_versions: Option<velodex_ecosystem_pypi::VersionSpecifiers>,
+    allow_versions: Option<VersionSpecifiers>,
     allow_package_types: u8,
     block_package_types: u8,
     allow_wheel_pythons: HashSet<String>,
@@ -91,7 +86,7 @@ impl Policy {
             .allow_versions
             .as_deref()
             .map(|value| {
-                parse_version_specifiers(value).ok_or_else(|| PolicyConfigError::VersionSpecifiers(value.to_owned()))
+                VersionSpecifiers::from_str(value).map_err(|_| PolicyConfigError::VersionSpecifiers(value.to_owned()))
             })
             .transpose()?;
         let policy = Self {
@@ -117,6 +112,12 @@ impl Policy {
     #[must_use]
     pub const fn has_project_size_limit(&self) -> bool {
         self.max_project_size_bytes.is_some()
+    }
+
+    /// The configured per-project size limit, if any.
+    #[must_use]
+    pub const fn max_project_size(&self) -> Option<u64> {
+        self.max_project_size_bytes
     }
 
     #[must_use]
@@ -169,90 +170,11 @@ impl Policy {
         ))
     }
 
-    /// Check whether one Simple API file record is allowed.
+    /// Check one artifact's neutral [`FileFacts`] against every configured rule.
     ///
     /// # Errors
-    /// Returns a denial when the file's parsed facts match a configured policy rule.
-    pub fn check_file(&self, action: PolicyAction, project: &str, file: &File) -> Result<(), PolicyDenial> {
-        let facts = FileFacts::from_file(project, file);
-        self.check_facts(action, &facts)
-    }
-
-    /// Check whether a direct artifact or metadata download is allowed.
-    ///
-    /// # Errors
-    /// Returns a denial when the filename or known size matches a configured policy rule.
-    pub fn check_download(&self, action: PolicyAction, filename: &str, size: Option<u64>) -> Result<(), PolicyDenial> {
-        let artifact = filename.strip_suffix(".metadata").unwrap_or(filename);
-        let facts = FileFacts::from_filename(artifact, size);
-        self.check_facts(action, &facts)
-    }
-
-    /// Filter a project detail response through this policy.
-    ///
-    /// # Errors
-    /// Returns a denial when project-wide rules reject the whole response.
-    pub fn apply_detail(
-        &self,
-        action: PolicyAction,
-        project: &str,
-        mut detail: ProjectDetail,
-    ) -> Result<ProjectDetail, PolicyDenial> {
-        self.check_project(action, project)?;
-        if !self.active {
-            return Ok(detail);
-        }
-        detail
-            .files
-            .retain(|file| self.check_file(action, project, file).is_ok());
-        if let Some(limit) = self.max_project_size_bytes {
-            apply_project_size_limit(action, project, limit, &detail)?;
-        }
-        retain_versions_with_files(&mut detail);
-        Ok(detail)
-    }
-
-    #[must_use]
-    pub fn apply_list(&self, list: ProjectList) -> ProjectList {
-        if self.allow_projects.is_empty() && self.block_projects.is_empty() {
-            return list;
-        }
-        ProjectList {
-            meta: list.meta,
-            projects: list
-                .projects
-                .into_iter()
-                .filter(|entry| {
-                    self.check_project(PolicyAction::Serve, &normalize_name(&entry.name))
-                        .is_ok()
-                })
-                .collect(),
-        }
-    }
-
-    #[must_use]
-    pub fn preview_detail(&self, action: PolicyAction, detail: &ProjectDetail) -> Vec<PolicyDenial> {
-        let mut denials = Vec::new();
-        if let Err(denial) = self.check_project(action, &detail.name) {
-            denials.push(denial);
-            return denials;
-        }
-        let mut allowed = Vec::new();
-        for file in &detail.files {
-            match self.check_file(action, &detail.name, file) {
-                Ok(()) => allowed.push(file),
-                Err(denial) => denials.push(denial),
-            }
-        }
-        if let Some(limit) = self.max_project_size_bytes
-            && let Some(denial) = project_size_denial(action, &detail.name, allowed, limit)
-        {
-            denials.push(denial);
-        }
-        denials
-    }
-
-    fn check_facts(&self, action: PolicyAction, facts: &FileFacts) -> Result<(), PolicyDenial> {
+    /// Returns a denial when the facts match a configured policy rule.
+    pub fn check_facts(&self, action: PolicyAction, facts: &FileFacts) -> Result<(), PolicyDenial> {
         self.check_project(action, &facts.project)?;
         self.check_version(action, facts)?;
         self.check_package_type(action, facts)?;
@@ -413,7 +335,10 @@ pub struct PolicyDenial {
 }
 
 impl PolicyDenial {
-    fn new(
+    /// Build a denial. Ecosystem mappers construct these when a format-specific check (a project-wide
+    /// size total, say) fails outside [`Policy::check_facts`].
+    #[must_use]
+    pub fn new(
         action: PolicyAction,
         project: &str,
         filename: Option<&str>,
@@ -475,45 +400,22 @@ fn check_wheel_tag(action: PolicyAction, facts: &FileFacts, rule: WheelTagRule<'
     }
 }
 
-struct FileFacts {
-    project: String,
-    filename: Option<String>,
-    version: Option<velodex_ecosystem_pypi::Version>,
-    package_type: Option<PackageType>,
-    python_tag: Option<String>,
-    platform_tag: Option<String>,
-    size: Option<u64>,
+/// The neutral facts one artifact contributes to a policy decision.
+///
+/// Ecosystem code fills these from its own records (a `PyPI` Simple-API file, a wheel/sdist filename)
+/// so [`Policy`] never sees a format type.
+#[derive(Debug, Clone)]
+pub struct FileFacts {
+    pub project: String,
+    pub filename: Option<String>,
+    pub version: Option<Version>,
+    pub package_type: Option<PackageType>,
+    pub python_tag: Option<String>,
+    pub platform_tag: Option<String>,
+    pub size: Option<u64>,
 }
 
 impl FileFacts {
-    fn from_file(project: &str, file: &File) -> Self {
-        let parsed = parse_distribution_filename(&file.filename).ok();
-        Self {
-            project: project.to_owned(),
-            filename: Some(file.filename.clone()),
-            version: parsed.as_ref().map(|parsed| parsed.version.clone()),
-            package_type: parsed.as_ref().map(|parsed| PackageType::from(parsed.kind)),
-            python_tag: parsed.as_ref().and_then(|parsed| parsed.python_tag.clone()),
-            platform_tag: parsed.as_ref().and_then(|parsed| parsed.platform_tag.clone()),
-            size: file.size,
-        }
-    }
-
-    fn from_filename(filename: &str, size: Option<u64>) -> Self {
-        let parsed = parse_distribution_filename(filename).ok();
-        Self {
-            project: parsed
-                .as_ref()
-                .map_or_else(|| "<unknown>".to_owned(), |parsed| parsed.normalized_name.clone()),
-            filename: Some(filename.to_owned()),
-            version: parsed.as_ref().map(|parsed| parsed.version.clone()),
-            package_type: parsed.as_ref().map(|parsed| PackageType::from(parsed.kind)),
-            python_tag: parsed.as_ref().and_then(|parsed| parsed.python_tag.clone()),
-            platform_tag: parsed.as_ref().and_then(|parsed| parsed.platform_tag.clone()),
-            size,
-        }
-    }
-
     fn denial(&self, action: PolicyAction, rule: &'static str, field: &'static str, reason: String) -> PolicyDenial {
         PolicyDenial::new(
             action,
@@ -527,72 +429,24 @@ impl FileFacts {
     }
 }
 
-fn apply_project_size_limit(
-    action: PolicyAction,
-    project: &str,
-    limit: u64,
-    detail: &ProjectDetail,
-) -> Result<(), PolicyDenial> {
-    if let Some(denial) = project_size_denial(action, project, detail.files.iter(), limit) {
-        return Err(denial);
-    }
-    Ok(())
-}
-
-fn project_size_denial<'a>(
-    action: PolicyAction,
-    project: &str,
-    files: impl IntoIterator<Item = &'a File>,
-    limit: u64,
-) -> Option<PolicyDenial> {
-    let mut total = 0_u64;
-    for file in files {
-        let Some(size) = file.size else {
-            return Some(PolicyDenial::new(
-                action,
-                project,
-                Some(&file.filename),
-                None,
-                "max-project-size",
-                "size",
-                format!(
-                    "project size is unknown because file {:?} has no declared size",
-                    file.filename
-                ),
-            ));
-        };
-        total = total.saturating_add(size);
-    }
-    (total > limit).then(|| {
-        PolicyDenial::new(
-            action,
-            project,
-            None,
-            None,
-            "max-project-size",
-            "project_size",
-            format!("project size {total} exceeds limit {limit}"),
-        )
-    })
-}
-
-fn retain_versions_with_files(detail: &mut ProjectDetail) {
-    let versions = detail
-        .files
-        .iter()
-        .filter_map(|file| parse_distribution_filename(&file.filename).ok())
-        .map(|parsed| parsed.version.to_string())
-        .collect::<BTreeSet<_>>();
-    if versions.is_empty() {
-        detail.versions.clear();
-        return;
-    }
-    detail.versions.retain(|version| versions.contains(version));
-    for version in versions {
-        if !detail.versions.contains(&version) {
-            detail.versions.push(version);
+/// Normalize a project name per PEP 503 (lowercase, collapse runs of `-`, `_`, `.` to a single `-`).
+/// Mirrors `velodex-ecosystem-pypi`'s `normalize_name`; kept local so the policy engine carries no
+/// format dependency. The rule is fixed by PEP 503, so the two cannot drift.
+fn normalize_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut in_separator = false;
+    for ch in name.chars() {
+        if matches!(ch, '-' | '_' | '.') {
+            if !in_separator {
+                out.push('-');
+                in_separator = true;
+            }
+        } else {
+            in_separator = false;
+            out.extend(ch.to_lowercase());
         }
     }
+    out
 }
 
 fn normalize_projects(projects: &[String]) -> HashSet<String> {
@@ -614,5 +468,19 @@ fn tags(values: &[String]) -> Result<HashSet<String>, PolicyConfigError> {
     Ok(tags)
 }
 
-#[cfg(test)]
-mod tests;
+/// Retain from `versions` only those present in `keep`, appending any missing ones.
+///
+/// This keeps a project's version list matching the files that survived filtering; `keep` is the set
+/// of versions whose files remain. Exposed for ecosystem mappers that filter a detail response.
+pub fn retain_versions(versions: &mut Vec<String>, keep: BTreeSet<String>) {
+    if keep.is_empty() {
+        versions.clear();
+        return;
+    }
+    versions.retain(|version| keep.contains(version));
+    for version in keep {
+        if !versions.contains(&version) {
+            versions.push(version);
+        }
+    }
+}

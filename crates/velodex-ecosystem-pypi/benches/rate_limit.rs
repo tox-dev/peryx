@@ -50,7 +50,7 @@ fn mirror(rate_limit: RateLimitConfig) -> (tempfile::TempDir, Arc<AppState>) {
     .unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:9/simple/").unwrap();
-    let state = AppState::with_limits(
+    let mut state = AppState::with_limits(
         meta,
         blobs,
         3600,
@@ -68,6 +68,7 @@ fn mirror(rate_limit: RateLimitConfig) -> (tempfile::TempDir, Arc<AppState>) {
         rate_limit,
         [("pypi".to_owned(), 0)],
     );
+    velodex_ecosystem_pypi::install(&mut state);
     (dir, Arc::new(state))
 }
 

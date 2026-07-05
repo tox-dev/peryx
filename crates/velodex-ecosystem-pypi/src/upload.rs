@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use velodex_ecosystem_pypi::{
+use crate::{
     CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
     is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
     parse_version_specifiers, to_json,
@@ -15,7 +15,7 @@ use velodex_ecosystem_pypi::{
 use velodex_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
 use velodex_storage::meta::{MetaError, MetaStore};
 
-use crate::path_safety::{local_file_url, validate_filename};
+use velodex_http::path_safety::{local_file_url, validate_filename};
 
 /// An uploaded file plus the version it belongs to, stored per file on a private index and
 /// reassembled into the project's detail page.
@@ -336,9 +336,9 @@ fn metadata_bytes(
 
 fn validate_metadata_identity(
     form: &UploadForm,
-    metadata: &velodex_ecosystem_pypi::CoreMetadataDoc,
+    metadata: &crate::CoreMetadataDoc,
     normalized: &str,
-    parsed_version: &velodex_ecosystem_pypi::Version,
+    parsed_version: &crate::Version,
 ) -> Result<(), UploadError> {
     if normalize_name(&metadata.name) != normalized || !is_valid_name(&metadata.name) {
         return Err(UploadError::MetadataNameMismatch {

@@ -441,3 +441,19 @@ fn limited_response(retry_after: u64) -> Response {
     );
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Method;
+
+    use super::{RouteClass, route_class};
+
+    #[test]
+    fn test_route_class_detects_writes_and_metadata() {
+        assert_eq!(route_class(&Method::POST, "/pypi/simple/"), RouteClass::Upload);
+        assert_eq!(
+            route_class(&Method::GET, "/pypi/files/abc/flask-1.0.whl.metadata"),
+            RouteClass::Metadata
+        );
+    }
+}

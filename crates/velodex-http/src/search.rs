@@ -15,13 +15,12 @@ use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer, TokenizerMana
 use tantivy::{Index as TantivyIndex, IndexReader, Order, Term};
 use velodex_storage::meta::MetaScanError;
 
-use crate::search_pypi::PypiIndexer;
 use crate::state::AppState;
 
 const SUBSTRING_TOKENIZER: &str = "velodex_substring";
 const MIN_NGRAM: usize = 2;
 const MAX_NGRAM: usize = 12;
-pub(crate) const INDEXED_TEXT_BYTES: usize = 64 * 1024;
+pub const INDEXED_TEXT_BYTES: usize = 64 * 1024;
 const RAW_REGEX_BYTES: usize = 32 * 1024;
 const WRITER_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE: usize = 25;
@@ -31,14 +30,32 @@ const REGEX_SPECIALS: &str = "\\.+*?()|[]{}^$";
 /// Produces the search documents for one ecosystem's stored packages.
 ///
 /// The tantivy index, schema, and querying are ecosystem-neutral; only turning an index's stored
-/// records into searchable [`PackageDocument`]s is format-specific, so it sits behind this seam (the
-/// `PyPI` implementation is [`PypiIndexer`](crate::search_pypi::PypiIndexer)).
+/// records into searchable [`PackageDocument`]s is format-specific, so it sits behind this seam. The
+/// binary injects the configured ecosystem's indexer; a build with none wired in gets
+/// [`EmptyIndexer`].
 pub trait PackageIndexer: Send + Sync {
     /// Every searchable document derivable from `state`, replacing the current index contents.
     ///
     /// # Errors
     /// Returns a search error when cached package records or blobs cannot be read.
     fn documents(&self, state: &AppState) -> Result<Vec<PackageDocument>, SearchError>;
+}
+
+/// The indexer installed until an ecosystem driver is wired into the state: it yields no documents.
+///
+/// A freshly built [`AppState`] searches an empty index until [`AppState::set_ecosystem`] injects the
+/// real indexer, which keeps the neutral crate free of any format-specific indexing logic.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmptyIndexer;
+
+impl PackageIndexer for EmptyIndexer {
+    fn documents(&self, _state: &AppState) -> Result<Vec<PackageDocument>, SearchError> {
+        Ok(Vec::new())
+    }
+}
+
+fn default_indexer() -> Arc<dyn PackageIndexer> {
+    Arc::new(EmptyIndexer)
 }
 
 pub struct PackageSearch {
@@ -92,10 +109,16 @@ impl PackageSearch {
             index,
             reader,
             fields,
-            indexer: Arc::new(PypiIndexer),
+            indexer: default_indexer(),
             indexed_epoch: Mutex::new(None),
             rebuild_lock: Mutex::new(()),
         })
+    }
+
+    /// Replace the ecosystem indexer. The binary injects the configured ecosystem's indexer at
+    /// startup; without this the search index stays empty (see [`EmptyIndexer`]).
+    pub fn set_indexer(&mut self, indexer: Arc<dyn PackageIndexer>) {
+        self.indexer = indexer;
     }
 
     /// Search cached package documents.
@@ -533,7 +556,8 @@ fn non_empty_string(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-pub(crate) fn truncate_to_chars(value: &str, max_bytes: usize) -> &str {
+#[must_use]
+pub fn truncate_to_chars(value: &str, max_bytes: usize) -> &str {
     if value.len() <= max_bytes {
         return value;
     }
