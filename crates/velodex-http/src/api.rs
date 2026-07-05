@@ -368,14 +368,14 @@ fn index_discovery() -> OperationBuilder {
                     "index": {
                         "name": "root/pypi",
                         "route": "root/pypi",
-                        "kind": "overlay",
+                        "kind": "virtual",
                         "layers": ["local", "pypi"],
                         "uploads": true,
                         "upload_to": "local",
                         "capabilities": {
                             "simple_html": true,
                             "simple_json": true,
-                            "simple_api_version": velodex_ecosystem_pypi::API_VERSION,
+                            "simple_api_version": "1.4",
                             "metadata_siblings": true,
                             "uploads": true,
                             "yanking": true,

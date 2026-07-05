@@ -22,6 +22,13 @@ pub fn normalize_name(name: &str) -> String {
     out
 }
 
+/// The project a distribution filename belongs to: the escaped name before the first `-`, normalized
+/// per PEP 503. Used to key usage aggregation by project when only the filename is at hand.
+#[must_use]
+pub fn project_of_filename(filename: &str) -> String {
+    normalize_name(filename.split('-').next().unwrap_or(filename))
+}
+
 /// Whether `name` matches the `PyPA` project-name grammar before normalization.
 #[must_use]
 pub fn is_valid_name(name: &str) -> bool {

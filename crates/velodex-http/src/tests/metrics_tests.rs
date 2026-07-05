@@ -26,16 +26,19 @@ fn test_events_aggregate_by_index_project_and_file() {
     });
     metrics.record(Event::Download {
         route: "root/pypi".into(),
+        project: "pandas".into(),
         filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl".into(),
         bytes: 100,
     });
     metrics.record(Event::Download {
         route: "root/pypi".into(),
+        project: "pandas".into(),
         filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl".into(),
         bytes: 50,
     });
     metrics.record(Event::Metadata {
         route: "root/pypi".into(),
+        project: "pandas".into(),
         filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl.metadata".into(),
     });
     metrics.record(Event::Upload {
@@ -101,7 +104,7 @@ fn test_operational_events_aggregate() {
     });
     metrics.record(Event::BlobRejected {
         route: "pypi".into(),
-        filename: "flask-1.0-py3-none-any.whl".into(),
+        project: "flask".into(),
     });
     settle(&metrics, |m| {
         m.index_totals().get("pypi").is_some_and(|t| t.rejected == 1)

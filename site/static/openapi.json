@@ -427,7 +427,7 @@
                       "pip.conf": "[global]\nindex-url = http://127.0.0.1:4433/root/pypi/simple/\n",
                       "uv.toml": "publish-url = \"http://127.0.0.1:4433/root/pypi/\"\n\n[[index]]\nname = \"velodex\"\nurl = \"http://127.0.0.1:4433/root/pypi/simple/\"\ndefault = true\n\n[pip]\nindex-url = \"http://127.0.0.1:4433/root/pypi/simple/\"\n"
                     },
-                    "kind": "overlay",
+                    "kind": "virtual",
                     "layers": [
                       "local",
                       "pypi"

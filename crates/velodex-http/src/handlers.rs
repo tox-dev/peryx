@@ -416,6 +416,7 @@ async fn file_route(state: &Arc<AppState>, index: &Index, file: &str) -> Respons
         let digest_hex = digest.as_str().to_owned();
         state.metrics.record(Event::Metadata {
             route: route.clone(),
+            project: velodex_ecosystem_pypi::project_of_filename(&filename),
             filename: filename.clone(),
         });
         return file_response(
@@ -497,6 +498,7 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
             };
             let bytes = file.metadata().await.map(|meta| meta.len()).unwrap_or_default();
             state.metrics.record(Event::Download {
+                project: velodex_ecosystem_pypi::project_of_filename(filename),
                 route,
                 filename: filename.to_owned(),
                 bytes,

@@ -9,21 +9,26 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
-use velodex_ecosystem_pypi::normalize_name;
 
 /// One request-path observation.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A simple page was served.
     Page { route: String, project: String },
-    /// An artifact was served, with its size.
+    /// An artifact was served, with its size. `filename` keys the per-file breakdown; `project` is
+    /// the pre-normalized owning project (the ecosystem driver derives it, so this stays neutral).
     Download {
         route: String,
+        project: String,
         filename: String,
         bytes: u64,
     },
     /// A PEP 658 sibling was served.
-    Metadata { route: String, filename: String },
+    Metadata {
+        route: String,
+        project: String,
+        filename: String,
+    },
     /// A distribution was uploaded.
     Upload { route: String, project: String },
     /// A revalidation ran against upstream (on demand or from the background refresher);
@@ -38,7 +43,7 @@ pub enum Event {
     /// Upstream was unreachable and there was nothing cached to fall back to.
     UpstreamError { route: String, project: String },
     /// A streamed download hashed differently than its registration; the blob was not admitted.
-    BlobRejected { route: String, filename: String },
+    BlobRejected { route: String, project: String },
 }
 
 /// Counters at one level of the tree.
@@ -178,21 +183,30 @@ fn apply(tree: &mut StatsTree, event: Event) {
             index.totals.pages += 1;
             index.projects.entry(project).or_default().totals.pages += 1;
         }
-        Event::Download { route, filename, bytes } => {
+        Event::Download {
+            route,
+            project,
+            filename,
+            bytes,
+        } => {
             let index = tree.entry(route).or_default();
             index.totals.downloads += 1;
             index.totals.bytes += bytes;
-            let project = index.projects.entry(project_of(&filename)).or_default();
+            let project = index.projects.entry(project).or_default();
             project.totals.downloads += 1;
             project.totals.bytes += bytes;
             let file = project.files.entry(filename).or_default();
             file.downloads += 1;
             file.bytes += bytes;
         }
-        Event::Metadata { route, filename } => {
+        Event::Metadata {
+            route,
+            project,
+            filename,
+        } => {
             let index = tree.entry(route).or_default();
             index.totals.metadata += 1;
-            let project = index.projects.entry(project_of(&filename)).or_default();
+            let project = index.projects.entry(project).or_default();
             project.totals.metadata += 1;
             project.files.entry(filename).or_default().metadata += 1;
         }
@@ -225,15 +239,10 @@ fn apply(tree: &mut StatsTree, event: Event) {
             index.totals.upstream_errors += 1;
             index.projects.entry(project).or_default().totals.upstream_errors += 1;
         }
-        Event::BlobRejected { route, filename } => {
+        Event::BlobRejected { route, project } => {
             let index = tree.entry(route).or_default();
             index.totals.rejected += 1;
-            index.projects.entry(project_of(&filename)).or_default().totals.rejected += 1;
+            index.projects.entry(project).or_default().totals.rejected += 1;
         }
     }
-}
-
-/// The project a distribution filename belongs to: the escaped name before the first `-`.
-fn project_of(filename: &str) -> String {
-    normalize_name(filename.split('-').next().unwrap_or(filename))
 }

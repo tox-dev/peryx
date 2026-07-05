@@ -10,7 +10,7 @@ use bytes::Bytes;
 use velodex_ecosystem_pypi::file_matches_version;
 use velodex_ecosystem_pypi::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Yanked, parse_detail,
-    parse_detail_html, parse_distribution_filename, to_json,
+    parse_detail_html, parse_distribution_filename, project_of_filename, to_json,
 };
 use velodex_storage::blob::Digest;
 use velodex_storage::meta::CachedIndex;
@@ -2276,7 +2276,8 @@ async fn pump_download(
     if outcome.is_err() {
         tracing::warn!(digest = digest.as_str(), "blob persist rejected");
         let (route, filename) = served_as;
-        state.metrics.record(Event::BlobRejected { route, filename });
+        let project = project_of_filename(&filename);
+        state.metrics.record(Event::BlobRejected { route, project });
     }
     // Commit lands before the entry disappears and the entry disappears before done broadcasts,
     // so a request arriving at any point sees the blob, the live download, or nothing stale.
@@ -2379,6 +2380,7 @@ pub(crate) fn tail_download(
                 Some(Ok(())) => {
                     tail.state.metrics.record(Event::Download {
                         route: tail.route.clone(),
+                        project: project_of_filename(&tail.filename),
                         filename: tail.filename.clone(),
                         bytes: tail.sent,
                     });
