@@ -76,6 +76,34 @@ zola --root site serve   # live-reloading preview at 127.0.0.1:1111
 Read the Docs builds and hosts the site from `.readthedocs.yaml` on each merge; CI builds it on each pull request so a
 broken site blocks the merge.
 
+## Gotchas
+
+Two dev-environment behaviors are non-obvious enough to have cost real debugging time.
+
+### The SSR binary and the wasm bundle must come from one build
+
+`cargo leptos build` writes a matched pair: `target/debug/velodex` (the server that renders HTML) and
+`ui/pkg/velodex_web*.wasm` (the bundle that hydrates it). Both embed the same component tree, and hydration only works
+when they agree. Mix two builds and the server emits hydration markers the wasm does not expect; Leptos then panics in
+the browser (`tachys::hydration::failed_to_cast_marker_node`, `RuntimeError: unreachable`), never sets
+`body[data-hydrated]`, and every Playwright test times out at navigation with no hint as to why.
+
+The Playwright harness (`tests/frontend/serve.mjs`) prefers `target/release/velodex` when it exists, and a plain
+`cargo build --release` rebuilds only the binary, leaving it paired with a stale debug wasm. After touching UI source,
+rerun `cargo leptos build`. If you keep a release binary around, build it with `cargo leptos build --release` so both
+halves match, or delete it so the harness falls back to the debug pair.
+
+When a Playwright run fails wholesale at `waitForSelector("body[data-hydrated]")`, open the page in a browser and read
+the console. A hydration panic there points at a mismatched build pair, so rebuild before you suspect the test.
+
+### Off-by-default features need their own unit tests
+
+A subsystem that is disabled by default is an `Option<T>` that stays `None`, so it is absent from the request path
+rather than skipped on it (see the zero-overhead contract in the architecture docs). Integration tests that drive the
+default server therefore never reach its code. The rate limiter is the standard example: with it off, velodex omits the
+enforce layer entirely, so a driver method like `classify_route` runs only under a direct unit test. The 100% coverage
+gate will catch the omission, but it is faster to write the unit test up front than to chase the uncovered line.
+
 ## Conventions
 
 - Commits: imperative subject up to 50 characters, no period; a wrapped body explaining what and why for anything
