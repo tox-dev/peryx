@@ -1,24 +1,30 @@
 +++
 title = "Configuration"
-description = "Every TOML key, flag, and default. Precedence is defaults < TOML file < flags."
+description = "Every TOML key, flag, and default. Precedence is defaults < TOML file < environment < flags."
 weight = 1
 +++
 
-velodex reads one TOML file, passed with `--config <path>`. A few operational settings double as flags, which override
-the file. Precedence is `defaults < TOML file < flags`.
+velodex reads one TOML file, passed with `--config <path>`. A few operational settings double as flags or `VELODEX_*`
+environment variables, which override the file. Precedence is `defaults < TOML file < environment < flags`.
 
 ## Top level
 
-| Setting                   | Flag              | TOML key         | Default        |
-| ------------------------- | ----------------- | ---------------- | -------------- |
-| Bind host                 | `--host`          | `host`           | `127.0.0.1`    |
-| Bind port                 | `--port`          | `port`           | `4433`         |
-| Data directory            | `--data-dir`      | `data_dir`       | `velodex-data` |
-| Offline mode              | `--offline`       | `offline`        | `false`        |
-| Config file               | `--config` / `-c` | (n/a)            | (none)         |
-| Cache freshness (seconds) | (file only)       | `cache_ttl_secs` | `300`          |
-| Indexes                   | (file only)       | `[[index]]`      | (see below)    |
-| Rate limits               | (file only)       | `[rate_limit]`   | (see below)    |
+| Setting                   | Flag              | Environment              | TOML key         | Default        |
+| ------------------------- | ----------------- | ------------------------ | ---------------- | -------------- |
+| Bind host                 | `--host`          | `VELODEX_HOST`           | `host`           | `127.0.0.1`    |
+| Bind port                 | `--port`          | `VELODEX_PORT`           | `port`           | `4433`         |
+| Data directory            | `--data-dir`      | `VELODEX_DATA_DIR`       | `data_dir`       | `velodex-data` |
+| Offline mode              | `--offline`       | `VELODEX_OFFLINE`        | `offline`        | `false`        |
+| Config file               | `--config` / `-c` | (n/a)                    | (n/a)            | (none)         |
+| Cache freshness (seconds) | (file/env only)   | `VELODEX_CACHE_TTL_SECS` | `cache_ttl_secs` | `300`          |
+| Indexes                   | (file only)       | (n/a)                    | `[[index]]`      | (see below)    |
+| Rate limits               | (file only)       | (n/a)                    | `[rate_limit]`   | (see below)    |
+
+Environment variables sit between the file and flags: a `VELODEX_*` value overrides the TOML file, and a flag overrides
+the variable. Only scalar settings are environment-configurable — the `[[index]]` topology and `[rate_limit]` block stay
+file-only, since neither maps cleanly to a flat variable. An empty variable is treated as unset. The `[log]` block also
+reads variables (`VELODEX_LOG_LEVEL`, `VELODEX_LOG_FORMAT`, `VELODEX_LOG_SINK`, `VELODEX_LOG_FILE`); see
+[`[log]`](#log).
 
 `cache_ttl_secs` is a fallback: when an upstream response carries a usable `Cache-Control` lifetime (`s-maxage` or
 `max-age`), that lifetime governs the page instead. The fallback applies when the header is absent,
@@ -245,4 +251,6 @@ target name, attempt count, next retry time, response status, and last error. It
 | `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                                                                      | `stdout` |
 | `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
 
-The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these.
+The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these, as do the
+`VELODEX_LOG_LEVEL`, `VELODEX_LOG_FORMAT`, `VELODEX_LOG_SINK`, and `VELODEX_LOG_FILE` variables (below the flags in
+precedence).
