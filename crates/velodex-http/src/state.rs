@@ -541,7 +541,7 @@ pub struct IndexDescription {
     pub hosted: Option<HostedDescription>,
 }
 
-/// Mirror status data that excludes credential material.
+/// A cached index's upstream status, with credential material excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamDescription {
     pub url: String,
@@ -549,7 +549,7 @@ pub struct UpstreamDescription {
     pub offline: bool,
 }
 
-/// Local-store status data that excludes upload-token values.
+/// A hosted store's status, with upload-token values excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedDescription {
     pub volatile: bool,

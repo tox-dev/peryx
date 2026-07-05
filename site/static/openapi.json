@@ -54,7 +54,7 @@
           "search"
         ],
         "summary": "Search cached packages",
-        "description": "Searches the derived package index built from cached simple pages, local uploads, and cached core metadata. `q` uses substring matching; prefix it with `re:` for a regex. Repository policy removes denied packages before indexing. Results are sorted by display name and paged without collecting every match.",
+        "description": "Searches the derived package index built from cached simple pages, local uploads, and cached core metadata. `q` uses substring matching; prefix it with `re:` for a regex. Index policy removes denied packages before indexing. Results are sorted by display name and paged without collecting every match.",
         "parameters": [
           {
             "name": "q",
@@ -494,7 +494,7 @@
           "search"
         ],
         "summary": "Search one index route",
-        "description": "Searches the derived package index built from cached simple pages, local uploads, and cached core metadata. `q` uses substring matching; prefix it with `re:` for a regex. Repository policy removes denied packages before indexing. Results are sorted by display name and paged without collecting every match.",
+        "description": "Searches the derived package index built from cached simple pages, local uploads, and cached core metadata. `q` uses substring matching; prefix it with `re:` for a regex. Index policy removes denied packages before indexing. Results are sorted by display name and paged without collecting every match.",
         "parameters": [
           {
             "name": "q",
@@ -922,7 +922,7 @@
           "simple"
         ],
         "summary": "Project detail",
-        "description": "All files of one project, merged across virtual-index layers (first match per filename wins, versions union). File URLs point back at velodex's own `files/` route; `core-metadata` advertises the PEP 658 sibling. Repository policy filters denied files and their versions before serialization.",
+        "description": "All files of one project, merged across virtual-index layers (first match per filename wins, versions union). File URLs point back at velodex's own `files/` route; `core-metadata` advertises the PEP 658 sibling. Index policy filters denied files and their versions before serialization.",
         "parameters": [
           {
             "name": "route",
@@ -986,7 +986,7 @@
             }
           },
           "403": {
-            "description": "Repository policy denied the project detail",
+            "description": "Index policy denied the project detail",
             "content": {
               "application/json": {
                 "example": {

@@ -307,7 +307,7 @@ impl UpstreamLimits {
                 event = "rate_limit",
                 action = "upstream_fetch",
                 result = "denied",
-                repository = name,
+                index = name,
                 retry_after = 1_u64,
                 "upstream concurrency limit denied"
             );

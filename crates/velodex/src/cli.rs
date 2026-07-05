@@ -182,7 +182,7 @@ pub enum CacheCommand {
     Purge(CachePurgeCommand),
 }
 
-/// Repository policy commands.
+/// Index policy commands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PolicyCommand {
     /// Report cached projects and files the configured policy would block.

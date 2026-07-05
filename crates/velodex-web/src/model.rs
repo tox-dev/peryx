@@ -61,7 +61,7 @@ pub struct UiIndex {
     pub recent_uploads: Vec<UiRecentUpload>,
 }
 
-/// Mirror status data with credential material redacted by the server.
+/// A cached index's upstream status, with credential material redacted by the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiUpstream {
     pub url: String,
@@ -70,7 +70,7 @@ pub struct UiUpstream {
     pub status: String,
 }
 
-/// Local status data with upload-token values redacted by the server.
+/// A hosted store's status, with upload-token values redacted by the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiHosted {
     pub volatile: bool,

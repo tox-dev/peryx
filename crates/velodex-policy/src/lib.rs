@@ -1,4 +1,4 @@
-//! Repository policy checks compiled from configuration.
+//! Index policy checks compiled from configuration.
 //!
 //! The engine is ecosystem-neutral: it never names a package format. Callers turn one artifact into a
 //! neutral [`FileFacts`] (project, version, package type, wheel tags, size) and ask [`Policy`] whether
