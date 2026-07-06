@@ -49,7 +49,7 @@ the role. velodex rejects unknown keys.
 | `username`             | cached  | Basic-auth username for the upstream                                  | (none)             |
 | `password`             | cached  | Basic-auth password for the upstream                                  | (none)             |
 | `token`                | cached  | Bearer token; takes precedence over username/password                 | (none)             |
-| `upstream_concurrency` | cached  | Concurrent upstream fetches for this index; `0` disables the cap      | `8`                |
+| `upstream_concurrency` | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default  | `0`                |
 | `offline`              | cached  | Serve this cached index from disk only                                | `false`            |
 | `prefetch`             | cached  | Package and artifact selection for `velodex mirror`                   | (see below)        |
 | `hosted`               | hosted  | `true` marks this index as a hosted store (implied by `upload_token`) | `false`            |

@@ -188,12 +188,19 @@ async fn virtual_detail(
     let mut meta = Meta::default();
     let mut found = false;
     let mut offline_missing = None;
+    let mut rate_limited = None;
     for (&pos, outcome) in layers.iter().zip(resolved) {
         // A layer being unavailable (a down upstream with a cold cache) must not break the others.
         let detail = match outcome {
             Ok(detail) => detail,
             Err(err @ CacheError::OfflineMissing(_)) => {
                 offline_missing = Some(err);
+                continue;
+            }
+            // A saturated upstream cap is transient. If no other layer serves the project, propagate it
+            // as a retryable error rather than skipping the layer and reporting the project as missing.
+            Err(err @ CacheError::RateLimited { .. }) => {
+                rate_limited = Some(err);
                 continue;
             }
             Err(err) => {
@@ -217,6 +224,9 @@ async fn virtual_detail(
         }
     }
     if !found {
+        if let Some(err) = rate_limited {
+            return Err(err);
+        }
         if let Some(err) = offline_missing {
             return Err(err);
         }
@@ -350,7 +360,7 @@ async fn fetch_and_store(
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let route = mirror_route(state, name);
     let event_project = project.to_owned();
-    let _permit = upstream_permit(state, name)?;
+    let _permit = upstream_permit(state, name).await?;
     match client.fetch_project(project, etag.as_deref()).await {
         Ok(response) if response.status == 200 => {
             let record = CachedIndex {
@@ -452,10 +462,11 @@ fn project_negative_key(key: &str) -> String {
     format!("project\0{key}")
 }
 
-fn upstream_permit(state: &AppState, name: &str) -> Result<UpstreamPermit, CacheError> {
+async fn upstream_permit(state: &AppState, name: &str) -> Result<UpstreamPermit, CacheError> {
     state
         .upstream_limits
         .acquire(name)
+        .await
         .map_err(|limited| CacheError::RateLimited {
             retry_after: limited.retry_after,
         })
@@ -799,7 +810,7 @@ async fn fetch_from_source(state: &AppState, source: &str, url: &str) -> Result<
     if offline {
         return Err(CacheError::OfflineMissing("metadata"));
     }
-    let _permit = upstream_permit(state, source)?;
+    let _permit = upstream_permit(state, source).await?;
     Ok(client.fetch_bytes(url).await?)
 }
 
@@ -962,7 +973,7 @@ async fn generated_wheel_metadata_by_range(
     if !client.may_support_ranges() {
         return Ok(None);
     }
-    let _permit = upstream_permit(state, source_name)?;
+    let _permit = upstream_permit(state, source_name).await?;
     match wheel_metadata_by_range(&client, url, filename).await {
         Ok(RemoteMetadata::Found(metadata)) => Ok(Some(metadata)),
         Ok(RemoteMetadata::Missing) => Err(CacheError::FileNotFound),
@@ -1617,7 +1628,7 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
     let now = (state.clock)();
     let cached = state.meta.get_index(&key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
-    let permit = upstream_permit(&state, &cached_name)?;
+    let permit = upstream_permit(&state, &cached_name).await?;
     let Ok(head) = client.head_project(&project, etag.as_deref()).await else {
         release_flight(&state, &key, guard);
         return Ok(PageOutcome::Fallback);
@@ -2182,7 +2193,7 @@ async fn start_download(
     if offline {
         return Err(CacheError::OfflineMissing("file"));
     }
-    let permit = upstream_permit(state, &source.source)?;
+    let permit = upstream_permit(state, &source.source).await?;
     let body = client.stream_bytes(&source.url).await?;
     let pending = state.blobs.begin()?;
     let (sender, receiver) = tokio::sync::watch::channel(DownloadProgress::default());
