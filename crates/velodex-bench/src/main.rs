@@ -69,11 +69,10 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Build the release binary when it is absent, so one command reproduces everything.
+/// Build the release binary before every run so the benchmark always measures the current source, never
+/// a stale artifact from an earlier build. Cargo's incremental build makes this a no-op when nothing
+/// changed, so it stays a one-command reproduction while keeping A/B comparisons honest.
 fn ensure_velodex_built() -> anyhow::Result<()> {
-    if repo_root().join("target").join("release").join("velodex").exists() {
-        return Ok(());
-    }
     println!("building velodex (release)");
     let status = Command::new("cargo")
         .args(["build", "--release", "-p", "velodex"])
