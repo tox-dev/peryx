@@ -38,7 +38,9 @@ pub use filename::{DistributionFilename, DistributionFilenameError, Distribution
 pub use html::{parse_detail_html, parse_index_html};
 pub use legacy_json::render_legacy_json;
 pub use metadata::{CoreMetadataDoc, parse_metadata};
-pub use name::{PackageName, file_matches_version, is_valid_name, normalize_name, project_of_filename};
+pub use name::{
+    PackageName, file_matches_version, is_valid_name, normalize_name, normalize_name_cow, project_of_filename,
+};
 pub use simple::{
     API_VERSION, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus,
     Provenance, SimpleError, Yanked, parse_detail, parse_index, parse_meta, render_detail_html, render_index_html,

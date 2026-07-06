@@ -1,5 +1,6 @@
 //! PEP 503 project-name normalization.
 
+use std::borrow::Cow;
 use std::fmt;
 
 /// Normalize a project name per PEP 503: lowercase, and collapse every run of `-`, `_`, or `.`
@@ -20,6 +21,31 @@ pub fn normalize_name(name: &str) -> String {
         }
     }
     out
+}
+
+/// [`normalize_name`] without the allocation when the name is already normalized, which upstream
+/// indexes usually deliver. The check is a byte scan; only a name that needs rewriting is copied.
+#[must_use]
+pub fn normalize_name_cow(name: &str) -> Cow<'_, str> {
+    if is_normalized(name) {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(normalize_name(name))
+    }
+}
+
+/// Whether `name` is already in PEP 503 normal form: ASCII lowercase, digits, and single `-`
+/// separators. A `true` here guarantees [`normalize_name`] would return `name` unchanged.
+fn is_normalized(name: &str) -> bool {
+    let mut prev_dash = false;
+    for &byte in name.as_bytes() {
+        match byte {
+            b'a'..=b'z' | b'0'..=b'9' => prev_dash = false,
+            b'-' if !prev_dash => prev_dash = true,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The project a distribution filename belongs to: the escaped name before the first `-`, normalized

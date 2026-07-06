@@ -1,4 +1,18 @@
-use crate::{PackageName, is_valid_name, normalize_name};
+use std::borrow::Cow;
+
+use crate::{PackageName, is_valid_name, normalize_name, normalize_name_cow};
+
+#[test]
+fn test_normalize_name_cow_borrows_already_normal_and_owns_the_rest() {
+    for already in ["flask", "django-rest", "a1b2", "-leading", "trailing-"] {
+        assert!(matches!(normalize_name_cow(already), Cow::Borrowed(_)), "{already:?}");
+        assert_eq!(normalize_name_cow(already), normalize_name(already));
+    }
+    for rewritten in ["Flask", "zope.interface", "A__B", "foo--bar"] {
+        assert!(matches!(normalize_name_cow(rewritten), Cow::Owned(_)), "{rewritten:?}");
+        assert_eq!(normalize_name_cow(rewritten), normalize_name(rewritten));
+    }
+}
 
 #[test]
 fn test_normalize_name_matches_pep503() {

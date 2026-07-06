@@ -553,7 +553,7 @@ pub fn render_index_html(list: &ProjectList) -> String {
     let mut out = String::new();
     push_head(&mut out, "Simple index", &list.meta);
     for entry in &list.projects {
-        let normalized = crate::normalize_name(&entry.name);
+        let normalized = crate::normalize_name_cow(&entry.name);
         let _ = writeln!(out, "    <a href=\"{normalized}/\">{}</a>", escape_text(&entry.name));
     }
     push_tail(&mut out);
