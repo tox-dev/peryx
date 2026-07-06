@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rate-limit:
-    name: Rate limit hot-path benchmarks
+  operations:
+    name: PyPI driver operation benchmarks
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -28,7 +28,7 @@ jobs:
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-codspeed
-      - run: cargo codspeed build -p velodex-ecosystem-pypi --bench rate_limit
+      - run: cargo codspeed build -p velodex-ecosystem-pypi --bench operations
       - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           mode: instrumentation

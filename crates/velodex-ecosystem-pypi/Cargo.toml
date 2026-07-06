@@ -95,7 +95,7 @@ insta.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
 
 [[bench]]
-name = "rate_limit"
+name = "operations"
 harness = false
 required-features = ["serving"]
 
