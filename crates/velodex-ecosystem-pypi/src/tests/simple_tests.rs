@@ -230,6 +230,47 @@ fn test_legacy_project_json_uses_advertised_version_when_no_files() {
 }
 
 #[test]
+fn test_legacy_project_json_groups_unparseable_version_and_dashless_file() {
+    let detail = ProjectDetail {
+        meta: Meta::default(),
+        name: "proj".to_owned(),
+        versions: vec!["not-a-version".to_owned(), "1.0".to_owned()],
+        files: vec![
+            File {
+                filename: "proj-1.0-py3-none-any.whl".to_owned(),
+                url: "https://files.example/a.whl".to_owned(),
+                hashes: BTreeMap::new(),
+                requires_python: None,
+                size: None,
+                upload_time: None,
+                yanked: Yanked::No,
+                core_metadata: CoreMetadata::Absent,
+                dist_info_metadata: CoreMetadata::Absent,
+                gpg_sig: None,
+                provenance: Provenance::Absent,
+            },
+            File {
+                filename: "dashless".to_owned(),
+                url: "https://files.example/x".to_owned(),
+                hashes: BTreeMap::new(),
+                requires_python: None,
+                size: None,
+                upload_time: None,
+                yanked: Yanked::No,
+                core_metadata: CoreMetadata::Absent,
+                dist_info_metadata: CoreMetadata::Absent,
+                gpg_sig: None,
+                provenance: Provenance::Absent,
+            },
+        ],
+    };
+    let legacy: serde_json::Value = serde_json::from_str(&render_legacy_json(&detail, None).unwrap()).unwrap();
+
+    assert_eq!(legacy["releases"]["1.0"][0]["filename"], "proj-1.0-py3-none-any.whl");
+    assert_eq!(legacy["releases"]["not-a-version"], serde_json::json!([]));
+}
+
+#[test]
 fn test_legacy_project_json_maps_legacy_filename_shapes() {
     let detail = ProjectDetail {
         meta: Meta::default(),

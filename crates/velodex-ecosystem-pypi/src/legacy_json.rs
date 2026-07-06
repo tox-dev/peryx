@@ -1,12 +1,49 @@
 //! The legacy `PyPI` JSON API shape, serialized from a resolved Simple API detail page.
 
+use std::collections::{BTreeMap as OrderedMap, HashSet};
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
 use crate::{
-    File, ProjectDetail, Yanked, file_matches_version, parse_distribution_filename, parse_version, sorted_desc,
+    File, ProjectDetail, Version, Yanked, file_matches_version, parse_distribution_filename, parse_version, sorted_desc,
 };
+
+/// A version identity that matches [`file_matches_version`]: two versions are the same release when
+/// their strings are equal or they parse to the same PEP 440 version. Grouping by this key collapses
+/// the per-version file rescan into one pass.
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum VersionKey {
+    Parsed(Version),
+    Raw(String),
+}
+
+fn version_key(version: &str) -> VersionKey {
+    parse_version(version).map_or_else(|| VersionKey::Raw(version.to_owned()), VersionKey::Parsed)
+}
+
+/// The version segment [`file_matches_version`] compares against, without parsing the whole filename.
+fn file_version_candidate(filename: &str) -> Option<&str> {
+    let stem = filename
+        .strip_suffix(".tar.gz")
+        .or_else(|| filename.strip_suffix(".zip"))
+        .or_else(|| filename.strip_suffix(".whl"))
+        .unwrap_or(filename);
+    let (_name, rest) = stem.split_once('-')?;
+    Some(rest.split('-').next().unwrap_or(rest))
+}
+
+/// Bucket a project's files by release version in a single pass, so rendering every release is linear
+/// in the number of files rather than files times versions.
+fn group_by_version(detail: &ProjectDetail) -> OrderedMap<VersionKey, Vec<&File>> {
+    let mut groups: OrderedMap<VersionKey, Vec<&File>> = OrderedMap::new();
+    for file in &detail.files {
+        if let Some(candidate) = file_version_candidate(&file.filename) {
+            groups.entry(version_key(candidate)).or_default().push(file);
+        }
+    }
+    groups
+}
 
 /// Serialize `GET /pypi/{project}/json` or `GET /pypi/{project}/{version}/json`.
 ///
@@ -73,9 +110,13 @@ fn legacy_info(detail: &ProjectDetail, version: Option<&str>) -> Value {
 }
 
 fn legacy_releases(detail: &ProjectDetail) -> Value {
+    let groups = group_by_version(detail);
     let mut releases = Map::new();
     for version in release_versions(detail) {
-        releases.insert(version.clone(), legacy_files(detail, Some(&version)));
+        let files = groups
+            .get(&version_key(&version))
+            .map_or_else(Vec::new, |files| files.iter().map(|file| legacy_file(file)).collect());
+        releases.insert(version, Value::Array(files));
     }
     Value::Object(releases)
 }
@@ -131,19 +172,13 @@ fn latest_release_version(detail: &ProjectDetail) -> Option<String> {
 }
 
 fn release_versions(detail: &ProjectDetail) -> Vec<String> {
-    let mut versions = sorted_desc(&detail.versions);
+    let mut versions: Vec<String> = detail.versions.clone();
+    let mut seen: HashSet<VersionKey> = detail.versions.iter().map(|version| version_key(version)).collect();
     for file in &detail.files {
         let Some(version) = filename_version(&file.filename) else {
             continue;
         };
-        let mut seen = false;
-        for known in &versions {
-            if versions_match(known, &version) {
-                seen = true;
-                break;
-            }
-        }
-        if !seen {
+        if seen.insert(version_key(&version)) {
             versions.push(version);
         }
     }
