@@ -1,0 +1,12 @@
+{
+  "name": "velodex-docs-diagrams",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Build-time mermaid diagram pre-rendering for the velodex documentation site.",
+  "scripts": {
+    "render": "node scripts/render_diagrams.mjs"
+  },
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "11.12.0"
+  }
+}

@@ -94,7 +94,6 @@
       var next = dark ? "light" : "dark";
       root.dataset.theme = next;
       localStorage.setItem("theme", next);
-      if (window.velodexRenderMermaid) window.velodexRenderMermaid();
     });
     (function () {
       var modal = document.getElementById("search-modal");
@@ -299,64 +298,7 @@
       });
     });
   </script>
-  {%- set mermaid_content = "" -%}
-  {%- if page -%}{%- set mermaid_content = page.content | default(value="") -%}
-  {%- elif section -%}{%- set mermaid_content = section.content | default(value="") -%}
-  {%- endif -%}
-  {% if mermaid_content is containing('class="mermaid"') %}
-  <script type="module">
-    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs";
-    // Every diagram keeps its source so a theme switch can re-render with the new palette.
-    document.querySelectorAll(".mermaid").forEach(function (node) {
-      node.dataset.source = node.textContent;
-    });
-    function isDark() {
-      var theme = document.documentElement.dataset.theme;
-      if (theme) return theme === "dark";
-      return window.matchMedia("(prefers-color-scheme: dark)").matches;
-    }
-    function render() {
-      var dark = isDark();
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: "strict",
-        theme: "base",
-        themeVariables: dark
-          ? {
-              darkMode: true,
-              background: "#12151a",
-              primaryColor: "#243040",
-              primaryTextColor: "#e8e6e3",
-              primaryBorderColor: "#3d4b5f",
-              secondaryColor: "#2b3a2e",
-              tertiaryColor: "#3a2f28",
-              lineColor: "#8a94a3",
-              textColor: "#e8e6e3",
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fontSize: "15px",
-            }
-          : {
-              background: "#ffffff",
-              primaryColor: "#e8eef7",
-              primaryTextColor: "#1f2430",
-              primaryBorderColor: "#9fb3cc",
-              secondaryColor: "#e6f2e8",
-              tertiaryColor: "#f7ece2",
-              lineColor: "#5c6675",
-              textColor: "#1f2430",
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fontSize: "15px",
-            },
-      });
-      document.querySelectorAll(".mermaid").forEach(function (node) {
-        node.removeAttribute("data-processed");
-        node.textContent = node.dataset.source;
-      });
-      mermaid.run();
-    }
-    window.velodexRenderMermaid = render;
-    render();
-  </script>
-  {% endif %}
+  {# Mermaid diagrams are pre-rendered to dual-theme SVG at build time (site/scripts/render_diagrams.mjs
+     + inline_diagrams.py), so no diagram JavaScript ships to the browser. #}
 </body>
 </html>

@@ -143,3 +143,19 @@ jobs:
         working-directory: tests/frontend
       - run: npx playwright test
         working-directory: tests/frontend
+
+  # Mermaid diagrams are pre-rendered to committed dual-theme SVG (site/diagrams). Build the site and
+  # inline them: if a diagram's source changed without a regenerated partial, inlining fails here, so
+  # the committed SVGs can never drift from the source.
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Install zola
+        run: |
+          curl -sL "https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz" | tar xz
+          sudo mv zola /usr/local/bin/
+      - run: zola --root site build
+      - run: python3 site/scripts/inline_diagrams.py site/public
