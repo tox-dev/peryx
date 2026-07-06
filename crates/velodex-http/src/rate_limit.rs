@@ -16,7 +16,18 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::state::AppState;
 
-pub const DEFAULT_UPSTREAM_CONCURRENCY: usize = 8;
+/// Concurrent upstream fetches allowed per cached index; `0` (the default) means unlimited.
+///
+/// Like every other velodex control, the upstream limiter is off until configured. A `uv`/`pip`
+/// install issues a burst of cold requests, so a default cap would throttle every zero-config install
+/// for no reason. Operators fronting a fragile upstream can set a cap, and then excess requests wait
+/// for a slot (see [`UpstreamLimits::acquire`]) rather than fail.
+pub const DEFAULT_UPSTREAM_CONCURRENCY: usize = 0;
+
+/// How long a request waits for an upstream slot before giving up. A cold burst drains in far less;
+/// exceeding it means the upstream is genuinely stalled, so the request returns a retryable error
+/// instead of holding the client forever.
+const UPSTREAM_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub type UpstreamPermit = Option<OwnedSemaphorePermit>;
 
@@ -288,18 +299,27 @@ impl UpstreamLimits {
         }
     }
 
-    /// Acquire one upstream slot for a cached index.
+    /// Acquire one upstream slot for a cached index, waiting for a slot when the cap is reached.
+    ///
+    /// Back-pressure, not fast failure: a burst of cold requests (a `uv` install) queues at the
+    /// concurrency cap and every request still succeeds, just serialized. Only a stall longer than
+    /// [`UPSTREAM_WAIT_TIMEOUT`] gives up, and it does so with a retryable error rather than serving
+    /// an empty page.
     ///
     /// # Errors
-    /// Returns [`UpstreamLimited`] when the cached index has a concurrency cap and every slot is held.
-    pub fn acquire(&self, name: &str) -> Result<UpstreamPermit, UpstreamLimited> {
+    /// Returns [`UpstreamLimited`] only when no slot frees within [`UPSTREAM_WAIT_TIMEOUT`].
+    pub async fn acquire(&self, name: &str) -> Result<UpstreamPermit, UpstreamLimited> {
         let Some(limit) = self.entries.get(name) else {
             return Ok(None);
         };
         let Some(semaphore) = &limit.semaphore else {
             return Ok(None);
         };
-        semaphore.clone().try_acquire_owned().map(Some).map_err(|_| {
+        // The semaphore is never closed, so an inner acquire error is unreachable; reaching the `else`
+        // means the deadline elapsed with no free slot.
+        if let Ok(Ok(permit)) = tokio::time::timeout(UPSTREAM_WAIT_TIMEOUT, semaphore.clone().acquire_owned()).await {
+            Ok(Some(permit))
+        } else {
             limit.denied.fetch_add(1, Ordering::Relaxed);
             tracing::info!(
                 target: "velodex::security",
@@ -309,10 +329,10 @@ impl UpstreamLimits {
                 result = "denied",
                 index = name,
                 retry_after = 1_u64,
-                "upstream concurrency limit denied"
+                "upstream concurrency wait timed out"
             );
-            UpstreamLimited { retry_after: 1 }
-        })
+            Err(UpstreamLimited { retry_after: 1 })
+        }
     }
 
     #[must_use]
@@ -344,6 +364,7 @@ pub struct UpstreamLimitSnapshot {
     pub denied: u64,
 }
 
+#[derive(Debug)]
 pub struct UpstreamLimited {
     pub retry_after: u64,
 }

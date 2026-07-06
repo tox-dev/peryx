@@ -16,7 +16,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::http_tests::detail_json;
 use super::{LogCapture, field};
 use velodex_http::rate_limit::{
-    DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits,
+    DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimited, UpstreamLimits,
 };
 use velodex_http::router;
 use velodex_http::state::{AppState, Index, IndexKind};
@@ -272,7 +272,7 @@ async fn test_token_denials_are_logged_as_token_clients() {
 }
 
 #[tokio::test]
-async fn test_upstream_concurrency_is_capped_per_mirror() {
+async fn test_upstream_concurrency_cap_applies_backpressure() {
     let h = harness(RateLimitConfig::default(), 1).await;
     let digest = Digest::of(b"wheel");
     let file_url = format!("{}/files/flask.whl", h.server.uri());
@@ -285,7 +285,7 @@ async fn test_upstream_concurrency_is_capped_per_mirror() {
                     "application/vnd.pypi.simple.v1+json",
                 ),
         )
-        .expect(1)
+        .expect(2)
         .mount(&h.server)
         .await;
 
@@ -293,19 +293,90 @@ async fn test_upstream_concurrency_is_capped_per_mirror() {
         request(&h.state, "/pypi/simple/flask/", &[("x-forwarded-for", "192.0.2.1")]),
         request(&h.state, "/pypi/simple/django/", &[("x-forwarded-for", "192.0.2.2")]),
     );
-    let statuses = [first.0, second.0];
 
-    assert!(statuses.contains(&StatusCode::OK));
-    assert!(statuses.contains(&StatusCode::TOO_MANY_REQUESTS));
-    let denied = if first.0 == StatusCode::TOO_MANY_REQUESTS {
-        first.1
-    } else {
-        second.1
-    };
-    assert_eq!(denied[header::RETRY_AFTER].to_str().unwrap(), "1");
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(second.0, StatusCode::OK);
 
     let (_, _, metrics) = request(&h.state, "/metrics", &[]).await;
-    assert!(metrics.contains("velodex_upstream_rate_limit_denied_total{index=\"pypi\"} 1"));
+    assert!(metrics.contains("velodex_upstream_rate_limit_denied_total{index=\"pypi\"} 0"));
+}
+
+// `held` must keep the only permit alive for the whole test so the second acquire saturates and times out.
+#[expect(clippy::significant_drop_tightening)]
+#[tokio::test(start_paused = true)]
+async fn test_upstream_acquire_times_out_when_saturated() {
+    let limits = UpstreamLimits::new([("pypi".to_owned(), 1)]);
+
+    let held = limits.acquire("pypi").await.unwrap();
+    assert!(held.is_some());
+
+    let denied = limits.acquire("pypi").await;
+
+    assert!(matches!(denied, Err(UpstreamLimited { retry_after: 1 })));
+    assert_eq!(limits.snapshots()[0].denied, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_request_returns_429_when_upstream_cap_saturated() {
+    let h = harness(RateLimitConfig::default(), 1).await;
+    let held = h.state.upstream_limits.acquire("pypi").await.unwrap();
+    assert!(held.is_some());
+
+    let (status, headers, body) = request(&h.state, "/pypi/simple/flask/", &[]).await;
+    drop(held);
+
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(headers[header::RETRY_AFTER].to_str().unwrap(), "1");
+    assert!(body.contains("rate limit exceeded"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let ticks = Arc::new(AtomicI64::new(1000));
+    let state = super::wired(AppState::with_limits(
+        meta,
+        blobs,
+        60,
+        vec![
+            Index {
+                name: "pypi".to_owned(),
+                route: "pypi".to_owned(),
+                ecosystem: velodex_format::Ecosystem::Pypi,
+                kind: IndexKind::Cached {
+                    client: upstream,
+                    offline: false,
+                },
+                policy: Policy::default(),
+            },
+            Index {
+                name: "root".to_owned(),
+                route: "root".to_owned(),
+                ecosystem: velodex_format::Ecosystem::Pypi,
+                kind: IndexKind::Virtual {
+                    layers: vec![0],
+                    upload: None,
+                },
+                policy: Policy::default(),
+            },
+        ],
+        Arc::new(move || ticks.load(Ordering::Relaxed)),
+        RateLimitConfig::default(),
+        [("pypi".to_owned(), 1)],
+    ));
+
+    let held = state.upstream_limits.acquire("pypi").await.unwrap();
+    assert!(held.is_some());
+
+    let (status, headers, _) = request(&state, "/root/simple/flask/", &[]).await;
+    drop(held);
+
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(headers[header::RETRY_AFTER].to_str().unwrap(), "1");
 }
 
 #[test]
@@ -363,12 +434,12 @@ fn test_state_with_search_path_uses_disabled_limiter() {
     assert!(state.upstream_limits.snapshots().is_empty());
 }
 
-#[test]
-fn test_upstream_limits_allow_unknown_and_uncapped_mirrors() {
+#[tokio::test]
+async fn test_upstream_limits_allow_unknown_and_uncapped_mirrors() {
     let limits = UpstreamLimits::new([("z".to_owned(), 0), ("a".to_owned(), 2)]);
 
-    assert!(matches!(limits.acquire("missing"), Ok(None)));
-    assert!(matches!(limits.acquire("z"), Ok(None)));
+    assert!(matches!(limits.acquire("missing").await, Ok(None)));
+    assert!(matches!(limits.acquire("z").await, Ok(None)));
     let snapshots = limits.snapshots();
 
     assert_eq!(snapshots[0].index, "a");

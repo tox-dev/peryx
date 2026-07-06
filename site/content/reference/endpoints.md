@@ -99,8 +99,8 @@ hosted index; the username is ignored. Promotion authenticates against the targe
 - `404`: unknown route, project, or nothing matched.
 - `405`: the route's index does not accept writes.
 - `409`: promotion target already has the filename with different bytes.
-- `429`: a route-class limit or cached index upstream concurrency cap rejected the request; retry after the
-  `Retry-After` seconds.
+- `429`: a route-class limit rejected the request, or a configured upstream concurrency cap could not free a slot within
+  the wait window; retry after the `Retry-After` seconds.
 
 ## Webhooks
 
@@ -143,8 +143,9 @@ sha256 hash, but they do not get PEP 658 metadata.
 
 When `[rate_limit] enabled = true` and a client exceeds a configured route-class window, velodex returns
 `429 Too Many Requests` before the handler reads multipart bodies, cache state, or upstreams. The response includes
-`Retry-After` in seconds. The same status and header apply when a cached index's `upstream_concurrency` cap has no free
-slot.
+`Retry-After` in seconds. A cached index leaves upstream fetches uncapped by default; when you set
+`upstream_concurrency` and the cap is saturated, requests wait for a free slot instead of failing, and only a wait
+longer than 30 seconds returns the same `429` with `Retry-After`.
 
 Velodex writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry
 delay. It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class, plus upstream
