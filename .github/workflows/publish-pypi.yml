@@ -24,12 +24,12 @@ jobs:
           - { os: linux, runner: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28" }
           - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, manylinux: musllinux_1_2 }
           - { os: linux, runner: ubuntu-24.04, target: aarch64-unknown-linux-musl, manylinux: musllinux_1_2, zig: true }
-          - { os: macos, runner: macos-15, target: aarch64 }
-          - { os: macos, runner: macos-15, target: x86_64 }
+          - { os: macos, runner: macos-26, target: aarch64 }
+          - { os: macos, runner: macos-26, target: x86_64 }
           - { os: windows, runner: windows-2025, target: x64 }
           - { os: windows, runner: windows-11-arm, target: aarch64 }
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Build wheel
@@ -49,7 +49,7 @@ jobs:
     name: sdist
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Build sdist

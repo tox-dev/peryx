@@ -1387,8 +1387,25 @@ async fn test_metadata_served_verified_and_counted() {
     assert_eq!(status2, StatusCode::OK);
     assert_eq!(body2, body);
 
+    // Metadata counters are folded in by the off-thread aggregator, so poll until both siblings land
+    // before reading `/metrics`; a bare read races the aggregator and flakes on slow runners.
+    for _ in 0..500 {
+        if h.state
+            .metrics
+            .index_totals()
+            .get("pypi")
+            .and_then(|totals| totals.ecosystem.get("metadata").copied())
+            == Some(2)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
     let (_, _, metrics) = get(&h.state, "/metrics", None).await;
-    assert!(metrics.contains("velodex_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 2"));
+    assert!(
+        metrics.contains("velodex_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 2"),
+        "metadata counter never reached 2:\n{metrics}"
+    );
 }
 
 #[tokio::test]
