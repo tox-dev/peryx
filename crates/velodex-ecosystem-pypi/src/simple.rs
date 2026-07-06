@@ -563,7 +563,7 @@ pub fn render_index_html(list: &ProjectList) -> String {
 /// Render the PEP 503 HTML for a project detail page.
 #[must_use]
 pub fn render_detail_html(detail: &ProjectDetail) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(detail.files.len() * 256 + 512);
     push_head(&mut out, &format!("Links for {}", detail.name), &detail.meta);
     for file in &detail.files {
         out.push_str("    <a href=\"");
