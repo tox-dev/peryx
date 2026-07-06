@@ -1,0 +1,17 @@
+{
+  "theme": "base",
+  "securityLevel": "strict",
+  "themeVariables": {
+    "darkMode": true,
+    "background": "#12151a",
+    "primaryColor": "#243040",
+    "primaryTextColor": "#e8e6e3",
+    "primaryBorderColor": "#3d4b5f",
+    "secondaryColor": "#2b3a2e",
+    "tertiaryColor": "#3a2f28",
+    "lineColor": "#8a94a3",
+    "textColor": "#e8e6e3",
+    "fontFamily": "system-ui, -apple-system, sans-serif",
+    "fontSize": "15px"
+  }
+}

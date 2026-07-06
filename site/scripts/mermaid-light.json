@@ -1,0 +1,16 @@
+{
+  "theme": "base",
+  "securityLevel": "strict",
+  "themeVariables": {
+    "background": "#ffffff",
+    "primaryColor": "#e8eef7",
+    "primaryTextColor": "#1f2430",
+    "primaryBorderColor": "#9fb3cc",
+    "secondaryColor": "#e6f2e8",
+    "tertiaryColor": "#f7ece2",
+    "lineColor": "#5c6675",
+    "textColor": "#1f2430",
+    "fontFamily": "system-ui, -apple-system, sans-serif",
+    "fontSize": "15px"
+  }
+}

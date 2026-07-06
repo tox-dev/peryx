@@ -1149,17 +1149,36 @@ table {
   }
 }
 
-pre.mermaid {
-  background: transparent !important;
-  border: none;
+// Diagrams are pre-rendered to two SVGs (light + dark); show the one matching the active theme.
+.mermaid-figure {
+  margin: 1.5rem 0;
   display: flex;
   justify-content: center;
-  padding: 0.5rem 0;
-  white-space: pre;
 
   svg {
     max-width: 100%;
     height: auto;
+  }
+}
+.mermaid-dark {
+  display: none;
+}
+:root[data-theme="dark"] {
+  .mermaid-light {
+    display: none;
+  }
+  .mermaid-dark {
+    display: block;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    .mermaid-light {
+      display: none;
+    }
+    .mermaid-dark {
+      display: block;
+    }
   }
 }
 

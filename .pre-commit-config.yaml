@@ -47,6 +47,8 @@ repos:
     hooks:
       - id: codespell
         args: ["--ignore-words-list=ser"]
+        # Generated mermaid SVGs contain mermaid's own class names (e.g. `.composit`).
+        exclude: "^site/diagrams/"
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: v1.26.1
     hooks:
