@@ -78,7 +78,6 @@ jobs:
     steps:
       - run: docker pull peryx.internal:4433/dockerhub/library/postgres:16
       - run: docker run --rm peryx.internal:4433/dockerhub/library/postgres:16
-          postgres --version
 ```
 
 ## Or mirror Docker Hub transparently
