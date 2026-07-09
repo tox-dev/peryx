@@ -7,21 +7,39 @@ use tower::ServiceExt as _;
 use crate::state::AppState;
 
 fn unwired_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+    unwired_state_with(Vec::new())
+}
+
+fn unwired_state_with(indexes: Vec<crate::state::Index>) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = velodex_storage::meta::MetaStore::open(dir.path().join("velodex.redb")).unwrap();
     let blobs = velodex_storage::blob::BlobStore::new(dir.path().join("blobs"));
-    (dir, std::sync::Arc::new(AppState::new(meta, blobs, 60, Vec::new())))
+    (dir, std::sync::Arc::new(AppState::new(meta, blobs, 60, indexes)))
+}
+
+fn pypi_index(route: &str) -> crate::state::Index {
+    crate::state::Index {
+        name: route.to_owned(),
+        route: route.to_owned(),
+        ecosystem: velodex_format::Ecosystem::Pypi,
+        kind: crate::state::IndexKind::Hosted {
+            upload_token: None,
+            volatile: false,
+        },
+        policy: velodex_policy::Policy::default(),
+    }
 }
 
 #[tokio::test]
-async fn test_unwired_state_serves_503_on_every_method() {
-    let (_dir, state) = unwired_state();
+async fn test_unwired_state_serves_503_when_a_driver_is_missing() {
+    // A configured index with no ecosystem driver wired in: resolvable, so the request reaches the
+    // driver seam and fails loudly rather than serving nothing.
+    let (_dir, state) = unwired_state_with(vec![pypi_index("pypi")]);
     let app = crate::router(state);
     let cases = [
         (Method::GET, "/pypi/simple/", Body::empty(), None),
         (Method::PUT, "/pypi/flask/1.0/yank", Body::empty(), None),
         (Method::DELETE, "/pypi/flask/1.0/", Body::empty(), None),
-        (Method::GET, "/+api", Body::empty(), None),
         (
             Method::POST,
             "/pypi/",
@@ -41,6 +59,72 @@ async fn test_unwired_state_serves_503_on_every_method() {
             "{method} {uri} should be 503 without a driver",
         );
     }
+}
+
+#[tokio::test]
+async fn test_get_for_an_unknown_route_is_not_found() {
+    // The neutral GET dispatch resolves the index before touching a driver, so a path under no
+    // configured route is a plain 404.
+    let (_dir, state) = unwired_state();
+    let app = crate::router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/nope/simple/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_unwired_state_discovery_lists_no_indexes() {
+    // `/+api` is a neutral service endpoint: it describes the running server and needs no ecosystem
+    // driver, so an unwired state answers `200` with an empty index list rather than `503`.
+    let (_dir, state) = unwired_state();
+    let app = crate::router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/+api").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(document["indexes"].as_array().unwrap().is_empty());
+    assert!(document["urls"]["status"].is_string());
+}
+
+#[tokio::test]
+async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
+    use velodex_format::Ecosystem;
+
+    use crate::state::{Index, IndexKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let meta = velodex_storage::meta::MetaStore::open(dir.path().join("velodex.redb")).unwrap();
+    let blobs = velodex_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let index = Index {
+        name: "pypi".to_owned(),
+        route: "pypi".to_owned(),
+        ecosystem: Ecosystem::Pypi,
+        kind: IndexKind::Hosted {
+            upload_token: None,
+            volatile: false,
+        },
+        policy: velodex_policy::Policy::default(),
+    };
+    // Without an ecosystem driver, an index still appears in discovery through the neutral fallback:
+    // its identity, but none of the wire-protocol URLs a real driver would render.
+    let state = std::sync::Arc::new(AppState::new(meta, blobs, 60, vec![index]));
+    let app = crate::router(state);
+    let response = app
+        .oneshot(Request::builder().uri("/+api").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let entry = &document["indexes"][0];
+    assert_eq!(entry["route"], "pypi");
+    assert_eq!(entry["ecosystem"], "pypi");
+    assert_eq!(entry["urls"], serde_json::Value::Null);
 }
 
 #[test]

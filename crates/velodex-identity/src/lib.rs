@@ -40,7 +40,23 @@ pub fn parse_basic(header_value: &str) -> Option<BasicCredentials> {
 pub fn authorized(header: Option<&str>, token: &str) -> bool {
     header
         .and_then(parse_basic)
-        .is_some_and(|credentials| credentials.password == token)
+        .is_some_and(|credentials| credentials_match(&credentials.password, token))
+}
+
+/// Compare a presented password to the token without an early-out on the first differing byte, so the
+/// server does not leak how much of the token a guess got right through its response time. The length
+/// is not secret, so a length mismatch may short-circuit. `black_box` keeps the optimizer from
+/// reintroducing the short-circuit.
+fn credentials_match(password: &str, token: &str) -> bool {
+    let (password, token) = (password.as_bytes(), token.as_bytes());
+    if password.len() != token.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (presented, expected) in password.iter().zip(token) {
+        difference |= presented ^ expected;
+    }
+    std::hint::black_box(difference) == 0
 }
 
 #[cfg(test)]

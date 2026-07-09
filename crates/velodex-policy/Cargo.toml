@@ -5,12 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Repository policy engine for velodex: allow/deny, version, wheel-tag, and size rules."
+description = "Ecosystem-neutral index policy engine for velodex: name allow/deny, size limits, and a rule seam."
 
 [dependencies]
-pep440_rs.workspace = true
 serde.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

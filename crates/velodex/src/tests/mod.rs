@@ -1,8 +1,9 @@
-mod app_tests;
-mod cli_tests;
-mod config_tests;
+mod api;
+mod app;
+mod cli;
+mod config;
 mod logging_tests;
-mod operator_tests;
-mod prefetch_tests;
+mod operator;
+mod prefetch;
 mod server_tests;
 mod ui_tests;

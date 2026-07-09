@@ -1,10 +1,9 @@
 //! The ecosystem axis: which package format an index speaks.
 //!
-//! An index is a `(role, ecosystem, key)` triple. [`Ecosystem`] is the second axis — a first-class,
+//! An index is a `(role, ecosystem, key)` triple. [`Ecosystem`] is the second axis: a first-class,
 //! immutable-at-creation value that selects the format driver. velodex implements `Pypi` today; a new
-//! ecosystem is a new variant here plus a sibling `velodex-ecosystem-*` crate implementing
-//! [`EcosystemDriver`]. Dispatch on this enum is static, so a single-ecosystem serving path stays
-//! branch-free.
+//! ecosystem is a new variant here plus a sibling `velodex-ecosystem-*` crate that registers a serving
+//! driver. Dispatch on this enum is static, so a single-ecosystem serving path stays branch-free.
 
 use core::fmt;
 use core::str::FromStr;
@@ -18,19 +17,71 @@ pub enum Ecosystem {
     /// The Python Package Index: the PEP 503/691 simple API, wheels, and sdists.
     #[default]
     Pypi,
+    /// An OCI/Docker registry: the distribution-spec `/v2/` API, manifests, and content-addressed blobs.
+    Oci,
 }
 
 impl Ecosystem {
     /// Every known ecosystem, in a stable order, for help text and the UI.
-    pub const ALL: &'static [Self] = &[Self::Pypi];
+    pub const ALL: &'static [Self] = &[Self::Pypi, Self::Oci];
 
     /// The stable lowercase identifier used in config, routes, the API, and the UI.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pypi => "pypi",
+            Self::Oci => "oci",
         }
     }
+}
+
+/// One ecosystem's user-facing words for velodex's neutral concepts. The neutral name is in each
+/// field's doc comment; the value is what a user of that ecosystem calls the same thing.
+///
+/// velodex's internal model is one neutral vocabulary, but a reader arriving from Docker thinks
+/// "registry, repository, tag, blob, push, pull". Each ecosystem crate defines its own `Lexicon`
+/// value (this crate stays neutral and never names an ecosystem's words) and registers it, so
+/// user-facing surfaces localize a label by looking it up for an index's ecosystem rather than
+/// branching on the ecosystem to pick a word. [`Lexicon::NEUTRAL`] is the fallback before any
+/// ecosystem registers one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lexicon {
+    /// The endpoint a client points at (neutral: index).
+    pub server: &'static str,
+    /// One named collection of releases (neutral: project).
+    pub collection: &'static str,
+    /// Many collections (neutral: projects).
+    pub collections: &'static str,
+    /// The search noun for a collection (neutral: package).
+    pub search_noun: &'static str,
+    /// One release of a collection (neutral: version).
+    pub release: &'static str,
+    /// Many releases (neutral: versions).
+    pub releases: &'static str,
+    /// One stored downloadable piece (neutral: file).
+    pub artifact: &'static str,
+    /// Many pieces (neutral: files).
+    pub artifacts: &'static str,
+    /// The verb for fetching (neutral: download).
+    pub get: &'static str,
+    /// The verb for storing your own (neutral: upload).
+    pub put: &'static str,
+}
+
+impl Lexicon {
+    /// velodex's own neutral vocabulary, used until an ecosystem registers its own words.
+    pub const NEUTRAL: Self = Self {
+        server: "index",
+        collection: "project",
+        collections: "projects",
+        search_noun: "package",
+        release: "version",
+        releases: "versions",
+        artifact: "file",
+        artifacts: "files",
+        get: "download",
+        put: "upload",
+    };
 }
 
 impl fmt::Display for Ecosystem {
@@ -63,19 +114,6 @@ impl FromStr for Ecosystem {
     }
 }
 
-/// The behavior every ecosystem must provide so the serving layer stays format-agnostic.
-///
-/// The role model (hosted/cached/virtual), storage, the journal, aggregation, and the request router
-/// are ecosystem-neutral; everything format-specific — index render/parse, artifact identity, the
-/// metadata sidecar, the upstream wire protocol, and client setup snippets — lives behind this trait.
-/// Its methods are filled in as the serving layer is converted to dispatch through it (the `PyPI`
-/// implementation lives in the `velodex-ecosystem-pypi` crate); the one stable method today is the
-/// identity of the ecosystem the driver implements.
-pub trait EcosystemDriver: Send + Sync + 'static {
-    /// The ecosystem this driver implements.
-    fn ecosystem(&self) -> Ecosystem;
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Ecosystem, UnknownEcosystem};
@@ -85,8 +123,24 @@ mod tests {
         assert_eq!(Ecosystem::default(), Ecosystem::Pypi);
         assert_eq!(Ecosystem::Pypi.as_str(), "pypi");
         assert_eq!(Ecosystem::Pypi.to_string(), "pypi");
-        assert_eq!(Ecosystem::ALL, &[Ecosystem::Pypi]);
+        assert_eq!(Ecosystem::Oci.as_str(), "oci");
+        assert_eq!(Ecosystem::Oci.to_string(), "oci");
+        assert_eq!(Ecosystem::ALL, &[Ecosystem::Pypi, Ecosystem::Oci]);
         assert_eq!("pypi".parse::<Ecosystem>().unwrap(), Ecosystem::Pypi);
+        assert_eq!("oci".parse::<Ecosystem>().unwrap(), Ecosystem::Oci);
+    }
+
+    #[test]
+    fn test_neutral_lexicon_is_velodexs_own_words() {
+        let neutral = super::Lexicon::NEUTRAL;
+        assert_eq!(
+            (neutral.server, neutral.collection, neutral.release),
+            ("index", "project", "version")
+        );
+        assert_eq!(
+            (neutral.artifact, neutral.get, neutral.put),
+            ("file", "download", "upload")
+        );
     }
 
     #[test]

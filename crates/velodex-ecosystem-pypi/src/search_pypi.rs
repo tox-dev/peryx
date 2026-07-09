@@ -92,6 +92,7 @@ fn package_document(state: &AppState, index: &Index, normalized: &str) -> Result
         normalized_name: normalized.to_owned(),
         route: index.route.clone(),
         index: index.name.clone(),
+        ecosystem: index.ecosystem.as_str().to_owned(),
         source,
         summary,
     }))

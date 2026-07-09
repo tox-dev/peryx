@@ -5,15 +5,15 @@
   <div class="glow" aria-hidden="true"></div>
   <div class="container hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">PyPI cache · private index · one binary</p>
+      <p class="eyebrow">PyPI · OCI · one binary</p>
       <h1>Your packages, <span class="gradient-text">served from next door</span>.</h1>
       <p class="tagline">
-        velodex is a PyPI-compatible read-through cache and private package index in a single Rust binary.
-        Point pip, uv, or twine at it; the only change a client needs is the index URL. First install runs at
-        upstream speed while the cache fills, every one after comes from your own disk.
+        velodex is a read-through cache and private registry in a single Rust binary. Point your package and
+        container clients at it; the only change any of them needs is the URL. The first pull runs at upstream
+        speed while the cache fills, every one after comes from your own disk.
       </p>
       <div class="actions">
-        <a class="button primary" href="{{ get_url(path='@/tutorials/getting-started.md') }}">Get started</a>
+        <a class="button primary" href="{{ get_url(path='@/core/getting-started.md') }}">Get started</a>
         <a class="button" href="{{ config.extra.repo }}">Source on GitHub</a>
       </div>
     </div>
@@ -39,10 +39,12 @@
       <div class="terminal">
         <div class="terminal-bar" aria-hidden="true"><span></span><span></span><span></span></div>
         <pre><code><span class="prompt">$</span> velodex serve
-<span class="dim">velodex listening on 127.0.0.1:4433 · 3 indexes</span>
+<span class="dim">velodex listening on 127.0.0.1:4433 · 6 indexes</span>
 <span class="prompt">$</span> uv pip install --index-url \
     http://127.0.0.1:4433/root/pypi/simple/ requests
-<span class="dim">Installed 5 packages in 41ms</span></code></pre>
+<span class="dim">Installed 5 packages in 41ms</span>
+<span class="prompt">$</span> docker pull 127.0.0.1:4433/dockerhub/library/alpine
+<span class="dim">Downloaded from cache in 0.3s</span></code></pre>
       </div>
     </div>
   </div>
@@ -51,25 +53,10 @@
 <section class="stats">
   <div class="container stats-grid">
     <div><strong>1</strong><span>binary, no database or broker</span></div>
-    <a href="{{ get_url(path='@/explanation/performance.md') }}"><strong>0.7s</strong><span>warm <code>uv pip install pandas polars</code></span></a>
+    <a href="{{ get_url(path='@/core/performance.md') }}"><strong>0.7s · 1.6s</strong><span>warm PyPI install · OCI image pull</span></a>
     <a href="{{ config.extra.repo }}/actions/workflows/ci.yml"><strong>100%</strong><span>line &amp; function coverage</span></a>
-    <div>
-      <strong>
-        <a href="https://peps.python.org/pep-0691/">PEP 691</a> ·
-        <a href="https://peps.python.org/pep-0658/">658</a> ·
-        <a href="https://peps.python.org/pep-0700/">700</a> ·
-        <a href="https://peps.python.org/pep-0592/">592</a>
-      </strong>
-      <span>modern index protocols</span>
-    </div>
-    <div>
-      <strong>
-        <a href="https://pip.pypa.io/">pip</a> ·
-        <a href="https://docs.astral.sh/uv/">uv</a> ·
-        <a href="https://twine.readthedocs.io/">twine</a>
-      </strong>
-      <span>verified end to end</span>
-    </div>
+    {% set ecosystems = get_section(path="ecosystems/_index.md") %}
+    <a href="{{ ecosystems.permalink }}"><strong>{% for sub in ecosystems.subsections %}{% set subsec = get_section(path=sub) %}{{ subsec.title }}{% if not loop.last %} · {% endif %}{% endfor %}</strong><span>ecosystems — set me up</span></a>
   </div>
 </section>
 
@@ -80,22 +67,19 @@
 <section class="quadrants container">
   <h2>Documentation</h2>
   <div class="grid">
-    <a class="card" href="{{ get_url(path='@/tutorials/_index.md') }}">
-      <h3>Tutorials</h3>
-      <p>Learning-oriented lessons: install velodex and take it from zero to serving and hosting packages.</p>
+    {% set core = get_section(path="core/_index.md") %}
+    <a class="card" href="{{ core.permalink }}">
+      <h3>{{ core.title }}</h3>
+      <p>Install, configure, and operate velodex: the CLI, the index model, TLS, logging, monitoring, and the web UI — shared by every ecosystem.</p>
     </a>
-    <a class="card" href="{{ get_url(path='@/guides/_index.md') }}">
-      <h3>How-to guides</h3>
-      <p>Task-oriented recipes: proxy a private mirror, compose overlays, publish, yank, and delete.</p>
+    {% set ecosystems = get_section(path="ecosystems/_index.md") %}
+    {% for subpath in ecosystems.subsections %}
+    {% set eco = get_section(path=subpath) %}
+    <a class="card" href="{{ eco.permalink }}">
+      <h3>{{ eco.title }}</h3>
+      <p>{{ eco.description }}</p>
     </a>
-    <a class="card" href="{{ get_url(path='@/reference/_index.md') }}">
-      <h3>Reference</h3>
-      <p>Information-oriented specifications: configuration keys, HTTP endpoints, CLI flags, and metrics.</p>
-    </a>
-    <a class="card" href="{{ get_url(path='@/explanation/_index.md') }}">
-      <h3>Explanation</h3>
-      <p>Understanding-oriented discussion: the architecture, the index model, and the standards velodex speaks.</p>
-    </a>
+    {% endfor %}
   </div>
 </section>
 {% endblock content %}

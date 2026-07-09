@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
-use velodex_policy::{PackageType, Policy, PolicyAction, PolicyConfig, PolicyConfigError};
+use velodex_policy::{Policy, PolicyAction, PolicyConfig};
 
-use crate::policy::PypiPolicy;
+use crate::policy::{PackageType, PypiPolicy, PypiPolicyConfig, PypiPolicyError, compile_rules};
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
 
 #[test]
 fn test_apply_list_filters_project_rules() {
-    let policy = policy(|config| {
-        config.block_projects = vec!["bad-pkg".to_owned()];
+    let policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["bad-pkg".to_owned()];
     });
 
     assert_eq!(
@@ -34,8 +34,8 @@ fn test_apply_list_filters_project_rules() {
 
 #[test]
 fn test_apply_detail_rejects_project_size_over_limit() {
-    let policy = policy(|config| {
-        config.max_project_size_bytes = Some(10);
+    let policy = policy(|neutral, _pypi| {
+        neutral.max_project_size_bytes = Some(10);
     });
 
     let denial = policy
@@ -61,8 +61,8 @@ fn test_apply_detail_rejects_project_size_over_limit() {
 
 #[test]
 fn test_check_project_denies_project_outside_allow_list() {
-    let policy = policy(|config| {
-        config.allow_projects = vec!["flask".to_owned()];
+    let policy = policy(|neutral, _pypi| {
+        neutral.allow_projects = vec!["flask".to_owned()];
     });
 
     let denial = policy.check_project(PolicyAction::Serve, "django").unwrap_err();
@@ -73,57 +73,99 @@ fn test_check_project_denies_project_outside_allow_list() {
 }
 
 #[test]
-fn test_check_download_denies_unknown_version_when_versions_are_limited() {
-    let policy = policy(|config| {
-        config.allow_versions = Some(">=1".to_owned());
-    });
+fn test_check_download_denies_unknown_file_attributes() {
+    struct Case {
+        label: &'static str,
+        configure: fn(&mut PolicyConfig, &mut PypiPolicyConfig),
+        rule: &'static str,
+        field: &'static str,
+        reason: &'static str,
+    }
+    let cases = [
+        Case {
+            label: "unknown version when versions are limited",
+            configure: |_neutral, pypi| pypi.allow_versions = Some(">=1".to_owned()),
+            rule: "version-specifier",
+            field: "version",
+            reason: "file version is unknown",
+        },
+        Case {
+            label: "unknown package type when types are limited",
+            configure: |_neutral, pypi| pypi.allow_package_types = vec![PackageType::Wheel],
+            rule: "package-type-allow-list",
+            field: "package_type",
+            reason: "package type is unknown",
+        },
+    ];
 
-    let denial = policy
-        .check_download(PolicyAction::Serve, "not-a-dist.whl", Some(1))
-        .unwrap_err();
+    for case in cases {
+        let policy = policy(case.configure);
 
-    assert_eq!(denial.rule, "version-specifier");
-    assert_eq!(denial.field, "version");
-    assert_eq!(denial.reason.as_ref(), "file version is unknown");
+        let denial = policy
+            .check_download(PolicyAction::Serve, "not-a-dist.whl", Some(1))
+            .unwrap_err();
+
+        assert_eq!(denial.rule, case.rule, "{}", case.label);
+        assert_eq!(denial.field, case.field, "{}", case.label);
+        assert_eq!(denial.reason.as_ref(), case.reason, "{}", case.label);
+    }
 }
 
 #[test]
-fn test_check_download_denies_unknown_package_type_when_types_are_limited() {
-    let policy = policy(|config| {
-        config.allow_package_types = vec![PackageType::Wheel];
-    });
+fn test_check_file_denies_by_rule_and_field() {
+    struct Case {
+        label: &'static str,
+        configure: fn(&mut PolicyConfig, &mut PypiPolicyConfig),
+        rule: &'static str,
+        field: &'static str,
+        reason: Option<&'static str>,
+    }
+    let cases = [
+        Case {
+            label: "blocked wheel package type",
+            configure: |_neutral, pypi| pypi.block_package_types = vec![PackageType::Wheel],
+            rule: "package-type-block-list",
+            field: "package_type",
+            reason: Some("package type wheel is blocked"),
+        },
+        Case {
+            label: "wheel python allow list",
+            configure: |_neutral, pypi| pypi.allow_wheel_pythons = vec!["cp39".to_owned()],
+            rule: "wheel-python-allow-list",
+            field: "wheel_python",
+            reason: None,
+        },
+        Case {
+            label: "wheel platform block list",
+            configure: |_neutral, pypi| pypi.block_wheel_platforms = vec!["any".to_owned()],
+            rule: "wheel-platform-block-list",
+            field: "wheel_platform",
+            reason: None,
+        },
+    ];
 
-    let denial = policy
-        .check_download(PolicyAction::Serve, "not-a-dist.whl", Some(1))
-        .unwrap_err();
+    for case in cases {
+        let policy = policy(case.configure);
 
-    assert_eq!(denial.rule, "package-type-allow-list");
-    assert_eq!(denial.field, "package_type");
-    assert_eq!(denial.reason.as_ref(), "package type is unknown");
-}
+        let denial = policy
+            .check_file(PolicyAction::Serve, "demo", &file("demo-1.0-py3-none-any.whl", Some(1)))
+            .unwrap_err();
 
-#[test]
-fn test_check_file_denies_blocked_wheel_package_type() {
-    let policy = policy(|config| {
-        config.block_package_types = vec![PackageType::Wheel];
-    });
-
-    let denial = policy
-        .check_file(PolicyAction::Serve, "demo", &file("demo-1.0-py3-none-any.whl", Some(1)))
-        .unwrap_err();
-
-    assert_eq!(denial.rule, "package-type-block-list");
-    assert_eq!(denial.field, "package_type");
-    assert_eq!(denial.reason.as_ref(), "package type wheel is blocked");
+        assert_eq!(denial.rule, case.rule, "{}", case.label);
+        assert_eq!(denial.field, case.field, "{}", case.label);
+        if let Some(reason) = case.reason {
+            assert_eq!(denial.reason.as_ref(), reason, "{}", case.label);
+        }
+    }
 }
 
 #[test]
 fn test_check_file_accepts_wheel_tag_allow_and_block_rules() {
-    let policy = policy(|config| {
-        config.allow_wheel_pythons = vec!["py3".to_owned()];
-        config.block_wheel_pythons = vec!["cp39".to_owned()];
-        config.allow_wheel_platforms = vec!["any".to_owned()];
-        config.block_wheel_platforms = vec!["manylinux_2_28_x86_64".to_owned()];
+    let policy = policy(|_neutral, pypi| {
+        pypi.allow_wheel_pythons = vec!["py3".to_owned()];
+        pypi.block_wheel_pythons = vec!["cp39".to_owned()];
+        pypi.allow_wheel_platforms = vec!["any".to_owned()];
+        pypi.block_wheel_platforms = vec!["manylinux_2_28_x86_64".to_owned()];
     });
 
     policy
@@ -136,42 +178,14 @@ fn test_check_file_accepts_wheel_tag_allow_and_block_rules() {
 }
 
 #[test]
-fn test_check_file_denies_wheel_python_allow_list() {
-    let policy = policy(|config| {
-        config.allow_wheel_pythons = vec!["cp39".to_owned()];
-    });
-
-    let denial = policy
-        .check_file(PolicyAction::Serve, "demo", &file("demo-1.0-py3-none-any.whl", Some(1)))
-        .unwrap_err();
-
-    assert_eq!(denial.rule, "wheel-python-allow-list");
-    assert_eq!(denial.field, "wheel_python");
-}
-
-#[test]
-fn test_check_file_denies_wheel_platform_block_list() {
-    let policy = policy(|config| {
-        config.block_wheel_platforms = vec!["any".to_owned()];
-    });
-
-    let denial = policy
-        .check_file(PolicyAction::Serve, "demo", &file("demo-1.0-py3-none-any.whl", Some(1)))
-        .unwrap_err();
-
-    assert_eq!(denial.rule, "wheel-platform-block-list");
-    assert_eq!(denial.field, "wheel_platform");
-}
-
-#[test]
 fn test_policy_action_display_formats_mirror() {
     assert_eq!(PolicyAction::Cached.to_string(), "cached");
 }
 
 #[test]
 fn test_apply_detail_accepts_project_size_under_limit() {
-    let policy = policy(|config| {
-        config.max_project_size_bytes = Some(10);
+    let policy = policy(|neutral, _pypi| {
+        neutral.max_project_size_bytes = Some(10);
     });
 
     let detail = policy
@@ -196,8 +210,8 @@ fn test_apply_detail_accepts_project_size_under_limit() {
 
 #[test]
 fn test_apply_detail_rejects_project_size_without_file_size() {
-    let policy = policy(|config| {
-        config.max_project_size_bytes = Some(10);
+    let policy = policy(|neutral, _pypi| {
+        neutral.max_project_size_bytes = Some(10);
     });
 
     let denial = policy
@@ -223,8 +237,8 @@ fn test_apply_detail_rejects_project_size_without_file_size() {
 
 #[test]
 fn test_apply_detail_clears_versions_when_no_file_versions_remain() {
-    let policy = policy(|config| {
-        config.block_projects = vec!["blocked".to_owned()];
+    let policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["blocked".to_owned()];
     });
 
     let detail = policy
@@ -245,8 +259,8 @@ fn test_apply_detail_clears_versions_when_no_file_versions_remain() {
 
 #[test]
 fn test_apply_detail_adds_missing_file_versions() {
-    let policy = policy(|config| {
-        config.block_projects = vec!["blocked".to_owned()];
+    let policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["blocked".to_owned()];
     });
 
     let detail = policy
@@ -267,9 +281,9 @@ fn test_apply_detail_adds_missing_file_versions() {
 
 #[test]
 fn test_preview_detail_reports_file_and_project_size_denials() {
-    let policy = policy(|config| {
-        config.block_package_types = vec![PackageType::Sdist];
-        config.max_project_size_bytes = Some(5);
+    let policy = policy(|neutral, pypi| {
+        pypi.block_package_types = vec![PackageType::Sdist];
+        neutral.max_project_size_bytes = Some(5);
     });
     let detail = ProjectDetail {
         meta: Meta::default(),
@@ -291,21 +305,22 @@ fn test_preview_detail_reports_file_and_project_size_denials() {
 
 #[test]
 fn test_compile_rejects_empty_wheel_tag() {
-    let config = PolicyConfig {
+    let config = PypiPolicyConfig {
         allow_wheel_pythons: vec![String::new()],
-        ..PolicyConfig::default()
+        ..PypiPolicyConfig::default()
     };
 
     assert!(matches!(
-        Policy::compile(&config),
-        Err(PolicyConfigError::EmptyTag(value)) if value.is_empty()
+        compile_rules(&config),
+        Err(PypiPolicyError::EmptyTag(value)) if value.is_empty()
     ));
 }
 
-fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
-    let mut config = PolicyConfig::default();
-    configure(&mut config);
-    Policy::compile(&config).unwrap()
+fn policy(configure: impl FnOnce(&mut PolicyConfig, &mut PypiPolicyConfig)) -> Policy {
+    let mut neutral = PolicyConfig::default();
+    let mut pypi = PypiPolicyConfig::default();
+    configure(&mut neutral, &mut pypi);
+    Policy::compile(&neutral).with_rules(compile_rules(&pypi).unwrap())
 }
 
 fn file(filename: &str, size: Option<u64>) -> File {
@@ -322,4 +337,27 @@ fn file(filename: &str, size: Option<u64>) -> File {
         gpg_sig: None,
         provenance: Provenance::Absent,
     }
+}
+
+#[test]
+fn test_compile_rejects_empty_platform_tag() {
+    let config = PypiPolicyConfig {
+        allow_wheel_platforms: vec![String::new()],
+        ..PypiPolicyConfig::default()
+    };
+    assert!(matches!(
+        compile_rules(&config),
+        Err(PypiPolicyError::EmptyTag(value)) if value.is_empty()
+    ));
+}
+
+#[test]
+fn test_wheel_tag_rule_ignores_non_wheel_files() {
+    let policy = policy(|_neutral, pypi| {
+        pypi.block_wheel_platforms = vec!["any".to_owned()];
+    });
+    // An sdist carries no wheel tags, so a wheel-tag rule does not apply to it.
+    policy
+        .check_file(PolicyAction::Serve, "demo", &file("demo-1.0.tar.gz", Some(1)))
+        .unwrap();
 }

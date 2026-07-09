@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, OnceLock};
 
-mod archive_tests;
+mod archive;
 mod conformance_tests;
 mod fanout_tests;
 mod filename_tests;
@@ -15,17 +15,11 @@ mod rate_limit_tests;
 mod refresh_tests;
 mod search_tests;
 mod serve_tests;
-mod simple_tests;
-mod stream_tests;
+mod simple;
+mod stream;
 mod upload_tests;
 mod version_tests;
 mod webhooks_tests;
-
-#[test]
-fn test_pypi_driver_reports_its_ecosystem() {
-    use velodex_format::{Ecosystem, EcosystemDriver};
-    assert_eq!(crate::PypiDriver.ecosystem(), Ecosystem::Pypi);
-}
 
 thread_local! {
     /// The capture buffer for the test running on this thread, if it installed a [`LogCapture`].
@@ -38,7 +32,7 @@ thread_local! {
 /// A single, permanent subscriber keeps tracing's per-callsite interest cache stable: every
 /// `security_event` callsite stays enabled for the life of the test binary. The earlier design set a
 /// *thread-local* subscriber per test, so a thread running a non-capturing test had no subscriber and,
-/// if it hit a callsite first, cached it as `Interest::never()` process-wide — intermittently dropping
+/// if it hit a callsite first, cached it as `Interest::never()` process-wide, intermittently dropping
 /// events from capturing tests on other threads under parallel runs. This subscriber instead routes
 /// every event to the current thread's [`ACTIVE_CAPTURE`] buffer, so tests stay isolated without
 /// poisoning the cache.

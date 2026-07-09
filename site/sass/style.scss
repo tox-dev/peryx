@@ -804,6 +804,10 @@ $header-offset: 4.3rem;
     color: var(--text-soft);
   }
 
+  .docs-nav-logo {
+    object-fit: contain;
+  }
+
   // The current (open) section's glyph picks up the accent, matching its active title.
   .docs-nav-group[open] > summary .docs-nav-icon {
     color: var(--accent);
@@ -840,6 +844,26 @@ $header-offset: 4.3rem;
       color: var(--accent);
       border-left-color: var(--accent);
       font-weight: 600;
+    }
+  }
+
+  // A diátaxis subsection inside an ecosystem group (Tutorials, How-to, …): a small heading with its
+  // pages nested a step further in, so a page reads as a child of the subsection, not a sibling.
+  .docs-nav-sub {
+    margin: 0.1rem 0 0.35rem 0.7rem;
+  }
+
+  .docs-nav-subtitle {
+    display: block;
+    padding: 0.3rem 0 0.15rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-soft);
+
+    &.active {
+      color: var(--accent);
     }
   }
 }
@@ -1282,6 +1306,26 @@ pre:hover .copy-snippet,
   td.bench-worst { background: color-mix(in srgb, rgb(208, 59, 59) 38%, var(--bg)); }
   td.bench-none { color: var(--text-soft); }
 
+  // The spread the median carries (±CV); a noisy cell paints it red so a number wider than the effects
+  // it is compared against reads as untrustworthy at a glance.
+  .bench-spread { color: var(--text-soft); font-size: 0.75rem; }
+  td.bench-noisy .bench-spread { color: rgb(208, 59, 59); font-style: italic; }
+
+  // The methodology note under the caption, and the "net" key within it.
+  .bench-note { font-size: 0.78rem; }
+  // The "net" badge marking an upstream-bound row that does not gate regressions.
+  .bench-network,
+  .bench-network-key {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-soft);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 0.25rem;
+    vertical-align: middle;
+  }
+
   // Freeze the label column and the velodex baseline column. They only engage when the table is
   // wider than its container (narrow screens); at full width every server shows at once. --label-w
   // is set by JS to the first column's width so velodex sits flush against the widest label.
@@ -1352,7 +1396,5 @@ pre:hover .copy-snippet,
 
   img {
     border-radius: 5px;
-    background: #ffffff;
-    padding: 2px;
   }
 }

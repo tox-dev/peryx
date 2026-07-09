@@ -20,6 +20,7 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 velodex-format = { path = "crates/velodex-format" }
 velodex-ecosystem-pypi = { path = "crates/velodex-ecosystem-pypi", default-features = false }
+velodex-ecosystem-oci = { path = "crates/velodex-ecosystem-oci" }
 velodex-policy = { path = "crates/velodex-policy" }
 velodex-identity = { path = "crates/velodex-identity" }
 velodex-replication = { path = "crates/velodex-replication" }
@@ -38,9 +39,11 @@ csv = "1"
 tempfile = "3"
 mimalloc = "0.1"
 redb = "4.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "rustls-native-certs", "http2", "stream", "gzip"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls-acme = { version = "0.15", default-features = false, features = ["ring", "axum", "tls12", "webpki-roots"] }
 bytes = "1"
 futures-core = "0.3"
 futures-util = "0.3"
@@ -49,6 +52,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
 url = "2"
 wiremock = "0.6"
+rstest = "0.26"
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -81,6 +85,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"]
 tracing-appender = "0.2"
 time = { version = "0.3", features = ["formatting"] }
 criterion = { package = "codspeed-criterion-compat", version = "5.0", default-features = false }
+statrs = "0.18"
+hdrhistogram = { version = "7.5", default-features = false }
 
 [profile.release]
 strip = true

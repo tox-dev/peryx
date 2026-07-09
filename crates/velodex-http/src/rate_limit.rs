@@ -374,12 +374,22 @@ pub(crate) async fn enforce(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let class = service_route_class(request.method(), request.uri().path())
-        .unwrap_or_else(|| state.serving.classify_route(request.uri().path()));
+    let path = request.uri().path();
+    let class = service_route_class(request.method(), path).unwrap_or_else(|| {
+        // A GET inside an index namespace is classed by the driver that serves it, selected at the same
+        // URL boundary the router dispatches on: a namespace ecosystem that owns the path, else the
+        // per-index ecosystem's Simple-style API.
+        state.namespace_for_path(path).map_or_else(
+            || state.serving.classify_route(path),
+            |driver| driver.classify_route(path),
+        )
+    });
     let actor = actor_key(&request);
     match state.rate_limits.check(class, actor) {
         Ok(()) => next.run(request).await,
         Err(limited) => {
+            // Compute the log fields before the macro: as macro arguments they would evaluate only when
+            // the callsite is enabled, so a run without a security-log subscriber would never cover them.
             let class = limited.class.as_str();
             let client = limited.actor.kind();
             tracing::info!(
@@ -401,8 +411,10 @@ pub(crate) async fn enforce(
 /// Classify the ecosystem-neutral part of a request: writes and velodex's own service endpoints.
 ///
 /// Returns `None` for a GET inside an index's namespace (a project listing, metadata sibling, or
-/// artifact), whose class depends on the ecosystem's URL scheme and so is decided by the index's
-/// driver through [`EcosystemServing::classify_route`](crate::serving::EcosystemServing::classify_route).
+/// artifact), whose class depends on the ecosystem's URL scheme and so is decided by the owning
+/// driver's `classify_route`: [`EcosystemServing`](crate::serving::EcosystemServing::classify_route)
+/// for a per-index ecosystem, [`NamespaceServing`](crate::serving::NamespaceServing::classify_route)
+/// for one that owns a top-level namespace.
 #[must_use]
 pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     if method != Method::GET {

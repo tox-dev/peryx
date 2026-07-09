@@ -6,6 +6,7 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
+use rstest::{fixture, rstest};
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 use velodex_ecosystem_pypi::upload::Uploaded;
@@ -16,6 +17,21 @@ use velodex_storage::blob::Digest;
 use crate::config::{Config, IndexConfig, IndexKind};
 use crate::server::{build_router, build_state, router_for};
 
+#[fixture]
+fn ui_router() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    (dir, router)
+}
+
+#[fixture]
+fn filter_router() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_filter_files(&state);
+    (dir, router_for(state))
+}
+
 fn ui_config(dir: &tempfile::TempDir) -> Config {
     Config {
         data_dir: dir.path().to_path_buf(),
@@ -24,6 +40,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
                 policy: velodex_policy::PolicyConfig::default(),
+                pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
@@ -40,6 +57,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
                 policy: velodex_policy::PolicyConfig::default(),
+                pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
@@ -51,6 +69,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 name: "root/pypi".to_owned(),
                 route: "root/pypi".to_owned(),
                 policy: velodex_policy::PolicyConfig::default(),
+                pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
                 ecosystem: velodex_format::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
@@ -69,6 +88,205 @@ fn empty_ui_config(dir: &tempfile::TempDir) -> Config {
         indexes: Vec::new(),
         ..Config::default()
     }
+}
+
+fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![IndexConfig {
+            name: "images".to_owned(),
+            route: "images".to_owned(),
+            policy: velodex_policy::PolicyConfig::default(),
+            pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            webhooks: Vec::new(),
+            ecosystem: velodex_format::Ecosystem::Oci,
+            kind: IndexKind::Hosted {
+                upload_token: Some("s3cret".to_owned()),
+                volatile: true,
+            },
+        }],
+        ..Config::default()
+    }
+}
+
+/// Push a tagged image manifest through the `/v2/` API so the browse pages have an OCI repository.
+/// Upload a blob to the hosted `images/app` repo and return its OCI digest.
+async fn upload_blob(router: &axum::Router, bytes: &[u8]) -> String {
+    let digest = format!("sha256:{}", Digest::of(bytes).as_str());
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v2/images/app/blobs/uploads/?digest={digest}"))
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .body(Body::from(bytes.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    digest
+}
+
+/// Upload a config and a layer blob, then push a manifest referencing them, returning both digests.
+async fn push_oci_image(router: &axum::Router) -> (String, String) {
+    let config = upload_blob(router, b"{}").await;
+    let layer = upload_blob(router, b"layer-bytes").await;
+    let manifest = format!(
+        concat!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","#,
+            r#""config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config}","size":2}},"#,
+            r#""layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer}","size":11}}]}}"#,
+        ),
+        config = config,
+        layer = layer,
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v2/images/app/manifests/1.0")
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .header(header::CONTENT_TYPE, "application/vnd.oci.image.manifest.v1+json")
+                .body(Body::from(manifest))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    (config, layer)
+}
+
+/// A gzip-tar layer carrying one text and one binary member, plus its OCI digest.
+fn oci_layer() -> (Vec<u8>, String) {
+    let mut tar_bytes = Vec::new();
+    let mut builder = tar::Builder::new(&mut tar_bytes);
+    for (path, bytes) in [
+        ("etc/app.conf", b"debug = true\n".as_slice()),
+        ("bin/app", &[0x7f, 0x45, 0x4c, 0x46]),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, bytes).unwrap();
+    }
+    builder.into_inner().unwrap();
+    let mut gz = Vec::new();
+    let mut encoder = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+    encoder.write_all(&tar_bytes).unwrap();
+    encoder.finish().unwrap();
+    let digest = format!("sha256:{}", Digest::of(&gz).as_str());
+    (gz, digest)
+}
+
+/// Upload a real gzip layer blob and push a manifest referencing it, so the layer browser has a
+/// stored layer to open.
+async fn push_oci_image_with_layer(router: &axum::Router) -> String {
+    let (layer, digest) = oci_layer();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v2/images/app/blobs/uploads/?digest={digest}"))
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .body(Body::from(layer))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let config = upload_blob(router, b"{}").await;
+    let manifest = format!(
+        concat!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","#,
+            r#""config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config}","size":2}},"#,
+            r#""layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{digest}","size":42}}]}}"#,
+        ),
+        config = config,
+        digest = digest,
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v2/images/app/manifests/1.0")
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .header(header::CONTENT_TYPE, "application/vnd.oci.image.manifest.v1+json")
+                .body(Body::from(manifest))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    digest
+}
+
+#[tokio::test]
+async fn test_ui_oci_manifest_links_layer_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let digest = push_oci_image_with_layer(&router).await;
+
+    let (status, body) = get(&router, "/browse?index=images&project=app&ref=1.0").await;
+    assert_eq!(status, StatusCode::OK);
+    // The layer row carries a contents link into the layer browser, keyed on the layer digest (its
+    // colon percent-encoded in the query).
+    assert!(body.contains("class=\"inspect\""), "contents link missing: {body}");
+    let hex = digest.strip_prefix("sha256:").unwrap();
+    assert!(
+        body.contains(&format!("layer=sha256%3A{hex}")),
+        "layer link missing: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ui_oci_layer_lists_and_previews_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let digest = push_oci_image_with_layer(&router).await;
+
+    let listing = format!("/browse?index=images&project=app&ref=1.0&layer={digest}");
+    let (status, body) = get(&router, &listing).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("etc/app.conf"), "text member missing: {body}");
+    assert!(body.contains("bin/app"), "binary member missing: {body}");
+
+    let member = format!("{listing}&member=etc%2Fapp.conf");
+    let (status, body) = get(&router, &member).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("debug = true"), "member preview missing: {body}");
+}
+
+#[tokio::test]
+async fn test_ui_oci_repository_lists_its_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    push_oci_image(&router).await;
+
+    let (status, body) = get(&router, "/browse?index=images&project=app").await;
+    assert_eq!(status, StatusCode::OK);
+    // The repository page shows the pushed tag, linking to its manifest.
+    assert!(body.contains("1.0"), "tag missing: {body}");
+    assert!(body.contains("ref=1.0"), "manifest link missing: {body}");
+}
+
+#[tokio::test]
+async fn test_ui_oci_manifest_shows_config_and_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let (config, layer) = push_oci_image(&router).await;
+
+    let (status, body) = get(&router, "/browse?index=images&project=app&ref=1.0").await;
+    assert_eq!(status, StatusCode::OK);
+    // The manifest page shows the config and layer blob digests.
+    assert!(body.contains(&config), "config blob missing: {body}");
+    assert!(body.contains(&layer), "layer blob missing: {body}");
+    assert!(body.contains("Layers"), "layer heading missing: {body}");
 }
 
 async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
@@ -173,10 +391,10 @@ fn put_filter_files(state: &velodex_http::AppState) {
     put_legacy_file(state, "veloxdemo-1.0.0.tar.gz", b"sdist");
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_dashboard_renders_indexes_and_counters() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_dashboard_renders_indexes_and_counters(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     let (status, body) = get(&router, "/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("change serial"));
@@ -191,9 +409,23 @@ async fn test_ui_dashboard_renders_indexes_and_counters() {
 }
 
 #[tokio::test]
-async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
+async fn test_ui_dashboard_shows_the_oci_registry_endpoint_not_simple() {
     let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let (status, body) = get(&router, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    // An OCI index card advertises the `/v2/` registry endpoint, never a PyPI `/simple/` URL.
+    assert!(body.contains("/v2/images/"), "OCI endpoint missing: {body}");
+    assert!(
+        !body.contains("/images/simple/"),
+        "OCI card wrongly shows a Simple URL: {body}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_admin_status_renders_read_only_state_without_secrets(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     let (status, body) = get(&router, "/admin/status").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Admin status"));
@@ -224,10 +456,10 @@ async fn test_ui_admin_status_empty_state() {
     assert!(body.contains("No uploads recorded yet."));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_admin_status_lists_counts_and_recent_uploads() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_admin_status_lists_counts_and_recent_uploads(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     upload_fixture(&router).await;
     let (status, body) = get(&router, "/admin/status").await;
     assert_eq!(status, StatusCode::OK);
@@ -238,10 +470,10 @@ async fn test_ui_admin_status_lists_counts_and_recent_uploads() {
     assert!(!body.contains("A demonstration package"));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_browse_lists_projects_after_upload() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_browse_lists_projects_after_upload(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     upload_fixture(&router).await;
     let (status, body) = get(&router, "/browse?index=hosted").await;
     assert_eq!(status, StatusCode::OK);
@@ -249,19 +481,19 @@ async fn test_ui_browse_lists_projects_after_upload() {
     assert!(body.contains("Filter projects"));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_browse_empty_index_hint() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_browse_empty_index_hint(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     let (status, body) = get(&router, "/browse?index=hosted").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("No projects observed"));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_project_page_renders_metadata() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_project_page_renders_metadata(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     upload_fixture(&router).await;
     let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
@@ -275,67 +507,56 @@ async fn test_ui_project_page_renders_metadata() {
     assert!(body.contains("1.2 kB"));
 }
 
+#[rstest]
+#[case::substring(
+    "/browse?index=hosted&project=veloxdemo&filename=cp312",
+    &["1 of 3 files"][..],
+    &["veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"][..],
+    &["veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", "veloxdemo-1.0.0.tar.gz"][..]
+)]
+#[case::regex(
+    "/browse?index=hosted&project=veloxdemo&filename=cp31%5B12%5D.*whl&filename_match=regex",
+    &["2 of 3 files"][..],
+    &["veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"][..],
+    &["veloxdemo-1.0.0.tar.gz"][..]
+)]
+#[case::invalid_regex(
+    "/browse?index=hosted&project=veloxdemo&filename=%5B&filename_match=regex",
+    &["Invalid regex", "3 files"][..],
+    &[
+        "veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl",
+        "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl",
+        "veloxdemo-1.0.0.tar.gz",
+    ][..],
+    &[][..]
+)]
 #[tokio::test]
-async fn test_ui_project_page_filters_files_by_substring() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = build_state(&ui_config(&dir)).unwrap();
-    put_filter_files(&state);
-    let router = router_for(state);
-
-    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo&filename=cp312").await;
+async fn test_ui_project_page_filters_files(
+    filter_router: (tempfile::TempDir, axum::Router),
+    #[case] query: &str,
+    #[case] count_text: &[&str],
+    #[case] present: &[&str],
+    #[case] absent: &[&str],
+) {
+    let (_dir, router) = filter_router;
+    let (status, body) = get(&router, query).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("1 of 3 files"));
+    for text in count_text {
+        assert!(body.contains(text), "{body}");
+    }
     let table = first_files_table(&body);
-    assert!(table.contains("veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"));
-    assert!(!table.contains("veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl"));
-    assert!(!table.contains("veloxdemo-1.0.0.tar.gz"));
+    for file in present {
+        assert!(table.contains(file), "{body}");
+    }
+    for file in absent {
+        assert!(!table.contains(file), "{body}");
+    }
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_project_page_filters_files_by_regex() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = build_state(&ui_config(&dir)).unwrap();
-    put_filter_files(&state);
-    let router = router_for(state);
-
-    let (status, body) = get(
-        &router,
-        "/browse?index=hosted&project=veloxdemo&filename=cp31%5B12%5D.*whl&filename_match=regex",
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("2 of 3 files"));
-    let table = first_files_table(&body);
-    assert!(table.contains("veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl"));
-    assert!(table.contains("veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"));
-    assert!(!table.contains("veloxdemo-1.0.0.tar.gz"));
-}
-
-#[tokio::test]
-async fn test_ui_project_page_invalid_regex_keeps_full_table() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = build_state(&ui_config(&dir)).unwrap();
-    put_filter_files(&state);
-    let router = router_for(state);
-
-    let (status, body) = get(
-        &router,
-        "/browse?index=hosted&project=veloxdemo&filename=%5B&filename_match=regex",
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("Invalid regex"));
-    assert!(body.contains("3 files"));
-    let table = first_files_table(&body);
-    assert!(table.contains("veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl"));
-    assert!(table.contains("veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"));
-    assert!(table.contains("veloxdemo-1.0.0.tar.gz"));
-}
-
-#[tokio::test]
-async fn test_ui_project_page_missing_project() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_project_page_missing_project(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     let (status, body) = get(&router, "/browse?index=hosted&project=ghost").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Project not found on this index."));
@@ -382,10 +603,10 @@ async fn test_ui_project_page_hides_contents_for_unsupported_legacy_tar() {
     assert!(!body.contains("class=\"inspect\""));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_archive_listing_and_member() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_archive_listing_and_member(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     upload_fixture(&router).await;
     let (_, detail) = get(&router, "/hosted/simple/veloxdemo/").await;
     let sha = detail
@@ -411,10 +632,12 @@ async fn test_ui_archive_listing_and_member() {
     assert!(content.contains("back to archive"));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview(
+    ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = ui_router;
     let mut inner = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut inner));
@@ -500,20 +723,20 @@ fn wheel_record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {
     record
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_unknown_route_falls_back() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_unknown_route_falls_back(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     let (status, body) = get(&router, "/nosuchpage").await;
     // The catch-all API dispatcher answers for non-UI paths.
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("not found"));
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_ui_stats_drills_from_index_to_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir)).unwrap();
+async fn test_ui_stats_drills_from_index_to_files(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
     upload_fixture(&router).await;
     // The aggregator applies the upload event on its own thread; poll the rendered page.
     let mut body = String::new();

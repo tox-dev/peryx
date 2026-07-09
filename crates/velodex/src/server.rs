@@ -56,6 +56,8 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     )
     .context(format!("open search index {}", search_path.display()))?;
     velodex_ecosystem_pypi::install(&mut state);
+    velodex_ecosystem_oci::install(&mut state);
+    state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
     if !state.webhooks.is_empty() {
         webhook::kick(state.clone());
@@ -92,7 +94,10 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::R
                 route: index.route.clone(),
                 ecosystem: index.ecosystem,
                 kind: build_kind(index, configs, &positions, offline)?,
-                policy: Policy::compile(&index.policy).with_context(|| format!("compile policy for {}", index.name))?,
+                policy: Policy::compile(&index.policy).with_rules(
+                    velodex_ecosystem_pypi::policy::compile_rules(&index.pypi_policy)
+                        .with_context(|| format!("compile policy for {}", index.name))?,
+                ),
             })
         })
         .collect()

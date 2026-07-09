@@ -15,7 +15,10 @@ fn test_authorized_accepts_any_user_with_the_token() {
 
 #[test]
 fn test_authorized_rejects_wrong_password() {
+    // A shorter guess exercises the length short-circuit; a same-length guess exercises the
+    // byte-by-byte constant-time comparison to its end.
     assert!(!authorized(Some(&basic(b"alice:nope")), "s3cret"));
+    assert!(!authorized(Some(&basic(b"alice:s3crXt")), "s3cret"));
 }
 
 #[test]

@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, bail};
 
-use crate::report::repo_root;
+use crate::report::velodex_binary;
 use crate::servers::Server;
 
 /// The always-present project every simple index answers for, used to probe readiness.
@@ -21,10 +21,10 @@ fn velodex() -> Server {
     Server {
         name: "velodex",
         homepage: "https://velodex.readthedocs.io/",
-        simple_url: |port| format!("http://127.0.0.1:{port}/root/pypi/simple/"),
-        probe_path: PROBE,
+        base_url: |port| format!("http://127.0.0.1:{port}/root/pypi/simple/"),
+        probe: |base| format!("{base}{PROBE}"),
         command: Some(|port, state| {
-            let mut command = Command::new(repo_root().join("target").join("release").join("velodex"));
+            let mut command = Command::new(velodex_binary());
             command
                 .arg("serve")
                 .args(["--host", "127.0.0.1"])
@@ -34,6 +34,7 @@ fn velodex() -> Server {
             command
         }),
         setup: None,
+        teardown: None,
     }
 }
 
@@ -41,10 +42,11 @@ fn direct() -> Server {
     Server {
         name: "direct",
         homepage: "https://pypi.org/",
-        simple_url: |_port| "https://pypi.org/simple/".to_owned(),
-        probe_path: PROBE,
+        base_url: |_port| "https://pypi.org/simple/".to_owned(),
+        probe: |base| format!("{base}{PROBE}"),
         command: None,
         setup: None,
+        teardown: None,
     }
 }
 
@@ -52,8 +54,8 @@ fn devpi() -> Server {
     Server {
         name: "devpi",
         homepage: "https://devpi.net/docs/",
-        simple_url: |port| format!("http://127.0.0.1:{port}/root/pypi/+simple/"),
-        probe_path: PROBE,
+        base_url: |port| format!("http://127.0.0.1:{port}/root/pypi/+simple/"),
+        probe: |base| format!("{base}{PROBE}"),
         command: Some(|port, state| {
             let mut command = Command::new("uvx");
             command
@@ -74,6 +76,7 @@ fn devpi() -> Server {
             }
             Ok(())
         }),
+        teardown: None,
     }
 }
 
@@ -81,8 +84,8 @@ fn proxpi() -> Server {
     Server {
         name: "proxpi",
         homepage: "https://github.com/EpicWink/proxpi",
-        simple_url: |port| format!("http://127.0.0.1:{port}/index/"),
-        probe_path: PROBE,
+        base_url: |port| format!("http://127.0.0.1:{port}/index/"),
+        probe: |base| format!("{base}{PROBE}"),
         command: Some(|port, _state| {
             let mut command = Command::new("uvx");
             command
@@ -92,6 +95,7 @@ fn proxpi() -> Server {
             command
         }),
         setup: None,
+        teardown: None,
     }
 }
 
@@ -99,8 +103,8 @@ fn pypiserver() -> Server {
     Server {
         name: "pypiserver",
         homepage: "https://github.com/pypiserver/pypiserver",
-        simple_url: |port| format!("http://127.0.0.1:{port}/simple/"),
-        probe_path: PROBE,
+        base_url: |port| format!("http://127.0.0.1:{port}/simple/"),
+        probe: |base| format!("{base}{PROBE}"),
         command: Some(|port, state| {
             let mut command = Command::new("uvx");
             command
@@ -112,6 +116,7 @@ fn pypiserver() -> Server {
             command
         }),
         setup: None,
+        teardown: None,
     }
 }
 
@@ -119,8 +124,8 @@ fn pypicloud() -> Server {
     Server {
         name: "pypicloud",
         homepage: "https://pypicloud.readthedocs.io/",
-        simple_url: |port| format!("http://127.0.0.1:{port}/simple/"),
-        probe_path: PROBE,
+        base_url: |port| format!("http://127.0.0.1:{port}/simple/"),
+        probe: |base| format!("{base}{PROBE}"),
         command: Some(|_port, state| {
             let mut command = Command::new("uvx");
             command
@@ -156,5 +161,6 @@ fn pypicloud() -> Server {
             );
             std::fs::write(state.join("pypicloud.ini"), ini).context("pypicloud.ini")
         }),
+        teardown: None,
     }
 }

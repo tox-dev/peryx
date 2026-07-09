@@ -6,12 +6,30 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
 use crate::servers::Server;
+use crate::stats::Summary;
+use crate::usage::Cost;
 
 /// Best-in-row to worst-in-row tint names the site's stylesheet colors green through red.
 const LADDER: &[&str] = &["faster", "par", "mild", "slow", "veryslow", "worst"];
 
 /// The tint scale never compresses below an 8x span, so a near-parity row reads green throughout.
 const MIN_SPAN: f64 = 2.079_441_541_679_835_9; // ln 8
+
+/// The whole report: every workload's table, keyed by name.
+#[derive(Deserialize)]
+pub struct Report {
+    #[serde(default)]
+    pub tables: std::collections::BTreeMap<String, Table>,
+}
+
+/// Load a report from disk for an A/B compare.
+///
+/// # Errors
+/// Returns an error when the file cannot be read or is not a valid report.
+pub fn load(path: &std::path::Path) -> anyhow::Result<Report> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    toml::from_str(&text).with_context(|| format!("{} is not a valid report", path.display()))
+}
 
 /// One comparison table.
 #[derive(Serialize, Deserialize)]
@@ -32,6 +50,14 @@ pub struct Party {
 pub struct Row {
     pub name: String,
     pub cells: Vec<Cell>,
+    /// The measurement is dominated by upstream/CDN variance velodex does not control (a cold,
+    /// network-bound pass), so the site marks it and a regression check must not gate on it.
+    #[serde(default)]
+    pub network_bound: bool,
+    /// Whether a larger number is the better one (a rate), so an A/B compare knows which direction a
+    /// change means a regression.
+    #[serde(default)]
+    pub higher_is_better: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,6 +65,22 @@ pub struct Cell {
     pub text: String,
     pub ratio: String,
     pub tint: String,
+    /// The dispersion around `text` (the median), as `±CV%`; empty when a party has no number.
+    #[serde(default)]
+    pub spread: String,
+    /// The observed `min–max` across the rounds; empty when a party has no number.
+    #[serde(default)]
+    pub range: String,
+    /// The round-to-round spread is too wide to read this number as fact.
+    #[serde(default)]
+    pub noisy: bool,
+    /// Rounds that landed past the Tukey fence, kept rather than dropped so the spread stays honest.
+    #[serde(default)]
+    pub outliers: usize,
+    /// The raw median so an A/B compare can take ratios without parsing `text`; absent for a party
+    /// with no number.
+    #[serde(default)]
+    pub value: Option<f64>,
 }
 
 /// What a `None` measurement means for a row, and how its cell renders.
@@ -61,29 +103,52 @@ pub enum Metric {
     Amount(&'static str),
 }
 
-/// Format one row: readable value, ratio against the baseline party, and a best-to-worst tint.
+/// Format one local-serving row: median value with its spread, ratio against the baseline party, and
+/// a best-to-worst tint. See [`build_row`].
+pub fn row(name: &str, values: &[Option<Summary>], baseline: usize, metric: Metric, absent: Absent) -> Row {
+    build_row(name, values, baseline, metric, absent, false)
+}
+
+/// Format one network-bound row (a cold pass whose time is dominated by the upstream, not velodex);
+/// tinted and reported like any other but marked so a regression check skips it. See [`build_row`].
+pub fn network_row(name: &str, values: &[Option<Summary>], baseline: usize, metric: Metric, absent: Absent) -> Row {
+    build_row(name, values, baseline, metric, absent, true)
+}
+
+/// Format one row from each party's [`Summary`] over the run's rounds: the median is the point
+/// estimate, its coefficient of variation is the spread, and a wide spread flags the cell as noisy.
 ///
-/// The baseline is the no-proxy `direct` measurement where present, so every other cell reads as
-/// the overhead (or win) a server adds on top of talking to the upstream itself. A `None` marks a
-/// party without a number; `absent` says whether that is a failure (red) or a non-entity (plain).
+/// The baseline is the no-proxy `direct` measurement where present, so every other cell reads as the
+/// overhead (or win) a server adds on top of talking to the upstream itself. A `None` marks a party
+/// without a number; `absent` says whether that is a failure (red) or a non-entity (plain).
 ///
 /// # Panics
 /// Never in practice: the caller always measures the baseline party.
-pub fn row(name: &str, values: &[Option<f64>], baseline: usize, metric: Metric, absent: Absent) -> Row {
-    let reference = values[baseline].expect("the baseline party always has a number");
+fn build_row(
+    name: &str,
+    values: &[Option<Summary>],
+    baseline: usize,
+    metric: Metric,
+    absent: Absent,
+    network_bound: bool,
+) -> Row {
+    let reference = values[baseline]
+        .as_ref()
+        .expect("the baseline party always has a number")
+        .median;
     let higher_is_better = matches!(metric, Metric::Rate(_));
     let cost = |value: f64| if higher_is_better { 1.0 / value } else { value };
-    let finite: Vec<f64> = values.iter().flatten().map(|&value| cost(value)).collect();
+    let finite: Vec<f64> = values.iter().flatten().map(|summary| cost(summary.median)).collect();
     let best = finite.iter().copied().fold(f64::INFINITY, f64::min);
     let worst = finite.iter().copied().fold(0.0f64, f64::max);
     let span = (worst / best).ln().max(MIN_SPAN);
     let cells = values
         .iter()
         .map(|value| {
-            value.map_or_else(
+            value.as_ref().map_or_else(
                 || absent_cell(absent),
-                |value| {
-                    let position = (cost(value) / best).ln() / span;
+                |summary| {
+                    let position = (cost(summary.median) / best).ln() / span;
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_precision_loss,
@@ -92,9 +157,14 @@ pub fn row(name: &str, values: &[Option<f64>], baseline: usize, metric: Metric, 
                     )]
                     let index = ((position * LADDER.len() as f64) as usize).min(LADDER.len() - 1);
                     Cell {
-                        text: format_value(value, metric),
-                        ratio: format!("{:.2}x", value / reference),
+                        text: format_value(summary.median, metric),
+                        ratio: format!("{:.2}x", summary.median / reference),
                         tint: LADDER[index].to_owned(),
+                        spread: format_spread(summary),
+                        range: format_range(summary, metric),
+                        noisy: summary.noisy(),
+                        outliers: summary.outliers,
+                        value: Some(summary.median),
                     }
                 },
             )
@@ -103,7 +173,44 @@ pub fn row(name: &str, values: &[Option<f64>], baseline: usize, metric: Metric, 
     Row {
         name: name.to_owned(),
         cells,
+        network_bound,
+        higher_is_better,
     }
+}
+
+/// Reduce each party's per-round samples to a [`Summary`]. A party that failed every round has an
+/// empty series and becomes `None`, which renders as an absent (failed) cell.
+#[must_use]
+pub fn summarize(samples: &[Vec<f64>]) -> Vec<Option<Summary>> {
+    samples.iter().map(|series| Summary::of(series)).collect()
+}
+
+/// The dispersion note the site prints under the median: the coefficient of variation as a percent,
+/// or empty when a single round leaves nothing to spread.
+fn format_spread(summary: &Summary) -> String {
+    if summary.n < 2 {
+        return String::new();
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cv percent is small"
+    )]
+    let percent = (summary.cv * 100.0).round() as u64;
+    format!("±{percent}%")
+}
+
+/// The observed `min–max` band across the rounds, for the site to show behind the median; empty when
+/// a single round leaves nothing to bound.
+fn format_range(summary: &Summary, metric: Metric) -> String {
+    if summary.n < 2 {
+        return String::new();
+    }
+    format!(
+        "{}–{}",
+        format_value(summary.min, metric),
+        format_value(summary.max, metric)
+    )
 }
 
 const fn absent_kinds(absent: Absent) -> (&'static str, &'static str) {
@@ -119,7 +226,58 @@ fn absent_cell(absent: Absent) -> Cell {
         text: text.to_owned(),
         ratio: "n/a".to_owned(),
         tint: tint.to_owned(),
+        spread: String::new(),
+        range: String::new(),
+        noisy: false,
+        outliers: 0,
+        value: None,
     }
+}
+
+/// The index of the no-proxy baseline party, `direct`; every ratio reads against it.
+pub fn baseline(servers: &[Server]) -> usize {
+    servers.iter().position(|server| server.name == "direct").unwrap_or(0)
+}
+
+/// The party resource rows compare against: direct runs no server, so it cannot anchor them.
+pub fn anchor(servers: &[Server]) -> usize {
+    servers
+        .iter()
+        .position(|server| server.name == "velodex")
+        .unwrap_or_else(|| baseline(servers))
+}
+
+/// The rows every table ends with: what the server itself burned while the workload ran, summarized
+/// across the rounds. Each party carries one [`Cost`] per round (`None` for `direct`, which runs no
+/// server); the CPU seconds and peak resident memory are reduced to a median with its spread like any
+/// other measurement.
+pub fn cost_rows(servers: &[Server], costs: &[Option<Vec<Cost>>]) -> Vec<Row> {
+    let anchor = anchor(servers);
+    let cpu = summaries(costs, |cost| cost.cpu_seconds);
+    #[expect(clippy::cast_precision_loss, reason = "resident sizes fit f64 to the byte")]
+    let rss = summaries(costs, |cost| cost.peak_rss_bytes as f64 / 1e6);
+    vec![
+        row("server CPU", &cpu, anchor, Metric::Seconds, Absent::NoServer),
+        row(
+            "server peak memory",
+            &rss,
+            anchor,
+            Metric::Amount("MB"),
+            Absent::NoServer,
+        ),
+    ]
+}
+
+/// Summarize one field of each party's per-round costs.
+fn summaries(costs: &[Option<Vec<Cost>>], field: impl Fn(&Cost) -> f64) -> Vec<Option<Summary>> {
+    costs
+        .iter()
+        .map(|party| {
+            party
+                .as_ref()
+                .and_then(|rounds| Summary::of(&rounds.iter().map(&field).collect::<Vec<_>>()))
+        })
+        .collect()
 }
 
 /// Assemble a table over the run's parties.
@@ -204,6 +362,29 @@ fn thousands(value: f64) -> String {
 /// Where the report lives: zola loads it relative to the site root.
 pub fn report_path() -> PathBuf {
     repo_root().join("site").join("data").join("bench").join("report.toml")
+}
+
+/// The override an A/B sets so the velodex party launches from a specific binary (a base-commit
+/// build) instead of this checkout's release binary.
+fn binary_override() -> &'static std::sync::Mutex<Option<PathBuf>> {
+    static OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
+    OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Point the velodex party at `path`, or clear the override with `None`. Set between the two runs of
+/// an A/B so each measures a different build through the same harness.
+pub fn set_velodex_binary(path: Option<PathBuf>) {
+    *binary_override().lock().expect("binary override lock is not poisoned") = path;
+}
+
+/// The velodex binary the harness launches: the A/B override when one is set, otherwise the release
+/// binary this checkout builds.
+pub fn velodex_binary() -> PathBuf {
+    binary_override()
+        .lock()
+        .expect("binary override lock is not poisoned")
+        .clone()
+        .unwrap_or_else(|| repo_root().join("target").join("release").join("velodex"))
 }
 
 /// The repository checkout root.

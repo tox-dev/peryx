@@ -13,34 +13,54 @@
 {%- endif %}
 {% endmacro %}
 
+{# Generic, ecosystem-agnostic sidebar: Core (shared), then one group per ecosystem discovered under
+   ecosystems/, then Contributing. Adding an ecosystem is a content folder — the nav needs no edit. #}
 {% macro nav(current) %}
-{% set groups = ["tutorials", "guides", "ecosystems", "reference", "explanation", "migration"] %}
 <details class="docs-nav" open>
   <summary>Documentation</summary>
   <div class="docs-nav-search" data-search-slot></div>
   <nav aria-label="Documentation sections">
-    {% for group in groups %}
-    {% set sec = get_section(path=group ~ "/_index.md") %}
-    {% set in_section = current is starting_with(sec.permalink) %}
-    <details class="docs-nav-group"{% if in_section %} open{% endif %}>
-      <summary>
-        {{ self::icon(name=group) }}
-        <a class="docs-nav-title{% if current == sec.permalink %} active{% endif %}" href="{{ sec.permalink }}">{{ sec.title }}</a>
-      </summary>
-      {% if sec.pages %}
-      <ul>
-        {% for p in sec.pages %}
-        <li><a{% if current == p.permalink %} class="active" aria-current="page"{% endif %} href="{{ p.permalink }}">{{ p.title }}</a></li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-    </details>
+    {% set core = get_section(path="core/_index.md") %}
+    {{ self::group(sec=core, current=current, icon="reference") }}
+    {% set ecosystems = get_section(path="ecosystems/_index.md") %}
+    {% for subpath in ecosystems.subsections %}
+    {% set eco = get_section(path=subpath) %}
+    {{ self::group(sec=eco, current=current, icon="ecosystems") }}
     {% endfor %}
-    <div class="docs-nav-group docs-nav-leaf">
-      {{ self::icon(name="contributing") }}
-      <a class="docs-nav-title{% if current == get_url(path='@/contributing.md') %} active{% endif %}" href="{{ get_url(path='@/contributing.md') }}">Contributing</a>
-    </div>
+    {% set contributing = get_section(path="contributing/_index.md") %}
+    {{ self::group(sec=contributing, current=current, icon="contributing") }}
   </nav>
+</details>
+{% endmacro %}
+
+{# One top-level nav group: its diátaxis subsections (each with its pages) then its own direct pages. #}
+{% macro group(sec, current, icon) %}
+{% set in_section = current is starting_with(sec.permalink) %}
+<details class="docs-nav-group"{% if in_section %} open{% endif %}>
+  <summary>
+    {% if sec.extra.logos %}<img class="docs-nav-icon docs-nav-logo" src="{{ get_url(path=sec.extra.logos.0) }}" alt="" width="18" height="18">{% else %}{{ self::icon(name=icon) }}{% endif %}
+    <a class="docs-nav-title{% if current == sec.permalink %} active{% endif %}" href="{{ sec.permalink }}">{{ sec.title }}</a>
+  </summary>
+  {% for subpath in sec.subsections %}
+  {% set sub = get_section(path=subpath) %}
+  <div class="docs-nav-sub">
+    <a class="docs-nav-subtitle{% if current == sub.permalink %} active{% endif %}" href="{{ sub.permalink }}">{{ sub.title }}</a>
+    {% if sub.pages %}
+    <ul>
+      {% for p in sub.pages %}
+      <li><a{% if current == p.permalink %} class="active" aria-current="page"{% endif %} href="{{ p.permalink }}">{{ p.title }}</a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% if sec.pages %}
+  <ul>
+    {% for p in sec.pages %}
+    <li><a{% if current == p.permalink %} class="active" aria-current="page"{% endif %} href="{{ p.permalink }}">{{ p.title }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 </details>
 {% endmacro %}
 

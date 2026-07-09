@@ -3,8 +3,9 @@ exclude: ^site/static/logos/
 
 ci:
   autoupdate_schedule: monthly
-  # pre-commit.ci has no Rust toolchain; CI runs fmt/clippy instead
-  skip: [cargo-fmt, cargo-clippy]
+  # pre-commit.ci has neither a Rust toolchain nor a headless browser; CI runs fmt/clippy, and the docs
+  # job re-inlines the committed diagrams (a missing partial fails there).
+  skip: [cargo-fmt, cargo-clippy, render-diagrams]
 
 repos:
   - repo: local
@@ -20,6 +21,14 @@ repos:
         language: system
         entry: cargo clippy --workspace --all-targets -- -D warnings
         types: [rust]
+        pass_filenames: false
+      # Mermaid diagrams render to committed SVG partials because the docs host has no browser. Editing a
+      # diagram's source changes its content-hash, so this re-renders and stages the partial on commit.
+      - id: render-diagrams
+        name: render mermaid diagrams
+        language: system
+        entry: npm --prefix site run render
+        files: ^site/content/.*\.md$
         pass_filenames: false
   - repo: https://github.com/hukkin/mdformat
     rev: 1.0.0
@@ -46,7 +55,7 @@ repos:
     rev: v2.4.2
     hooks:
       - id: codespell
-        args: ["--ignore-words-list=ser"]
+        args: ["--ignore-words-list=ser,unparseable"]
         # Generated mermaid SVGs contain mermaid's own class names (e.g. `.composit`).
         exclude: "^site/diagrams/"
   - repo: https://github.com/zizmorcore/zizmor-pre-commit

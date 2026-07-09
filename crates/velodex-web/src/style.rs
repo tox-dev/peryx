@@ -80,7 +80,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .table-scroll { overflow-x: auto; }
 .ops-table { margin-top: 0.8rem; }
 /* The admin status page is data-dense (wide topology and usage tables), so it breaks out of the
-   70rem reading column to a wider, viewport-centered width — the tables fit without scrolling on a
+   70rem reading column to a wider, viewport-centered width. The tables fit without scrolling on a
    desktop, and still scroll gracefully within `.table-scroll` on narrow screens. */
 .ops-page { width: min(94rem, calc(100vw - 3rem)); margin-left: 50%; transform: translateX(-50%); }
 .table-scroll .ops-table { min-width: 48rem; }
@@ -124,6 +124,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 }
 .badge.kind-cached { color: #2f81f7; border-color: #2f81f7; }
 .badge.ecosystem-pypi { color: #3775a9; border-color: #3775a9; }
+.badge.ecosystem-oci { color: #0072b2; border-color: #0072b2; }
 .badge.kind-hosted { color: #34c496; border-color: #34c496; }
 .badge.kind-virtual { color: var(--accent); border-color: var(--accent); }
 .badge.source-uploaded { color: #34c496; border-color: #34c496; }

@@ -16,14 +16,19 @@ const START_TIMEOUT: Duration = Duration::from_mins(3);
 pub struct Server {
     pub name: &'static str,
     pub homepage: &'static str,
-    /// The index URL a client points at, given the port the server listens on.
-    pub simple_url: fn(u16) -> String,
-    /// The path appended to `simple_url` to probe readiness (an always-present project).
-    pub probe_path: &'static str,
+    /// The base URL a client points at, given the port the server listens on: a `PyPI` simple index
+    /// (`http://host/root/pypi/simple/`) or an `OCI` registry prefix (`http://host/dockerhub/`).
+    pub base_url: fn(u16) -> String,
+    /// The readiness URL derived from the base, hit until any HTTP status answers: a `PyPI` project
+    /// page, an `OCI` `/v2/` root.
+    pub probe: fn(&str) -> String,
     /// How to spawn the server; `None` for a party that runs no process (a direct baseline).
     pub command: Option<fn(u16, &Path) -> Command>,
     /// One-time preparation before the first spawn (init a datadir, write a config).
     pub setup: Option<fn(u16, &Path) -> anyhow::Result<()>>,
+    /// Teardown after the spawned process is killed, keyed by port. A container competitor detaches
+    /// from the process that launched it, so killing that process is not enough; this removes it.
+    pub teardown: Option<fn(u16)>,
 }
 
 /// A started server: where to reach it and the process behind it (none for direct).
@@ -31,7 +36,9 @@ pub struct Active {
     pub url: String,
     process: Option<Child>,
     log: Option<PathBuf>,
-    probe_path: &'static str,
+    probe_url: String,
+    port: u16,
+    teardown: Option<fn(u16)>,
 }
 
 impl Active {
@@ -47,6 +54,9 @@ impl Drop for Active {
             let _ = process.kill();
             let _ = process.wait();
         }
+        if let Some(teardown) = self.teardown {
+            teardown(self.port);
+        }
     }
 }
 
@@ -57,12 +67,16 @@ impl Server {
     /// Returns an error when the server exits early or never becomes ready; includes its log tail.
     pub async fn start(&self, state: &Path, client: &reqwest::Client) -> anyhow::Result<Active> {
         let port = free_port()?;
+        let url = (self.base_url)(port);
+        let probe_url = (self.probe)(&url);
         let Some(command) = self.command else {
             return Ok(Active {
-                url: (self.simple_url)(port),
+                url,
                 process: None,
                 log: None,
-                probe_path: self.probe_path,
+                probe_url,
+                port,
+                teardown: None,
             });
         };
         if let Some(setup) = self.setup {
@@ -76,10 +90,12 @@ impl Server {
             .spawn()
             .with_context(|| format!("{} did not start", self.name))?;
         let mut active = Active {
-            url: (self.simple_url)(port),
+            url,
             process: Some(process),
             log: Some(log),
-            probe_path: self.probe_path,
+            probe_url,
+            port,
+            teardown: self.teardown,
         };
         active.wait_ready(client).await.with_context(|| {
             let tail = active
@@ -95,7 +111,7 @@ impl Server {
 
 impl Active {
     async fn wait_ready(&mut self, client: &reqwest::Client) -> anyhow::Result<()> {
-        let probe = format!("{}{}", self.url, self.probe_path);
+        let probe = self.probe_url.clone();
         let deadline = Instant::now() + START_TIMEOUT;
         while Instant::now() < deadline {
             if let Some(process) = self.process.as_mut()

@@ -279,7 +279,6 @@ fn test_cache_error_user_message_describes_store_and_policy_errors() {
         ..PolicyConfig::default()
     };
     let denial = Policy::compile(&config)
-        .unwrap()
         .check_project(PolicyAction::Serve, "flask")
         .unwrap_err();
     assert_eq!(
@@ -1124,4 +1123,44 @@ async fn test_buffered_fetch_registers_metadata_siblings() {
         .expect("metadata sibling registered");
     assert_eq!(url, format!("{file_url}.metadata"));
     assert_eq!(meta_sha, meta_digest.as_str());
+}
+
+#[tokio::test]
+async fn test_oci_index_rejects_pypi_protocol_dispatch() {
+    use axum::body::Body;
+    use axum::http::{Method, Request, header};
+    use tower::ServiceExt as _;
+    use velodex_http::router;
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, "http://127.0.0.1:9/simple/", |_client| {
+        vec![Index {
+            name: "oci".to_owned(),
+            route: "oci".to_owned(),
+            ecosystem: velodex_format::Ecosystem::Oci,
+            kind: IndexKind::Hosted {
+                upload_token: Some("s3cret".to_owned()),
+                volatile: true,
+            },
+            policy: Policy::default(),
+        }]
+    });
+    // An OCI index serves the `/v2/` namespace, not the PyPI Simple/legacy/upload/mutation APIs.
+    assert_eq!(get(&state, "/oci/simple/x/", None).await.0, StatusCode::NOT_FOUND);
+    let auth = super::http_tests::upload_auth();
+    for method in [Method::PUT, Method::DELETE] {
+        let request = Request::builder()
+            .method(method.clone())
+            .uri("/oci/x/1.0/yank")
+            .header(header::AUTHORIZATION, &auth)
+            .body(Body::empty())
+            .unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
+    }
+    let (content_type, body) = super::http_tests::multipart_body(&[("name", "x"), ("version", "1.0")], None);
+    assert_eq!(
+        super::http_tests::post_upload(&state, "/oci/", Some(&auth), &content_type, body).await,
+        StatusCode::NOT_FOUND
+    );
 }

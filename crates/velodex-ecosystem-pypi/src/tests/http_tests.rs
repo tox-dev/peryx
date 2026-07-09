@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
+use rstest::rstest;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 use velodex_storage::blob::{BlobStore, Digest};
@@ -25,7 +26,9 @@ use crate::upload::Uploaded;
 use velodex_http::path_safety::local_file_url;
 use velodex_http::router;
 use velodex_http::state::{AppState, Index, IndexKind};
-use velodex_policy::{PackageType, Policy, PolicyConfig};
+use velodex_policy::{Policy, PolicyConfig};
+
+use crate::policy::{PackageType, PypiPolicyConfig, compile_rules};
 
 pub(super) struct Harness {
     _dir: tempfile::TempDir,
@@ -170,10 +173,11 @@ async fn promotion_harness() -> Harness {
     }
 }
 
-fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
-    let mut config = PolicyConfig::default();
-    configure(&mut config);
-    Policy::compile(&config).unwrap()
+fn policy(configure: impl FnOnce(&mut PolicyConfig, &mut PypiPolicyConfig)) -> Policy {
+    let mut neutral = PolicyConfig::default();
+    let mut pypi = PypiPolicyConfig::default();
+    configure(&mut neutral, &mut pypi);
+    Policy::compile(&neutral).with_rules(compile_rules(&pypi).unwrap())
 }
 
 fn put_raw_project_status(path: &Path, key: &str, value: &[u8]) {
@@ -498,64 +502,20 @@ async fn test_legacy_release_json_unknown_version_is_not_found() {
     assert!(body.contains("version Some(\"9.9\") was not found"));
 }
 
+#[rstest]
+#[case::invalid_project_path("/pypi/%FF/json", "invalid percent-encoded path segment")]
+#[case::invalid_versioned_project_path("/pypi/%FF/1.0/json", "invalid percent-encoded path segment")]
+#[case::invalid_version_path("/pypi/flask/%FF/json", "invalid percent-encoded path segment")]
+#[case::unsafe_project_path("/pypi/flask%2Fbad/json", "invalid project \"flask/bad\"")]
+#[case::unsafe_versioned_project_path("/pypi/flask%2Fbad/1.0/json", "invalid project \"flask/bad\"")]
+#[case::unsafe_version_path("/pypi/flask/1.0%2Fbad/json", "invalid version \"1.0/bad\"")]
 #[tokio::test]
-async fn test_legacy_json_rejects_invalid_project_path() {
+async fn test_legacy_json_rejects_invalid_paths(#[case] uri: &str, #[case] expected: &str) {
     let h = harness().await;
-
-    let (status, _, body) = get(&h.state, "/pypi/%FF/json", None).await;
+    let (status, _, body) = get(&h.state, uri, None).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("invalid percent-encoded path segment"));
-}
-
-#[tokio::test]
-async fn test_legacy_json_rejects_invalid_versioned_project_path() {
-    let h = harness().await;
-
-    let (status, _, body) = get(&h.state, "/pypi/%FF/1.0/json", None).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("invalid percent-encoded path segment"));
-}
-
-#[tokio::test]
-async fn test_legacy_json_rejects_invalid_version_path() {
-    let h = harness().await;
-
-    let (status, _, body) = get(&h.state, "/pypi/flask/%FF/json", None).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("invalid percent-encoded path segment"));
-}
-
-#[tokio::test]
-async fn test_legacy_json_rejects_unsafe_project_path() {
-    let h = harness().await;
-
-    let (status, _, body) = get(&h.state, "/pypi/flask%2Fbad/json", None).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("invalid project \"flask/bad\""));
-}
-
-#[tokio::test]
-async fn test_legacy_json_rejects_unsafe_versioned_project_path() {
-    let h = harness().await;
-
-    let (status, _, body) = get(&h.state, "/pypi/flask%2Fbad/1.0/json", None).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("invalid project \"flask/bad\""));
-}
-
-#[tokio::test]
-async fn test_legacy_json_rejects_unsafe_version_path() {
-    let h = harness().await;
-
-    let (status, _, body) = get(&h.state, "/pypi/flask/1.0%2Fbad/json", None).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("invalid version \"1.0/bad\""));
+    assert!(body.contains(expected), "{body}");
 }
 
 #[tokio::test]
@@ -575,8 +535,8 @@ async fn test_legacy_json_missing_project_is_not_found() {
 
 #[tokio::test]
 async fn test_policy_rejects_legacy_json_project() {
-    let overlay_policy = policy(|policy| {
-        policy.block_projects = vec!["flask".to_owned()];
+    let overlay_policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["flask".to_owned()];
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
 
@@ -704,10 +664,10 @@ async fn test_mirror_detail_from_html_preserves_simple_api_fields() {
 
 #[tokio::test]
 async fn test_policy_filters_upstream_simple_files() {
-    let overlay_policy = policy(|policy| {
-        policy.allow_versions = Some("==1.0".to_owned());
-        policy.allow_package_types = vec![PackageType::Wheel];
-        policy.allow_wheel_platforms = vec!["any".to_owned()];
+    let overlay_policy = policy(|_neutral, pypi| {
+        pypi.allow_versions = Some("==1.0".to_owned());
+        pypi.allow_package_types = vec![PackageType::Wheel];
+        pypi.allow_wheel_platforms = vec!["any".to_owned()];
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let allowed = Digest::of(b"allowed");
@@ -750,8 +710,8 @@ async fn test_policy_filters_upstream_simple_files() {
 
 #[tokio::test]
 async fn test_policy_filters_files_without_declared_size() {
-    let overlay_policy = policy(|policy| {
-        policy.max_file_size_bytes = Some(20);
+    let overlay_policy = policy(|neutral, _pypi| {
+        neutral.max_file_size_bytes = Some(20);
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let small = Digest::of(b"small");
@@ -781,8 +741,8 @@ async fn test_policy_filters_files_without_declared_size() {
 
 #[tokio::test]
 async fn test_policy_rejects_direct_download() {
-    let overlay_policy = policy(|policy| {
-        policy.block_wheel_pythons = vec!["py3".to_owned()];
+    let overlay_policy = policy(|_neutral, pypi| {
+        pypi.block_wheel_pythons = vec!["py3".to_owned()];
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let digest = Digest::of(b"wheel");
@@ -799,8 +759,8 @@ async fn test_policy_rejects_direct_download() {
 
 #[tokio::test]
 async fn test_policy_rejects_project_detail() {
-    let overlay_policy = policy(|policy| {
-        policy.block_projects = vec!["flask".to_owned()];
+    let overlay_policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["flask".to_owned()];
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
 
@@ -815,8 +775,8 @@ async fn test_policy_rejects_project_detail() {
 
 #[tokio::test]
 async fn test_policy_rejects_upload_when_target_local_index_denies() {
-    let local_policy = policy(|policy| {
-        policy.max_file_size_bytes = Some(1);
+    let local_policy = policy(|neutral, _pypi| {
+        neutral.max_file_size_bytes = Some(1);
     });
     let h = harness_with_policies(true, true, Policy::default(), local_policy, Policy::default()).await;
     let wheel = fixture_wheel();
@@ -833,8 +793,8 @@ async fn test_policy_rejects_upload_when_target_local_index_denies() {
 
 #[tokio::test]
 async fn test_overlay_serves_buffered_when_mirror_layer_policy_is_active() {
-    let mirror_policy = policy(|policy| {
-        policy.block_projects = vec!["blocked".to_owned()];
+    let mirror_policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["blocked".to_owned()];
     });
     let h = harness_with_policies(true, true, mirror_policy, Policy::default(), Policy::default()).await;
     let digest = Digest::of(b"wheel");
@@ -849,8 +809,8 @@ async fn test_overlay_serves_buffered_when_mirror_layer_policy_is_active() {
 
 #[tokio::test]
 async fn test_overlay_serves_buffered_when_local_layer_policy_is_active() {
-    let local_policy = policy(|policy| {
-        policy.block_projects = vec!["blocked".to_owned()];
+    let local_policy = policy(|neutral, _pypi| {
+        neutral.block_projects = vec!["blocked".to_owned()];
     });
     let h = harness_with_policies(true, true, Policy::default(), local_policy, Policy::default()).await;
     let digest = Digest::of(b"wheel");
@@ -865,8 +825,8 @@ async fn test_overlay_serves_buffered_when_local_layer_policy_is_active() {
 
 #[tokio::test]
 async fn test_persist_page_skips_policy_denied_file_registrations() {
-    let mirror_policy = policy(|policy| {
-        policy.block_package_types = vec![PackageType::Wheel];
+    let mirror_policy = policy(|_neutral, pypi| {
+        pypi.block_package_types = vec![PackageType::Wheel];
     });
     let h = harness_with_policies(true, true, mirror_policy, Policy::default(), Policy::default()).await;
     let digest = Digest::of(b"wheel");
@@ -991,6 +951,82 @@ async fn test_discovery_document_uses_request_origin_and_redacts_token() {
     assert!(body.contains("\"uv.toml\""));
     assert!(body.contains("password = <upload-token>"));
     assert!(!body.contains("s3cret"));
+}
+
+#[tokio::test]
+async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let indexes = vec![
+        Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: velodex_format::Ecosystem::Pypi,
+            kind: IndexKind::Hosted {
+                upload_token: None,
+                volatile: true,
+            },
+            policy: Policy::default(),
+        },
+        Index {
+            name: "images".to_owned(),
+            route: "images".to_owned(),
+            ecosystem: velodex_format::Ecosystem::Oci,
+            kind: IndexKind::Hosted {
+                upload_token: None,
+                volatile: true,
+            },
+            policy: Policy::default(),
+        },
+    ];
+    // No OCI driver is wired here, so the OCI index falls back to the neutral driver's minimal entry:
+    // it still appears in the document, but without the registry URLs a real driver would render.
+    let state = super::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 1000)));
+    let (status, body) = get_with_headers(&state, "/+api", &[("host", "127.0.0.1:4433")]).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let indexes = json["indexes"].as_array().unwrap();
+    let routes: Vec<&str> = indexes.iter().map(|index| index["route"].as_str().unwrap()).collect();
+    assert_eq!(routes, ["pypi", "images"]);
+
+    let pypi = &indexes[0];
+    assert_eq!(pypi["ecosystem"], "pypi");
+    assert!(pypi["urls"]["simple"].is_string());
+
+    let oci = &indexes[1];
+    assert_eq!(oci["ecosystem"], "oci");
+    assert_eq!(
+        oci["urls"],
+        serde_json::Value::Null,
+        "the neutral fallback renders no URLs"
+    );
+}
+
+#[tokio::test]
+async fn test_per_index_discovery_dispatches_an_oci_index_to_the_oci_driver() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("velodex.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let indexes = vec![Index {
+        name: "images".to_owned(),
+        route: "images".to_owned(),
+        ecosystem: velodex_format::Ecosystem::Oci,
+        kind: IndexKind::Hosted {
+            upload_token: None,
+            volatile: true,
+        },
+        policy: Policy::default(),
+    }];
+    // The PyPI dispatch handles the neutral `/{route}/+api` route for every index, delegating an OCI
+    // index's entry to the OCI driver rather than rendering a Simple-API document for it.
+    let state = super::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 1000)));
+    let (status, body) = get_with_headers(&state, "/images/+api", &[("host", "127.0.0.1:4433")]).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["index"]["route"], "images");
+    assert_eq!(json["index"]["ecosystem"], "oci");
+    assert_eq!(json["index"]["urls"], serde_json::Value::Null);
 }
 
 #[tokio::test]
@@ -1616,45 +1652,69 @@ async fn test_metadata_backfill_downloads_when_range_zip_is_unsupported() {
 }
 
 #[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_tail_is_not_zip() {
-    let h = harness().await;
+async fn test_metadata_backfill_downloads_when_range_is_unusable() {
+    struct Case {
+        label: &'static str,
+        build_ranged: fn(&[u8], &[u8]) -> Vec<u8>,
+    }
     let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
     let wheel = fixture_wheel_with_metadata(metadata);
+    let cases = [
+        Case {
+            label: "tail is not zip",
+            build_ranged: |_metadata, _wheel| vec![0; 128],
+        },
+        Case {
+            label: "directory is empty",
+            build_ranged: |_metadata, _wheel| empty_zip(),
+        },
+        Case {
+            label: "directory is invalid",
+            build_ranged: |_metadata, wheel| {
+                let mut ranged = wheel.to_vec();
+                overwrite_metadata_central_signature(&mut ranged, [0, 0, 0, 0]);
+                ranged
+            },
+        },
+        Case {
+            label: "metadata is too large",
+            build_ranged: |metadata, _wheel| {
+                wheel_with_metadata_uncompressed_size(
+                    metadata,
+                    u32::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap() + 1,
+                )
+            },
+        },
+        Case {
+            label: "deflate is invalid",
+            build_ranged: |metadata, _wheel| wheel_with_invalid_deflated_metadata(metadata),
+        },
+        Case {
+            label: "compression is unsupported",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_compression_method(metadata, 99),
+        },
+        Case {
+            label: "size mismatches",
+            build_ranged: |metadata, _wheel| {
+                wheel_with_metadata_uncompressed_size(metadata, u32::try_from(metadata.len()).unwrap() + 1)
+            },
+        },
+        Case {
+            label: "local header is invalid",
+            build_ranged: |_metadata, wheel| {
+                let mut ranged = wheel.to_vec();
+                overwrite_metadata_local_signature(&mut ranged, [0, 0, 0, 0]);
+                ranged
+            },
+        },
+    ];
 
-    assert_metadata_range_fallback(&h, vec![0; 128], wheel, metadata).await;
-}
+    for case in cases {
+        let h = harness().await;
+        let ranged = (case.build_ranged)(metadata, &wheel);
 
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_directory_is_empty() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-
-    assert_metadata_range_fallback(&h, empty_zip(), wheel, metadata).await;
-}
-
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_directory_is_invalid() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let mut ranged = wheel.clone();
-    overwrite_metadata_central_signature(&mut ranged, [0, 0, 0, 0]);
-
-    assert_metadata_range_fallback(&h, ranged, wheel, metadata).await;
-}
-
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_metadata_is_too_large() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let ranged = wheel_with_metadata_uncompressed_size(
-        metadata,
-        u32::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap() + 1,
-    );
-
-    assert_metadata_range_fallback(&h, ranged, wheel, metadata).await;
+        assert_metadata_range_fallback(&h, case.label, ranged, wheel.clone(), metadata).await;
+    }
 }
 
 #[tokio::test]
@@ -1708,175 +1768,6 @@ async fn test_metadata_backfill_skips_ranges_after_disable() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_bytes(), second_metadata);
-}
-
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_deflate_is_invalid() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let ranged = wheel_with_invalid_deflated_metadata(metadata);
-    let digest = Digest::of(&wheel);
-    let filename = "velodexpkg-1.0-py3-none-any.whl";
-    h.state
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
-    Mock::given(method("HEAD"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", ranged.len()),
-        )
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
-        .respond_with(range_response(ranged))
-        .with_priority(1)
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel))
-        .with_priority(10)
-        .mount(&h.server)
-        .await;
-
-    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
-    let (status, _, body) = get(&h.state, &uri, None).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), metadata);
-}
-
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_compression_is_unsupported() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let ranged = wheel_with_metadata_compression_method(metadata, 99);
-    let digest = Digest::of(&wheel);
-    let filename = "velodexpkg-1.0-py3-none-any.whl";
-    h.state
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
-    Mock::given(method("HEAD"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", ranged.len()),
-        )
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
-        .respond_with(range_response(ranged))
-        .with_priority(1)
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel))
-        .with_priority(10)
-        .mount(&h.server)
-        .await;
-
-    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
-    let (status, _, body) = get(&h.state, &uri, None).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), metadata);
-}
-
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_size_mismatches() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let ranged = wheel_with_metadata_uncompressed_size(metadata, u32::try_from(metadata.len()).unwrap() + 1);
-    let digest = Digest::of(&wheel);
-    let filename = "velodexpkg-1.0-py3-none-any.whl";
-    h.state
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
-    Mock::given(method("HEAD"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", ranged.len()),
-        )
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
-        .respond_with(range_response(ranged))
-        .with_priority(1)
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel))
-        .with_priority(10)
-        .mount(&h.server)
-        .await;
-
-    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
-    let (status, _, body) = get(&h.state, &uri, None).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), metadata);
-}
-
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_local_header_is_invalid() {
-    let h = harness().await;
-    let metadata = b"Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let mut ranged = wheel.clone();
-    overwrite_metadata_local_signature(&mut ranged, [0, 0, 0, 0]);
-    let digest = Digest::of(&wheel);
-    let filename = "velodexpkg-1.0-py3-none-any.whl";
-    h.state
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
-    Mock::given(method("HEAD"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", ranged.len()),
-        )
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
-        .respond_with(range_response(ranged))
-        .with_priority(1)
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel))
-        .with_priority(10)
-        .mount(&h.server)
-        .await;
-
-    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
-    let (status, _, body) = get(&h.state, &uri, None).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), metadata);
 }
 
 #[tokio::test]
@@ -1938,7 +1829,7 @@ fn range_response(bytes: Vec<u8>) -> impl wiremock::Respond {
     }
 }
 
-async fn assert_metadata_range_fallback(h: &Harness, ranged: Vec<u8>, wheel: Vec<u8>, metadata: &[u8]) {
+async fn assert_metadata_range_fallback(h: &Harness, label: &str, ranged: Vec<u8>, wheel: Vec<u8>, metadata: &[u8]) {
     let digest = Digest::of(&wheel);
     let filename = "velodexpkg-1.0-py3-none-any.whl";
     h.state
@@ -1971,8 +1862,8 @@ async fn assert_metadata_range_fallback(h: &Harness, ranged: Vec<u8>, wheel: Vec
     let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), metadata);
+    assert_eq!(status, StatusCode::OK, "{label}");
+    assert_eq!(body.as_bytes(), metadata, "{label}");
 }
 
 fn upload_fields() -> Vec<(&'static str, &'static str)> {
@@ -2155,8 +2046,8 @@ async fn test_upload_via_overlay_then_serve_and_download() {
 
 #[tokio::test]
 async fn test_policy_rejects_upload() {
-    let overlay_policy = policy(|policy| {
-        policy.max_file_size_bytes = Some(1);
+    let overlay_policy = policy(|neutral, _pypi| {
+        neutral.max_file_size_bytes = Some(1);
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let wheel = fixture_wheel();
@@ -2324,28 +2215,14 @@ async fn test_upload_duplicate_content_field_is_bad_request() {
     assert_eq!(body, "bad upload: duplicate content field");
 }
 
+#[rstest]
+#[case::mirror_route("/pypi/", StatusCode::METHOD_NOT_ALLOWED)]
+#[case::unknown_route("/nope/", StatusCode::NOT_FOUND)]
+#[case::hosted_subpath("/hosted/simple/", StatusCode::NOT_FOUND)]
 #[tokio::test]
-async fn test_upload_to_mirror_route_is_method_not_allowed() {
+async fn test_upload_to_invalid_route_is_rejected(#[case] route: &str, #[case] expected: StatusCode) {
     let h = harness().await;
-    assert_eq!(
-        upload_velodexpkg(&h.state, "/pypi/", b"x").await,
-        StatusCode::METHOD_NOT_ALLOWED
-    );
-}
-
-#[tokio::test]
-async fn test_upload_unknown_route_is_not_found() {
-    let h = harness().await;
-    assert_eq!(upload_velodexpkg(&h.state, "/nope/", b"x").await, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_upload_to_subpath_is_not_found() {
-    let h = harness().await;
-    assert_eq!(
-        upload_velodexpkg(&h.state, "/hosted/simple/", b"x").await,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(upload_velodexpkg(&h.state, route, b"x").await, expected);
 }
 
 #[tokio::test]
@@ -2904,7 +2781,7 @@ async fn test_delete_specific_version() {
 #[tokio::test]
 async fn test_admin_routes_decode_safe_project_and_version_segments() {
     let h = harness().await;
-    upload_version(&h.state, "/hosted/", "1.0+local", b"PKlocal").await;
+    upload_version(&h.state, "/hosted/", "1.0+local").await;
     assert_eq!(
         request(
             &h.state,
@@ -3227,7 +3104,7 @@ async fn test_index_response_error_is_bad_gateway() {
     );
 }
 
-async fn upload_version(state: &Arc<AppState>, uri: &str, version: &str, _wheel: &[u8]) -> StatusCode {
+async fn upload_version(state: &Arc<AppState>, uri: &str, version: &str) -> StatusCode {
     let wheel = fixture_wheel_for(version);
     let fields = vec![
         (":action", "file_upload"),
@@ -3319,8 +3196,8 @@ async fn test_file_digest_mismatch_fails_the_body_and_never_persists() {
 #[tokio::test]
 async fn test_delete_one_of_two_versions() {
     let h = harness().await;
-    upload_version(&h.state, "/hosted/", "1.0", b"PKv1").await;
-    upload_version(&h.state, "/hosted/", "2.0", b"PKv2").await;
+    upload_version(&h.state, "/hosted/", "1.0").await;
+    upload_version(&h.state, "/hosted/", "2.0").await;
     assert_eq!(
         request(&h.state, "DELETE", "/hosted/velodexpkg/1.0/", Some(&upload_auth())).await,
         StatusCode::OK
@@ -3333,8 +3210,8 @@ async fn test_delete_one_of_two_versions() {
 #[tokio::test]
 async fn test_yank_one_of_two_versions() {
     let h = harness().await;
-    upload_version(&h.state, "/hosted/", "1.0", b"PKv1").await;
-    upload_version(&h.state, "/hosted/", "2.0", b"PKv2").await;
+    upload_version(&h.state, "/hosted/", "1.0").await;
+    upload_version(&h.state, "/hosted/", "2.0").await;
     assert_eq!(
         request(&h.state, "PUT", "/hosted/velodexpkg/1.0/yank", Some(&upload_auth())).await,
         StatusCode::OK

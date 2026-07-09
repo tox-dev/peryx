@@ -6,48 +6,34 @@ pub mod packages;
 pub mod servers;
 pub mod workloads;
 
-/// A part of the `PyPI` suite `--skip` can leave out; the second selection axis (`--part`).
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Part {
-    /// The install workload.
-    Install,
-    /// The pip client inside the install workload (uv still runs).
-    Pip,
-    /// The file throughput workload.
-    Throughput,
-    /// The parallel-CI install workload.
-    Parallel,
-    /// The PEP 658 metadata sibling workload.
-    Metadata,
-    /// The request swarm workload.
-    Load,
-}
-
 /// Run the `PyPI` suite: every workload not in `skip`, against every server named in `only`.
+///
+/// Parts, any of which `--skip` leaves out by name: `install`, `pip` (the pip client inside the
+/// install workload; uv still runs), `throughput`, `parallel`, `metadata`, `load`.
 ///
 /// # Errors
 /// Returns an error when a server cannot start or a workload against a healthy server fails.
-pub async fn run(runs: usize, skip: &[Part], only: &str, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn run(rounds: usize, skip: &[String], only: &str, http: &reqwest::Client) -> anyhow::Result<()> {
     let servers: Vec<_> = servers::all()
         .into_iter()
         .filter(|server| only.is_empty() || only.split(',').any(|name| name == server.name))
         .collect();
-    let enabled = |part: Part| !skip.contains(&part);
-    if enabled(Part::Install) {
-        let clients: &[&str] = if enabled(Part::Pip) { &["uv", "pip"] } else { &["uv"] };
-        workloads::installs(&servers, clients, runs, http).await?;
+    let enabled = |part: &str| !skip.iter().any(|skipped| skipped.eq_ignore_ascii_case(part));
+    if enabled("install") {
+        let clients: &[&str] = if enabled("pip") { &["uv", "pip"] } else { &["uv"] };
+        workloads::installs(&servers, clients, rounds, http).await?;
     }
-    if enabled(Part::Throughput) {
-        workloads::throughput(&servers, http).await?;
+    if enabled("throughput") {
+        workloads::throughput(&servers, rounds, http).await?;
     }
-    if enabled(Part::Parallel) {
-        workloads::fleet(&servers, http).await?;
+    if enabled("parallel") {
+        workloads::fleet(&servers, rounds, http).await?;
     }
-    if enabled(Part::Metadata) {
-        workloads::metadata(&servers, http).await?;
+    if enabled("metadata") {
+        workloads::metadata(&servers, rounds, http).await?;
     }
-    if enabled(Part::Load) {
-        workloads::load(&servers, &[1, 32], http).await?;
+    if enabled("load") {
+        workloads::load(&servers, &[1, 32], rounds, http).await?;
     }
     Ok(())
 }

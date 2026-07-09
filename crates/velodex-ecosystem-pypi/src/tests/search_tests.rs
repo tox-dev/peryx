@@ -548,7 +548,7 @@ fn test_search_public_filter_labels_and_scan_errors() {
 fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
     let mut config = PolicyConfig::default();
     configure(&mut config);
-    Policy::compile(&config).unwrap()
+    Policy::compile(&config)
 }
 
 fn put_uploaded_package(state: &velodex_http::state::AppState, display: &str, normalized: &str, summary: &str) {

@@ -128,23 +128,68 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             }
         });
         let router = velodex::server::router_for(state);
-        let addr = format!("{}:{}", config.host, config.port);
-        // Nagle batches the small chunked frames the streaming transformer emits; disable it so
-        // page bytes reach resolvers the moment they exist.
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("bind HTTP listener on {addr}"))?
-            .tap_io(|stream| {
-                let _ = stream.set_nodelay(true);
-            });
-        tracing::info!(%addr, indexes = config.indexes.len(), "velodex listening");
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await?;
+        let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
+            .parse()
+            .with_context(|| format!("parse listen address {}:{}", config.host, config.port))?;
+        let indexes = config.indexes.len();
+        let make_service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+        match config.tls.clone() {
+            None => {
+                // Nagle batches the small chunked frames the streaming transformer emits; disable it
+                // so page bytes reach resolvers the moment they exist.
+                let listener = tokio::net::TcpListener::bind(&addr)
+                    .await
+                    .with_context(|| format!("bind HTTP listener on {addr}"))?
+                    .tap_io(|stream| {
+                        let _ = stream.set_nodelay(true);
+                    });
+                tracing::info!(%addr, indexes, scheme = "http", "velodex listening");
+                axum::serve(listener, make_service).await?;
+            }
+            Some(config::TlsConfig::Manual { cert, key }) => {
+                let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+                    .await
+                    .with_context(|| format!("load TLS cert {} and key {}", cert.display(), key.display()))?;
+                tracing::info!(%addr, indexes, scheme = "https", "velodex listening");
+                axum_server::bind_rustls(addr, tls).serve(make_service).await?;
+            }
+            Some(config::TlsConfig::Acme(acme)) => {
+                serve_acme(addr, acme, make_service, indexes).await?;
+            }
+        }
         anyhow::Ok(())
     })
+}
+
+/// Serve HTTPS with certificates obtained and renewed automatically from Let's Encrypt. The ACME
+/// event stream runs in the background so renewals and the TLS-ALPN-01 challenge are handled without
+/// blocking traffic. Excluded from coverage: it drives a live ACME provider.
+async fn serve_acme(
+    addr: std::net::SocketAddr,
+    acme: config::AcmeConfig,
+    make_service: axum::extract::connect_info::IntoMakeServiceWithConnectInfo<axum::Router, std::net::SocketAddr>,
+    indexes: usize,
+) -> anyhow::Result<()> {
+    use futures_util::StreamExt as _;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut state = rustls_acme::AcmeConfig::new(acme.domains.clone())
+        .contact([format!("mailto:{}", acme.contact)])
+        .cache(rustls_acme::caches::DirCache::new(acme.cache_dir.clone()))
+        .directory_lets_encrypt(!acme.staging)
+        .state();
+    let acceptor = state.axum_acceptor(state.default_rustls_config());
+    tokio::spawn(async move {
+        loop {
+            match state.next().await {
+                Some(Ok(event)) => tracing::info!(?event, "acme event"),
+                Some(Err(err)) => tracing::error!(%err, "acme error"),
+                None => break,
+            }
+        }
+    });
+    tracing::info!(%addr, indexes, domains = ?acme.domains, scheme = "https+acme", "velodex listening");
+    axum_server::bind(addr).acceptor(acceptor).serve(make_service).await?;
+    anyhow::Ok(())
 }
 
 fn print_config_snippet(args: &ConfigSnippetArgs) -> anyhow::Result<()> {
@@ -203,7 +248,7 @@ fn main() -> anyhow::Result<()> {
             runtime.block_on(velodex::prefetch::run(&config, &command, &mut std::io::stdout()))
         }
         velodex::cli::Command::Openapi => {
-            print!("{}", velodex_http::api::openapi_json());
+            print!("{}", velodex::api::openapi_json());
             Ok(())
         }
         #[cfg(feature = "self-update")]

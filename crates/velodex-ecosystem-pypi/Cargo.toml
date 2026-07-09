@@ -85,6 +85,7 @@ tempfile = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 
 [dev-dependencies]
+rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true

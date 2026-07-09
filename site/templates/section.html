@@ -31,6 +31,21 @@
           {% if page.description %}<p>{{ page.description }}</p>{% endif %}
         </li>
         {% endfor %}
+        {% for subpath in section.subsections %}
+        {% set sub = get_section(path=subpath) %}
+        <li>
+          <a href="{{ sub.permalink }}">
+            {%- if sub.extra.logos %}
+            <span class="title-logos">
+              {%- for logo in sub.extra.logos %}
+              <img src="{{ get_url(path=logo) }}" alt="" width="20" height="20">
+              {%- endfor %}
+            </span>
+            {%- endif %}
+            {{ sub.title }}</a>
+          {% if sub.description %}<p>{{ sub.description }}</p>{% endif %}
+        </li>
+        {% endfor %}
       </ul>
     </article>
   </div>

@@ -1,3 +1,223 @@
+[tables.image-throughput]
+baseline = "direct"
+label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
+
+[[tables.image-throughput.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.image-throughput.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.image-throughput.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.image-throughput.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.image-throughput.rows]]
+higher_is_better = true
+name = "hot cache: single stream"
+network_bound = false
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "67 MB/s–68 MB/s"
+ratio = "1.80x"
+spread = "±1%"
+text = "68 MB/s"
+tint = "mild"
+value = 68.08121280855373
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "38 MB/s–38 MB/s"
+ratio = "1.00x"
+spread = "±1%"
+text = "38 MB/s"
+tint = "veryslow"
+value = 37.82438210685844
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "20 MB/s–30 MB/s"
+ratio = "0.78x"
+spread = "±22%"
+text = "29 MB/s"
+tint = "worst"
+value = 29.430164366582275
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "121 MB/s–185 MB/s"
+ratio = "4.79x"
+spread = "±22%"
+text = "181 MB/s"
+tint = "faster"
+value = 181.2750198983699
+
+[[tables.image-throughput.rows]]
+higher_is_better = true
+name = "hot cache: 8 parallel streams"
+network_bound = false
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "664 MB/s–896 MB/s"
+ratio = "9.09x"
+spread = "±15%"
+text = "803 MB/s"
+tint = "faster"
+value = 802.6072946100517
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "87 MB/s–89 MB/s"
+ratio = "1.00x"
+spread = "±1%"
+text = "88 MB/s"
+tint = "worst"
+value = 88.25802749612009
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "137 MB/s–160 MB/s"
+ratio = "1.68x"
+spread = "±8%"
+text = "148 MB/s"
+tint = "veryslow"
+value = 148.0497795689721
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "601 MB/s–808 MB/s"
+ratio = "9.01x"
+spread = "±16%"
+text = "795 MB/s"
+tint = "faster"
+value = 795.4252329017751
+
+[tables.image-throughput-mirror]
+baseline = "direct"
+label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
+
+[[tables.image-throughput-mirror.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.image-throughput-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.image-throughput-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.image-throughput-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.image-throughput-mirror.rows]]
+higher_is_better = true
+name = "hot cache: single stream"
+network_bound = false
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "24 MB/s–79 MB/s"
+ratio = "0.91x"
+spread = "±52%"
+text = "79 MB/s"
+tint = "mild"
+value = 78.66605957381299
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "78 MB/s–134 MB/s"
+ratio = "1.00x"
+spread = "±30%"
+text = "86 MB/s"
+tint = "mild"
+value = 86.17755859962597
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "27 MB/s–36 MB/s"
+ratio = "0.34x"
+spread = "±16%"
+text = "29 MB/s"
+tint = "worst"
+value = 28.9271745859846
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "161 MB/s–182 MB/s"
+ratio = "2.11x"
+spread = "±7%"
+text = "181 MB/s"
+tint = "faster"
+value = 181.4108670861565
+
+[[tables.image-throughput-mirror.rows]]
+higher_is_better = true
+name = "hot cache: 8 parallel streams"
+network_bound = false
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "524 MB/s–593 MB/s"
+ratio = "4.12x"
+spread = "±6%"
+text = "576 MB/s"
+tint = "faster"
+value = 575.8994854090787
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "38 MB/s–149 MB/s"
+ratio = "1.00x"
+spread = "±56%"
+text = "140 MB/s"
+tint = "veryslow"
+value = 139.63172417935465
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "137 MB/s–167 MB/s"
+ratio = "1.03x"
+spread = "±11%"
+text = "144 MB/s"
+tint = "veryslow"
+value = 144.1343346650715
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "529 MB/s–683 MB/s"
+ratio = "4.25x"
+spread = "±13%"
+text = "593 MB/s"
+tint = "faster"
+value = 592.9424480002094
+
 [tables.install-pip]
 baseline = "direct"
 label = "pip: install the top 51 PyPI packages"
@@ -27,136 +247,262 @@ name = "pypicloud"
 url = "https://pypicloud.readthedocs.io/"
 
 [[tables.install-pip.rows]]
+higher_is_better = false
 name = "cold cache"
+network_bound = true
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.12x"
-text = "20.7 s"
-tint = "faster"
+noisy = false
+outliers = 0
+range = "1m 03.7s–1m 06.7s"
+ratio = "3.42x"
+spread = "±3%"
+text = "1m 06.5s"
+tint = "slow"
+value = 66.452366333
 
 [[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = "19.2 s–19.6 s"
 ratio = "1.00x"
-text = "18.4 s"
+spread = "±1%"
+text = "19.4 s"
 tint = "faster"
+value = 19.431585333
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.43x"
-text = "26.4 s"
-tint = "par"
-
-[[tables.install-pip.rows.cells]]
-ratio = "1.47x"
-text = "27.1 s"
-tint = "par"
-
-[[tables.install-pip.rows.cells]]
-ratio = "1.04x"
-text = "19.2 s"
+noisy = false
+outliers = 0
+range = "26.6 s–27.2 s"
+ratio = "1.37x"
+spread = "±1%"
+text = "26.7 s"
 tint = "faster"
+value = 26.704706834
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.28x"
-text = "23.6 s"
+noisy = true
+outliers = 0
+range = "22.0 s–26.1 s"
+ratio = "1.16x"
+spread = "±10%"
+text = "22.5 s"
 tint = "faster"
-
-[[tables.install-pip.rows]]
-name = "warm cache"
+value = 22.466075292
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.94x"
-text = "17.2 s"
-tint = "faster"
-
-[[tables.install-pip.rows.cells]]
-ratio = "1.00x"
-text = "18.3 s"
-tint = "faster"
-
-[[tables.install-pip.rows.cells]]
-ratio = "0.96x"
-text = "17.6 s"
-tint = "faster"
-
-[[tables.install-pip.rows.cells]]
-ratio = "1.09x"
+noisy = false
+outliers = 0
+range = "19.8 s–20.2 s"
+ratio = "1.03x"
+spread = "±1%"
 text = "20.0 s"
 tint = "faster"
+value = 20.011405458
 
 [[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = "24.7 s–25.8 s"
+ratio = "1.27x"
+spread = "±2%"
+text = "24.8 s"
+tint = "faster"
+value = 24.7550785
+
+[[tables.install-pip.rows]]
+higher_is_better = false
+name = "warm cache"
+network_bound = false
+
+[[tables.install-pip.rows.cells]]
+noisy = true
+outliers = 0
+range = "22.3 s–33.5 s"
+ratio = "1.57x"
+spread = "±20%"
+text = "30.6 s"
+tint = "par"
+value = 30.632142
+
+[[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = "19.2 s–19.6 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "19.5 s"
+tint = "faster"
+value = 19.488907458
+
+[[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = "18.6 s–18.7 s"
+ratio = "0.96x"
+spread = "±0%"
+text = "18.7 s"
+tint = "faster"
+value = 18.71805025
+
+[[tables.install-pip.rows.cells]]
+noisy = true
+outliers = 0
+range = "20.6 s–24.6 s"
+ratio = "1.08x"
+spread = "±10%"
+text = "21.0 s"
+tint = "faster"
+value = 21.010279458
+
+[[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = "19.9 s–20.4 s"
 ratio = "1.02x"
-text = "18.8 s"
+spread = "±1%"
+text = "19.9 s"
 tint = "faster"
+value = 19.922847167
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.85x"
-text = "15.6 s"
+noisy = false
+outliers = 0
+range = "16.7 s–17.5 s"
+ratio = "0.86x"
+spread = "±2%"
+text = "16.8 s"
 tint = "faster"
+value = 16.771493541
 
 [[tables.install-pip.rows]]
+higher_is_better = false
 name = "server CPU"
+network_bound = false
 
 [[tables.install-pip.rows.cells]]
+noisy = true
+outliers = 0
+range = "1m 02.5s–1m 09.2s"
 ratio = "1.00x"
-text = "1.2 s"
-tint = "slow"
+spread = "±6%"
+text = "1m 08.8s"
+tint = "worst"
+value = 68.775
 
 [[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.install-pip.rows.cells]]
-ratio = "9.63x"
-text = "11.5 s"
-tint = "worst"
-
-[[tables.install-pip.rows.cells]]
-ratio = "2.52x"
-text = "3.0 s"
+noisy = false
+outliers = 0
+range = "12.2 s–12.5 s"
+ratio = "0.18x"
+spread = "±1%"
+text = "12.3 s"
 tint = "veryslow"
+value = 12.333
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.02x"
-text = "21 ms"
+noisy = true
+outliers = 0
+range = "5.8 s–6.8 s"
+ratio = "0.09x"
+spread = "±8%"
+text = "6.0 s"
+tint = "veryslow"
+value = 6.008
+
+[[tables.install-pip.rows.cells]]
+noisy = true
+outliers = 0
+range = "30 ms–37 ms"
+ratio = "0.00x"
+spread = "±11%"
+text = "35 ms"
 tint = "faster"
+value = 0.035
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.63x"
-text = "1.9 s"
-tint = "veryslow"
+noisy = true
+outliers = 0
+range = "2.1 s–2.6 s"
+ratio = "0.04x"
+spread = "±10%"
+text = "2.5 s"
+tint = "slow"
+value = 2.501
 
 [[tables.install-pip.rows]]
+higher_is_better = false
 name = "server peak memory"
+network_bound = false
 
 [[tables.install-pip.rows.cells]]
+noisy = true
+outliers = 0
+range = "355 MB–479 MB"
 ratio = "1.00x"
-text = "325 MB"
-tint = "slow"
+spread = "±15%"
+text = "449 MB"
+tint = "veryslow"
+value = 449.134592
 
 [[tables.install-pip.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.install-pip.rows.cells]]
-ratio = "3.66x"
-text = "1,188 MB"
+noisy = true
+outliers = 0
+range = "984 MB–1,115 MB"
+ratio = "2.35x"
+spread = "±6%"
+text = "1,056 MB"
 tint = "worst"
+value = 1055.932416
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.81x"
-text = "587 MB"
+noisy = true
+outliers = 0
+range = "533 MB–632 MB"
+ratio = "1.21x"
+spread = "±10%"
+text = "544 MB"
 tint = "veryslow"
+value = 543.997952
 
 [[tables.install-pip.rows.cells]]
-ratio = "0.22x"
-text = "71 MB"
+noisy = false
+outliers = 0
+range = "67 MB–71 MB"
+ratio = "0.15x"
+spread = "±3%"
+text = "67 MB"
 tint = "faster"
+value = 67.42016
 
 [[tables.install-pip.rows.cells]]
-ratio = "1.16x"
-text = "378 MB"
+noisy = false
+outliers = 0
+range = "348 MB–379 MB"
+ratio = "0.80x"
+spread = "±4%"
+text = "359 MB"
 tint = "slow"
+value = 359.432192
 
 [tables.install-uv]
 baseline = "direct"
@@ -187,140 +533,266 @@ name = "pypicloud"
 url = "https://pypicloud.readthedocs.io/"
 
 [[tables.install-uv.rows]]
+higher_is_better = false
 name = "cold cache"
+network_bound = true
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.14x"
-text = "3.8 s"
-tint = "faster"
+noisy = true
+outliers = 0
+range = "19.5 s–34.7 s"
+ratio = "9.26x"
+spread = "±29%"
+text = "33.4 s"
+tint = "worst"
+value = 33.434663666
 
 [[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "3.6 s–4.1 s"
 ratio = "1.00x"
-text = "3.3 s"
-tint = "faster"
-
-[[tables.install-uv.rows.cells]]
-ratio = "4.12x"
-text = "13.8 s"
-tint = "veryslow"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.54x"
-text = "5.1 s"
-tint = "par"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.08x"
+spread = "±7%"
 text = "3.6 s"
 tint = "faster"
+value = 3.6124741670000002
 
 [[tables.install-uv.rows.cells]]
-ratio = "2.99x"
-text = "10.0 s"
+noisy = false
+outliers = 0
+range = "11.9 s–13.0 s"
+ratio = "3.50x"
+spread = "±5%"
+text = "12.7 s"
 tint = "slow"
-
-[[tables.install-uv.rows]]
-name = "warm cache"
+value = 12.658032292
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.83x"
-text = "2.7 s"
-tint = "faster"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.00x"
-text = "3.2 s"
-tint = "faster"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.86x"
-text = "6.0 s"
-tint = "mild"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.14x"
-text = "3.7 s"
-tint = "faster"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.14x"
-text = "3.7 s"
-tint = "faster"
-
-[[tables.install-uv.rows.cells]]
-ratio = "1.36x"
+noisy = true
+outliers = 0
+range = "4.4 s–5.4 s"
+ratio = "1.23x"
+spread = "±12%"
 text = "4.4 s"
+tint = "faster"
+value = 4.438026625
+
+[[tables.install-uv.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.7 s–3.9 s"
+ratio = "1.07x"
+spread = "±2%"
+text = "3.9 s"
+tint = "faster"
+value = 3.868456916
+
+[[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "9.8 s–10.7 s"
+ratio = "2.72x"
+spread = "±5%"
+text = "9.8 s"
+tint = "mild"
+value = 9.811055207999999
+
+[[tables.install-uv.rows]]
+higher_is_better = false
+name = "warm cache"
+network_bound = false
+
+[[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "6.7 s–12.0 s"
+ratio = "2.37x"
+spread = "±30%"
+text = "8.4 s"
+tint = "mild"
+value = 8.384732083
+
+[[tables.install-uv.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.5 s–3.8 s"
+ratio = "1.00x"
+spread = "±4%"
+text = "3.5 s"
+tint = "faster"
+value = 3.534325833
+
+[[tables.install-uv.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.2 s–6.7 s"
+ratio = "1.84x"
+spread = "±4%"
+text = "6.5 s"
 tint = "par"
+value = 6.490278833
+
+[[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "3.1 s–4.0 s"
+ratio = "1.04x"
+spread = "±12%"
+text = "3.7 s"
+tint = "faster"
+value = 3.679514
+
+[[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "3.4 s–4.8 s"
+ratio = "1.10x"
+spread = "±18%"
+text = "3.9 s"
+tint = "faster"
+value = 3.898007042
+
+[[tables.install-uv.rows.cells]]
+noisy = false
+outliers = 0
+range = "4.5 s–4.8 s"
+ratio = "1.32x"
+spread = "±3%"
+text = "4.7 s"
+tint = "faster"
+value = 4.654207958
 
 [[tables.install-uv.rows]]
+higher_is_better = false
 name = "server CPU"
+network_bound = false
 
 [[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "30.4 s–41.7 s"
 ratio = "1.00x"
-text = "1.0 s"
-tint = "slow"
+spread = "±16%"
+text = "40.0 s"
+tint = "worst"
+value = 40.027
 
 [[tables.install-uv.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.install-uv.rows.cells]]
-ratio = "14.52x"
-text = "15.2 s"
+noisy = false
+outliers = 0
+range = "16.1 s–16.6 s"
+ratio = "0.40x"
+spread = "±2%"
+text = "16.1 s"
 tint = "worst"
+value = 16.09
 
 [[tables.install-uv.rows.cells]]
-ratio = "2.52x"
-text = "2.6 s"
-tint = "veryslow"
+noisy = true
+outliers = 0
+range = "3.4 s–4.0 s"
+ratio = "0.09x"
+spread = "±9%"
+text = "3.5 s"
+tint = "slow"
+value = 3.55
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.03x"
-text = "29 ms"
+noisy = true
+outliers = 0
+range = "39 ms–46 ms"
+ratio = "0.00x"
+spread = "±9%"
+text = "46 ms"
 tint = "faster"
+value = 0.046
 
 [[tables.install-uv.rows.cells]]
-ratio = "3.16x"
-text = "3.3 s"
-tint = "veryslow"
+noisy = false
+outliers = 0
+range = "3.3 s–3.4 s"
+ratio = "0.09x"
+spread = "±3%"
+text = "3.4 s"
+tint = "slow"
+value = 3.429
 
 [[tables.install-uv.rows]]
+higher_is_better = false
 name = "server peak memory"
+network_bound = false
 
 [[tables.install-uv.rows.cells]]
+noisy = true
+outliers = 0
+range = "474 MB–585 MB"
 ratio = "1.00x"
-text = "537 MB"
+spread = "±11%"
+text = "570 MB"
 tint = "veryslow"
+value = 569.638912
 
 [[tables.install-uv.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.install-uv.rows.cells]]
-ratio = "2.21x"
-text = "1,190 MB"
+noisy = true
+outliers = 0
+range = "1,011 MB–1,182 MB"
+ratio = "2.07x"
+spread = "±9%"
+text = "1,179 MB"
 tint = "worst"
+value = 1178.812416
 
 [[tables.install-uv.rows.cells]]
-ratio = "1.33x"
-text = "716 MB"
+noisy = false
+outliers = 0
+range = "628 MB–645 MB"
+ratio = "1.12x"
+spread = "±1%"
+text = "639 MB"
 tint = "veryslow"
+value = 638.89408
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.13x"
-text = "72 MB"
+noisy = false
+outliers = 0
+range = "67 MB–71 MB"
+ratio = "0.12x"
+spread = "±3%"
+text = "68 MB"
 tint = "faster"
+value = 67.518464
 
 [[tables.install-uv.rows.cells]]
-ratio = "0.75x"
-text = "402 MB"
+noisy = true
+outliers = 0
+range = "323 MB–376 MB"
+ratio = "0.64x"
+spread = "±8%"
+text = "367 MB"
 tint = "slow"
+value = 366.608384
 
 [tables.load]
 baseline = "direct"
-label = "simple-page requests against a warm cache"
+label = "simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it"
 
 [[tables.load.parties]]
 name = "velodex"
@@ -347,202 +819,737 @@ name = "pypicloud"
 url = "https://pypicloud.readthedocs.io/"
 
 [[tables.load.rows]]
+higher_is_better = true
 name = "1 user: requests/s"
+network_bound = false
 
 [[tables.load.rows.cells]]
-ratio = "2.95x"
-text = "681 req/s"
+noisy = false
+outliers = 0
+range = "551 req/s–579 req/s"
+ratio = "2.16x"
+spread = "±3%"
+text = "573 req/s"
 tint = "faster"
+value = 572.6
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "264 req/s–272 req/s"
 ratio = "1.00x"
-text = "231 req/s"
-tint = "slow"
+spread = "±2%"
+text = "265 req/s"
+tint = "mild"
+value = 264.8
 
 [[tables.load.rows.cells]]
-ratio = "0.34x"
+noisy = false
+outliers = 0
+range = "73 req/s–75 req/s"
+ratio = "0.28x"
+spread = "±1%"
+text = "74 req/s"
+tint = "worst"
+value = 74.2
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "95 req/s–96 req/s"
+ratio = "0.36x"
+spread = "±0%"
+text = "95 req/s"
+tint = "worst"
+value = 95.4
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "243 req/s–250 req/s"
+ratio = "0.92x"
+spread = "±2%"
+text = "244 req/s"
+tint = "mild"
+value = 244.2
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "197 req/s–198 req/s"
+ratio = "0.74x"
+spread = "±0%"
+text = "197 req/s"
+tint = "slow"
+value = 196.8
+
+[[tables.load.rows]]
+higher_is_better = false
+name = "1 user: p95 latency"
+network_bound = false
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "9 ms–9 ms"
+ratio = "0.86x"
+spread = "±1%"
+text = "9 ms"
+tint = "faster"
+value = 0.009031
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "10 ms–11 ms"
+ratio = "1.00x"
+spread = "±4%"
+text = "11 ms"
+tint = "faster"
+value = 0.010551
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "93 ms–107 ms"
+ratio = "8.87x"
+spread = "±8%"
+text = "94 ms"
+tint = "worst"
+value = 0.093567
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "43 ms–43 ms"
+ratio = "4.10x"
+spread = "±0%"
+text = "43 ms"
+tint = "veryslow"
+value = 0.043263
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "10 ms–11 ms"
+ratio = "1.01x"
+spread = "±4%"
+text = "11 ms"
+tint = "faster"
+value = 0.010631
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "26 ms–30 ms"
+ratio = "2.84x"
+spread = "±8%"
+text = "30 ms"
+tint = "slow"
+value = 0.029935
+
+[[tables.load.rows]]
+higher_is_better = true
+name = "32 users: requests/s"
+network_bound = false
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "2,447 req/s–2,523 req/s"
+ratio = "2.87x"
+spread = "±2%"
+text = "2,512 req/s"
+tint = "faster"
+value = 2512.2
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "866 req/s–878 req/s"
+ratio = "1.00x"
+spread = "±1%"
+text = "876 req/s"
+tint = "par"
+value = 876.4
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "78 req/s–79 req/s"
+ratio = "0.09x"
+spread = "±1%"
 text = "79 req/s"
 tint = "worst"
+value = 79.2
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "415 req/s–417 req/s"
 ratio = "0.47x"
-text = "109 req/s"
-tint = "worst"
-
-[[tables.load.rows.cells]]
-ratio = "0.93x"
-text = "216 req/s"
+spread = "±0%"
+text = "415 req/s"
 tint = "slow"
+value = 415.0
 
 [[tables.load.rows.cells]]
-ratio = "0.92x"
-text = "212 req/s"
-tint = "slow"
-
-[[tables.load.rows]]
-name = "1 user: p95 latency"
-
-[[tables.load.rows.cells]]
-ratio = "0.62x"
-text = "6 ms"
-tint = "faster"
-
-[[tables.load.rows.cells]]
-ratio = "1.00x"
-text = "9 ms"
+noisy = false
+outliers = 0
+range = "884 req/s–885 req/s"
+ratio = "1.01x"
+spread = "±0%"
+text = "884 req/s"
 tint = "par"
+value = 883.8
 
 [[tables.load.rows.cells]]
-ratio = "5.10x"
-text = "45 ms"
-tint = "worst"
-
-[[tables.load.rows.cells]]
-ratio = "3.96x"
-text = "35 ms"
-tint = "worst"
-
-[[tables.load.rows.cells]]
-ratio = "1.08x"
-text = "10 ms"
-tint = "par"
-
-[[tables.load.rows.cells]]
-ratio = "1.65x"
-text = "15 ms"
-tint = "mild"
-
-[[tables.load.rows]]
-name = "32 users: requests/s"
-
-[[tables.load.rows.cells]]
-ratio = "3.32x"
-text = "2,987 req/s"
-tint = "faster"
-
-[[tables.load.rows.cells]]
-ratio = "1.00x"
-text = "900 req/s"
-tint = "par"
-
-[[tables.load.rows.cells]]
-ratio = "0.08x"
-text = "76 req/s"
-tint = "worst"
-
-[[tables.load.rows.cells]]
-ratio = "0.48x"
-text = "437 req/s"
-tint = "slow"
-
-[[tables.load.rows.cells]]
-ratio = "1.00x"
-text = "904 req/s"
-tint = "par"
-
-[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "207 req/s–209 req/s"
 ratio = "0.24x"
-text = "214 req/s"
+spread = "±0%"
+text = "207 req/s"
 tint = "veryslow"
+value = 207.2
 
 [[tables.load.rows]]
+higher_is_better = false
 name = "32 users: p95 latency"
+network_bound = false
 
 [[tables.load.rows.cells]]
-ratio = "0.20x"
-text = "24 ms"
+noisy = false
+outliers = 0
+range = "16 ms–16 ms"
+ratio = "0.36x"
+spread = "±1%"
+text = "16 ms"
 tint = "faster"
+value = 0.016015
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "44 ms–45 ms"
 ratio = "1.00x"
-text = "121 ms"
-tint = "mild"
+spread = "±1%"
+text = "44 ms"
+tint = "par"
+value = 0.044159
 
 [[tables.load.rows.cells]]
-ratio = "5.22x"
-text = "632 ms"
+noisy = false
+outliers = 0
+range = "473 ms–492 ms"
+ratio = "10.95x"
+spread = "±2%"
+text = "483 ms"
 tint = "worst"
+value = 0.483327
 
 [[tables.load.rows.cells]]
-ratio = "0.92x"
-text = "112 ms"
+noisy = false
+outliers = 0
+range = "83 ms–84 ms"
+ratio = "1.91x"
+spread = "±1%"
+text = "84 ms"
 tint = "mild"
+value = 0.084287
 
 [[tables.load.rows.cells]]
-ratio = "0.95x"
-text = "115 ms"
-tint = "mild"
+noisy = false
+outliers = 0
+range = "105 ms–108 ms"
+ratio = "2.41x"
+spread = "±2%"
+text = "106 ms"
+tint = "slow"
+value = 0.106367
 
 [[tables.load.rows.cells]]
-ratio = "2.16x"
-text = "262 ms"
+noisy = false
+outliers = 0
+range = "167 ms–171 ms"
+ratio = "3.82x"
+spread = "±1%"
+text = "169 ms"
 tint = "veryslow"
+value = 0.168575
 
 [[tables.load.rows]]
+higher_is_better = false
 name = "server CPU"
+network_bound = false
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "2m 02.6s–2m 06.5s"
 ratio = "1.00x"
-text = "2m 49.4s"
+spread = "±2%"
+text = "2m 06.1s"
 tint = "worst"
+value = 126.089
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.load.rows.cells]]
-ratio = "0.23x"
-text = "38.6 s"
+noisy = false
+outliers = 0
+range = "32.0 s–32.3 s"
+ratio = "0.25x"
+spread = "±1%"
+text = "32.0 s"
 tint = "slow"
+value = 32.036
 
 [[tables.load.rows.cells]]
-ratio = "0.53x"
-text = "1m 30.2s"
+noisy = false
+outliers = 0
+range = "1m 07.9s–1m 08.1s"
+ratio = "0.54x"
+spread = "±0%"
+text = "1m 08.1s"
 tint = "worst"
+value = 68.053
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.8 s–2.9 s"
 ratio = "0.02x"
-text = "3.5 s"
+spread = "±1%"
+text = "2.9 s"
 tint = "faster"
+value = 2.865
 
 [[tables.load.rows.cells]]
-ratio = "0.22x"
-text = "38.0 s"
+noisy = false
+outliers = 0
+range = "30.5 s–30.7 s"
+ratio = "0.24x"
+spread = "±0%"
+text = "30.5 s"
 tint = "slow"
+value = 30.503
 
 [[tables.load.rows]]
+higher_is_better = false
 name = "server peak memory"
+network_bound = false
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "333 MB–356 MB"
 ratio = "1.00x"
-text = "324 MB"
-tint = "veryslow"
+spread = "±4%"
+text = "336 MB"
+tint = "slow"
+value = 336.216064
 
 [[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.load.rows.cells]]
-ratio = "1.89x"
-text = "614 MB"
+noisy = false
+outliers = 0
+range = "1,144 MB–1,155 MB"
+ratio = "3.43x"
+spread = "±0%"
+text = "1,152 MB"
+tint = "worst"
+value = 1151.54944
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "347 MB–357 MB"
+ratio = "1.05x"
+spread = "±1%"
+text = "352 MB"
+tint = "slow"
+value = 352.223232
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "67 MB–71 MB"
+ratio = "0.20x"
+spread = "±3%"
+text = "68 MB"
+tint = "faster"
+value = 67.534848
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "175 MB–199 MB"
+ratio = "0.58x"
+spread = "±7%"
+text = "196 MB"
+tint = "mild"
+value = 195.54304
+
+[tables.metadata]
+baseline = "direct"
+label = "PEP 658 metadata siblings for boto3"
+
+[[tables.metadata.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.metadata.parties]]
+name = "direct"
+url = "https://pypi.org/"
+
+[[tables.metadata.parties]]
+name = "devpi"
+url = "https://devpi.net/docs/"
+
+[[tables.metadata.parties]]
+name = "proxpi"
+url = "https://github.com/EpicWink/proxpi"
+
+[[tables.metadata.parties]]
+name = "pypiserver"
+url = "https://github.com/pypiserver/pypiserver"
+
+[[tables.metadata.parties]]
+name = "pypicloud"
+url = "https://pypicloud.readthedocs.io/"
+
+[[tables.metadata.rows]]
+higher_is_better = false
+name = "cold metadata siblings"
+network_bound = true
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "168 ms–231 ms"
+ratio = "5.10x"
+spread = "±16%"
+text = "197 ms"
+tint = "veryslow"
+value = 0.197372167
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "35 ms–70 ms"
+ratio = "1.00x"
+spread = "±40%"
+text = "39 ms"
+tint = "faster"
+value = 0.038726375
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
 tint = "worst"
 
-[[tables.load.rows.cells]]
-ratio = "1.28x"
-text = "416 MB"
-tint = "veryslow"
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "401 ms–414 ms"
+ratio = "10.46x"
+spread = "±2%"
+text = "405 ms"
+tint = "worst"
+value = 0.405232083
 
-[[tables.load.rows.cells]]
-ratio = "0.22x"
-text = "72 MB"
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "36 ms–38 ms"
+ratio = "0.96x"
+spread = "±3%"
+text = "37 ms"
 tint = "faster"
+value = 0.037239917
 
-[[tables.load.rows.cells]]
-ratio = "0.75x"
-text = "244 MB"
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
+tint = "worst"
+
+[[tables.metadata.rows]]
+higher_is_better = false
+name = "hot metadata siblings"
+network_bound = false
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "1 ms–6 ms"
+ratio = "0.04x"
+spread = "±94%"
+text = "1 ms"
+tint = "faster"
+value = 0.001327375
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "35 ms–55 ms"
+ratio = "1.00x"
+spread = "±27%"
+text = "36 ms"
+tint = "worst"
+value = 0.03610725
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
+tint = "worst"
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "45 ms–71 ms"
+ratio = "1.55x"
+spread = "±22%"
+text = "56 ms"
+tint = "worst"
+value = 0.055983084
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "37 ms–44 ms"
+ratio = "1.06x"
+spread = "±10%"
+text = "38 ms"
+tint = "worst"
+value = 0.038416917
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
+tint = "worst"
+
+[[tables.metadata.rows]]
+higher_is_better = true
+name = "hot metadata throughput"
+network_bound = false
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "2,835 docs/s–14,012 docs/s"
+ratio = "27.20x"
+spread = "±62%"
+text = "12,054 docs/s"
+tint = "faster"
+value = 12053.865712402298
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "292 docs/s–461 docs/s"
+ratio = "1.00x"
+spread = "±23%"
+text = "443 docs/s"
+tint = "worst"
+value = 443.12430329089034
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
+tint = "worst"
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "225 docs/s–352 docs/s"
+ratio = "0.64x"
+spread = "±22%"
+text = "286 docs/s"
+tint = "worst"
+value = 285.8006179152259
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "360 docs/s–430 docs/s"
+ratio = "0.94x"
+spread = "±9%"
+text = "416 docs/s"
+tint = "worst"
+value = 416.48318630045196
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
+tint = "worst"
+
+[[tables.metadata.rows]]
+higher_is_better = false
+name = "server CPU"
+network_bound = false
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "32 ms–50 ms"
+ratio = "1.00x"
+spread = "±27%"
+text = "32 ms"
+tint = "faster"
+value = 0.032
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "no server"
+tint = "none"
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "176 ms–184 ms"
+ratio = "5.59x"
+spread = "±2%"
+text = "179 ms"
+tint = "faster"
+value = 0.179
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "138 ms–181 ms"
+ratio = "5.22x"
+spread = "±14%"
+text = "167 ms"
+tint = "faster"
+value = 0.167
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "0 ms–0 ms"
+ratio = "0.00x"
+spread = "±0%"
+text = "0 ms"
+tint = "faster"
+value = 0.0
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "0 ms–0 ms"
+ratio = "0.00x"
+spread = "±0%"
+text = "0 ms"
+tint = "faster"
+value = 0.0
+
+[[tables.metadata.rows]]
+higher_is_better = false
+name = "server peak memory"
+network_bound = false
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "48 MB–53 MB"
+ratio = "1.00x"
+spread = "±5%"
+text = "50 MB"
+tint = "faster"
+value = 49.610752
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "no server"
+tint = "none"
+
+[[tables.metadata.rows.cells]]
+noisy = true
+outliers = 0
+range = "534 MB–1,104 MB"
+ratio = "18.41x"
+spread = "±34%"
+text = "913 MB"
+tint = "worst"
+value = 913.211392
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "320 MB–337 MB"
+ratio = "6.47x"
+spread = "±3%"
+text = "321 MB"
 tint = "slow"
+value = 321.060864
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "67 MB–70 MB"
+ratio = "1.35x"
+spread = "±3%"
+text = "67 MB"
+tint = "faster"
+value = 66.977792
+
+[[tables.metadata.rows.cells]]
+noisy = false
+outliers = 0
+range = "145 MB–147 MB"
+ratio = "2.94x"
+spread = "±1%"
+text = "146 MB"
+tint = "mild"
+value = 145.997824
 
 [tables.parallel-install]
 baseline = "direct"
@@ -573,136 +1580,700 @@ name = "pypicloud"
 url = "https://pypicloud.readthedocs.io/"
 
 [[tables.parallel-install.rows]]
+higher_is_better = false
 name = "cold cache: 10 parallel installs"
+network_bound = true
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.33x"
-text = "1.6 s"
+noisy = true
+outliers = 0
+range = "2.2 s–7.4 s"
+ratio = "0.76x"
+spread = "±52%"
+text = "6.8 s"
 tint = "faster"
+value = 6.813690584
 
 [[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "7.0 s–9.6 s"
 ratio = "1.00x"
-text = "4.8 s"
-tint = "slow"
+spread = "±16%"
+text = "8.9 s"
+tint = "faster"
+value = 8.931892375
 
 [[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "error"
 tint = "worst"
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.94x"
-text = "4.5 s"
-tint = "slow"
+noisy = true
+outliers = 0
+range = "4.7 s–7.5 s"
+ratio = "0.75x"
+spread = "±23%"
+text = "6.7 s"
+tint = "faster"
+value = 6.704470625
 
 [[tables.parallel-install.rows.cells]]
-ratio = "1.78x"
-text = "8.6 s"
-tint = "veryslow"
+noisy = true
+outliers = 0
+range = "6.6 s–7.9 s"
+ratio = "0.75x"
+spread = "±10%"
+text = "6.7 s"
+tint = "faster"
+value = 6.739049416
 
 [[tables.parallel-install.rows.cells]]
-ratio = "2.06x"
-text = "10.0 s"
-tint = "worst"
+noisy = true
+outliers = 0
+range = "9.0 s–10.8 s"
+ratio = "1.10x"
+spread = "±9%"
+text = "9.8 s"
+tint = "par"
+value = 9.837462416
 
 [[tables.parallel-install.rows]]
+higher_is_better = false
 name = "warm cache: 10 parallel installs"
+network_bound = false
 
 [[tables.parallel-install.rows.cells]]
-ratio = "0.21x"
+noisy = true
+outliers = 0
+range = "4.1 s–8.5 s"
+ratio = "0.96x"
+spread = "±35%"
+text = "7.6 s"
+tint = "faster"
+value = 7.613598042
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "6.9 s–8.7 s"
+ratio = "1.00x"
+spread = "±12%"
+text = "7.9 s"
+tint = "faster"
+value = 7.917583083
+
+[[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "error"
+tint = "worst"
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "6.9 s–9.2 s"
+ratio = "1.08x"
+spread = "±14%"
+text = "8.5 s"
+tint = "faster"
+value = 8.543184125
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "6.8 s–8.9 s"
+ratio = "0.97x"
+spread = "±14%"
+text = "7.7 s"
+tint = "faster"
+value = 7.670412208
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "6.6 s–8.8 s"
+ratio = "0.89x"
+spread = "±15%"
+text = "7.0 s"
+tint = "faster"
+value = 7.03523125
+
+[[tables.parallel-install.rows]]
+higher_is_better = false
+name = "server CPU"
+network_bound = false
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "2.0 s–2.3 s"
+ratio = "1.00x"
+spread = "±8%"
+text = "2.2 s"
+tint = "worst"
+value = 2.223
+
+[[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "no server"
+tint = "none"
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "41 ms–197 ms"
+ratio = "0.03x"
+spread = "±82%"
+text = "68 ms"
+tint = "par"
+value = 0.068
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.0 s–1.5 s"
+ratio = "0.59x"
+spread = "±19%"
+text = "1.3 s"
+tint = "worst"
+value = 1.316
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "13 ms–23 ms"
+ratio = "0.01x"
+spread = "±31%"
+text = "15 ms"
+tint = "faster"
+value = 0.015
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.3 s–1.6 s"
+ratio = "0.62x"
+spread = "±10%"
+text = "1.4 s"
+tint = "worst"
+value = 1.38
+
+[[tables.parallel-install.rows]]
+higher_is_better = false
+name = "server peak memory"
+network_bound = false
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "126 MB–169 MB"
+ratio = "1.00x"
+spread = "±14%"
+text = "154 MB"
+tint = "par"
+value = 153.878528
+
+[[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
+ratio = "n/a"
+spread = ""
+text = "no server"
+tint = "none"
+
+[[tables.parallel-install.rows.cells]]
+noisy = true
+outliers = 0
+range = "593 MB–1,005 MB"
+ratio = "6.47x"
+spread = "±27%"
+text = "995 MB"
+tint = "worst"
+value = 995.377152
+
+[[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = "322 MB–336 MB"
+ratio = "2.09x"
+spread = "±3%"
+text = "322 MB"
+tint = "slow"
+value = 322.338816
+
+[[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = "67 MB–71 MB"
+ratio = "0.44x"
+spread = "±3%"
+text = "67 MB"
+tint = "faster"
+value = 67.25632
+
+[[tables.parallel-install.rows.cells]]
+noisy = false
+outliers = 0
+range = "213 MB–230 MB"
+ratio = "1.46x"
+spread = "±4%"
+text = "224 MB"
+tint = "mild"
+value = 224.034816
+
+[tables.parallel-pull]
+baseline = "direct"
+label = "ten clients pull library/node:22-alpine at once"
+
+[[tables.parallel-pull.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.parallel-pull.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.parallel-pull.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.parallel-pull.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.parallel-pull.rows]]
+higher_is_better = false
+name = "cold cache: 10 parallel pulls"
+network_bound = true
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "2.2 s–2.5 s"
+ratio = "0.37x"
+spread = "±7%"
+text = "2.2 s"
+tint = "faster"
+value = 2.237255417
+
+[[tables.parallel-pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.1 s–6.2 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "6.1 s"
+tint = "mild"
+value = 6.077244833
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "8.4 s–9.4 s"
+ratio = "1.39x"
+spread = "±6%"
+text = "8.4 s"
+tint = "slow"
+value = 8.421872042
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "8.9 s–9.9 s"
+ratio = "1.52x"
+spread = "±6%"
+text = "9.2 s"
+tint = "veryslow"
+value = 9.210835417
+
+[[tables.parallel-pull.rows]]
+higher_is_better = false
+name = "warm cache: 10 parallel pulls"
+network_bound = false
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "552 ms–916 ms"
+ratio = "0.10x"
+spread = "±28%"
+text = "613 ms"
+tint = "faster"
+value = 0.612924875
+
+[[tables.parallel-pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.0 s–6.1 s"
+ratio = "1.00x"
+spread = "±0%"
+text = "6.0 s"
+tint = "worst"
+value = 6.048175
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "2.9 s–3.7 s"
+ratio = "0.57x"
+spread = "±12%"
+text = "3.5 s"
+tint = "veryslow"
+value = 3.474028666
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.5 s–1.9 s"
+ratio = "0.30x"
+spread = "±11%"
+text = "1.8 s"
+tint = "mild"
+value = 1.8261322500000001
+
+[tables.parallel-pull-mirror]
+baseline = "direct"
+label = "ten clients pull library/node:22-alpine at once"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.parallel-pull-mirror.rows]]
+higher_is_better = false
+name = "cold cache: 10 parallel pulls"
+network_bound = true
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.4 s–2.3 s"
+ratio = "0.42x"
+spread = "±27%"
 text = "1.5 s"
 tint = "faster"
+value = 1.541682625
 
-[[tables.parallel-install.rows.cells]]
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.7 s–3.8 s"
 ratio = "1.00x"
-text = "7.2 s"
+spread = "±1%"
+text = "3.7 s"
+tint = "mild"
+value = 3.688658042
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "7.2 s–7.7 s"
+ratio = "1.98x"
+spread = "±3%"
+text = "7.3 s"
 tint = "veryslow"
+value = 7.285127042
 
-[[tables.parallel-install.rows.cells]]
-ratio = "n/a"
-text = "error"
-tint = "worst"
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "3.7 s–13.5 s"
+ratio = "1.03x"
+spread = "±81%"
+text = "3.8 s"
+tint = "mild"
+value = 3.786108209
 
-[[tables.parallel-install.rows.cells]]
-ratio = "0.82x"
-text = "5.9 s"
+[[tables.parallel-pull-mirror.rows]]
+higher_is_better = false
+name = "warm cache: 10 parallel pulls"
+network_bound = false
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "713 ms–1.3 s"
+ratio = "0.27x"
+spread = "±30%"
+text = "923 ms"
+tint = "faster"
+value = 0.922805666
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "3.3 s–3.7 s"
+ratio = "1.00x"
+spread = "±6%"
+text = "3.5 s"
 tint = "slow"
+value = 3.451504042
 
-[[tables.parallel-install.rows.cells]]
-ratio = "1.04x"
-text = "7.4 s"
-tint = "veryslow"
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.4 s–2.5 s"
+ratio = "0.71x"
+spread = "±3%"
+text = "2.5 s"
+tint = "mild"
+value = 2.454814834
 
-[[tables.parallel-install.rows.cells]]
-ratio = "1.23x"
-text = "8.8 s"
-tint = "worst"
-
-[[tables.parallel-install.rows]]
-name = "server CPU"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "1.00x"
-text = "545 ms"
-tint = "faster"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "n/a"
-text = "no server"
-tint = "none"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "0.00x"
-text = "0 ms"
-tint = "faster"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "1.67x"
-text = "912 ms"
-tint = "faster"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "0.02x"
-text = "9 ms"
-tint = "faster"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "2.31x"
-text = "1.3 s"
-tint = "faster"
-
-[[tables.parallel-install.rows]]
-name = "server peak memory"
-
-[[tables.parallel-install.rows.cells]]
-ratio = "1.00x"
-text = "122 MB"
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "1.5 s–1.5 s"
+ratio = "0.43x"
+spread = "±2%"
+text = "1.5 s"
 tint = "par"
+value = 1.498001
 
-[[tables.parallel-install.rows.cells]]
-ratio = "n/a"
-text = "no server"
-tint = "none"
+[tables.pull]
+baseline = "direct"
+label = "pull 6 images through each registry"
 
-[[tables.parallel-install.rows.cells]]
-ratio = "9.24x"
-text = "1,125 MB"
-tint = "worst"
+[[tables.pull.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
 
-[[tables.parallel-install.rows.cells]]
-ratio = "2.83x"
-text = "345 MB"
-tint = "slow"
+[[tables.pull.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
 
-[[tables.parallel-install.rows.cells]]
-ratio = "0.59x"
-text = "72 MB"
+[[tables.pull.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.pull.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.pull.rows]]
+higher_is_better = false
+name = "cold cache"
+network_bound = true
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.5 s–6.9 s"
+ratio = "0.92x"
+spread = "±3%"
+text = "6.7 s"
 tint = "faster"
+value = 6.710163125
 
-[[tables.parallel-install.rows.cells]]
-ratio = "2.46x"
-text = "300 MB"
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "7.1 s–7.3 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "7.3 s"
+tint = "faster"
+value = 7.2631075
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "12.8 s–13.0 s"
+ratio = "1.77x"
+spread = "±0%"
+text = "12.9 s"
+tint = "par"
+value = 12.880280959
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "50.7 s–54.4 s"
+ratio = "7.07x"
+spread = "±4%"
+text = "51.3 s"
+tint = "worst"
+value = 51.346499041
+
+[[tables.pull.rows]]
+higher_is_better = false
+name = "warm cache"
+network_bound = false
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "525 ms–531 ms"
+ratio = "0.07x"
+spread = "±1%"
+text = "527 ms"
+tint = "faster"
+value = 0.526731292
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "7.2 s–7.3 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "7.2 s"
+tint = "worst"
+value = 7.214828792
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.4 s–2.5 s"
+ratio = "0.33x"
+spread = "±3%"
+text = "2.4 s"
 tint = "slow"
+value = 2.415784125
+
+[[tables.pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "5.8 s–6.5 s"
+ratio = "0.89x"
+spread = "±6%"
+text = "6.4 s"
+tint = "worst"
+value = 6.435870375
+
+[tables.pull-mirror]
+baseline = "direct"
+label = "pull 6 images through each registry"
+
+[[tables.pull-mirror.parties]]
+name = "velodex"
+url = "https://velodex.readthedocs.io/"
+
+[[tables.pull-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.pull-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.pull-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.pull-mirror.rows]]
+higher_is_better = false
+name = "cold cache"
+network_bound = true
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.0 s–3.2 s"
+ratio = "1.14x"
+spread = "±3%"
+text = "3.0 s"
+tint = "faster"
+value = 3.036930542
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.6 s–2.7 s"
+ratio = "1.00x"
+spread = "±0%"
+text = "2.7 s"
+tint = "faster"
+value = 2.6602625829999997
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "5.6 s–5.8 s"
+ratio = "2.14x"
+spread = "±1%"
+text = "5.7 s"
+tint = "mild"
+value = 5.703603875
+
+[[tables.pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "17.8 s–1m 37.5s"
+ratio = "6.95x"
+spread = "±103%"
+text = "18.5 s"
+tint = "worst"
+value = 18.476309833
+
+[[tables.pull-mirror.rows]]
+higher_is_better = false
+name = "warm cache"
+network_bound = false
+
+[[tables.pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "2.2 s–2.9 s"
+ratio = "0.83x"
+spread = "±16%"
+text = "2.2 s"
+tint = "faster"
+value = 2.214770959
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.6 s–2.7 s"
+ratio = "1.00x"
+spread = "±0%"
+text = "2.7 s"
+tint = "faster"
+value = 2.663027334
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.6 s–2.6 s"
+ratio = "0.98x"
+spread = "±1%"
+text = "2.6 s"
+tint = "faster"
+value = 2.5968906670000003
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.4 s–6.4 s"
+ratio = "2.40x"
+spread = "±0%"
+text = "6.4 s"
+tint = "slow"
+value = 6.384896542
 
 [tables.throughput]
 baseline = "direct"
@@ -733,166 +2304,321 @@ name = "pypicloud"
 url = "https://pypicloud.readthedocs.io/"
 
 [[tables.throughput.rows]]
+higher_is_better = false
 name = "cold cache: 4 clients, one wheel"
+network_bound = true
 
 [[tables.throughput.rows.cells]]
-ratio = "0.26x"
-text = "794 ms"
+noisy = false
+outliers = 0
+range = "818 ms–831 ms"
+ratio = "0.27x"
+spread = "±1%"
+text = "819 ms"
 tint = "faster"
+value = 0.818676792
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.0 s–3.3 s"
 ratio = "1.00x"
-text = "3.1 s"
-tint = "slow"
-
-[[tables.throughput.rows.cells]]
-ratio = "1.00x"
-text = "3.1 s"
-tint = "slow"
-
-[[tables.throughput.rows.cells]]
-ratio = "1.99x"
-text = "6.1 s"
-tint = "worst"
-
-[[tables.throughput.rows.cells]]
-ratio = "0.98x"
+spread = "±5%"
 text = "3.0 s"
 tint = "slow"
+value = 3.031394208
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.1 s–3.1 s"
+ratio = "1.01x"
+spread = "±0%"
+text = "3.1 s"
+tint = "slow"
+value = 3.074097125
+
+[[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.1 s–6.1 s"
+ratio = "2.02x"
+spread = "±0%"
+text = "6.1 s"
+tint = "worst"
+value = 6.13014075
+
+[[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.0 s–3.0 s"
+ratio = "1.00x"
+spread = "±0%"
+text = "3.0 s"
+tint = "slow"
+value = 3.024744583
+
+[[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "error"
 tint = "worst"
 
 [[tables.throughput.rows]]
+higher_is_better = true
 name = "hot cache: single download"
+network_bound = false
 
 [[tables.throughput.rows.cells]]
-ratio = "52.97x"
-text = "6,166 MB/s"
+noisy = true
+outliers = 0
+range = "3,962 MB/s–4,421 MB/s"
+ratio = "36.97x"
+spread = "±6%"
+text = "4,306 MB/s"
 tint = "faster"
+value = 4306.482833113254
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "116 MB/s–116 MB/s"
 ratio = "1.00x"
+spread = "±0%"
 text = "116 MB/s"
 tint = "worst"
+value = 116.49285093495926
 
 [[tables.throughput.rows.cells]]
-ratio = "24.15x"
-text = "2,811 MB/s"
-tint = "par"
+noisy = true
+outliers = 0
+range = "590 MB/s–1,354 MB/s"
+ratio = "8.21x"
+spread = "±40%"
+text = "957 MB/s"
+tint = "mild"
+value = 956.8209689651912
 
 [[tables.throughput.rows.cells]]
-ratio = "68.13x"
-text = "7,931 MB/s"
+noisy = true
+outliers = 0
+range = "2,507 MB/s–6,327 MB/s"
+ratio = "27.50x"
+spread = "±51%"
+text = "3,203 MB/s"
 tint = "faster"
+value = 3203.0072872507876
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "116 MB/s–117 MB/s"
 ratio = "1.00x"
+spread = "±0%"
 text = "116 MB/s"
 tint = "worst"
+value = 116.44147336686564
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "error"
 tint = "worst"
 
 [[tables.throughput.rows]]
+higher_is_better = true
 name = "hot cache: 8 parallel downloads"
+network_bound = false
 
 [[tables.throughput.rows.cells]]
-ratio = "81.56x"
-text = "9,527 MB/s"
+noisy = false
+outliers = 0
+range = "7,147 MB/s–7,662 MB/s"
+ratio = "65.51x"
+spread = "±4%"
+text = "7,653 MB/s"
 tint = "faster"
+value = 7652.840125943629
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "116 MB/s–117 MB/s"
 ratio = "1.00x"
+spread = "±0%"
 text = "117 MB/s"
 tint = "worst"
+value = 116.82721391018875
 
 [[tables.throughput.rows.cells]]
-ratio = "29.24x"
-text = "3,415 MB/s"
+noisy = true
+outliers = 0
+range = "2,749 MB/s–3,781 MB/s"
+ratio = "25.26x"
+spread = "±17%"
+text = "2,951 MB/s"
 tint = "par"
+value = 2951.001040165424
 
 [[tables.throughput.rows.cells]]
-ratio = "104.63x"
-text = "12,222 MB/s"
+noisy = true
+outliers = 0
+range = "6,968 MB/s–9,625 MB/s"
+ratio = "77.24x"
+spread = "±16%"
+text = "9,024 MB/s"
 tint = "faster"
+value = 9024.268572204168
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "117 MB/s–117 MB/s"
 ratio = "1.00x"
+spread = "±0%"
 text = "117 MB/s"
 tint = "worst"
+value = 116.8259049507871
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "error"
 tint = "worst"
 
 [[tables.throughput.rows]]
+higher_is_better = false
 name = "server CPU"
+network_bound = false
 
 [[tables.throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "282 ms–355 ms"
 ratio = "1.00x"
-text = "1.1 s"
+spread = "±13%"
+text = "294 ms"
 tint = "faster"
+value = 0.294
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.throughput.rows.cells]]
-ratio = "1.77x"
-text = "1.9 s"
+noisy = false
+outliers = 0
+range = "1.5 s–1.6 s"
+ratio = "5.17x"
+spread = "±4%"
+text = "1.5 s"
 tint = "faster"
+value = 1.519
 
 [[tables.throughput.rows.cells]]
-ratio = "0.79x"
-text = "848 ms"
+noisy = true
+outliers = 0
+range = "626 ms–878 ms"
+ratio = "2.53x"
+spread = "±17%"
+text = "744 ms"
 tint = "faster"
+value = 0.744
 
 [[tables.throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "0 ms–2 ms"
 ratio = "0.00x"
+spread = "±173%"
 text = "0 ms"
 tint = "faster"
+value = 0.0
 
 [[tables.throughput.rows.cells]]
-ratio = "0.61x"
-text = "655 ms"
+noisy = false
+outliers = 0
+range = "528 ms–581 ms"
+ratio = "1.92x"
+spread = "±5%"
+text = "565 ms"
 tint = "faster"
+value = 0.565
 
 [[tables.throughput.rows]]
+higher_is_better = false
 name = "server peak memory"
+network_bound = false
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "43 MB–47 MB"
 ratio = "1.00x"
-text = "54 MB"
+spread = "±4%"
+text = "44 MB"
 tint = "faster"
+value = 44.351488
 
 [[tables.throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = ""
 ratio = "n/a"
+spread = ""
 text = "no server"
 tint = "none"
 
 [[tables.throughput.rows.cells]]
-ratio = "12.97x"
-text = "706 MB"
+noisy = true
+outliers = 0
+range = "608 MB–1,117 MB"
+ratio = "15.23x"
+spread = "±35%"
+text = "675 MB"
 tint = "worst"
+value = 675.397632
 
 [[tables.throughput.rows.cells]]
-ratio = "5.74x"
-text = "312 MB"
+noisy = false
+outliers = 0
+range = "285 MB–292 MB"
+ratio = "6.55x"
+spread = "±1%"
+text = "290 MB"
 tint = "veryslow"
+value = 290.48832
 
 [[tables.throughput.rows.cells]]
-ratio = "1.23x"
+noisy = false
+outliers = 0
+range = "67 MB–67 MB"
+ratio = "1.50x"
+spread = "±0%"
 text = "67 MB"
 tint = "faster"
+value = 66.650112
 
 [[tables.throughput.rows.cells]]
-ratio = "5.28x"
-text = "287 MB"
+noisy = true
+outliers = 0
+range = "171 MB–260 MB"
+ratio = "5.85x"
+spread = "±22%"
+text = "260 MB"
 tint = "slow"
+value = 259.588096

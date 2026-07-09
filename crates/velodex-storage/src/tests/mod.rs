@@ -1,2 +1,2 @@
-mod blob_tests;
-mod meta_tests;
+mod blob;
+mod meta;

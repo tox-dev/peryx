@@ -1,2 +1,3 @@
-mod api_tests;
+mod body_tests;
 mod fallback_tests;
+mod search;

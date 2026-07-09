@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Ecosystem-neutral domain core for velodex: the Ecosystem enum, the EcosystemDriver trait, and shared name and version abstractions."
+description = "Ecosystem-neutral domain core for velodex: the Ecosystem enum, the neutral lexicon, and shared name and version abstractions."
 
 [dependencies]
 serde.workspace = true

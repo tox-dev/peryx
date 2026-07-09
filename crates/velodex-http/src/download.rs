@@ -2,7 +2,7 @@
 //!
 //! A cold file request starts one detached transfer into a temp file; every concurrent request for
 //! the same digest attaches to that transfer and tails its bytes as they land. The handle and its
-//! progress are ecosystem-neutral — they carry a digest's bytes, not any package format — so they
+//! progress are ecosystem-neutral: they carry a digest's bytes, not any package format, so they
 //! live in the core serving crate and `AppState` holds the live-download registry. The ecosystem
 //! driver owns only the format-specific decision of which digest to fetch.
 

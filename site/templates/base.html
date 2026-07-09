@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ config.title }} — fast PyPI mirror and private index{% endblock title %}</title>
+  <title>{% block title %}{{ config.title }} — fast package and container registry{% endblock title %}</title>
   {%- if page %}
     {%- set seo_desc = page.description | default(value=config.description) %}
     {%- set seo_url = page.permalink %}
@@ -15,7 +15,7 @@
   {%- else %}
     {%- set seo_desc = config.description %}
     {%- set seo_url = get_url(path="/") %}
-    {%- set seo_title = config.title ~ " — fast PyPI mirror and private index" %}
+    {%- set seo_title = config.title ~ " — fast package and container registry" %}
   {%- endif %}
   <meta name="description" content="{{ seo_desc }}">
   <link rel="canonical" href="{{ seo_url | safe }}">
@@ -50,7 +50,7 @@
       </a>
       <div class="nav-right">
       <div class="links" id="site-nav">
-        <a href="{{ get_url(path='@/tutorials/getting-started.md') }}">
+        <a href="{{ get_url(path='@/core/getting-started.md') }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
           Documentation</a>
         <a href="{{ config.extra.repo }}" rel="external">
@@ -175,7 +175,7 @@
       // no-op rather than a loop.
       var searchRoot = document.getElementById("pagefind-search");
       if (searchRoot) {
-        var SECTION_LABELS = { tutorials: "Tutorial", guides: "How-to", ecosystems: "Ecosystem", reference: "Reference", explanation: "Explanation", migration: "Migration" };
+        var SECTION_LABELS = { core: "Core", tutorials: "Tutorial", guides: "How-to", reference: "Reference", migration: "Migration" };
         var update = function () {
           var message = modal.querySelector(".pagefind-ui__message");
           if (message) {
@@ -191,7 +191,7 @@
           modal.querySelectorAll(".pagefind-ui__result-title").forEach(function (title) {
             if (title.querySelector(".pf-badge")) return;
             var link = title.querySelector("a[href]");
-            var section = link && link.getAttribute("href").match(/\/(tutorials|guides|ecosystems|reference|explanation|migration)\//);
+            var section = link && link.getAttribute("href").match(/\/(tutorials|guides|reference|migration|core)\//);
             if (!section) return;
             var badge = document.createElement("span");
             badge.className = "pf-badge";
@@ -299,6 +299,44 @@
     });
   </script>
   {# Mermaid diagrams are pre-rendered to dual-theme SVG at build time (site/scripts/render_diagrams.mjs
-     + inline_diagrams.py), so no diagram JavaScript ships to the browser. #}
+     + inline_diagrams.py), so no diagram JavaScript ships to the built site. The block below is a dev-server
+     fallback: on `zola serve` the inlining step has not run, so the raw `<pre class="mermaid">` blocks survive
+     and this renders them client-side. On the built site none survive, so it never loads mermaid. To match prod
+     exactly it renders each diagram twice (light + dark) into the same `.mermaid-figure` structure the build
+     emits, so the existing CSS shows the SVG for the active theme and the header toggle switches it live. #}
+  <script>
+    (function () {
+      var blocks = Array.prototype.slice.call(document.querySelectorAll("pre.mermaid"));
+      if (!blocks.length) return;
+      var sources = blocks.map(function (pre) { return pre.textContent; });
+      var loader = document.createElement("script");
+      loader.type = "module";
+      loader.textContent =
+        'import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";' +
+        'const sources = ' + JSON.stringify(sources) + ';' +
+        'async function renderAll(theme) {' +
+        '  mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme });' +
+        '  const out = [];' +
+        '  for (let i = 0; i < sources.length; i++) {' +
+        '    const { svg } = await mermaid.render("mmd-" + theme + "-" + i, sources[i]);' +
+        '    out.push(svg);' +
+        '  }' +
+        '  return out;' +
+        '}' +
+        '(async () => {' +
+        '  const light = await renderAll("default");' +
+        '  const dark = await renderAll("dark");' +
+        '  const blocks = document.querySelectorAll("pre.mermaid");' +
+        '  blocks.forEach((pre, i) => {' +
+        '    const fig = document.createElement("figure");' +
+        '    fig.className = "mermaid-figure";' +
+        '    fig.innerHTML = \'<div class="mermaid-svg mermaid-light">\' + light[i] + \'</div>\' +' +
+        '      \'<div class="mermaid-svg mermaid-dark">\' + dark[i] + \'</div>\';' +
+        '    pre.replaceWith(fig);' +
+        '  });' +
+        '})();';
+      document.body.appendChild(loader);
+    })();
+  </script>
 </body>
 </html>

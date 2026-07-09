@@ -40,7 +40,7 @@ fn settle(state: &Arc<velodex_http::state::AppState>, field: &str, want: u64) {
 fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
     let mut config = PolicyConfig::default();
     configure(&mut config);
-    Policy::compile(&config).unwrap()
+    Policy::compile(&config)
 }
 
 #[tokio::test]

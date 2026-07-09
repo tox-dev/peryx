@@ -7,7 +7,9 @@
 {%- set filtering = only_val != "" -%}
 <div class="bench">
   <table class="bench-table">
-    <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}</caption>
+    <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}<br>
+      <span class="bench-note">median over the run's rounds, ±&nbsp;coefficient&nbsp;of&nbsp;variation; a
+        <span class="bench-network-key">net</span> row is upstream-bound and not a velodex measurement</span></caption>
     <thead>
       <tr>
         <th></th>
@@ -21,13 +23,13 @@
     </thead>
     <tbody>
       {%- for row in feed.rows %}
-      <tr>
-        <th>{{ row.name }}</th>
+      <tr{% if row.network_bound %} class="bench-network-row"{% endif %}>
+        <th>{{ row.name }}{% if row.network_bound %} <span class="bench-network" title="Dominated by upstream/CDN variance velodex does not control; shown for context, not used to gate regressions.">net</span>{% endif %}</th>
         {%- for cell in row.cells %}
         {%- set party = feed.parties[loop.index0] %}
         {%- set pname = party.name | default(value=party) %}
         {%- if not filtering or pname in keep %}
-        <td class="bench-{{ cell.tint }}">{{ cell.text }} <span class="bench-ratio">({{ cell.ratio }})</span></td>
+        <td class="bench-{{ cell.tint }}{% if cell.noisy %} bench-noisy{% endif %}"{% if cell.range %} title="range {{ cell.range }}{% if cell.outliers %} · {{ cell.outliers }} outlier(s){% endif %}"{% endif %}>{{ cell.text }}{% if cell.spread %} <span class="bench-spread">{{ cell.spread }}</span>{% endif %} <span class="bench-ratio">({{ cell.ratio }})</span></td>
         {%- endif %}
         {%- endfor %}
       </tr>

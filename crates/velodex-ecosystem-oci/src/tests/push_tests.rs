@@ -1,0 +1,739 @@
+//! Hosted-push paths: blob upload (session and monolithic), mount, manifest PUT, and DELETE.
+
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode, header};
+use http_body_util::BodyExt as _;
+use tower::ServiceExt as _;
+use velodex_http::IndexKind;
+use velodex_storage::blob::Digest;
+
+use super::{
+    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, oci_index, proxy, send, send_body,
+};
+
+const TOKEN: &str = "s3cret";
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+#[tokio::test]
+async fn test_session_upload_then_pull() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"a-real-layer-of-bytes";
+    let digest = oci_digest(blob);
+
+    // Start the upload session.
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    assert!(!headers["docker-upload-uuid"].is_empty());
+
+    // Send the bytes as a chunk.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // Finish, committing under the digest.
+    let (status, headers, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+    assert_eq!(headers[header::LOCATION], format!("/v2/store/app/blobs/{digest}"));
+
+    // The blob now serves from the store.
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &blob[..]);
+}
+
+#[tokio::test]
+async fn test_monolithic_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"single-post-blob";
+    let digest = oci_digest(blob);
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+    assert!(
+        state
+            .blobs
+            .exists(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap())
+    );
+}
+
+#[tokio::test]
+async fn test_monolithic_upload_digest_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let wrong = format!("sha256:{}", "0".repeat(64));
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={wrong}"),
+        &[("authorization", &auth(TOKEN))],
+        b"mismatched".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(super::body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_monolithic_upload_non_sha256_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/?digest=sha512:abcdef",
+        &[("authorization", &auth(TOKEN))],
+        b"bytes".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(super::body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_cross_repo_mount_of_an_existing_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"already-here";
+    let stored = state.blobs.write(blob).unwrap();
+    let digest = format!("sha256:{}", stored.as_str());
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?mount={digest}&from=other/repo"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+}
+
+#[tokio::test]
+async fn test_mount_miss_falls_back_to_a_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let absent = format!("sha256:{}", "1".repeat(64));
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?mount={absent}&from=other/repo"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(headers.contains_key(header::LOCATION));
+}
+
+#[tokio::test]
+async fn test_manifest_put_by_tag_then_pull_and_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let digest = oci_digest(manifest);
+
+    let (status, headers, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+
+    let (status, headers, got) = send(&app, Method::GET, "/v2/store/app/manifests/v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], MANIFEST_TYPE);
+    assert_eq!(got, &manifest[..]);
+
+    let (status, _, tags) = send(&app, Method::GET, "/v2/store/app/tags/list").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(std::str::from_utf8(&tags).unwrap().contains("\"v1\""));
+}
+
+#[tokio::test]
+async fn test_manifest_put_by_digest_and_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(manifest);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/app/manifests/{digest}"),
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let wrong = format!("sha256:{}", "2".repeat(64));
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/app/manifests/{wrong}"),
+        &[("authorization", &auth(TOKEN))],
+        manifest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(super::body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_manifest_delete_by_tag() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = br#"{"schemaVersion":2}"#;
+    send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.to_vec(),
+    )
+    .await;
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _, _) = send(&app, Method::GET, "/v2/store/app/manifests/v1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_manifest_delete_by_digest_and_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(manifest);
+    crate::store::put_manifest(
+        &state.meta,
+        &digest,
+        &crate::store::Manifest {
+            media_type: MANIFEST_TYPE.to_owned(),
+            bytes: manifest.to_vec(),
+        },
+    )
+    .unwrap();
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/manifests/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/manifests/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(super::body_has_code(&body, "MANIFEST_UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_blob_delete_and_missing_and_bad_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let stored = state.blobs.write(b"gc-me").unwrap();
+    let digest = format!("sha256:{}", stored.as_str());
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(super::body_has_code(&body, "BLOB_UNKNOWN"), "{body:?}");
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::DELETE,
+        "/v2/store/app/blobs/sha512:abc",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(super::body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_push_requires_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, headers, _) = send_body(&app, Method::POST, "/v2/store/app/blobs/uploads/", &[], Vec::new()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(headers[header::WWW_AUTHENTICATE], "Basic realm=\"velodex\"");
+}
+
+#[tokio::test]
+async fn test_push_rejects_a_wrong_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth("wrong"))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_push_to_a_store_with_no_token_is_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted(&dir);
+    let (status, _, body) = send_body(&app, Method::POST, "/v2/store/app/blobs/uploads/", &[], Vec::new()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(super::body_has_code(&body, "DENIED"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_patch_to_an_unknown_session_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, _, body) = send_body(
+        &app,
+        Method::PATCH,
+        "/v2/store/app/blobs/uploads/deadbeef",
+        &[("authorization", &auth(TOKEN))],
+        b"chunk".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(super::body_has_code(&body, "BLOB_UPLOAD_UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_finish_an_unknown_session_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/blobs/uploads/deadbeef?digest=sha256:x",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_finish_without_a_digest_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    let (status_put, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"bytes".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(status_put, StatusCode::BAD_REQUEST);
+    assert!(super::body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_every_write_verb_is_denied_on_a_read_only_proxy() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, "http://127.0.0.1:1/", false);
+    let cases = [
+        (Method::POST, "/v2/hub/app/blobs/uploads/".to_owned()),
+        (Method::PATCH, "/v2/hub/app/blobs/uploads/xyz".to_owned()),
+        (Method::PUT, "/v2/hub/app/blobs/uploads/xyz?digest=sha256:x".to_owned()),
+        (Method::DELETE, "/v2/hub/app/manifests/v1".to_owned()),
+        (Method::DELETE, format!("/v2/hub/app/blobs/sha256:{}", "a".repeat(64))),
+    ];
+    for (method, uri) in cases {
+        let (status, _, _) = send_body(&app, method.clone(), &uri, &[], b"x".to_vec()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn test_write_to_an_unresolvable_name_is_name_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, "http://127.0.0.1:1/", false);
+    let (status, _, body) = send_body(&app, Method::POST, "/v2/other/app/blobs/uploads/", &[], Vec::new()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(super::body_has_code(&body, "NAME_UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_manifest_put_body_error_is_a_gateway_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let erroring = futures_util::stream::iter(vec![
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"{")),
+        Err(std::io::Error::other("boom")),
+    ]);
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri("/v2/store/app/manifests/v1")
+        .header("authorization", auth(TOKEN))
+        .body(Body::from_stream(erroring))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let _ = response.into_body().collect().await;
+}
+
+#[tokio::test]
+async fn test_upload_body_read_error_is_a_gateway_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    // Open a session, then PATCH a body stream that fails mid-transfer.
+    let (_status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    let erroring = futures_util::stream::iter(vec![
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"partial")),
+        Err(std::io::Error::other("boom")),
+    ]);
+    let request = Request::builder()
+        .method(Method::PATCH)
+        .uri(&location)
+        .header("authorization", auth(TOKEN))
+        .body(Body::from_stream(erroring))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let _ = response.into_body().collect().await;
+}
+
+#[tokio::test]
+async fn test_manifest_push_rejects_unsupported_media_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", "text/plain")],
+        br#"{"schemaVersion":2}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "MANIFEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_manifest_push_rejects_missing_referenced_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"config":{{"digest":"sha256:{}"}},"layers":[]}}"#,
+        "a".repeat(64)
+    );
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.into_bytes(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "MANIFEST_BLOB_UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_manifest_push_accepts_present_referenced_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let config = state.blobs.write(b"config-bytes").unwrap();
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"config":{{"digest":"sha256:{}"}},"layers":[]}}"#,
+        config.as_str()
+    );
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.into_bytes(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_manifest_push_rejects_index_with_missing_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let index = format!(
+        r#"{{"schemaVersion":2,"manifests":[{{"digest":"sha256:{}"}}]}}"#,
+        "b".repeat(64)
+    );
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[
+            ("authorization", &auth(TOKEN)),
+            ("content-type", "application/vnd.oci.image.index.v1+json"),
+        ],
+        index.into_bytes(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "MANIFEST_BLOB_UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_manifest_push_accepts_index_with_present_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let child_digest = oci_digest(child);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/app/manifests/{child_digest}"),
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        child.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let index = format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"{child_digest}"}}]}}"#);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/latest",
+        &[
+            ("authorization", &auth(TOKEN)),
+            ("content-type", "application/vnd.oci.image.index.v1+json"),
+        ],
+        index.into_bytes(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_upload_session_is_scoped_to_its_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = app_with_indexes(
+        &dir,
+        vec![
+            oci_index(
+                "store",
+                "store",
+                IndexKind::Hosted {
+                    upload_token: Some(TOKEN.to_owned()),
+                    volatile: true,
+                },
+            ),
+            oci_index(
+                "other",
+                "other",
+                IndexKind::Hosted {
+                    upload_token: Some("other-token".to_owned()),
+                    volatile: true,
+                },
+            ),
+        ],
+    );
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    let session = location.rsplit('/').next().unwrap();
+
+    // A client authorized for `other` cannot reach `store`'s session by its id, even to read it.
+    let attack = format!("/v2/other/app/blobs/uploads/{session}");
+    for method in [Method::GET, Method::PATCH] {
+        let (status, _, body) = send_body(
+            &app,
+            method,
+            &attack,
+            &[("authorization", &auth("other-token"))],
+            b"x".to_vec(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body_has_code(&body, "BLOB_UPLOAD_UNKNOWN"), "{body:?}");
+    }
+
+    // The owner still uses its own session normally.
+    let (status, _, _) = send_body(
+        &app,
+        Method::GET,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"x".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn test_blob_delete_retains_a_referenced_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let layer = state.blobs.write(b"referenced-layer").unwrap();
+    let digest = format!("sha256:{}", layer.as_str());
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"digest":"{digest}"}},"layers":[]}}"#
+    );
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.into_bytes(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    // Retained: a manifest still references it, so the shared blob is not unlinked.
+    assert!(state.blobs.exists(&layer));
+}
+
+#[tokio::test]
+async fn test_abandoned_upload_sessions_expire() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
+
+    // Open a session, then abandon it.
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+
+    // Age past the TTL and start another upload, which reclaims the abandoned one.
+    now.store(1000 + 3601, Ordering::Relaxed);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // The abandoned session is gone.
+    let (status, _, body) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"x".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body_has_code(&body, "BLOB_UPLOAD_UNKNOWN"), "{body:?}");
+}

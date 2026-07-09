@@ -1,6 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;
+use rstest::rstest;
 use tower::ServiceExt as _;
 use velodex_http::IndexKind as RuntimeKind;
 use velodex_upstream::Auth;
@@ -8,11 +9,20 @@ use velodex_upstream::Auth;
 use crate::config::{Config, IndexConfig, IndexKind, WebhookConfig, WebhookSecret};
 use crate::server::{build_indexes, build_router, build_state, upstream_auth};
 
+fn config_with(dir: &tempfile::TempDir, indexes: Vec<IndexConfig>) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes,
+        ..Config::default()
+    }
+}
+
 fn cached(name: &str, upstream: &str) -> IndexConfig {
     IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
         policy: velodex_policy::PolicyConfig::default(),
+        pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
         ecosystem: velodex_format::Ecosystem::Pypi,
         kind: IndexKind::Cached {
@@ -32,6 +42,7 @@ fn hosted(name: &str) -> IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
         policy: velodex_policy::PolicyConfig::default(),
+        pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
         ecosystem: velodex_format::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
@@ -46,6 +57,7 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         name: "team".to_owned(),
         route: "team/dev".to_owned(),
         policy: velodex_policy::PolicyConfig::default(),
+        pypi_policy: velodex_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
         ecosystem: velodex_format::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
@@ -97,11 +109,7 @@ fn test_build_state_applies_upstream_concurrency() {
         panic!("expected cached index");
     };
     *upstream_concurrency = 2;
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        indexes: vec![pypi],
-        ..Config::default()
-    };
+    let config = config_with(&dir, vec![pypi]);
 
     let state = build_state(&config).unwrap();
 
@@ -129,11 +137,7 @@ fn test_build_state_reports_metadata_store_error() {
 #[test]
 fn test_build_state_reports_index_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        indexes: vec![cached("pypi", "not a url")],
-        ..Config::default()
-    };
+    let config = config_with(&dir, vec![cached("pypi", "not a url")]);
 
     let Err(err) = build_state(&config) else {
         panic!("expected index error");
@@ -152,11 +156,7 @@ fn test_build_state_reports_webhook_errors() {
         secret: WebhookSecret::Literal("secret".to_owned()),
         events: Vec::new(),
     });
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        indexes: vec![index],
-        ..Config::default()
-    };
+    let config = config_with(&dir, vec![index]);
 
     let Err(err) = build_state(&config) else {
         panic!("expected webhook error");
@@ -175,11 +175,7 @@ fn test_build_state_reports_missing_webhook_secret_env() {
         secret: WebhookSecret::Env("VELODEX_TEST_MISSING_WEBHOOK_SECRET".to_owned()),
         events: Vec::new(),
     });
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        indexes: vec![index],
-        ..Config::default()
-    };
+    let config = config_with(&dir, vec![index]);
 
     let Err(err) = build_state(&config) else {
         panic!("expected webhook env error");
@@ -201,39 +197,24 @@ async fn test_build_state_starts_webhook_runtime() {
         secret: WebhookSecret::Literal("secret".to_owned()),
         events: Vec::new(),
     });
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        indexes: vec![index],
-        ..Config::default()
-    };
+    let config = config_with(&dir, vec![index]);
 
     let state = build_state(&config).unwrap();
 
     assert!(!state.webhooks.is_empty());
 }
 
-#[test]
-fn test_upstream_auth_bearer_takes_precedence() {
-    assert_eq!(
-        upstream_auth(Some("tok"), Some("u"), Some("p")),
-        Auth::Bearer("tok".to_owned())
-    );
-}
-
-#[test]
-fn test_upstream_auth_basic() {
-    assert_eq!(
-        upstream_auth(None, Some("u"), Some("p")),
-        Auth::Basic {
-            username: "u".to_owned(),
-            password: "p".to_owned()
-        }
-    );
-}
-
-#[test]
-fn test_upstream_auth_none() {
-    assert_eq!(upstream_auth(None, None, None), Auth::None);
+#[rstest]
+#[case::bearer_takes_precedence(Some("tok"), Some("u"), Some("p"), Auth::Bearer("tok".to_owned()))]
+#[case::basic(None, Some("u"), Some("p"), Auth::Basic { username: "u".to_owned(), password: "p".to_owned() })]
+#[case::none(None, None, None, Auth::None)]
+fn test_upstream_auth(
+    #[case] token: Option<&str>,
+    #[case] user: Option<&str>,
+    #[case] pass: Option<&str>,
+    #[case] expected: Auth,
+) {
+    assert_eq!(upstream_auth(token, user, pass), expected);
 }
 
 #[test]
@@ -249,65 +230,58 @@ fn test_build_router_data_dir_error() {
     assert!(err.to_string().contains("create data directory"));
 }
 
-#[test]
-fn test_build_indexes_rejects_bad_upstream() {
-    let err = build_indexes(&[cached("pypi", "not a url")], false).unwrap_err();
-    assert!(err.to_string().contains("build cached index pypi"));
-    assert!(err.to_string().contains("<invalid upstream URL>"));
-}
-
-#[test]
-fn test_build_indexes_rejects_invalid_policy() {
-    let mut index = cached("pypi", "https://pypi.org/simple/");
-    index.policy.allow_versions = Some("not a specifier".to_owned());
-    let err = build_indexes(&[index], false).unwrap_err();
-    assert!(err.to_string().contains("compile policy for pypi"));
-}
-
-#[test]
-fn test_build_indexes_rejects_duplicate_name() {
-    let err = build_indexes(&[hosted("a"), hosted("a")], false).unwrap_err();
-    assert!(err.to_string().contains("duplicate index name"));
-}
-
-#[test]
-fn test_build_indexes_rejects_duplicate_route() {
-    let mut second = hosted("b");
-    second.route = "a".to_owned();
-    let err = build_indexes(&[hosted("a"), second], false).unwrap_err();
-    assert!(err.to_string().contains("duplicate index route"));
-}
-
-#[test]
-fn test_build_indexes_rejects_unsafe_route() {
-    let mut index = hosted("safe");
-    index.route = "root/../pypi".to_owned();
-    let err = build_indexes(&[index], false).unwrap_err();
-    assert!(err.to_string().contains("invalid index route root/../pypi"));
-}
-
-#[test]
-fn test_build_indexes_rejects_reserved_route() {
-    let mut index = hosted("safe");
-    index.route = "browse/private".to_owned();
-    let err = build_indexes(&[index], false).unwrap_err();
-    assert!(err.to_string().contains("invalid index route browse/private"));
-}
-
-#[test]
-fn test_build_indexes_rejects_unknown_layer() {
-    let err = build_indexes(&[hosted("x"), virtual_index(&["ghost"], None)], false).unwrap_err();
-    assert!(err.to_string().contains("unknown index ghost"));
-}
-
-#[test]
-fn test_build_indexes_rejects_non_local_upload_target() {
-    let configs = [
-        cached("pypi", "https://pypi.org/simple/"),
-        virtual_index(&["pypi"], Some("pypi")),
-    ];
-    let err = build_indexes(&configs, false).unwrap_err();
-    assert!(err.to_string().contains("not a hosted index"));
+#[rstest]
+#[case::bad_upstream(
+    || vec![cached("pypi", "not a url")],
+    &["build cached index pypi", "<invalid upstream URL>"][..]
+)]
+#[case::invalid_policy(
+    || {
+        let mut index = cached("pypi", "https://pypi.org/simple/");
+        index.pypi_policy.allow_versions = Some("not a specifier".to_owned());
+        vec![index]
+    },
+    &["compile policy for pypi"][..]
+)]
+#[case::duplicate_name(|| vec![hosted("a"), hosted("a")], &["duplicate index name"][..])]
+#[case::duplicate_route(
+    || {
+        let mut second = hosted("b");
+        second.route = "a".to_owned();
+        vec![hosted("a"), second]
+    },
+    &["duplicate index route"][..]
+)]
+#[case::unsafe_route(
+    || {
+        let mut index = hosted("safe");
+        index.route = "root/../pypi".to_owned();
+        vec![index]
+    },
+    &["invalid index route root/../pypi"][..]
+)]
+#[case::reserved_route(
+    || {
+        let mut index = hosted("safe");
+        index.route = "browse/private".to_owned();
+        vec![index]
+    },
+    &["invalid index route browse/private"][..]
+)]
+#[case::unknown_layer(
+    || vec![hosted("x"), virtual_index(&["ghost"], None)],
+    &["unknown index ghost"][..]
+)]
+#[case::non_local_upload_target(
+    || vec![cached("pypi", "https://pypi.org/simple/"), virtual_index(&["pypi"], Some("pypi"))],
+    &["not a hosted index"][..]
+)]
+fn test_build_indexes_rejects(#[case] indexes: fn() -> Vec<IndexConfig>, #[case] expected: &[&str]) {
+    let err = build_indexes(&indexes(), false).unwrap_err();
+    let message = err.to_string();
+    for substr in expected {
+        assert!(message.contains(substr), "{message}");
+    }
 }
 
 #[test]

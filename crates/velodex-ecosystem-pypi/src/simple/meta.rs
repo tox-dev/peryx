@@ -1,0 +1,147 @@
+//! The Simple API `meta` object, version negotiation, and project status markers.
+
+use serde::{Deserialize, Serialize};
+
+use super::SimpleError;
+
+/// The Simple API version velodex advertises.
+pub const API_VERSION: &str = "1.4";
+const API_MAJOR: u64 = 1;
+
+/// The `meta` object shared by both response kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Meta {
+    #[serde(rename = "api-version")]
+    pub api_version: &'static str,
+    #[serde(rename = "project-status", skip_serializing_if = "Option::is_none")]
+    pub project_status: Option<String>,
+    #[serde(rename = "project-status-reason", skip_serializing_if = "Option::is_none")]
+    pub project_status_reason: Option<String>,
+}
+
+impl Default for Meta {
+    fn default() -> Self {
+        Self {
+            api_version: API_VERSION,
+            project_status: None,
+            project_status_reason: None,
+        }
+    }
+}
+
+impl Meta {
+    /// Build served metadata from upstream metadata after checking Simple API compatibility.
+    ///
+    /// # Errors
+    /// Returns [`SimpleError`] when the upstream advertises an invalid or unsupported API version.
+    pub fn from_upstream(
+        api_version: Option<&str>,
+        project_status: Option<String>,
+        project_status_reason: Option<String>,
+    ) -> Result<Self, SimpleError> {
+        validate_api_version(api_version)?;
+        if let Some(status) = project_status.as_deref() {
+            validate_project_status(status)?;
+        }
+        Ok(Self {
+            api_version: API_VERSION,
+            project_status,
+            project_status_reason,
+        })
+    }
+
+    #[must_use]
+    pub fn status(&self) -> ProjectStatus {
+        self.project_status
+            .as_deref()
+            .and_then(ProjectStatus::from_marker)
+            .unwrap_or(ProjectStatus::Active)
+    }
+}
+
+#[derive(Default, Deserialize)]
+pub(super) struct IncomingMeta {
+    #[serde(rename = "api-version", default)]
+    api_version: Option<String>,
+    #[serde(rename = "project-status", default)]
+    project_status: Option<String>,
+    #[serde(rename = "project-status-reason", default)]
+    project_status_reason: Option<String>,
+}
+
+impl IncomingMeta {
+    pub(super) fn into_meta(self) -> Result<Meta, SimpleError> {
+        Meta::from_upstream(
+            self.api_version.as_deref(),
+            self.project_status,
+            self.project_status_reason,
+        )
+    }
+}
+
+fn validate_api_version(version: Option<&str>) -> Result<(), SimpleError> {
+    let Some(version) = version else {
+        return Ok(());
+    };
+    let Some((major, minor)) = version.split_once('.') else {
+        return Err(SimpleError::InvalidApiVersion(version.to_owned()));
+    };
+    let major = major
+        .parse::<u64>()
+        .map_err(|_| SimpleError::InvalidApiVersion(version.to_owned()))?;
+    if major != API_MAJOR {
+        return Err(SimpleError::UnsupportedApiVersion(version.to_owned()));
+    }
+    minor
+        .parse::<u64>()
+        .map_err(|_| SimpleError::InvalidApiVersion(version.to_owned()))?;
+    Ok(())
+}
+
+fn validate_project_status(status: &str) -> Result<(), SimpleError> {
+    ProjectStatus::from_marker(status)
+        .map(|_| ())
+        .ok_or_else(|| SimpleError::InvalidProjectStatus(status.to_owned()))
+}
+
+/// The standardized project status markers and their serving policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectStatus {
+    Active,
+    Archived,
+    Quarantined,
+    Deprecated,
+}
+
+impl ProjectStatus {
+    #[must_use]
+    pub fn from_marker(status: &str) -> Option<Self> {
+        match status {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            "quarantined" => Some(Self::Quarantined),
+            "deprecated" => Some(Self::Deprecated),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+            Self::Quarantined => "quarantined",
+            Self::Deprecated => "deprecated",
+        }
+    }
+
+    #[must_use]
+    pub const fn allows_uploads(self) -> bool {
+        matches!(self, Self::Active | Self::Deprecated)
+    }
+
+    #[must_use]
+    pub const fn offers_downloads(self) -> bool {
+        !matches!(self, Self::Quarantined)
+    }
+}

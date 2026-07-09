@@ -20,3 +20,4 @@ __pycache__/
 # stray local venv
 /magic/
 /site/node_modules/
+/results/

@@ -1,9 +1,7 @@
 //! The `PyPI` ecosystem driver for velodex: project names, versions, and the simple repository API.
 //!
-//! This crate implements the [`EcosystemDriver`] seam from `velodex-format` for Python. A future
-//! ecosystem is a sibling `velodex-ecosystem-*` crate, so nothing here is tangled into shared code.
-
-use velodex_format::{Ecosystem, EcosystemDriver};
+//! A future ecosystem is a sibling `velodex-ecosystem-*` crate, so nothing here is tangled into shared
+//! code.
 
 #[cfg(feature = "serving")]
 pub mod archive;
@@ -57,16 +55,9 @@ pub use version::{Version, VersionSpecifiers, parse_version, parse_version_speci
 #[cfg(feature = "serving")]
 pub fn install(state: &mut velodex_http::AppState) {
     state.set_ecosystem(std::sync::Arc::new(PypiServing), std::sync::Arc::new(PypiIndexer));
-}
-
-/// The [`EcosystemDriver`] for the Python Package Index.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PypiDriver;
-
-impl EcosystemDriver for PypiDriver {
-    fn ecosystem(&self) -> Ecosystem {
-        Ecosystem::Pypi
-    }
+    // velodex's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
+    // lexicon is the neutral one; a future divergence would give this crate its own constant.
+    state.register_lexicon(velodex_format::Ecosystem::Pypi, &velodex_format::Lexicon::NEUTRAL);
 }
 
 #[cfg(test)]

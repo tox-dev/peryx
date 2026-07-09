@@ -1,5 +1,20 @@
 use velodex_format::url_encoding::{push_component, push_path};
 
+/// The client-facing API endpoint an index is served at: the Simple index for a `PyPI` index, the
+/// `/v2/` registry namespace for an `OCI` one. The status card shows this so a client knows where to
+/// point, and it must not be a `PyPI` `/simple/` URL for a registry that answers `/v2/`.
+#[must_use]
+pub(crate) fn index_endpoint(route: &str, ecosystem: &str) -> String {
+    if ecosystem == "oci" {
+        let mut url = "/v2/".to_owned();
+        push_path(&mut url, route);
+        url.push('/');
+        url
+    } else {
+        simple_index_url(route)
+    }
+}
+
 #[must_use]
 pub(crate) fn simple_index_url(route: &str) -> String {
     let mut url = String::with_capacity(route.len() + 9);
@@ -18,6 +33,29 @@ pub(crate) fn simple_project_url(route: &str, project: &str) -> String {
     url
 }
 
+/// The OCI tag-list endpoint for one repository under an index route: `/v2/<route>/<repo>/tags/list`.
+#[must_use]
+pub(crate) fn oci_tags_url(route: &str, repo: &str) -> String {
+    let mut url = "/v2/".to_owned();
+    push_path(&mut url, route);
+    url.push('/');
+    push_path(&mut url, repo);
+    url.push_str("/tags/list");
+    url
+}
+
+/// The OCI manifest endpoint for one reference: `/v2/<route>/<repo>/manifests/<reference>`.
+#[must_use]
+pub(crate) fn oci_manifest_url(route: &str, repo: &str, reference: &str) -> String {
+    let mut url = "/v2/".to_owned();
+    push_path(&mut url, route);
+    url.push('/');
+    push_path(&mut url, repo);
+    url.push_str("/manifests/");
+    push_component(&mut url, reference);
+    url
+}
+
 #[must_use]
 pub(crate) fn browse_index_url(route: &str) -> String {
     let mut url = "/browse".to_owned();
@@ -29,6 +67,68 @@ pub(crate) fn browse_index_url(route: &str) -> String {
 pub(crate) fn browse_project_url(route: &str, project: &str) -> String {
     let mut url = browse_index_url(route);
     push_query(&mut url, "project", project);
+    url
+}
+
+/// The browse URL for one tag's manifest under an OCI repository (`?index&project&ref`).
+#[must_use]
+pub(crate) fn browse_oci_ref_url(route: &str, repo: &str, reference: &str) -> String {
+    let mut url = browse_project_url(route, repo);
+    push_query(&mut url, "ref", reference);
+    url
+}
+
+/// The browse URL for one layer's contents under an OCI manifest (`?index&project&ref&layer`).
+#[must_use]
+pub(crate) fn browse_oci_layer_url(route: &str, repo: &str, reference: &str, digest: &str) -> String {
+    let mut url = browse_oci_ref_url(route, repo, reference);
+    push_query(&mut url, "layer", digest);
+    url
+}
+
+/// The browse URL for one member inside a layer, carrying the paging offset when past the first chunk.
+#[must_use]
+pub(crate) fn browse_oci_layer_member_url(
+    route: &str,
+    repo: &str,
+    reference: &str,
+    digest: &str,
+    member: &str,
+    offset: u64,
+) -> String {
+    let mut url = browse_oci_layer_url(route, repo, reference, digest);
+    let mut query = QueryAppender::continuing(&mut url);
+    query.push("member", member);
+    if offset > 0 {
+        query.push("offset", &offset.to_string());
+    }
+    url
+}
+
+/// The velodex layer-browser endpoint: `/v2/<route>/<repo>/blobs/<digest>/contents`, listing the
+/// layer's members or (with `member`) previewing one.
+#[must_use]
+pub(crate) fn oci_layer_inspect_url(
+    route: &str,
+    repo: &str,
+    digest: &str,
+    member: Option<&str>,
+    offset: u64,
+) -> String {
+    let mut url = "/v2/".to_owned();
+    push_path(&mut url, route);
+    url.push('/');
+    push_path(&mut url, repo);
+    url.push_str("/blobs/");
+    // A digest is `algorithm:hex`, all URL-path-safe, and the `/v2/` route parser matches the literal
+    // colon, so it must not be percent-encoded the way an arbitrary path component would be.
+    url.push_str(digest);
+    url.push_str("/contents");
+    if let Some(member) = member {
+        let mut query = QueryAppender::new(&mut url);
+        query.push("member", member);
+        query.push("offset", &offset.to_string());
+    }
     url
 }
 

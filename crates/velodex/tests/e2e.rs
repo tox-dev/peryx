@@ -681,6 +681,16 @@ fn wheel_on_disk(name: &str) -> (TempDir, PathBuf) {
     (dir, path)
 }
 
+/// Publish a wheel to the hosted layer of `root/pypi` with `uv publish`, authenticating as the token.
+fn uv_publish(velodex: &Velodex, wheel: &std::path::Path) {
+    let mut cmd = Command::new("uv");
+    cmd.args(["publish", "--publish-url"])
+        .arg(velodex.upload_url())
+        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
+        .arg(wheel);
+    run(&mut cmd, "uv publish");
+}
+
 #[test]
 fn e2e_twine_upload_then_install() {
     let velodex = Velodex::start_against("http://127.0.0.1:9/simple/");
@@ -706,12 +716,7 @@ fn e2e_twine_upload_then_install() {
 fn e2e_uv_publish_then_install() {
     let velodex = Velodex::start_against("http://127.0.0.1:9/simple/");
     let (_dir, wheel) = wheel_on_disk("velodexpublish");
-    let mut cmd = Command::new("uv");
-    cmd.args(["publish", "--publish-url"])
-        .arg(velodex.upload_url())
-        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
-        .arg(&wheel);
-    run(&mut cmd, "uv publish");
+    uv_publish(&velodex, &wheel);
 
     let venv = uv_venv();
     uv_install(&venv, &velodex, "velodexpublish");
@@ -722,12 +727,7 @@ fn e2e_uv_publish_then_install() {
 fn e2e_yank_and_delete_round_trip() {
     let velodex = Velodex::start_against("http://127.0.0.1:9/simple/");
     let (_dir, wheel) = wheel_on_disk("velodexremove");
-    let mut cmd = Command::new("uv");
-    cmd.args(["publish", "--publish-url"])
-        .arg(velodex.upload_url())
-        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
-        .arg(&wheel);
-    run(&mut cmd, "uv publish");
+    uv_publish(&velodex, &wheel);
 
     // Yank the version: the file stays but carries the PEP 592 marker.
     assert_eq!(http_verb(velodex.port, "PUT", "/root/pypi/velodexremove/1.0/yank"), 200);
@@ -848,12 +848,7 @@ fn e2e_upstream_yank_hide_restore_round_trip() {
 fn e2e_inspect_uploaded_wheel() {
     let velodex = Velodex::start_against("http://127.0.0.1:9/simple/");
     let (_dir, wheel) = wheel_on_disk("velodexinspect");
-    let mut cmd = Command::new("uv");
-    cmd.args(["publish", "--publish-url"])
-        .arg(velodex.upload_url())
-        .args(["-u", "__token__", "-p", UPLOAD_TOKEN])
-        .arg(&wheel);
-    run(&mut cmd, "uv publish");
+    uv_publish(&velodex, &wheel);
 
     let (_, detail) = http_get(velodex.port, "/root/pypi/simple/velodexinspect/").expect("detail");
     let sha = detail

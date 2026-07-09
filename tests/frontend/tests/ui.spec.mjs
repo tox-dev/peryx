@@ -37,6 +37,11 @@ test("dashboard shows identity, counters, and the topology", async ({ page }) =>
   const standalone = page.locator(".card", { hasText: "internal" });
   await expect(standalone.locator(".badge.kind-hosted")).toBeVisible();
   await expect(standalone.locator(".badge.uploads")).toBeVisible();
+  // An OCI index advertises its /v2/ registry endpoint, not a PyPI /simple/ URL.
+  const images = page.locator(".card", { hasText: "images" });
+  await expect(images.locator(".badge.ecosystem-oci")).toBeVisible();
+  await expect(images).toContainText("/v2/images/");
+  await expect(images).not.toContainText("/simple/");
 });
 
 test("header nav links reach each in-app route", async ({ page }) => {
@@ -68,10 +73,10 @@ test("header search suggests packages live and opens one", async ({ page }) => {
 
 test("search reports no matches and honors the provenance facet", async ({ page }) => {
   await goto(page, "/search?q=zzznotapackage");
-  await expect(page.locator(".search-page")).toContainText("No packages matched");
+  await expect(page.locator(".search-page")).toContainText("Nothing matched this search");
   // veloxdemo is uploaded, so restricting to the cached facet excludes it.
   await goto(page, "/search?q=veloxdemo&type=cached");
-  await expect(page.locator(".search-page")).toContainText("No packages matched");
+  await expect(page.locator(".search-page")).toContainText("Nothing matched this search");
   await expect(page.locator(".search-controls select[name='type']")).toHaveValue("cached");
 });
 
@@ -315,4 +320,30 @@ test("usage stats drill from index to project to file", async ({ page }) => {
 
   await expect(page.locator(".breadcrumb")).toContainText("veloxdemo");
   await expect(page.locator(".stats-table tbody tr", { hasText: "veloxdemo-1.0.0" }).first()).toBeVisible();
+});
+
+test("browses an OCI repository's tags and its manifest", async ({ page }) => {
+  await goto(page, "/browse?index=images&project=app");
+  // The repository page lists the pushed tag.
+  await expect(page.locator(".page")).toContainText("1.0");
+  // Clicking the tag opens its manifest, showing the config and layer blob digests.
+  await page.getByRole("link", { name: "1.0" }).click();
+  await expect(page).toHaveURL(/ref=1\.0/);
+  await expect(page.locator(".page")).toContainText("Layers");
+  await expect(page.locator(".page")).toContainText("Config: sha256:");
+  await expect(page.locator(".page")).toContainText("application/vnd.oci.image.layer.v1.tar");
+  // The manifest view offers a copyable pull command, with the host filled in after hydration.
+  await expect(page.locator(".install code")).toContainText("docker pull 127.0.0.1:4455/images/app:1.0");
+});
+
+test("browses a layer's file contents and previews a text member", async ({ page }) => {
+  await goto(page, "/browse?index=images&project=app&ref=1.0");
+  // The layer row's contents link opens the archive browser over the layer tar.
+  await page.getByRole("link", { name: "contents" }).click();
+  await expect(page).toHaveURL(/layer=/);
+  await expect(page.locator(".page")).toContainText("etc/app.conf");
+  await expect(page.locator(".page")).toContainText("bin/app");
+  // A text member previews inline; a binary one does not link.
+  await page.getByRole("link", { name: "etc/app.conf" }).click();
+  await expect(page.locator(".page")).toContainText("debug = true");
 });

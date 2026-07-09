@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "velodex",
-    "description": "PyPI-compatible read-through cache and private index. Every configured index route serves the same surface; `{route}` is the index's route, for example `root/pypi`. Write operations authenticate with HTTP Basic where the password is the target local index's upload token and the username is ignored.",
+    "description": "Read-through cache and private index for multiple ecosystems. A PyPI index serves the Simple API under `/{route}/`, where `{route}` is the index's route (for example `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write operations authenticate with HTTP Basic where the password is the target hosted index's upload token and the username is ignored.",
     "contact": {
       "name": "tox-dev",
       "url": "https://github.com/tox-dev/velodex"
@@ -332,6 +332,465 @@
             "content": {
               "text/plain; version=0.0.4": {
                 "example": "# HELP velodex_requests_total Total HTTP requests served.\n# TYPE velodex_requests_total counter\nvelodex_requests_total 128\n# HELP velodex_index_metadata_total PEP 658 metadata siblings served.\n# TYPE velodex_index_metadata_total counter\nvelodex_index_metadata_total{index=\"root/pypi\",ecosystem=\"pypi\",role=\"virtual\"} 37\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Registry version check",
+        "description": "Confirms this is an OCI distribution-spec registry. Answers `200` with `Docker-Distribution-API-Version: registry/2.0` and an empty body.",
+        "responses": {
+          "200": {
+            "description": "A `/v2/` registry"
+          }
+        }
+      }
+    },
+    "/v2/{name}/blobs/uploads/": {
+      "post": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Begin, mount, or monolithically push a blob",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "digest",
+            "in": "query",
+            "description": "Monolithic push: the blob digest",
+            "required": false,
+            "example": "sha256:2c3e..."
+          },
+          {
+            "name": "mount",
+            "in": "query",
+            "description": "Cross-repo mount: an already-stored digest",
+            "required": false,
+            "example": "sha256:2c3e..."
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Mounted or monolithically stored"
+          },
+          "202": {
+            "description": "A session opened for chunked upload"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/v2/{name}/blobs/uploads/{session}": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Report upload progress",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "An in-progress upload session id",
+            "required": true,
+            "example": "0000000000000000000000000000abcd"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The bytes received so far"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Finish an upload",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "An in-progress upload session id",
+            "required": true,
+            "example": "0000000000000000000000000000abcd"
+          },
+          {
+            "name": "digest",
+            "in": "query",
+            "description": "The full blob digest",
+            "required": false,
+            "example": "sha256:2c3e..."
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Committed"
+          },
+          "403": {
+            "description": "`DENIED`: over the index's size limit"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Append a chunk",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "description": "An in-progress upload session id",
+            "required": true,
+            "example": "0000000000000000000000000000abcd"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Appended"
+          },
+          "416": {
+            "description": "The chunk is out of order"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/v2/{name}/blobs/{digest}": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Pull a blob",
+        "description": "Serves the blob from the content-addressed store, pulling it through an online proxy member on a miss; concurrent misses share one upstream fetch. Range-capable.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "required": true,
+            "example": "sha256:2c3e..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The blob bytes"
+          },
+          "206": {
+            "description": "A requested byte range"
+          },
+          "404": {
+            "description": "`BLOB_UNKNOWN`"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Delete a blob",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "required": true,
+            "example": "sha256:2c3e..."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Removed"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/v2/{name}/blobs/{digest}/contents": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Browse a layer's files",
+        "description": "velodex's own layer browser (not a distribution-spec route): lists a stored layer's tar members, or with `?member=` previews one text member in bounded chunks.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "required": true,
+            "example": "sha256:2c3e..."
+          },
+          {
+            "name": "member",
+            "in": "query",
+            "description": "A member path to preview",
+            "required": false,
+            "example": "etc/os-release"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The member list, or one member's text"
+          },
+          "404": {
+            "description": "The blob or member is unknown"
+          }
+        }
+      }
+    },
+    "/v2/{name}/manifests/{reference}": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Pull a manifest",
+        "description": "Resolves the reference hosted-first through the index's members and serves the manifest, pulling it through an online proxy member on a miss.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "reference",
+            "in": "path",
+            "description": "A tag or an `algorithm:hex` digest",
+            "required": true,
+            "example": "latest"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The manifest bytes"
+          },
+          "404": {
+            "description": "`MANIFEST_UNKNOWN`"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Push a manifest",
+        "description": "Stores the manifest under its canonical `sha256:` digest and, for a tag reference, points the tag at it. Requires a writable hosted index and its upload token.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "reference",
+            "in": "path",
+            "description": "A tag or an `algorithm:hex` digest",
+            "required": true,
+            "example": "latest"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Stored"
+          },
+          "403": {
+            "description": "`DENIED`: read-only index or blocked by policy"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "Delete a manifest or untag",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "reference",
+            "in": "path",
+            "description": "A tag or an `algorithm:hex` digest",
+            "required": true,
+            "example": "latest"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Removed"
+          },
+          "404": {
+            "description": "`MANIFEST_UNKNOWN`"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
+    "/v2/{name}/referrers/{digest}": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "List referrers",
+        "description": "The manifests that declare `{digest}` as their subject (attestations, signatures).",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "required": true,
+            "example": "sha256:2c3e..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An image-index of referrers"
+          }
+        }
+      }
+    },
+    "/v2/{name}/tags/list": {
+      "get": {
+        "tags": [
+          "oci"
+        ],
+        "summary": "List tags",
+        "description": "Answers `{\"name\", \"tags\"}`, with `n`/`last` pagination and a `Link` next-page header.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "required": true,
+            "example": "dockerhub/library/alpine"
+          },
+          {
+            "name": "n",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "example": 50
+          },
+          {
+            "name": "last",
+            "in": "query",
+            "description": "The tag to resume after",
+            "required": false,
+            "example": "1.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tag list",
+            "content": {
+              "application/json": {
+                "example": {
+                  "name": "library/alpine",
+                  "tags": [
+                    "3.19",
+                    "latest"
+                  ]
+                }
               }
             }
           }

@@ -1,1 +1,1 @@
-mod client_tests;
+mod client;

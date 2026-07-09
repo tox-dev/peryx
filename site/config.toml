@@ -1,6 +1,6 @@
 base_url = "https://velodex.readthedocs.io"
 title = "velodex"
-description = "A PyPI-compatible read-through cache and private index, written in Rust."
+description = "A read-through cache and private registry for PyPI and Docker, in one fast Rust binary."
 compile_sass = true
 build_search_index = false
 generate_feeds = false

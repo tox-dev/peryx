@@ -1,0 +1,273 @@
++++
+title = "Architecture"
+description = "How one process serves a pull: the request path, the streaming cache, freshness, and the two stores."
+weight = 1
++++
+
+Start with two concrete cases against a velodex that has never seen the artifact. A CI job runs `uv pip install pandas`:
+uv asks for the pandas index page, then for a handful of `.metadata` files, then for the wheels it chose. A developer
+runs `docker pull alpine`: docker asks for the `alpine` manifest, then for the config and layer blobs it names. velodex
+has none of it. The naive proxy would download each thing, store it, and then serve it, adding a full download of
+buffering delay on top of each upstream fetch. Most of this page explains how velodex avoids that: the client receives
+bytes at upstream wire speed on a cold cache, and from local disk and memory afterwards. The two ecosystems differ in
+wire protocol, not in this shape.
+
+velodex is a single async Rust process built on [axum](https://github.com/tokio-rs/axum) and [tokio](https://tokio.rs/).
+A request travels through three layers:
+
+1. **Routing.** The HTTP layer validates configured index routes at startup, then resolves each request path by longest
+   prefix. Routes are configuration data rather than compiled-in paths, and each request avoids decoding or normalizing
+   route text. A route also carries its index's **ecosystem** (pypi and oci today), which selects the format driver (the
+   wire protocol and artifact rules for that packaging format) at the routing boundary. Dispatch is a static match, not
+   a runtime lookup, so an ecosystem a request does not use costs it nothing.
+1. **Resolution.** The cache layer answers from local state when it can and talks to upstreams when it must. A virtual
+   index walks its layers in order and merges their answers.
+1. **Storage.** Two stores under one data directory hold all state.
+
+{% mermaid() %}
+flowchart LR
+client["pip / uv / twine / docker"] --> router["route resolver"]
+subgraph velodex["velodex, one process"]
+router --> cache["cache layer"]
+cache --> hot["hot page cache (RAM)"]
+cache --> meta["metadata store (redb)"]
+cache --> blobs["artifact store (disk)"]
+end
+cache -.->|"only on miss"| upstream["pypi.org, Docker Hub, or any upstream"]
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+class cache accent
+{% end %}
+
+## How a page is served
+
+A simple-index page (say `/root/pypi/simple/pandas/`) can be answered three ways, tried in order of cost:
+
+1. **Hot:** the transformed page sits in an in-memory cache, keyed by a mutation epoch so any upload or override
+   invalidates it instantly. Serving is a lookup and a memcpy.
+1. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. velodex
+   transforms it for the requesting route in one in-memory pass (file URLs rewritten, hosted uploads injected, yanked
+   and hidden files applied) and remembers the result in the hot cache.
+1. **Cold:** nothing usable is stored. velodex opens the upstream request and streams.
+
+{% mermaid() %}
+flowchart LR
+req["GET simple/pandas/"] --> hot{"hot cache?"}
+hot -->|hit| serve["serve from RAM"]
+hot -->|miss| warm{"raw page fresh?"}
+warm -->|yes| transform["transform in memory"] --> serve
+warm -->|no| cold["stream from upstream"] --> serve2["serve while caching"]
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+class serve good
+class cold,serve2 accent
+{% end %}
+
+The stored form is always the **raw upstream document** (HTML upstreams are canonicalized to PEP 691 JSON once, at fetch
+time). Transformation happens per request. That ordering matters for virtual indexes: one cached pypi.org page can serve
+any number of routes that layer it, each with different hosted files shadowing it, without storing a variant per route.
+
+## How bytes reach the client before they reach the disk
+
+The cold path is where proxies lose their users. velodex never buffers a whole response to work on it; both index
+documents (a Simple page, an OCI manifest) and artifacts (a wheel, a blob) stream, with the caching work riding along.
+The PyPI shape, a page then the wheels it names:
+
+{% mermaid() %}
+sequenceDiagram
+participant C as uv
+participant V as velodex
+participant U as upstream
+C->>+V: GET simple/pandas/
+V->>+U: GET (If-None-Match)
+U-->>-V: 200, JSON streams
+V-->>-C: transformed JSON, chunk by chunk
+Note over V: raw page persists before the<br/>final chunk, so file lookups<br/>that follow always resolve
+C->>+V: GET files/{sha256}/pandas…whl
+V->>+U: GET wheel
+U-->>-V: bytes
+V-->>-C: the same bytes, teed to a temp file
+Note over V: after the client has everything:<br/>verify sha256, rename into the store
+{% end %}
+
+The OCI shape, a manifest then the blobs it names:
+
+{% mermaid() %}
+sequenceDiagram
+participant C as docker
+participant V as velodex
+participant U as upstream
+C->>+V: GET /v2/…/manifests/alpine:latest
+V->>+U: GET (bearer handshake)
+U-->>-V: 200, manifest JSON
+V-->>-C: manifest, byte-for-byte
+Note over V: stored under the sha256 of its<br/>exact bytes, so the digest the<br/>client verifies matches
+C->>+V: GET /v2/…/blobs/{sha256}
+V->>+U: GET blob
+U-->>-V: bytes
+V-->>-C: the same bytes, teed to a temp file
+Note over V: after the client has everything:<br/>verify sha256, rename into the store
+{% end %}
+
+For PyPI pages, a chunk-at-a-time transformer rewrites each `files[]` element mid-flight (URL rewriting, hosted-file
+injection, yank and hide overrides), so the client starts parsing while the upstream transfer is still running. An OCI
+manifest is served byte-for-byte instead, since its digest is the address a client checks; only its stored copy carries
+the route. For artifacts (wheels, sdists, and OCI blobs alike), the tee hashes into a temp file that is verified and
+atomically renamed into the store after the client already has its bytes. A digest mismatch still forwards (pip, uv, and
+docker verify hashes themselves) but is never cached, and shows up as `rejected` in the
+[usage counters](@/core/monitor.md).
+
+File URLs put the sha256 in the path because it is the real storage key. The filename is kept for installer behavior,
+browser save names, and operator logs, but velodex treats it as one percent-encoded path segment and rejects decoded
+separators, traversal, and control characters. Archive inspection uses the same rule for the distribution filename and
+passes member paths in a query parameter so member names can contain `/` without becoming route structure. The inspector
+opens cached blobs from disk and returns member text by byte offset, so looking at a large generated file does not
+require loading the whole archive member into server memory or the browser.
+
+Nested ZIP inspection keeps the same constraint. Velodex reads stored ZIP members as seekable slices of the cached blob;
+compressed nested archives stream into bounded temporary files because their inner directory cannot be addressed without
+decompression. Listing and preview endpoints cap nesting depth, entry count, nested archive size, and returned text
+bytes.
+
+Three more decisions keep the cold path at wire speed:
+
+- **Single-flight.** Resolvers fire many requests for the same project concurrently. Concurrent misses for one page or
+  file share one upstream fetch; the rest wait for the first and serve from its result.
+- **Nothing durable blocks the response.** Page records commit to redb without an fsync (losing a cache entry in a crash
+  costs a refetch, nothing more), and artifact verification runs after the client's last byte.
+- **HTTP/1.1 for artifact downloads.** HTTP/2 would multiplex every concurrent wheel over one TCP connection and its
+  single congestion window; one connection per artifact keeps large parallel downloads at full bandwidth.
+
+## When does cached content expire?
+
+Artifacts never do. They are addressed by sha256, so "a new version of the file" is by definition a different file with
+a different address; anything in the store is correct forever.
+
+Pages do. Each cached page carries the freshness lifetime its upstream granted via `Cache-Control` (`s-maxage` over
+`max-age`; pypi.org grants 600 seconds). When the server grants none (the header is absent, `no-cache`, `no-store`, or
+zero), the configured `cache_ttl_secs` fallback of 300 seconds applies.
+
+{% mermaid() %}
+stateDiagram-v2
+state "First fetch" as Initial
+Initial --> Fresh
+Fresh --> Stale: lifetime lapses
+Stale --> Fresh: 304, nothing changed
+Stale --> Fresh: 200, new content
+Stale --> ServedStale: upstream down
+ServedStale --> Fresh: upstream back
+{% end %}
+
+A stale page is not dropped: the next request revalidates it with `If-None-Match`, and the common answer is a `304` with
+no body, which just resets the clock. A background sweep revalidates every stale page once a minute, so an upstream
+change lands within about one freshness window even when nobody requests the page; each detected change is logged and
+counted. When the upstream errors or is unreachable, the stale copy serves, and a pypi.org outage degrades to
+stale-but-working rather than red builds.
+
+## The metadata store
+
+Project pages, file-to-URL mappings, uploads, and the change serial live in [redb](https://www.redb.org/), an embedded,
+crash-safe, copy-on-write B-tree in pure Rust. redb gives one writer and many concurrent readers with snapshot
+isolation, which fits an index server's read-heavy traffic without an external database. Page records use a framed
+encoding (a small JSON header line, then the raw body bytes), so a multi-megabyte page is not re-encoded as JSON numbers
+and header-only scans (the freshness sweep) skip the body.
+
+The cache CLI uses the same store boundaries. Listing and size reporting walk redb tables row by row and summarize
+framed page records without copying page bodies. Project purge deletes one page row, the project-display row, and only
+the file URL or PEP 658 rows whose digests no other cached page or upload references. Velodex checks shared digest
+references before deletion, so a purge for one project does not break another project that shares a file digest.
+
+## The artifact store
+
+Artifacts live in a content-addressed store keyed by sha256, fanned out two hex levels deep (`sha256/ab/cd/<digest>`).
+Writes go to a temp file, fsync, then an atomic rename, so a crash cannot leave a partial blob visible; the path is the
+digest, so anything present is by construction correct. One wheel uploaded to two indexes, or cached from two upstreams,
+occupies disk once.
+
+Cache validation streams each blob through sha256 and compares the result to the digest in the path. Orphaned-blob purge
+first builds a set of digest references from metadata rows, then walks the blob tree one file at a time. It reads blob
+contents only when `cache fsck` asks for hash validation.
+
+Uploads use the same staged path as downloads: the multipart `content` field streams into a temp blob while sha256 and
+blake2b-256 are computed. Validation reads the archive back from that staged file, so a large wheel is not buffered in
+the HTTP handler. Wheel validation scans the ZIP directory, buffers capped `METADATA`, `WHEEL`, and `RECORD` files, and
+streams members through the RECORD hash checks instead of loading wheel payloads into memory.
+
+Sdist validation uses the same pattern. velodex streams the `.tar.gz` entries, rejects unsafe paths, unsafe links, and
+special files, and buffers only capped `PKG-INFO` content. Metadata 2.4+ `License-File` entries are checked against the
+member names seen during the scan; the archive is not unpacked.
+
+## Why metadata-before-artifact matters here
+
+Both ecosystems let a client learn what it needs from a small document before pulling large ones, and velodex leans on
+that. PyPI has PEP 658; OCI has the manifest.
+
+For PyPI: resolvers spend most of their network time learning dependencies. The
+[PEP 658/714](https://peps.python.org/pep-0658/) `.metadata` sibling lets pip and uv fetch a few kilobytes of core
+metadata instead of a multi-megabyte artifact per candidate. velodex uses an advertised upstream sibling first, verifies
+it against the digest from the index page, and caches it like any blob. When the upstream page lacks that sibling,
+velodex reads a wheel's ZIP central directory with HTTP byte ranges, fetches only the `METADATA` member, and records the
+generated sibling for later page responses. If an index does not satisfy range requests, velodex remembers that for the
+process and streams the artifact into the blob store before extracting metadata from the cached file. Sdist backfill
+uses the same cached-file path and buffers only capped `PKG-INFO` content. For hosted uploads, velodex writes the
+sibling from verified wheel `METADATA` or sdist `PKG-INFO`. The per-index `velodex_index_metadata_total` metric counts
+these; the end-to-end tests assert on it to prove real clients take this path. Few third-party indexes serve PEP 658
+yet, so fronting one with velodex can make resolution faster than the upstream itself once metadata is cached.
+
+For OCI the analogue is built into the protocol: a client fetches the manifest (a small JSON document) before pulling
+any config or layer blob, and often issues a `HEAD` to check a tag's digest without a body at all. velodex caches the
+manifest like any other document, so once an image is warm a `docker pull` of an unchanged tag resolves from local disk
+before a single layer moves.
+
+## Usage metrics
+
+Handlers record events (page served, file downloaded, upload accepted, refresh outcome) with one non-blocking channel
+send; a dedicated thread aggregates them into an index → project → file tree. The request path never takes the
+aggregation lock; recording costs one channel send. The tree serves [`/+stats`](@/core/monitor.md), the dashboard's
+usage drill-down, and the per-index Prometheus counters.
+
+## Distribution
+
+velodex ships one static binary through two channels. GitHub releases carry per-platform archives and installer scripts
+(built by [dist](https://axodotdev.github.io/cargo-dist/)); these copies carry the `self-update` feature and an install
+receipt, so `velodex self update` can replace them in place. PyPI carries the same binary wrapped in a
+`bindings = "bin"` wheel: Python-shop operators get velodex through the tooling they already run (`uv tool install`, a
+`requirements.txt` line, an internal mirror) without a second artifact channel, and since no Python ABI is involved, one
+wheel per platform serves every interpreter. Wheel installs have no self-update: pip owns that file, and the updater
+refuses copies without a receipt rather than fight it.
+
+## The web UI
+
+The UI is a [Leptos](https://leptos.dev/) application compiled twice from one codebase: natively into the server, which
+renders every page to HTML, and to WebAssembly (by [cargo-leptos](https://github.com/leptos-rs/cargo-leptos)), which
+hydrates the page in the browser for reactivity: live counters, filter-as-you-type, and the upload-management buttons.
+Pages work without the bundle, so the server never depends on a wasm toolchain.
+
+This split also decides how the UI is tested. The server half is ordinary Rust: velodex's test suite renders each page
+through the real router and asserts on the HTML. The browser half cannot feed the coverage gate, because
+`wasm32-unknown-unknown` has no coverage instrumentation and event handlers only execute in a browser; a Playwright
+suite drives the hydrated UI instead (search, package pages, the archive browser, and token-authenticated yank and
+delete), which is the stronger check for interactive behavior anyway.
+
+The UI reads velodex's own public API: `/+status` for the dashboard, `/+status?details=admin` for the admin status page,
+`/+stats` for usage, the PEP 691 simple endpoints for package data, and the `inspect` endpoints for archive contents.
+The admin status document summarizes metadata keys for observed project counts, uploaded file counts, and capped recent
+uploads; it does not fetch upstreams or read cached artifact bytes. Anything the UI shows, a script can fetch the same
+way.
+
+## Tradeoffs
+
+- **One process, local state.** No replication, no failover. A cache instance per site or cluster is the intended shape;
+  each warms independently.
+- **The first request for anything pays upstream latency.** Streaming removes the buffering penalty, not the network. A
+  cold cache behaves like pypi.org plus one hop until it has seen your working set once.
+- **redb has one writer.** Fine for an index server (reads dominate by orders of magnitude), wrong for a write-heavy
+  workload.
+- **Trust follows the hash.** velodex verifies artifacts against the digests the index page advertises. If an upstream
+  lies about its own hashes, velodex caches the lie; it defends the transport, not the source.
+
+## In practice
+
+- See what it does under load: [performance and methodology](@/core/performance.md)
+- Compose cached, hosted, and virtual indexes: [the index model](@/core/indexes.md)
+- Run it: [getting started](@/core/getting-started.md), [configuration](@/core/configuration.md)
+- Watch it: [monitoring](@/core/monitor.md)
