@@ -757,6 +757,43 @@ async fn test_policy_rejects_direct_download() {
     assert_eq!(denial["rule"], "wheel-python-block-list");
 }
 
+/// A size limit reads a cached artifact's size from the stored blob. An unknown size is a denial, so
+/// serving the bytes proves the stat ran: the zero-config path skips it, and only an active policy
+/// reaches for it.
+#[tokio::test]
+async fn test_policy_sizes_a_cached_download_from_the_stored_blob() {
+    let overlay_policy = policy(|neutral, _pypi| {
+        neutral.max_file_size_bytes = Some(1024);
+    });
+    let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
+    let wheel = b"wheelcontent";
+    let digest = h.state.blobs.write(wheel).unwrap();
+    let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "wheelcontent");
+}
+
+/// The same stat drives a denial: the limit is below the stored blob's real length.
+#[tokio::test]
+async fn test_policy_denies_a_cached_download_over_the_size_limit() {
+    let overlay_policy = policy(|neutral, _pypi| {
+        neutral.max_file_size_bytes = Some(4);
+    });
+    let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
+    let digest = h.state.blobs.write(b"wheelcontent").unwrap();
+    let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+
+    let (status, _, body) = get(&h.state, &uri, Some("application/json")).await;
+
+    let denial: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(denial["rule"], "max-file-size");
+    assert_eq!(denial["reason"], "file size 12 exceeds limit 4");
+}
+
 #[tokio::test]
 async fn test_policy_rejects_project_detail() {
     let overlay_policy = policy(|neutral, _pypi| {
