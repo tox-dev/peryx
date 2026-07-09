@@ -1,9 +1,81 @@
 use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use super::error::{MetaError, MetaScanError};
-use super::{MetaStore, OVERRIDE, PROJECTS, UPLOAD};
+use super::journal::append_in_txn;
+use super::{METADATA, MetaStore, OVERRIDE, PROJECTS, UPLOAD, metadata_value};
+
+/// The PEP 658 metadata sibling recorded alongside a published file.
+pub struct MetadataSibling<'a> {
+    /// The artifact's own sha256, which keys the row.
+    pub artifact_sha256: &'a str,
+    /// Where the sibling came from; `uploaded` for a file published here.
+    pub url: &'a str,
+    /// The sibling's sha256, so a later fetch can verify it.
+    pub metadata_sha256: &'a str,
+    /// The index that owns it.
+    pub source: &'a str,
+}
+
+/// Everything one published file writes to the store.
+pub struct PublishedFile<'a> {
+    /// The hosted index the file lands on.
+    pub index: &'a str,
+    /// The project's normalized name, which keys its rows.
+    pub normalized: &'a str,
+    /// The project's display name, as the uploader spelled it.
+    pub display: &'a str,
+    /// The distribution filename.
+    pub filename: &'a str,
+    /// The serialized file record served on the project's page.
+    pub record: &'a [u8],
+    /// The release the file belongs to, recorded in the journal entry.
+    pub version: &'a str,
+    /// The file's metadata sibling, when it has one.
+    pub metadata: Option<MetadataSibling<'a>>,
+}
 
 impl MetaStore {
+    /// Publish a file: its metadata sibling, its record, its project, and its journal entry, together.
+    ///
+    /// One transaction, because these four rows are one fact. Committed separately, a crash between
+    /// the upload row and the journal entry leaves peryx serving a file forever that no replica will
+    /// ever receive: nothing reconciles the journal against the file tables at startup, and `fsck`
+    /// does not audit it. Being one transaction it is also one fsync rather than four.
+    ///
+    /// Returns the journal serial the publication was recorded under.
+    ///
+    /// # Errors
+    /// Returns a store error if the write, encode, or commit fails.
+    pub fn publish_file(&self, file: &PublishedFile) -> Result<u64, MetaError> {
+        let txn = self.db.begin_write()?;
+        let serial = {
+            if let Some(sibling) = &file.metadata {
+                let value = metadata_value(sibling.url, sibling.metadata_sha256, sibling.source);
+                let mut table = txn.open_table(METADATA)?;
+                table.insert(sibling.artifact_sha256, value.as_str())?;
+            }
+            {
+                let mut table = txn.open_table(UPLOAD)?;
+                let key = format!("{}/{}/{}", file.index, file.normalized, file.filename);
+                table.insert(key.as_str(), file.record)?;
+            }
+            {
+                let mut table = txn.open_table(PROJECTS)?;
+                let key = format!("{}/{}", file.index, file.normalized);
+                table.insert(key.as_str(), file.display)?;
+            }
+            append_in_txn(
+                &txn,
+                "add-file",
+                file.normalized,
+                Some(file.version),
+                Some(file.filename),
+            )?
+        };
+        txn.commit()?;
+        Ok(serial)
+    }
+
     /// Store an uploaded file's serialized record on a private index, keyed by
     /// `{index}/{normalized}/{filename}` so each file is an independent entry (no read-modify-write
     /// race between concurrent uploads).
@@ -21,30 +93,40 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Store promoted upload records and the observed project display name in one transaction.
+    /// Promote a release onto `index`: its file records, its project, and its journal entry, together.
+    ///
+    /// One transaction, for the same reason [`MetaStore::publish_file`] is: a promotion the journal
+    /// never records is invisible to every replica, and nothing reconciles that later.
+    ///
+    /// Returns the journal serial the promotion was recorded under.
     ///
     /// # Errors
-    /// Returns a store error if the write or commit fails.
-    pub fn put_uploads(
+    /// Returns a store error if the write, encode, or commit fails.
+    pub fn promote_files(
         &self,
         index: &str,
         normalized: &str,
         display: &str,
         records: &[(String, Vec<u8>)],
-    ) -> Result<(), MetaError> {
+    ) -> Result<u64, MetaError> {
         let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(UPLOAD)?;
-            for (filename, record) in records {
-                let key = format!("{index}/{normalized}/{filename}");
-                table.insert(key.as_str(), record.as_slice())?;
+        let serial = {
+            {
+                let mut table = txn.open_table(UPLOAD)?;
+                for (filename, record) in records {
+                    let key = format!("{index}/{normalized}/{filename}");
+                    table.insert(key.as_str(), record.as_slice())?;
+                }
             }
-            let mut table = txn.open_table(PROJECTS)?;
-            let key = format!("{index}/{normalized}");
-            table.insert(key.as_str(), display)?;
-        }
+            {
+                let mut table = txn.open_table(PROJECTS)?;
+                let key = format!("{index}/{normalized}");
+                table.insert(key.as_str(), display)?;
+            }
+            append_in_txn(&txn, "promote", normalized, None, None)?
+        };
         txn.commit()?;
-        Ok(())
+        Ok(serial)
     }
 
     /// Fetch one uploaded file record.

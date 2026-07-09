@@ -12,7 +12,7 @@ use crate::{
     parse_version_specifiers, to_json,
 };
 use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
-use peryx_storage::meta::{MetaError, MetaStore};
+use peryx_storage::meta::{MetaError, MetaStore, MetadataSibling, PublishedFile};
 use serde::{Deserialize, Serialize};
 
 use peryx_http::path_safety::{local_file_url, validate_filename};
@@ -259,12 +259,23 @@ pub fn store_prepared(
     blobs.commit_staged(content)?;
     let mut record = record;
     let metadata_digest = blobs.write(&metadata)?;
-    meta.put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), name)?;
     let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
     record.file.set_metadata(CoreMetadata::Hashes(hashes));
-    meta.put_upload(name, &normalized, &filename, &to_json(&record).into_bytes())?;
-    meta.put_project(name, &normalized, &display_name)?;
-    meta.append_journal("add-file", name, Some(record.version.as_str()), Some(filename.as_str()))?;
+    let body = to_json(&record).into_bytes();
+    meta.publish_file(&PublishedFile {
+        index: name,
+        normalized: &normalized,
+        display: &display_name,
+        filename: &filename,
+        record: &body,
+        version: record.version.as_str(),
+        metadata: Some(MetadataSibling {
+            artifact_sha256: content_digest.as_str(),
+            url: "uploaded",
+            metadata_sha256: metadata_digest.as_str(),
+            source: name,
+        }),
+    })?;
     Ok(true)
 }
 

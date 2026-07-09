@@ -24,6 +24,7 @@ pub use journal::JournalEntry;
 pub use projects::ProjectCachePurgeCounts;
 pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, ProjectStatusRecord};
 pub use summary::{IndexSummary, RecentUpload};
+pub use uploads::{MetadataSibling, PublishedFile};
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");

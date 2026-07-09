@@ -28,14 +28,14 @@ fn test_put_and_list_upload_entries() {
 }
 
 #[test]
-fn test_put_uploads_stores_records_and_project_display() {
+fn test_promote_files_stores_records_project_display_and_journals_once() {
     let (_dir, store) = store();
     let records = vec![
         ("flask-1.0.whl".to_owned(), b"one".to_vec()),
         ("flask-1.0.tar.gz".to_owned(), b"sdist".to_vec()),
     ];
 
-    store.put_uploads("prod", "flask", "Flask", &records).unwrap();
+    assert_eq!(store.promote_files("prod", "flask", "Flask", &records).unwrap(), 1);
 
     assert_eq!(store.get_project("prod", "flask").unwrap().as_deref(), Some("Flask"));
     assert_eq!(
@@ -44,6 +44,13 @@ fn test_put_uploads_stores_records_and_project_display() {
             ("flask-1.0.tar.gz".to_owned(), b"sdist".to_vec()),
             ("flask-1.0.whl".to_owned(), b"one".to_vec())
         ]
+    );
+    // The promotion and the entry that lets a replica see it commit together.
+    let journal = store.journal_since(0).unwrap();
+    assert_eq!(journal.len(), 1);
+    assert_eq!(
+        (journal[0].action.as_str(), journal[0].project.as_str()),
+        ("promote", "flask")
     );
 }
 

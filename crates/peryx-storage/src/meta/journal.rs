@@ -1,4 +1,4 @@
-use redb::{ReadableDatabase as _, ReadableTable as _};
+use redb::{ReadableDatabase as _, ReadableTable as _, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use super::error::MetaError;
@@ -59,21 +59,7 @@ impl MetaStore {
         filename: Option<&str>,
     ) -> Result<u64, MetaError> {
         let txn = self.db.begin_write()?;
-        let serial = {
-            let mut serials = txn.open_table(SERIAL)?;
-            let next = serials.get(SERIAL_KEY)?.map_or(0, |value| value.value()) + 1;
-            serials.insert(SERIAL_KEY, next)?;
-            let entry = JournalEntry {
-                serial: next,
-                action: action.to_owned(),
-                project: project.to_owned(),
-                version: version.map(str::to_owned),
-                filename: filename.map(str::to_owned),
-            };
-            let mut journal = txn.open_table(JOURNAL)?;
-            journal.insert(next, serde_json::to_vec(&entry)?.as_slice())?;
-            next
-        };
+        let serial = append_in_txn(&txn, action, project, version, filename)?;
         txn.commit()?;
         Ok(serial)
     }
@@ -92,4 +78,31 @@ impl MetaStore {
         }
         Ok(entries)
     }
+}
+
+/// Allocate the next serial and record `action` against it, inside a caller's transaction.
+///
+/// Kept separate from [`MetaStore::append_journal`] so a mutation and the journal entry that records
+/// it commit together. A file whose upload row is durable but whose journal entry is not would be
+/// served here forever and never reach a replica, and nothing reconciles that afterwards.
+pub(super) fn append_in_txn(
+    txn: &WriteTransaction,
+    action: &str,
+    project: &str,
+    version: Option<&str>,
+    filename: Option<&str>,
+) -> Result<u64, MetaError> {
+    let mut serials = txn.open_table(SERIAL)?;
+    let next = serials.get(SERIAL_KEY)?.map_or(0, |value| value.value()) + 1;
+    serials.insert(SERIAL_KEY, next)?;
+    let entry = JournalEntry {
+        serial: next,
+        action: action.to_owned(),
+        project: project.to_owned(),
+        version: version.map(str::to_owned),
+        filename: filename.map(str::to_owned),
+    };
+    let mut journal = txn.open_table(JOURNAL)?;
+    journal.insert(next, serde_json::to_vec(&entry)?.as_slice())?;
+    Ok(next)
 }

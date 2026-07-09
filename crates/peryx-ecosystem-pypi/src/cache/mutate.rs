@@ -76,8 +76,7 @@ pub fn promote_release(
         .meta
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
-    state.meta.put_uploads(target, normalized, &display, &records)?;
-    state.meta.append_journal("promote", normalized, None, None)?;
+    state.meta.promote_files(target, normalized, &display, &records)?;
     state.bump_epoch();
     Ok(records.len())
 }
