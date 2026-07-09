@@ -7,8 +7,8 @@ logos = [ "logos/gitlab.svg", "logos/googlecloud.svg"]
 +++
 
 The hosted registries integrate with their platform's identity and billing. That is the draw and the tax: metered
-storage and egress, tokens that expire mid-pipeline, and Python protocol support that lags years behind pypi.org.
-peryx either replaces them for Python or sits in front of them as a caching, protocol-upgrading cached index.
+storage and egress, tokens that expire mid-pipeline, and Python protocol support that lags years behind pypi.org. peryx
+either replaces them for Python or sits in front of them as a caching, protocol-upgrading cached index.
 
 What their own documentation states today:
 
@@ -41,15 +41,15 @@ protocols; the registry keeps ownership.
 ## The renames
 
 | Registry        | Its simple URL                                                                      | As a peryx cached index                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| --------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | CodeArtifact    | `https://{domain}-{acct}.d.codeartifact.{region}.amazonaws.com/pypi/{repo}/simple/` | supported once static credentials exist; today's 12-hour tokens need refresh support peryx does not have yet |
-| GitLab          | `https://host/api/v4/projects/{id}/packages/pypi/simple`                            | `username` + `password` (a personal or deploy token)                                                           |
-| Azure Artifacts | `https://pkgs.dev.azure.com/{org}/{proj}/_packaging/{feed}/pypi/simple/`            | `username` (any) + `password` (a PAT)                                                                          |
-| Google AR       | `https://{loc}-python.pkg.dev/{proj}/{repo}/simple/`                                | `username = "_json_key_base64"` + `password` (the encoded service-account key)                                 |
+| GitLab          | `https://host/api/v4/projects/{id}/packages/pypi/simple`                            | `username` + `password` (a personal or deploy token)                                                         |
+| Azure Artifacts | `https://pkgs.dev.azure.com/{org}/{proj}/_packaging/{feed}/pypi/simple/`            | `username` (any) + `password` (a PAT)                                                                        |
+| Google AR       | `https://{loc}-python.pkg.dev/{proj}/{repo}/simple/`                                | `username = "_json_key_base64"` + `password` (the encoded service-account key)                               |
 
 ## Pitfalls
 
-- CodeArtifact's short-lived tokens make it the one upstream peryx cannot front unattended today; a refresh-command
-  hook is on the roadmap.
+- CodeArtifact's short-lived tokens make it the one upstream peryx cannot front unattended today; a refresh-command hook
+  is on the roadmap.
 - Cloud IAM does not translate: peryx reads are open to its network, uploads are token-gated per index.
 - Egress from the registry to peryx is still billed by the provider; the cache means you pay it once per artifact.

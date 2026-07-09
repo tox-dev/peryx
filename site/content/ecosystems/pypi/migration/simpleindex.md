@@ -20,9 +20,9 @@ hosted-first shadowing is the default for every name you publish.
 
 ## The renames
 
-| simpleindex                               | peryx                                              |
+| simpleindex                               | peryx                                                |
 | ----------------------------------------- | ---------------------------------------------------- |
-| `simpleindex ./configuration.toml`        | `peryx serve --config peryx.toml`                |
+| `simpleindex ./configuration.toml`        | `peryx serve --config peryx.toml`                    |
 | route `source = "http"` (302 to an index) | a cached layer (fetched, verified, cached)           |
 | route `source = "path"` (local directory) | a hosted index, populated by `twine upload`          |
 | per-project route patterns                | virtual resolution: hosted layers first, cached last |

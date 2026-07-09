@@ -24,8 +24,8 @@ and the project advertises that it is looking for new maintainers.
 
 - **Per-action authentication.** pypiserver's `-a download,list,update` gates reads, listings, and uploads independently
   against an htpasswd file. peryx authenticates uploads only; reads are open to the network the port lives on.
-- **A hand-editable package directory.** You can drop files into pypiserver's directory and it lists them. peryx has
-  no drop-in directory; uploads are the only write path.
+- **A hand-editable package directory.** You can drop files into pypiserver's directory and it lists them. peryx has no
+  drop-in directory; uploads are the only write path.
 
 ### Missing: what peryx adds
 
@@ -53,9 +53,9 @@ because it caches nothing.
 Your package directory does not drop in: re-upload it once with twine, and peryx derives hashes and metadata
 server-side. Map the flags across:
 
-| pypiserver                                           | peryx                                                    |
+| pypiserver                                           | peryx                                                      |
 | ---------------------------------------------------- | ---------------------------------------------------------- |
-| `pypi-server run -p 8080 ~/packages`                 | `peryx serve`                                            |
+| `pypi-server run -p 8080 ~/packages`                 | `peryx serve`                                              |
 | `http://host:8080/simple/`                           | `http://host:4433/{route}/simple/`                         |
 | `-P htpasswd.txt -a update`                          | `upload_token` on the hosted index                         |
 | `--fallback-url https://pypi.org/simple/` (redirect) | a cached layer under the virtual index (served and cached) |

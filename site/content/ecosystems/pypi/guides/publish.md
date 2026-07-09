@@ -24,8 +24,8 @@ layers = ["hosted", "pypi"]
 upload = "hosted"
 ```
 
-Then publish to the virtual index's route. peryx accepts any username; the token is the password, matching the
-pypi.org `__token__` convention:
+Then publish to the virtual index's route. peryx accepts any username; the token is the password, matching the pypi.org
+`__token__` convention:
 
 ```shell
 twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
@@ -33,9 +33,9 @@ twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <
 uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
 ```
 
-peryx accepts wheels and modern `.tar.gz` source distributions. It rejects `.egg`, `.zip`, and ambiguous legacy
-archives on upload; those files can still be mirrored if an upstream index lists them. During upload, peryx checks the
-declared sha256 and blake2b-256 digests while streaming the artifact into a staged blob. A lone md5 digest is rejected.
+peryx accepts wheels and modern `.tar.gz` source distributions. It rejects `.egg`, `.zip`, and ambiguous legacy archives
+on upload; those files can still be mirrored if an upstream index lists them. During upload, peryx checks the declared
+sha256 and blake2b-256 digests while streaming the artifact into a staged blob. A lone md5 digest is rejected.
 
 Before publishing the staged blob, peryx validates the project name, PEP 440 version, safe filename shape, `filetype`,
 archive readability, and metadata identity. Wheel uploads must contain one normalized `{name}-{version}.dist-info/`
@@ -75,9 +75,9 @@ password = <secret>
 
 `twine upload -r peryx dist/*` then works without flags.
 
-`GET /root/pypi/+api` returns the same `.pypirc` shape when the request reaches Peryx with the public `Host` header.
-The discovery document keeps the password as `<upload-token>`; replace it with the hosted index token before publishing.
-For offline setup, print the same snippet from the config file:
+`GET /root/pypi/+api` returns the same `.pypirc` shape when the request reaches Peryx with the public `Host` header. The
+discovery document keeps the password as `<upload-token>`; replace it with the hosted index token before publishing. For
+offline setup, print the same snippet from the config file:
 
 ```shell
 peryx config-snippet --base-url http://127.0.0.1:4433 --index root/pypi .pypirc

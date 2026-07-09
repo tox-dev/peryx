@@ -123,8 +123,8 @@ A push to `reg` lands in the hosted layer, so clients read and write one route.
 
 ## Delete an image
 
-A hosted index with `volatile = true` (the default) accepts deletes. `crane delete` removes a manifest by digest;
-peryx answers `202` and later pulls of that digest return `404`:
+A hosted index with `volatile = true` (the default) accepts deletes. `crane delete` removes a manifest by digest; peryx
+answers `202` and later pulls of that digest return `404`:
 
 ```shell
 crane delete --insecure 127.0.0.1:4433/images/my-app@sha256:<digest>

@@ -144,6 +144,5 @@ dashboard of the configured indexes and their request counters; the same numbers
 
 - [Run a container registry](@/ecosystems/oci/guides/container-registry.md): add a virtual index so your hosted images
   shadow upstream, and delete images you no longer want.
-- [OCI performance](@/ecosystems/oci/performance.md): how peryx compares to distribution and zot as a Docker Hub
-  cache.
+- [OCI performance](@/ecosystems/oci/performance.md): how peryx compares to distribution and zot as a Docker Hub cache.
 - [Configuration reference](@/core/configuration.md): every TOML key, including TLS so clients need no insecure flag.

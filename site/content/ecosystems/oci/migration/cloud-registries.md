@@ -37,10 +37,9 @@ and put peryx in front as a cached index: clients get caching and single-flight 
 
 ## The renames
 
-Point a peryx `cached` OCI index at the registry's `/v2/` endpoint; its repository path becomes the index route
-prefix.
+Point a peryx `cached` OCI index at the registry's `/v2/` endpoint; its repository path becomes the index route prefix.
 
-| Registry  | Its `/v2/` host                         | As a peryx cached index                                                      |
+| Registry  | Its `/v2/` host                         | As a peryx cached index                                                        |
 | --------- | --------------------------------------- | ------------------------------------------------------------------------------ |
 | ECR       | `{acct}.dkr.ecr.{region}.amazonaws.com` | `username = "AWS"` + `password` (the 12-hour `get-login-password` token)       |
 | GHCR      | `ghcr.io`                               | `username` + `password` (a personal access token with `read:packages`)         |

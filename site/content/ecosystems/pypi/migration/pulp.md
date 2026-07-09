@@ -17,14 +17,13 @@ containers, and other content types with the same model.
 ## Why peryx
 
 If Python packages are the only content type you need, the platform is the overhead: four services and a database
-against one binary and a data directory. peryx also serves at a plain index root instead of
-`/pypi/{base_path}/simple/`, and its pull-through composes: virtual indexes can layer cached indexes of cached indexes,
-where Pulp documents that
+against one binary and a data directory. peryx also serves at a plain index root instead of `/pypi/{base_path}/simple/`,
+and its pull-through composes: virtual indexes can layer cached indexes of cached indexes, where Pulp documents that
 [chaining pull-through indices does not work](https://pulpproject.org/pulp_python/docs/user/guides/host/).
 
 ## The renames
 
-| Pulp (pulp_python)                   | peryx                                                                      |
+| Pulp (pulp_python)                   | peryx                                                                        |
 | ------------------------------------ | ---------------------------------------------------------------------------- |
 | repository + remote + distribution   | one `[[index]]` entry                                                        |
 | `policy = "on_demand"` remote        | the cached default                                                           |

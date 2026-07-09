@@ -4,8 +4,8 @@ description = "Serve Python packages through peryx: cache pypi.org, install with
 weight = 1
 +++
 
-In this tutorial you point peryx at pypi.org, install packages through it with pip and uv, publish a package of your
-own to a private hosted store, then yank and delete it. It takes about ten minutes.
+In this tutorial you point peryx at pypi.org, install packages through it with pip and uv, publish a package of your own
+to a private hosted store, then yank and delete it. It takes about ten minutes.
 
 A Python package ships as one or both of two **artifacts**: a **wheel** (`.whl`), a pre-built archive an installer
 unpacks as-is, and an **sdist** (`.tar.gz`), the source a wheel is built from. Installers find them through the Simple

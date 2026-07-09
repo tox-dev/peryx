@@ -21,8 +21,8 @@ For the Python slice of the job, protocol support is the concrete difference. Ne
 691 JSON API in [3.93.0 (June 2026)](https://help.sonatype.com/en/sonatype-nexus-repository-3-93-0-release-notes.html);
 Artifactory added opt-in PEP 691 in 7.146.7 (April 2026) and still has
 [no PEP 658 support](https://jfrog.atlassian.net/si/jira.issueviews:issue-html/RTFACT-26891/RTFACT-26891.html), with the
-request open since 2022; every resolve against it downloads wheels to read their metadata. peryx serves both by
-default, backfills them for upstreams that lack them, and idles in tens of megabytes of RAM.
+request open since 2022; every resolve against it downloads wheels to read their metadata. peryx serves both by default,
+backfills them for upstreams that lack them, and idles in tens of megabytes of RAM.
 
 If the rest of the organization stays on Artifactory or Nexus, peryx can also sit in front: configure the existing
 repository as a [cached index with credentials](@/ecosystems/pypi/guides/private-mirror.md), and clients get the JSON
@@ -30,7 +30,7 @@ and metadata fast paths the upstream does not offer.
 
 ## The renames
 
-| Artifactory / Nexus                          | peryx                         |
+| Artifactory / Nexus                          | peryx                           |
 | -------------------------------------------- | ------------------------------- |
 | remote repository                            | cached index                    |
 | local / hosted repository                    | hosted index                    |

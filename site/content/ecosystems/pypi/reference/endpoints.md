@@ -74,8 +74,8 @@ Upload and direct file-download denials use the same JSON shape:
 ## Discovery
 
 `GET /+api` returns a compact JSON document for the server and every configured index. `GET /{route}/+api` returns the
-same shape for one index. Peryx builds these documents from request headers and runtime index configuration; it does
-not scan package pages or storage.
+same shape for one index. Peryx builds these documents from request headers and runtime index configuration; it does not
+scan package pages or storage.
 
 When the request carries an origin (`Host`, or `X-Forwarded-Host` plus `X-Forwarded-Proto` behind a proxy), URL fields
 are absolute and `client_configuration` includes copyable `pip.conf`, `uv.toml`, and `.pypirc` text. The `.pypirc`
@@ -104,8 +104,8 @@ hosted index; the username is ignored. Promotion authenticates against the targe
 
 ## Webhooks
 
-Configured webhooks run after a write commits. Peryx enqueues one delivery per matching `[[index.webhook]]` target,
-then sends the JSON payload from a background task. Duplicate uploads with the same bytes and mutations that affect zero
+Configured webhooks run after a write commits. Peryx enqueues one delivery per matching `[[index.webhook]]` target, then
+sends the JSON payload from a background task. Duplicate uploads with the same bytes and mutations that affect zero
 files do not enqueue webhook deliveries.
 
 Events emitted by the write endpoints are `upload`, `yank`, `unyank`, `delete`, and `restore`. Payloads contain `event`,
@@ -115,13 +115,13 @@ Events emitted by the write endpoints are `upload`, `yank`, `unyank`, `delete`, 
 
 Each request carries these headers:
 
-| Header                | Meaning                               |
-| --------------------- | ------------------------------------- |
+| Header              | Meaning                               |
+| ------------------- | ------------------------------------- |
 | `X-Peryx-Event`     | Event name, such as `upload`          |
 | `X-Peryx-Delivery`  | Delivery ID, stable across retries    |
 | `X-Peryx-Timestamp` | Unix timestamp used for the signature |
 | `X-Peryx-Signature` | `sha256=<hex>` HMAC-SHA256 signature  |
-| `Content-Type`        | `application/json`                    |
+| `Content-Type`      | `application/json`                    |
 
 The signature input is `{timestamp}.{delivery}.{body}`, where `body` is the exact request body bytes. Consumers should
 compare the HMAC with the configured target secret and reject timestamps outside their replay window.
@@ -147,8 +147,8 @@ When `[rate_limit] enabled = true` and a client exceeds a configured route-class
 `upstream_concurrency` and the cap is saturated, requests wait for a free slot instead of failing, and only a wait
 longer than 30 seconds returns the same `429` with `Retry-After`.
 
-Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry
-delay. It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class, plus upstream
+Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry delay.
+It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class, plus upstream
 concurrency denials by cached index. HTTP request counters stay at zero while the request limiter is disabled.
 
 ## Status and usage
@@ -192,6 +192,6 @@ scoped to the role that reports it:
 - Caching indexes only: `peryx_index_refreshes_total`, `peryx_index_pages_changed_total`,
   `peryx_index_stale_served_total`, `peryx_index_upstream_errors_total`.
 - Hosted indexes only: `peryx_index_uploads_total`.
-- Ecosystem families (declared by the ecosystem driver): `peryx_index_metadata_total` is PyPI's PEP 658/714
-  `.metadata` sibling counter; a rising value proves clients resolve via the metadata fast path rather than by
-  downloading artifacts. Sum it across indexes for the instance-wide total.
+- Ecosystem families (declared by the ecosystem driver): `peryx_index_metadata_total` is PyPI's PEP 658/714 `.metadata`
+  sibling counter; a rising value proves clients resolve via the metadata fast path rather than by downloading
+  artifacts. Sum it across indexes for the instance-wide total.

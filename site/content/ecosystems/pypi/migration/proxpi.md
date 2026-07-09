@@ -34,8 +34,8 @@ its file cache defaults to a temporary directory, and it has no uploads and no p
 
 - **Persistence you can rely on.** proxpi's index cache is per-process memory and its file cache defaults to a
   `tempfile.mkdtemp()` that is deleted on shutdown, so without a configured `PROXPI_CACHE_DIR` nothing survives a
-  restart. Under four gunicorn workers the in-memory index cache is duplicated per worker and never shared. peryx is
-  one process with a persistent content-addressed store shared by everything it does.
+  restart. Under four gunicorn workers the in-memory index cache is duplicated per worker and never shared. peryx is one
+  process with a persistent content-addressed store shared by everything it does.
 - **Private packages.** peryx hosts your own uploads [shadowing upstream names](@/core/indexes.md); proxpi is a proxy
   only, with no upload path.
 - **Verified caching.** peryx checks each artifact against the digest its index page advertised before caching it.
@@ -59,7 +59,7 @@ per-worker memory cost:
 The client change is one line: point your index URL at peryx. proxpi caches nothing you need to carry over; peryx
 refills on first use. Map the environment knobs across:
 
-| proxpi                                 | peryx                                                                                                     |
+| proxpi                                 | peryx                                                                                                       |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `http://host:5000/index/`              | `http://host:4433/{route}/simple/`                                                                          |
 | `PROXPI_INDEX_URL`                     | `cached = "https://pypi.org/simple/"` on a cached index                                                     |
@@ -74,5 +74,5 @@ refills on first use. Map the environment knobs across:
 - **Budget disk for your working set.** proxpi evicts past `PROXPI_CACHE_SIZE`; peryx currently keeps everything it
   caches.
 - **No cache-invalidation endpoint.** Freshness follows the upstream's `Cache-Control` rather than a manual purge.
-- **proxpi's TTL is a fixed number; peryx's is the upstream's.** proxpi expires on `PROXPI_INDEX_TTL` regardless of
-  what pypi.org granted; peryx honors `Cache-Control` (`s-maxage`, then `max-age`) and falls back to `cache_ttl_secs`.
+- **proxpi's TTL is a fixed number; peryx's is the upstream's.** proxpi expires on `PROXPI_INDEX_TTL` regardless of what
+  pypi.org granted; peryx honors `Cache-Control` (`s-maxage`, then `max-age`) and falls back to `cache_ttl_secs`.

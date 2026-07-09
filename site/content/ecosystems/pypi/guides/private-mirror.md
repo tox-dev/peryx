@@ -33,8 +33,8 @@ Start peryx with `--config` and install through `http://<host>:<port>/corp/simpl
 
 ## Sync for offline use
 
-`peryx mirror sync` uses the same upstream URL and credentials as serving. Configure the working set next to the
-cached index, then populate and verify the cache while the upstream is reachable:
+`peryx mirror sync` uses the same upstream URL and credentials as serving. Configure the working set next to the cached
+index, then populate and verify the cache while the upstream is reachable:
 
 ```toml
 [[index]]
@@ -68,8 +68,8 @@ return `502` with the upstream URL in the error body.
 - The config file holds these credentials, so restrict it: `chmod 600 peryx.toml`.
 - Each cached index keeps its own credentials. A cached file remembers which cached index it came from, and a later
   cache-miss fetch reuses that index's authentication.
-- Peryx asks upstream for `Accept-Encoding: identity` during artifact downloads. This makes the bytes pip and uv
-  verify match the cached bytes. Same-host redirects keep the cached index's credentials.
+- Peryx asks upstream for `Accept-Encoding: identity` during artifact downloads. This makes the bytes pip and uv verify
+  match the cached bytes. Same-host redirects keep the cached index's credentials.
 - `cache_ttl_secs` (default 1800) controls how long peryx serves a cached project page before revalidating it against
   the upstream with `If-None-Match`.
 - Peryx caches upstream `404` misses for project pages and `.metadata` siblings for 30 seconds.

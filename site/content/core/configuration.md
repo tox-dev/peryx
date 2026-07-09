@@ -9,16 +9,16 @@ environment variables, which override the file. Precedence is `defaults < TOML f
 
 ## Top level
 
-| Setting                   | Flag              | Environment              | TOML key         | Default        |
-| ------------------------- | ----------------- | ------------------------ | ---------------- | -------------- |
-| Bind host                 | `--host`          | `PERYX_HOST`           | `host`           | `127.0.0.1`    |
-| Bind port                 | `--port`          | `PERYX_PORT`           | `port`           | `4433`         |
+| Setting                   | Flag              | Environment            | TOML key         | Default      |
+| ------------------------- | ----------------- | ---------------------- | ---------------- | ------------ |
+| Bind host                 | `--host`          | `PERYX_HOST`           | `host`           | `127.0.0.1`  |
+| Bind port                 | `--port`          | `PERYX_PORT`           | `port`           | `4433`       |
 | Data directory            | `--data-dir`      | `PERYX_DATA_DIR`       | `data_dir`       | `peryx-data` |
-| Offline mode              | `--offline`       | `PERYX_OFFLINE`        | `offline`        | `false`        |
-| Config file               | `--config` / `-c` | (n/a)                    | (n/a)            | (none)         |
-| Cache freshness (seconds) | (file/env only)   | `PERYX_CACHE_TTL_SECS` | `cache_ttl_secs` | `300`          |
-| Indexes                   | (file only)       | (n/a)                    | `[[index]]`      | (see below)    |
-| Rate limits               | (file only)       | (n/a)                    | `[rate_limit]`   | (see below)    |
+| Offline mode              | `--offline`       | `PERYX_OFFLINE`        | `offline`        | `false`      |
+| Config file               | `--config` / `-c` | (n/a)                  | (n/a)            | (none)       |
+| Cache freshness (seconds) | (file/env only)   | `PERYX_CACHE_TTL_SECS` | `cache_ttl_secs` | `300`        |
+| Indexes                   | (file only)       | (n/a)                  | `[[index]]`      | (see below)  |
+| Rate limits               | (file only)       | (n/a)                  | `[rate_limit]`   | (see below)  |
 
 Environment variables sit between the file and flags: a `PERYX_*` value overrides the TOML file, and a flag overrides
 the variable. Only scalar settings are environment-configurable. The `[[index]]` topology and `[rate_limit]` block stay
@@ -57,8 +57,8 @@ deployment serves trusted HTTPS with no manual certificate handling and no clien
 [acme]
 domains = ["registry.example.com"]
 contact = "admin@example.com"
-cache-dir = "/var/lib/peryx/acme" # where issued certificates are cached; default "acme-cache"
-staging = false                     # true uses Let's Encrypt staging while testing
+cache-dir = "/var/lib/peryx/acme"  # where issued certificates are cached; default "acme-cache"
+staging = false                    # true uses Let's Encrypt staging while testing
 ```
 
 | Table    | Key         | Meaning                                                     | Default      |
@@ -90,7 +90,7 @@ the role. peryx rejects unknown keys.
 | `token`                | cached  | Bearer token; takes precedence over username/password                 | (none)             |
 | `upstream_concurrency` | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default  | `0`                |
 | `offline`              | cached  | Serve this cached index from disk only                                | `false`            |
-| `prefetch`             | cached  | Package and artifact selection for `peryx mirror`                   | (see below)        |
+| `prefetch`             | cached  | Package and artifact selection for `peryx mirror`                     | (see below)        |
 | `hosted`               | hosted  | `true` marks this index as a hosted store (implied by `upload_token`) | `false`            |
 | `upload_token`         | hosted  | Basic-auth password uploads must present; unset disables uploads      | (none)             |
 | `volatile`             | hosted  | Allow delete and overwrite                                            | `true`             |
@@ -229,10 +229,10 @@ metadata_only = false
 `mode = "all"` reads the upstream root Simple project list and then visits matching projects. Artifact filters apply
 after a project page is fetched. `mode = "metadata-only"` implies `metadata_only = true`.
 
-The wheel/sdist and wheel-tag keys above are the PyPI selection set and seed `peryx mirror` for a PyPI index. For an
-OCI index, `packages` is the image list `peryx mirror` pulls (image references such as `library/alpine:3.19`), the
-same way it seeds a PyPI index's project list; `--image <ref>` on the command line adds one-off references on top. The
-PyPI wheel/sdist/wheel-tag keys do not apply to an OCI index.
+The wheel/sdist and wheel-tag keys above are the PyPI selection set and seed `peryx mirror` for a PyPI index. For an OCI
+index, `packages` is the image list `peryx mirror` pulls (image references such as `library/alpine:3.19`), the same way
+it seeds a PyPI index's project list; `--image <ref>` on the command line adds one-off references on top. The PyPI
+wheel/sdist/wheel-tag keys do not apply to an OCI index.
 
 ## `[rate_limit]`
 
@@ -303,8 +303,8 @@ events = ["upload", "delete", "restore"]
 | `events`     | Event names to send; omit or leave empty for all supported event names                            | all     |
 
 Use one of `secret` or `secret_env`. Supported event names are `upload`, `yank`, `unyank`, `delete`, `restore`,
-`promote`, `project-status`, and `management`. Peryx emits `upload`, `yank`, `unyank`, `delete`, and `restore` from
-the write endpoints in this release; the other names reserve the contract for management surfaces that use this runtime.
+`promote`, `project-status`, and `management`. Peryx emits `upload`, `yank`, `unyank`, `delete`, and `restore` from the
+write endpoints in this release; the other names reserve the contract for management surfaces that use this runtime.
 
 Peryx stores pending deliveries in the metadata database and sends them outside the request path. A failed delivery
 retries up to five attempts with capped backoff of 5, 15, 45, and 135 seconds. The delivery log stores the payload,
@@ -320,5 +320,4 @@ target name, attempt count, next retry time, response status, and last error. It
 | `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
 
 The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these, as do the
-`PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, and `PERYX_LOG_FILE` variables (below the flags in
-precedence).
+`PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, and `PERYX_LOG_FILE` variables (below the flags in precedence).

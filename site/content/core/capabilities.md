@@ -35,7 +35,7 @@ wired in rather than whether the feature exists.
 | Range / partial artifact reads                              | ✓    | ✓   |
 | Single-flight upstream fetch                                | ✓    | ✓   |
 | Usage metrics (pages, downloads, uploads)                   | ✓    | ✓   |
-| `peryx mirror` sync + offline                             | ✓    | ✓   |
+| `peryx mirror` sync + offline                               | ✓    | ✓   |
 | Policy: name allow/deny + size limits                       | ✓    | ✓   |
 | Signed webhooks                                             | ✓    | ✓   |
 | Search (find packages and images)                           | ✓    | ✓   |

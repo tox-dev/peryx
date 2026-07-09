@@ -4,8 +4,8 @@ description = "Plain-language answers to the cross-cutting terms peryx uses: ind
 weight = 6
 +++
 
-Every term peryx uses, defined as a question with a self-contained answer and a stable anchor, so the docs, the web
-UI, and `--help` can all link to one place. No packaging background is assumed. Start at the top if you are new; jump by
+Every term peryx uses, defined as a question with a self-contained answer and a stable anchor, so the docs, the web UI,
+and `--help` can all link to one place. No packaging background is assumed. Start at the top if you are new; jump by
 anchor if you came here from a link.
 
 ## What is a package index? {#index}

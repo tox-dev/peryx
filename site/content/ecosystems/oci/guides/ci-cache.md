@@ -6,8 +6,8 @@ weight = 1
 
 CI jobs start from clean runners, so every build and test job pulls the same base images again. Docker Hub caps
 anonymous pulls at 100 per six hours per IP, and a busy fleet behind one NAT egress burns through that in minutes. Run
-one peryx where your runners live, point their container clients at it, and the first job warms the cache while the
-rest pull layers from local disk.
+one peryx where your runners live, point their container clients at it, and the first job warms the cache while the rest
+pull layers from local disk.
 
 ## Run peryx next to the runners
 
@@ -34,11 +34,10 @@ Kubernetes or docker-compose this is one container with one volume.
 ## Transport: HTTP on loopback, TLS over the network
 
 `docker` and `podman` trust a loopback registry (`localhost`, `127.0.0.0/8`) over plain HTTP with no configuration, so a
-runner on the same host as peryx works as written. Reaching peryx across the runner network (the usual CI shape)
-means a client demands HTTPS: give peryx a certificate ([serve HTTPS](@/core/serve-https.md), the production path) or
-set the client's insecure-registry option. `crane` and `podman` take a per-command flag; `docker` needs an
-`insecure-registries` entry in its daemon config. The rest of this guide assumes peryx answers at
-`peryx.internal:4433`.
+runner on the same host as peryx works as written. Reaching peryx across the runner network (the usual CI shape) means a
+client demands HTTPS: give peryx a certificate ([serve HTTPS](@/core/serve-https.md), the production path) or set the
+client's insecure-registry option. `crane` and `podman` take a per-command flag; `docker` needs an `insecure-registries`
+entry in its daemon config. The rest of this guide assumes peryx answers at `peryx.internal:4433`.
 
 ## Pull through the proxy
 
@@ -133,7 +132,6 @@ revalidations while layer bytes come from disk. [`/metrics`](@/core/monitor.md) 
   multiply the miss.
 - The anonymous pull-rate limit stops being the wall: after warm-up, peryx serves the fleet and Docker Hub sees
   revalidations, not a hundred cold pulls an hour.
-- How peryx compares to distribution and zot as a Docker Hub cache:
-  [OCI performance](@/ecosystems/oci/performance.md).
+- How peryx compares to distribution and zot as a Docker Hub cache: [OCI performance](@/ecosystems/oci/performance.md).
 - The full role walkthrough, hosted and virtual as well as proxy:
   [run a container registry](@/ecosystems/oci/guides/container-registry.md).

@@ -9,10 +9,10 @@ An **ecosystem** is a packaging format and the wire protocol that carries it: ho
 and filenames are shaped, and what an "artifact" (an installable file) looks like. PyPI (Python packages) is one
 ecosystem; OCI (container images) is another.
 
-peryx treats the ecosystem as a first-class axis. Every index you configure is a **role** (what it does: cached,
-hosted, or virtual; see [the index model](@/core/indexes.md)) paired with an **ecosystem** (which format it speaks). The
-two are independent: the same three roles work for every ecosystem, and a [virtual index](@/core/glossary.md#roles) may
-only combine members of the same ecosystem.
+peryx treats the ecosystem as a first-class axis. Every index you configure is a **role** (what it does: cached, hosted,
+or virtual; see [the index model](@/core/indexes.md)) paired with an **ecosystem** (which format it speaks). The two are
+independent: the same three roles work for every ecosystem, and a [virtual index](@/core/glossary.md#roles) may only
+combine members of the same ecosystem.
 
 Today peryx ships two ecosystems: PyPI and OCI (container images). The architecture is built so more plug in without
 reshaping the core: each new ecosystem is a driver that teaches peryx that format's protocol and artifact rules. The

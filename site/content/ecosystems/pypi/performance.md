@@ -6,8 +6,8 @@ weight = 2
 
 Claims about speed are worthless without the commands behind them, so here are both. The headline: a **cold** install
 through peryx costs about what going straight to pypi.org costs, and a **warm** one is bounded by the installer's own
-CPU, not the network. This page measures that against every PyPI cache you could run instead. For why peryx behaves
-this way, see [performance and methodology](@/core/performance.md).
+CPU, not the network. This page measures that against every PyPI cache you could run instead. For why peryx behaves this
+way, see [performance and methodology](@/core/performance.md).
 
 ## The measurement
 
@@ -21,15 +21,15 @@ env VIRTUAL_ENV=$PWD/fresh-venv UV_CACHE_DIR=$PWD/fresh-cache \
     uv pip install pandas polars
 ```
 
-Setup: peryx release build and the client on the same Apple Silicon laptop, roughly 700 Mbit/s to PyPI's CDN. Each
-cell is the median over several independent rounds, each restarting the server on empty state; "cold" is that empty
-first pass, "warm" reruns against the now-full cache. See [performance and methodology](@/core/performance.md) for how
-the rounds, spread, and network-bound rows are handled.
+Setup: peryx release build and the client on the same Apple Silicon laptop, roughly 700 Mbit/s to PyPI's CDN. Each cell
+is the median over several independent rounds, each restarting the server on empty state; "cold" is that empty first
+pass, "warm" reruns against the now-full cache. See [performance and methodology](@/core/performance.md) for how the
+rounds, spread, and network-bound rows are handled.
 
-| Scenario                    | Wall time   | What dominates                                     |
-| --------------------------- | ----------- | -------------------------------------------------- |
-| uv direct to pypi.org       | 0.94–1.03 s | the network, end to end                            |
-| through peryx, cold cache | 1.13–1.38 s | the network; peryx adds ~0.1–0.3 s               |
+| Scenario                  | Wall time   | What dominates                                     |
+| ------------------------- | ----------- | -------------------------------------------------- |
+| uv direct to pypi.org     | 0.94–1.03 s | the network, end to end                            |
+| through peryx, cold cache | 1.13–1.38 s | the network; peryx adds ~0.1–0.3 s                 |
 | through peryx, warm cache | 0.66–0.71 s | uv itself (0.76 s of CPU unzipping and installing) |
 
 Per-request server timings from the warm runs: simple pages and cached wheels serve in 0 ms; the largest page in the set
@@ -50,7 +50,7 @@ source for those two axes, so the tables that follow are readable in advance rat
 
 | Server                                                 | Stack                                                                                                                                                                | On a miss                                                  | Persisted cache                                                     | Private uploads   |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- | ----------------- |
-| [peryx](@/core/architecture.md)                      | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)), one process                                                     | streams the bytes through, teeing into the store           | content-addressed, on disk ([redb](https://www.redb.org/) + blobs)  | token per index   |
+| [peryx](@/core/architecture.md)                        | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)), one process                                                     | streams the bytes through, teeing into the store           | content-addressed, on disk ([redb](https://www.redb.org/) + blobs)  | token per index   |
 | [devpi](https://devpi.net/docs/)                       | Python/[Pyramid](https://docs.pylonsproject.org/projects/pyramid/) on [waitress](https://docs.pylonsproject.org/projects/waitress/) (~50 threads); primary + replica | pages: fetch, parse, store, render; files: stream and tee  | [SQLite](https://www.sqlite.org/) keyfs plus sha256-addressed files | per-user, per-ACL |
 | [proxpi](https://github.com/EpicWink/proxpi)           | Python/[Flask](https://flask.palletsprojects.com/) under [gunicorn](https://gunicorn.org/) (4 worker processes here)                                                 | download to a disk temp dir in a thread; client waits      | index in RAM (per worker), files on disk                            | none              |
 | [pypiserver](https://github.com/pypiserver/pypiserver) | Python/[Bottle](https://bottlepy.org/docs/dev/), serves a directory of files                                                                                         | `302` redirect to pypi.org, caching nothing                | none for upstream content                                           | htpasswd on a dir |
@@ -74,12 +74,12 @@ class C,S warn
 {% end %}
 
 - **peryx** never buffers a whole response.
-  [Page and artifact bytes stream to the client and into the store at once](@/core/architecture.md); peryx transforms
-  a page chunk by chunk mid-flight, and tees a wheel to a temp file, hashes it, and renames it into the store once the
+  [Page and artifact bytes stream to the client and into the store at once](@/core/architecture.md); peryx transforms a
+  page chunk by chunk mid-flight, and tees a wheel to a temp file, hashes it, and renames it into the store once the
   client already has its bytes. A miss costs upstream wire time plus one hop. That sets the cold-install and
   cold-throughput numbers.
-- **devpi** handles artifacts much as peryx does. `FileStreamer` writes each chunk to a local file and yields it to
-  the client, then commits the sha256-addressed file once the body completes. Simple pages take the slower route: devpi
+- **devpi** handles artifacts much as peryx does. `FileStreamer` writes each chunk to a local file and yields it to the
+  client, then commits the sha256-addressed file once the body completes. Simple pages take the slower route: devpi
   fetches the upstream page, parses it, writes the link list into its SQLite keyfs, and only then renders a response
   from its own store. On PyPI-sized pages that parse-and-store step is real work on every refresh, and it runs under a
   single-writer transaction model.
@@ -153,9 +153,9 @@ where.
 ## The benchmark suite
 
 The tables below come from a [benchmark harness](https://github.com/tox-dev/peryx/tree/main/crates/peryx-bench) the
-repository carries as a Rust crate: it builds peryx, starts every competitor from its published package, times the
-same workload through each with a native HTTP client, samples each server's process tree while its workload runs, and
-writes one TOML report these tables render from. Cells tint from best-in-row green to worst-in-row red; the ratio in
+repository carries as a Rust crate: it builds peryx, starts every competitor from its published package, times the same
+workload through each with a native HTTP client, samples each server's process tree while its workload runs, and writes
+one TOML report these tables render from. Cells tint from best-in-row green to worst-in-row red; the ratio in
 parentheses compares against **direct**, the no-proxy baseline, so each server's cell reads as the overhead (or win) it
 adds over talking to pypi.org yourself.
 
@@ -166,9 +166,9 @@ is a Docker configuration rather than a package, and Artifactory, Nexus, and the
 accounts, so none of them can be measured this way.
 
 The install workload is the top 51 most-downloaded PyPI packages
-([the snapshot](https://github.com/tox-dev/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs),
-torch included for one large wheel), installed with uv into a fresh virtualenv with a fresh client cache. **Cold** is
-the first install against a server with empty state; **warm** reruns it with the server's cache full and only the client
+([the snapshot](https://github.com/tox-dev/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs), torch
+included for one large wheel), installed with uv into a fresh virtualenv with a fresh client cache. **Cold** is the
+first install against a server with empty state; **warm** reruns it with the server's cache full and only the client
 reset.
 
 {{ bench(file="install-uv") }}

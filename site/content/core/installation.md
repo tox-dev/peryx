@@ -6,12 +6,12 @@ weight = 0
 
 Every channel ships the same single static binary; pick by how you manage tools.
 
-| Channel                    | Command                                                                                                        | Updates with              |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| Installer script (Unix)    | `curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh \| sh`            | `peryx self update`     |
-| Installer script (Windows) | `powershell -c "irm https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.ps1 \| iex"` | `peryx self update`     |
+| Channel                    | Command                                                                                                    | Updates with              |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------- |
+| Installer script (Unix)    | `curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh \| sh`            | `peryx self update`       |
+| Installer script (Windows) | `powershell -c "irm https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.ps1 \| iex"` | `peryx self update`       |
 | PyPI wheel                 | `uv tool install peryx` or `pip install peryx`                                                             | `uv tool upgrade` / `pip` |
-| From source                | `cargo build --release` in a checkout                                                                          | `git pull` and rebuild    |
+| From source                | `cargo build --release` in a checkout                                                                      | `git pull` and rebuild    |
 
 ## Platforms
 
@@ -22,6 +22,6 @@ every interpreter.
 
 ## Self-update
 
-`peryx self update` replaces the binary with the newest GitHub release. It works only for copies placed by the
-installer scripts: those write an install receipt the updater reads. A pip- or cargo-installed peryx has no receipt
-and is refused with a pointer back to its own package manager, so two tools never fight over one file.
+`peryx self update` replaces the binary with the newest GitHub release. It works only for copies placed by the installer
+scripts: those write an install receipt the updater reads. A pip- or cargo-installed peryx has no receipt and is refused
+with a pointer back to its own package manager, so two tools never fight over one file.

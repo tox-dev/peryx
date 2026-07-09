@@ -31,8 +31,8 @@ effects compound:
   jobs, two Docker builds, and a laptop all need crosses your uplink once and is stored once, however many projects or
   images reference it.
 - **A concurrent burst costs one fetch.** When several clients miss the same uncached thing at once (a page, a wheel, a
-  layer), peryx's single-flight collapses them into one upstream transfer that every waiter tails, so a ten-job CI
-  fleet reaching for a fresh release does not become ten upstream downloads.
+  layer), peryx's single-flight collapses them into one upstream transfer that every waiter tails, so a ten-job CI fleet
+  reaching for a fresh release does not become ten upstream downloads.
 - **Latency stops stacking.** A resolve-install or pull cycle is a chain of dependent requests; moving them from
   cross-continent round-trips to your LAN shortens every link in the chain. For PyPI,
   [PEP 658](https://peps.python.org/pep-0658/) metadata makes the chain cheaper still: a resolver reads kilobytes of
@@ -51,8 +51,8 @@ stay comparable.
 
 Each cell prints the median with **± its coefficient of variation**, and a cell whose spread is wide enough to rival the
 differences being compared is flagged: a number you cannot trust to a few percent is marked rather than read as fact. A
-cold row that fetches from the real upstream is labelled `net`. Its time is dominated by CDN and network variance
-peryx does not control, so it is shown for context but never used to decide whether a change is a regression.
+cold row that fetches from the real upstream is labelled `net`. Its time is dominated by CDN and network variance peryx
+does not control, so it is shown for context but never used to decide whether a change is a regression.
 
 The request-load latency is measured **open-loop**: each client fires on a fixed schedule instead of waiting for the
 previous response, so a stall is charged the full delay since its intended send time. A closed-loop client would stop
@@ -60,10 +60,10 @@ issuing exactly the requests a stall delays and never see the tail, understating
 [coordinated-omission](https://www.scylladb.com/2021/04/22/on-coordinated-omission/) problem). Latencies land in an
 [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram) so the reported percentile is exact.
 
-The suite runs two ways. The tables here are **peryx against the other tools**
-(`cargo run --release -p peryx-bench`). To check a change against an earlier build, **peryx against itself at a base
-commit** builds both revisions, measures each through this same harness so the method matches on both sides, and prints
-a per-metric verdict aggregated with the geometric mean, gating only the local metrics:
+The suite runs two ways. The tables here are **peryx against the other tools** (`cargo run --release -p peryx-bench`).
+To check a change against an earlier build, **peryx against itself at a base commit** builds both revisions, measures
+each through this same harness so the method matches on both sides, and prints a per-metric verdict aggregated with the
+geometric mean, gating only the local metrics:
 
 ```shell
 cargo run --release -p peryx-bench -- ab <base-commit>
@@ -105,10 +105,10 @@ cargo bench -p peryx-ecosystem-oci --bench operations
 
 The two read paths differ in kind, which the numbers show. A container manifest and blob are content-addressed bytes
 peryx returns as stored, so a pull is a store lookup and a stream: single-digit microseconds for the manifest and tag
-metadata, tens for a small blob whose cost is the file read. peryx caches a PyPI Simple page in the modern JSON
-encoding after its first transform and serves it as a memory copy at the same few microseconds; the HTML and legacy-JSON
-rows are the one-time cost of rendering an alternate representation of that page on request, not a cache miss. Neither
-read path touches the network once the store is warm.
+metadata, tens for a small blob whose cost is the file read. peryx caches a PyPI Simple page in the modern JSON encoding
+after its first transform and serves it as a memory copy at the same few microseconds; the HTML and legacy-JSON rows are
+the one-time cost of rendering an alternate representation of that page on request, not a cache miss. Neither read path
+touches the network once the store is warm.
 
 ## In practice
 

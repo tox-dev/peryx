@@ -17,8 +17,7 @@ over a same-named image on Docker Hub, even if someone registers that name upstr
 ## Write the topology
 
 Container images are content-addressed, so `<name>` in `/v2/<name>/…` carries the index route as a prefix: an index at
-route `dockerhub` proxying Docker Hub serves `library/alpine` as `dockerhub/library/alpine`. Save this as
-`peryx.toml`:
+route `dockerhub` proxying Docker Hub serves `library/alpine` as `dockerhub/library/alpine`. Save this as `peryx.toml`:
 
 ```toml
 # peryx.toml
@@ -68,8 +67,8 @@ The dashboard at [http://127.0.0.1:4433/](http://127.0.0.1:4433/) draws the topo
 
 ## A teammate pushes an image
 
-Pushing needs the hosted store's `upload_token`; peryx accepts any username, and the token is the Basic-auth password.
-A teammate logs in, tags an image for the `root/oci` route, and pushes it. Blobs stream into the content-addressed store
+Pushing needs the hosted store's `upload_token`; peryx accepts any username, and the token is the Basic-auth password. A
+teammate logs in, tags an image for the `root/oci` route, and pushes it. Blobs stream into the content-addressed store
 and are verified on commit:
 
 {% tabs(names="docker, podman, crane") %}
@@ -143,5 +142,4 @@ registers `app` on Docker Hub tomorrow, nothing changes: the hosted layer answer
 
 - [Run a container registry](@/ecosystems/oci/guides/container-registry.md): the three roles in detail, plus deleting
   images you no longer want.
-- [OCI performance](@/ecosystems/oci/performance.md): how peryx compares to distribution and zot as a Docker Hub
-  cache.
+- [OCI performance](@/ecosystems/oci/performance.md): how peryx compares to distribution and zot as a Docker Hub cache.

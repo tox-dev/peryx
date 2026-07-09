@@ -41,7 +41,7 @@ hard-coded and no uploads or private packages. peryx adds the index-aware half: 
 
 ## The renames
 
-| Setup                         | peryx                                        |
+| Setup                         | peryx                                          |
 | ----------------------------- | ---------------------------------------------- |
 | dumb-pypi regenerate + S3     | `twine upload` to a hosted index               |
 | `--find-links /shared/wheels` | `--index-url http://host:4433/{route}/simple/` |

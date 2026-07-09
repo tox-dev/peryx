@@ -16,8 +16,8 @@ was archived on August 27, 2023 ("Pypicloud has transitioned to maintenance mode
 
 ### Overlap
 
-- **Read-through cache-on-miss.** pypicloud's `fallback = cache` is peryx's default cached-index behavior: fetch a
-  miss, store it, serve it.
+- **Read-through cache-on-miss.** pypicloud's `fallback = cache` is peryx's default cached-index behavior: fetch a miss,
+  store it, serve it.
 - **Private hosting** of your own packages, private names taking precedence over public ones.
 - **Token or user-authenticated uploads.**
 
@@ -32,8 +32,8 @@ was archived on August 27, 2023 ("Pypicloud has transitioned to maintenance mode
   [LDAP](https://en.wikipedia.org/wiki/Lightweight_Directory_Access_Protocol) user/group systems. peryx embeds its
   metadata store ([redb](https://www.redb.org/), nothing to provision) and authenticates uploads with one token per
   index.
-- **Horizontal scale-out.** Several stateless pypicloud web servers can share one storage backend and cache DB. peryx
-  is one process per data directory.
+- **Horizontal scale-out.** Several stateless pypicloud web servers can share one storage backend and cache DB. peryx is
+  one process per data directory.
 
 ### Missing: what peryx adds
 
@@ -60,12 +60,12 @@ wheel the instant it lands.
 
 ## How to migrate
 
-Feature-wise this is the most direct migration: peryx's read-through cached index is pypicloud's `fallback = cache`
-made the default. Your cached-index state refills on first use; only hosted uploads need to move. Map the config across:
+Feature-wise this is the most direct migration: peryx's read-through cached index is pypicloud's `fallback = cache` made
+the default. Your cached-index state refills on first use; only hosted uploads need to move. Map the config across:
 
-| pypicloud                                | peryx                                                                   |
+| pypicloud                                | peryx                                                                     |
 | ---------------------------------------- | ------------------------------------------------------------------------- |
-| `ppc-make-config` + `pserve config.ini`  | a [TOML file](@/core/configuration.md) + `peryx serve`                  |
+| `ppc-make-config` + `pserve config.ini`  | a [TOML file](@/core/configuration.md) + `peryx serve`                    |
 | `pypi.fallback = cache`                  | the default cached-index behavior                                         |
 | `pypi.fallback = redirect` / `none`      | not offered; misses serve through the cache or 404 on hosted-only indexes |
 | `storage = s3 / gcs / azure`             | local `data_dir` only                                                     |

@@ -6,8 +6,8 @@ template = "section.html"
 weight = 20
 +++
 
-peryx lives at [github.com/tox-dev/peryx](https://github.com/tox-dev/peryx). Bug reports, feature discussions, and
-pull requests are welcome there.
+peryx lives at [github.com/tox-dev/peryx](https://github.com/tox-dev/peryx). Bug reports, feature discussions, and pull
+requests are welcome there.
 
 ## Setting up
 

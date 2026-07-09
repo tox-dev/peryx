@@ -34,7 +34,7 @@ Every party is a pull-through cache of Docker Hub, so the tables read against **
 
 | Registry                                                     | Stack                                                                                               | On a cold pull                                                                                    | Persisted cache                 |
 | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------- |
-| [peryx](@/core/architecture.md)                            | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)) | streams each blob through, teeing into the store; concurrent misses for one layer share one fetch | content-addressed blobs on disk |
+| [peryx](@/core/architecture.md)                              | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)) | streams each blob through, teeing into the store; concurrent misses for one layer share one fetch | content-addressed blobs on disk |
 | [distribution](https://distribution.github.io/distribution/) | the reference registry (`registry:2`), Go, in `proxy` mode                                          | fetches and stores each blob, then serves it                                                      | filesystem, by repository       |
 | [zot](https://zotregistry.dev/)                              | a Go registry with an on-demand `sync` extension                                                    | syncs the image from upstream when a manifest is first pulled                                     | filesystem, by repository       |
 | direct ([Docker Hub](https://hub.docker.com/))               | no proxy, the client talks to Docker Hub                                                            | the full upstream pull, every time                                                                | none                            |
@@ -67,9 +67,9 @@ three registries stream from disk. Eight-way peryx and zot run level at the fron
 over distribution's 148 and direct's 88. zot reaches it through the kernel's `sendfile` path, copying bytes straight
 from the page cache to the socket; peryx pipelines its own reads so the disk read runs ahead of the socket write,
 matching zot's throughput despite the userspace copy it still pays. Single-stream the order flips: zot's zero-copy leads
-at 181 against peryx's 68, where peryx's per-request setup shows through with only one reader to amortize it. These
-are the noisiest rows in the suite: each transfer is a short `crane` subprocess, so single-stream numbers are dominated
-by process overhead and the spreads run wide; read them as broad strokes, not to the digit.
+at 181 against peryx's 68, where peryx's per-request setup shows through with only one reader to amortize it. These are
+the noisiest rows in the suite: each transfer is a short `crane` subprocess, so single-stream numbers are dominated by
+process overhead and the spreads run wide; read them as broad strokes, not to the digit.
 
 {{ bench(file="image-throughput") }}
 
@@ -81,15 +81,15 @@ behind zot's 593; the wide single-stream spreads hold with it, the honest read o
 ## A pull fleet
 
 The fleet workload is ten clients pulling one image (`node:22-alpine`) at once, each with its own empty cache, exactly
-like ten CI jobs landing on a runner pool together. Against Docker Hub it is where single-flight pays off most:
-peryx's ten clients share the upstream fetches and finish cold in **2.2 s** and warm in **0.6 s**, against 6–9 s cold
-for the others. It is the rate-limit story in one row: those ten pulls cost the upstream a single fetch through peryx,
-where direct sends all ten to Docker Hub and stays at 6.0 s warm because it caches nothing.
+like ten CI jobs landing on a runner pool together. Against Docker Hub it is where single-flight pays off most: peryx's
+ten clients share the upstream fetches and finish cold in **2.2 s** and warm in **0.6 s**, against 6–9 s cold for the
+others. It is the rate-limit story in one row: those ten pulls cost the upstream a single fetch through peryx, where
+direct sends all ten to Docker Hub and stays at 6.0 s warm because it caches nothing.
 
 {{ bench(file="parallel-pull") }}
 
-Behind the mirror the shape survives without the network: peryx finishes cold in 1.5 s and warm in 0.9 s, still ahead
-of the field, and the numbers stop moving with Docker Hub's weather.
+Behind the mirror the shape survives without the network: peryx finishes cold in 1.5 s and warm in 0.9 s, still ahead of
+the field, and the numbers stop moving with Docker Hub's weather.
 
 {{ bench(file="parallel-pull-mirror") }}
 

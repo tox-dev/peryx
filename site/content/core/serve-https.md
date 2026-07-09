@@ -25,9 +25,9 @@ cert = "/etc/peryx/fullchain.pem" # PEM certificate chain
 key = "/etc/peryx/privkey.pem"    # PEM private key
 ```
 
-peryx negotiates HTTP/2 and answers on the same port. A client trusts the connection when the certificate's CA is in
-its trust store: a public CA is trusted everywhere; a private or `mkcert` CA must be installed into the client's trust
-store (`mkcert -install` does this for the local machine, and Docker Desktop then trusts it too).
+peryx negotiates HTTP/2 and answers on the same port. A client trusts the connection when the certificate's CA is in its
+trust store: a public CA is trusted everywhere; a private or `mkcert` CA must be installed into the client's trust store
+(`mkcert -install` does this for the local machine, and Docker Desktop then trusts it too).
 
 ## Automatic certificates with ACME
 
@@ -36,10 +36,10 @@ with no insecure flag and no manual certificate handling:
 
 ```toml
 [acme]
-domains = ["registry.example.com"]  # the names to certify; reachable on port 443
-contact = "admin@example.com"       # where expiry notices go
-cache-dir = "/var/lib/peryx/acme" # persist issued certs across restarts (default "acme-cache")
-staging = false                     # true uses Let's Encrypt staging while testing
+domains = ["registry.example.com"] # the names to certify; reachable on port 443
+contact = "admin@example.com"      # where expiry notices go
+cache-dir = "/var/lib/peryx/acme"  # persist issued certs across restarts (default "acme-cache")
+staging = false                    # true uses Let's Encrypt staging while testing
 ```
 
 For this to work the domain's DNS must point at the server and port 443 must be reachable from the internet, since the

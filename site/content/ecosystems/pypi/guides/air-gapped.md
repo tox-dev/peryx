@@ -10,8 +10,8 @@ for. Two topologies cover the common cases.
 
 ## Controlled egress: peryx as the choke point
 
-The network allows outbound traffic only from approved hosts. Run peryx on one of them; everything else installs
-through it and needs no internet route:
+The network allows outbound traffic only from approved hosts. Run peryx on one of them; everything else installs through
+it and needs no internet route:
 
 ```toml
 # peryx.toml on the egress host
@@ -39,8 +39,8 @@ peryx mirror sync root/pypi --data-dir ./peryx-data --requirements requirements.
 peryx mirror verify root/pypi --data-dir ./peryx-data --requirements requirements.txt
 ```
 
-Everything selected (pages, PEP 658 metadata, wheels, and sdists) now sits under `./peryx-data`. Create a backup,
-verify it, carry the backup directory across the gap, restore it, and serve it in offline mode:
+Everything selected (pages, PEP 658 metadata, wheels, and sdists) now sits under `./peryx-data`. Create a backup, verify
+it, carry the backup directory across the gap, restore it, and serve it in offline mode:
 
 ```shell
 # connected side

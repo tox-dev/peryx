@@ -28,8 +28,8 @@ cached index. For a caching mirror the two overlap almost completely:
   hosted files shadow upstream ones in both.
 - **Yank and delete** of hosted files.
 - **A web UI** for browsing packages (devpi-web; built into peryx at `/`).
-- **Streaming artifact downloads**: devpi's `FileStreamer` and peryx both tee a wheel to disk while the client reads
-  it, and both address stored files by sha256.
+- **Streaming artifact downloads**: devpi's `FileStreamer` and peryx both tee a wheel to disk while the client reads it,
+  and both address stored files by sha256.
 
 ### Extra: what devpi does that peryx does not
 
@@ -37,8 +37,8 @@ Migrating to peryx means giving these up:
 
 - **Users and per-index ACLs.** devpi indexes belong to users, each with its own `acl_upload`. peryx has one upload
   token per hosted index and open reads.
-- **Replication.** devpi's primary/replica protocol streams a changelog to read-only replicas. peryx has no
-  equivalent; you run one instance per site and let each warm itself.
+- **Replication.** devpi's primary/replica protocol streams a changelog to read-only replicas. peryx has no equivalent;
+  you run one instance per site and let each warm itself.
 - **Promotion (`push`).** devpi can promote a release from one index to another server-side. In peryx that is a
   re-upload.
 - **A plugin ecosystem.** devpi-ldap, devpi-lockdown, and friends hook devpi through pluggy. peryx's extension points
@@ -80,9 +80,9 @@ The request workload drives a swarm of resolvers reading full project pages:
 devpi's mirror state does not migrate and does not need to: peryx's cache refills on first use. Only your uploaded
 packages need a `twine upload` pass into the new hosted index. Map the commands and knobs across:
 
-| devpi                                        | peryx                                                                                                     |
+| devpi                                        | peryx                                                                                                       |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `devpi-init` then `devpi-server --port 3141` | `peryx serve` (no init step)                                                                              |
+| `devpi-init` then `devpi-server --port 3141` | `peryx serve` (no init step)                                                                                |
 | `http://host:3141/{user}/{index}/+simple/`   | `http://host:4433/{route}/simple/`                                                                          |
 | `devpi index -c dev bases=root/pypi`         | a virtual index with `layers = ["dev-hosted", "pypi"]` in [TOML](@/core/configuration.md)                   |
 | `devpi login` + `devpi upload`               | `twine upload --repository-url http://host:4433/{route}/ dist/*` (any username, `upload_token` as password) |

@@ -12,8 +12,8 @@ output quiet:
 peryx serve --log-level "info,peryx_upstream=debug"
 ```
 
-peryx logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch
-pip and uv take the [PEP 658](https://peps.python.org/pep-0658/) `.metadata` path, or docker fetch a manifest before its
+peryx logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch pip
+and uv take the [PEP 658](https://peps.python.org/pep-0658/) `.metadata` path, or docker fetch a manifest before its
 blobs, without raising verbosity.
 
 ## Sinks
@@ -39,17 +39,17 @@ peryx validates the combination at startup and refuses, for example, a `file` si
 
 ## Security Events
 
-Index actions emit structured records on the `peryx::security` target. Use JSON output when downstream tooling needs
-to filter by actor, action, target, or result.
+Index actions emit structured records on the `peryx::security` target. Use JSON output when downstream tooling needs to
+filter by actor, action, target, or result.
 
 ```shell
 peryx serve --log-format json --log-sink file --log-file /var/log/peryx/events.log
 ```
 
-Each record sets `security_event=true` and `event=index_action`. Peryx also writes `action`, `result`, `actor`,
-`index`, `local_index`, `project`, `version`, `filename`, `digest`, `count`, `changed`, `reason`, `request_id`, and
-`user_agent`. Missing values use empty strings or zero values. Peryx leaves credentials, bearer tokens, Basic auth
-passwords, and URL secrets out of these records.
+Each record sets `security_event=true` and `event=index_action`. Peryx also writes `action`, `result`, `actor`, `index`,
+`local_index`, `project`, `version`, `filename`, `digest`, `count`, `changed`, `reason`, `request_id`, and `user_agent`.
+Missing values use empty strings or zero values. Peryx leaves credentials, bearer tokens, Basic auth passwords, and URL
+secrets out of these records.
 
 The current action names are `token_use`, `upload`, `yank`, `unyank`, `delete`, `restore`, and `mirror_sync`. Results
 are `success`, `denied`, `failure`, or `noop`.

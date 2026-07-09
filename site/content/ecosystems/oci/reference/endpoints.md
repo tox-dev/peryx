@@ -4,12 +4,12 @@ description = "The OCI distribution-spec /v2/ routes peryx serves: manifests, bl
 weight = 2
 +++
 
-peryx serves the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull-and-push
-API. Every route is `/v2/<name>/…`, and `<name>` carries the index route as a prefix: peryx matches the longest
-configured OCI index route that segment-aligns with `<name>`, and the remainder is the upstream repository. An index at
-route `dockerhub` serves Docker Hub's `library/alpine` as `/v2/dockerhub/library/alpine/…`. A request whose `<name>`
-matches no OCI index route answers `404 NAME_UNKNOWN`. For the concept map, see [OCI](@/ecosystems/oci/_index.md); for
-the wire standards, see [standards](@/ecosystems/oci/reference/standards.md).
+peryx serves the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull-and-push API.
+Every route is `/v2/<name>/…`, and `<name>` carries the index route as a prefix: peryx matches the longest configured
+OCI index route that segment-aligns with `<name>`, and the remainder is the upstream repository. An index at route
+`dockerhub` serves Docker Hub's `library/alpine` as `/v2/dockerhub/library/alpine/…`. A request whose `<name>` matches
+no OCI index route answers `404 NAME_UNKNOWN`. For the concept map, see [OCI](@/ecosystems/oci/_index.md); for the wire
+standards, see [standards](@/ecosystems/oci/reference/standards.md).
 
 `<name>` is one or more lowercase path components (`[a-z0-9._-]`, no bare `.`/`..`, ≤ 255 chars). A manifest
 `<reference>` is a tag (`[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`) or a digest (`algorithm:encoded`). Blob digests must be
@@ -81,19 +81,19 @@ answers `404` here, so it never collides with a pull). It ensures the layer blob
 the single-flight gate on a miss), then reads it as a tar. Without a query it answers `200` with
 `{"members": [{"path", "size", "kind", "previewable"}, …]}`, listing the layer's files. With `?member=<path>&offset=<n>`
 it previews one text member: `text/plain` bytes plus `x-peryx-member-size`, `x-peryx-member-offset`, and (when more
-follows) `x-peryx-next-offset` headers, so a large member pages in bounded chunks. A binary member is `415`, an
-unknown member `404`, an offset past the member `416`, and an unreadable layer `422`. The web UI's file browser reads
-this route to show a layer's contents.
+follows) `x-peryx-next-offset` headers, so a large member pages in bounded chunks. A binary member is `415`, an unknown
+member `404`, an offset past the member `416`, and an unreadable layer `422`. The web UI's file browser reads this route
+to show a layer's contents.
 
 ### Uploads
 
 A push writes blobs through an upload session started with `POST /v2/<name>/blobs/uploads/`. Three shapes:
 
-- **Cross-repo mount**: `POST …/uploads/?mount=<digest>[&from=<repo>]`. When `<digest>` is already stored, peryx
-  answers `201` immediately with `Location: /v2/<name>/blobs/<digest>` and `Docker-Content-Digest`; no bytes transfer.
-  When it is not stored, the mount is ignored and an ordinary session opens.
-- **Monolithic**: `POST …/uploads/?digest=<digest>` with the blob as the body. peryx streams it in, verifies the
-  digest on commit, and answers `201`.
+- **Cross-repo mount**: `POST …/uploads/?mount=<digest>[&from=<repo>]`. When `<digest>` is already stored, peryx answers
+  `201` immediately with `Location: /v2/<name>/blobs/<digest>` and `Docker-Content-Digest`; no bytes transfer. When it
+  is not stored, the mount is ignored and an ordinary session opens.
+- **Monolithic**: `POST …/uploads/?digest=<digest>` with the blob as the body. peryx streams it in, verifies the digest
+  on commit, and answers `201`.
 - **Chunked**: a bare `POST …/uploads/` opens a session and answers `202` with
   `Location: /v2/<name>/blobs/uploads/<session>`, `Docker-Upload-UUID`, and `Range: 0-<n>`. The client appends with
   `PATCH` requests, then finishes with `PUT …/uploads/<session>?digest=<digest>`.

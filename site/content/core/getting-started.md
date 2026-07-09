@@ -47,8 +47,8 @@ cargo build --release
 
 ## Start peryx
 
-peryx needs no configuration to start. Run it and it listens on `127.0.0.1:4433` with a default topology: a cached
-proxy of an upstream, a private hosted store, and a virtual index combining them:
+peryx needs no configuration to start. Run it and it listens on `127.0.0.1:4433` with a default topology: a cached proxy
+of an upstream, a private hosted store, and a virtual index combining them:
 
 ```shell
 peryx serve            # ./target/release/peryx serve when built from source
@@ -59,8 +59,8 @@ Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for the web dashboard: the
 
 ## Continue with your ecosystem
 
-peryx is up. From here the steps depend on what you serve: the client, the wire protocol, and how you publish differ
-by ecosystem. Follow the tutorial for yours:
+peryx is up. From here the steps depend on what you serve: the client, the wire protocol, and how you publish differ by
+ecosystem. Follow the tutorial for yours:
 
 - [**PyPI**: Python packages](@/ecosystems/pypi/tutorials/getting-started.md): cache pypi.org, install with pip and uv,
   publish a private package, then yank and delete it.

@@ -11,8 +11,8 @@ cargo build --release
 uv pip install --index-url http://127.0.0.1:4433/root/pypi/simple/ requests
 ```
 
-**Documentation: [peryx.readthedocs.io](https://peryx.readthedocs.io/)** - tutorials, how-to guides, the
-configuration and endpoint reference, and design explanations. [proposal.md](proposal.md) holds the original design
-document and roadmap; [CONTRIBUTING.md](CONTRIBUTING.md) covers development.
+**Documentation: [peryx.readthedocs.io](https://peryx.readthedocs.io/)** - tutorials, how-to guides, the configuration
+and endpoint reference, and design explanations. [proposal.md](proposal.md) holds the original design document and
+roadmap; [CONTRIBUTING.md](CONTRIBUTING.md) covers development.
 
 MIT licensed.

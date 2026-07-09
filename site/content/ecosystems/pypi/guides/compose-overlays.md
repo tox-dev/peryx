@@ -39,8 +39,8 @@ Clients using `/team/dev/simple/` see the team's uploads in front of the corpora
 `/oss/simple/` see the same uploads in front of pypi.org. One hosted store can back any number of virtual indexes.
 
 Choose routes as stable URL prefixes. Segments may contain ASCII letters, digits, `-`, `.`, `_`, and `~`; separate
-nested routes with `/`. Peryx validates routes once at startup so request routing can stay a fast prefix lookup, and
-it rejects routes that collide with built-in endpoints such as `browse`, `stats`, `+stats`, and `+status`.
+nested routes with `/`. Peryx validates routes once at startup so request routing can stay a fast prefix lookup, and it
+rejects routes that collide with built-in endpoints such as `browse`, `stats`, `+stats`, and `+status`.
 
 ## Chaining
 

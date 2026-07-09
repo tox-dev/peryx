@@ -18,7 +18,7 @@ peryx describes every ecosystem with one neutral vocabulary; for Python it mostl
 since peryx borrows Python's own words (index, project). The neutral name is what the same idea is called across
 ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/glossary.md)).
 
-| Python term                | peryx concept  | What it is                                                            |
+| Python term                | peryx concept    | What it is                                                            |
 | -------------------------- | ---------------- | --------------------------------------------------------------------- |
 | index (`--index-url`)      | index            | the endpoint a client points at; a cached index proxies one upstream  |
 | project / package          | project          | one distribution name, like `requests`                                |
@@ -26,7 +26,7 @@ ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/gloss
 | distribution (wheel/sdist) | artifact         | what you install: a `.whl` or a `.tar.gz` file                        |
 | file                       | file             | one content-addressed distribution file                               |
 | publish / upload           | upload / publish | putting a distribution into a hosted index with twine or `uv publish` |
-| install / download         | download         | fetching a distribution through peryx                               |
+| install / download         | download         | fetching a distribution through peryx                                 |
 | pull-through mirror        | cached (role)    | a read-through proxy of one upstream index                            |
 
 The role names (**cached**, **hosted**, **virtual**) and **shadowing** are peryx's own, the same in every ecosystem.

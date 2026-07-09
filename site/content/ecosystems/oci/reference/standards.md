@@ -27,10 +27,10 @@ R-->>-D: the blob, which docker verifies against its digest
 {% end %}
 
 Every hop names a spec: the routes are the distribution spec, the manifest and blob shapes are the image spec, each
-digest is the content-addressing both rely on. peryx sits on both sides of this conversation, a registry to your
-clients and a client to its upstreams, which is why the table below mixes "served" and "parsed".
+digest is the content-addressing both rely on. peryx sits on both sides of this conversation, a registry to your clients
+and a client to its upstreams, which is why the table below mixes "served" and "parsed".
 
-| Standard                                                                                                 | Role in peryx                                                                                                                       |
+| Standard                                                                                                 | Role in peryx                                                                                                                         |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | [Distribution spec](https://github.com/opencontainers/distribution-spec)                                 | The `/v2/` pull-and-push API: manifests, blobs, chunked uploads, cross-repo mount, tag listing; served to clients and spoken upstream |
 | [Image spec: manifest](https://github.com/opencontainers/image-spec/blob/main/manifest.md)               | The manifest JSON listing a config and layer descriptors; stored byte-for-byte and addressed by the sha256 of those exact bytes       |
@@ -38,7 +38,7 @@ clients and a client to its upstreams, which is why the table below mixes "serve
 | [Image spec: descriptor](https://github.com/opencontainers/image-spec/blob/main/descriptor.md)           | `mediaType`, `digest`, `size`, `artifactType`, and `annotations` on every referenced object                                           |
 | [Referrers API](https://github.com/opencontainers/distribution-spec/blob/main/spec.md#listing-referrers) | `GET /v2/<name>/referrers/<digest>` returning the manifests that declared `<digest>` as their `subject` (`OCI-Subject` on push)       |
 | [Docker manifest v2, schema 2](https://distribution.github.io/distribution/spec/manifest-v2-2/)          | The Docker-media-type manifests and image indexes that Docker Hub and older clients still emit; parsed and re-served                  |
-| [Token authentication](https://distribution.github.io/distribution/spec/auth/token/)                     | The `401` + `WWW-Authenticate: Bearer` handshake peryx runs as a *client* against an upstream that demands it                       |
+| [Token authentication](https://distribution.github.io/distribution/spec/auth/token/)                     | The `401` + `WWW-Authenticate: Bearer` handshake peryx runs as a *client* against an upstream that demands it                         |
 
 ## Digests are the contract
 

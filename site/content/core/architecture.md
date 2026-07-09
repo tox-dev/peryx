@@ -12,8 +12,8 @@ buffering delay on top of each upstream fetch. Most of this page explains how pe
 bytes at upstream wire speed on a cold cache, and from local disk and memory afterwards. The two ecosystems differ in
 wire protocol, not in this shape.
 
-peryx is a single async Rust process built on [axum](https://github.com/tokio-rs/axum) and [tokio](https://tokio.rs/).
-A request travels through three layers:
+peryx is a single async Rust process built on [axum](https://github.com/tokio-rs/axum) and [tokio](https://tokio.rs/). A
+request travels through three layers:
 
 1. **Routing.** The HTTP layer validates configured index routes at startup, then resolves each request path by longest
    prefix. Routes are configuration data rather than compiled-in paths, and each request avoids decoding or normalizing
@@ -44,9 +44,9 @@ A simple-index page (say `/root/pypi/simple/pandas/`) can be answered three ways
 
 1. **Hot:** the transformed page sits in an in-memory cache, keyed by a mutation epoch so any upload or override
    invalidates it instantly. Serving is a lookup and a memcpy.
-1. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. peryx
-   transforms it for the requesting route in one in-memory pass (file URLs rewritten, hosted uploads injected, yanked
-   and hidden files applied) and remembers the result in the hot cache.
+1. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. peryx transforms
+   it for the requesting route in one in-memory pass (file URLs rewritten, hosted uploads injected, yanked and hidden
+   files applied) and remembers the result in the hot cache.
 1. **Cold:** nothing usable is stored. peryx opens the upstream request and streams.
 
 {% mermaid() %}
@@ -204,14 +204,14 @@ that. PyPI has PEP 658; OCI has the manifest.
 For PyPI: resolvers spend most of their network time learning dependencies. The
 [PEP 658/714](https://peps.python.org/pep-0658/) `.metadata` sibling lets pip and uv fetch a few kilobytes of core
 metadata instead of a multi-megabyte artifact per candidate. peryx uses an advertised upstream sibling first, verifies
-it against the digest from the index page, and caches it like any blob. When the upstream page lacks that sibling,
-peryx reads a wheel's ZIP central directory with HTTP byte ranges, fetches only the `METADATA` member, and records the
+it against the digest from the index page, and caches it like any blob. When the upstream page lacks that sibling, peryx
+reads a wheel's ZIP central directory with HTTP byte ranges, fetches only the `METADATA` member, and records the
 generated sibling for later page responses. If an index does not satisfy range requests, peryx remembers that for the
 process and streams the artifact into the blob store before extracting metadata from the cached file. Sdist backfill
-uses the same cached-file path and buffers only capped `PKG-INFO` content. For hosted uploads, peryx writes the
-sibling from verified wheel `METADATA` or sdist `PKG-INFO`. The per-index `peryx_index_metadata_total` metric counts
-these; the end-to-end tests assert on it to prove real clients take this path. Few third-party indexes serve PEP 658
-yet, so fronting one with peryx can make resolution faster than the upstream itself once metadata is cached.
+uses the same cached-file path and buffers only capped `PKG-INFO` content. For hosted uploads, peryx writes the sibling
+from verified wheel `METADATA` or sdist `PKG-INFO`. The per-index `peryx_index_metadata_total` metric counts these; the
+end-to-end tests assert on it to prove real clients take this path. Few third-party indexes serve PEP 658 yet, so
+fronting one with peryx can make resolution faster than the upstream itself once metadata is cached.
 
 For OCI the analogue is built into the protocol: a client fetches the manifest (a small JSON document) before pulling
 any config or layer blob, and often issues a `HEAD` to check a tag's digest without a body at all. peryx caches the
@@ -229,11 +229,11 @@ usage drill-down, and the per-index Prometheus counters.
 
 peryx ships one static binary through two channels. GitHub releases carry per-platform archives and installer scripts
 (built by [dist](https://axodotdev.github.io/cargo-dist/)); these copies carry the `self-update` feature and an install
-receipt, so `peryx self update` can replace them in place. PyPI carries the same binary wrapped in a
-`bindings = "bin"` wheel: Python-shop operators get peryx through the tooling they already run (`uv tool install`, a
-`requirements.txt` line, an internal mirror) without a second artifact channel, and since no Python ABI is involved, one
-wheel per platform serves every interpreter. Wheel installs have no self-update: pip owns that file, and the updater
-refuses copies without a receipt rather than fight it.
+receipt, so `peryx self update` can replace them in place. PyPI carries the same binary wrapped in a `bindings = "bin"`
+wheel: Python-shop operators get peryx through the tooling they already run (`uv tool install`, a `requirements.txt`
+line, an internal mirror) without a second artifact channel, and since no Python ABI is involved, one wheel per platform
+serves every interpreter. Wheel installs have no self-update: pip owns that file, and the updater refuses copies without
+a receipt rather than fight it.
 
 ## The web UI
 

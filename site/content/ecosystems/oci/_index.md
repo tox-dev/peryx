@@ -11,9 +11,9 @@ logos = [ "logos/oci.svg"]
 OCI is the container-image ecosystem: the format of container images and the HTTP protocol clients such as Docker and
 Podman use to pull and push them. An image is a small tree, not one file: a **manifest** (a JSON document listing an
 image's parts), a **config** blob, and one or more **layer** blobs (the filesystem, gzip-compressed). Every part is a
-**blob** addressed by the sha256 of its bytes; a mutable **tag** (`latest`, `1.25`) points at a manifest's digest.
-peryx serves OCI over the [distribution spec](https://github.com/opencontainers/distribution-spec) that registries
-(Docker Hub, GHCR, ECR, Artifactory) implement.
+**blob** addressed by the sha256 of its bytes; a mutable **tag** (`latest`, `1.25`) points at a manifest's digest. peryx
+serves OCI over the [distribution spec](https://github.com/opencontainers/distribution-spec) that registries (Docker
+Hub, GHCR, ECR, Artifactory) implement.
 
 ## How OCI concepts map to peryx
 
@@ -21,7 +21,7 @@ peryx describes every ecosystem with one neutral vocabulary; here is how the con
 with it. In OCI contexts peryx uses the container term; the neutral name is what the same idea is called across
 ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/glossary.md)).
 
-| Container term         | peryx concept  | What it is                                                           |
+| Container term         | peryx concept    | What it is                                                           |
 | ---------------------- | ---------------- | -------------------------------------------------------------------- |
 | registry               | index            | the endpoint a client points at; a cached index proxies one upstream |
 | repository             | project          | one image name, like `library/alpine`                                |
@@ -30,7 +30,7 @@ ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/gloss
 | layer / blob           | file             | one content-addressed piece, stored once and shared across images    |
 | digest (`sha256:…`)    | content address  | the sha256 that names and verifies every stored object               |
 | push                   | upload / publish | putting an image into a hosted index                                 |
-| pull                   | download         | fetching an image through peryx                                    |
+| pull                   | download         | fetching an image through peryx                                      |
 | pull-through cache     | cached (role)    | a read-through proxy of one upstream registry                        |
 
 The role names (**cached**, **hosted**, **virtual**) and **shadowing** are peryx's own, the same in every ecosystem.

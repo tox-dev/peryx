@@ -5,10 +5,10 @@ weight = 3
 +++
 
 An index server earns its keep the day you have a package that must not come from the public internet. This page
-explains peryx's answer. An **index** is the list of packages a client installs from (pip and uv call it an
-index-url); a **registry** is the same idea under a different name. peryx builds every index from two independent
-choices, a **role** (what the index does) and an **ecosystem** (which packaging format it speaks), and one composition
-rule. That rule is a security control before it is a convenience.
+explains peryx's answer. An **index** is the list of packages a client installs from (pip and uv call it an index-url);
+a **registry** is the same idea under a different name. peryx builds every index from two independent choices, a
+**role** (what the index does) and an **ecosystem** (which packaging format it speaks), and one composition rule. That
+rule is a security control before it is a convenience.
 
 ## Two axes: role and ecosystem
 
@@ -17,8 +17,8 @@ independent.
 
 - **role** is what the index does. There are three:
   - **cached** is a read-through cache of one upstream index. "Upstream" means the index peryx fetches from, e.g.
-    pypi.org. On a first request peryx fetches from upstream, stores the result, and serves it; later requests come
-    from local disk. (This was called a "mirror".)
+    pypi.org. On a first request peryx fetches from upstream, stores the result, and serves it; later requests come from
+    local disk. (This was called a "mirror".)
   - **hosted** is an authoritative store you upload to. Nothing upstream; the packages live here because you published
     them. (This was called a "local" index.)
   - **virtual** is an ordered aggregation of other indexes served under one URL. Its member list is called `layers`.

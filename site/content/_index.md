@@ -20,6 +20,6 @@ template = "index.html"
 - **Built to operate** One TOML file, Prometheus metrics, per-file usage drill-down, structured logs, a live web UI, and
   a data directory you can back up with `cp`. Optional TLS or automatic Let's Encrypt certificates. No JVM, no database
   server, idle RAM in the tens of MB.
-- **Proven with real clients** The test suite drives each ecosystem's real clients against a live peryx, holds 100%
-  line and function coverage, passes the OCI distribution-spec conformance suite, and the
+- **Proven with real clients** The test suite drives each ecosystem's real clients against a live peryx, holds 100% line
+  and function coverage, passes the OCI distribution-spec conformance suite, and the
   [performance numbers](@/core/performance.md) come with the exact commands that produced them.

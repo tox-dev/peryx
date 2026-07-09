@@ -27,13 +27,13 @@ peryx <COMMAND>
 
 ## `serve` and `init` options
 
-| Flag                | Meaning                                         | Default        |
-| ------------------- | ----------------------------------------------- | -------------- |
-| `--config <path>`   | TOML configuration file                         | (none)         |
-| `--host <addr>`     | Bind address                                    | `127.0.0.1`    |
-| `--port <port>`     | Bind port                                       | `4433`         |
+| Flag                | Meaning                                         | Default      |
+| ------------------- | ----------------------------------------------- | ------------ |
+| `--config <path>`   | TOML configuration file                         | (none)       |
+| `--host <addr>`     | Bind address                                    | `127.0.0.1`  |
+| `--port <port>`     | Bind port                                       | `4433`       |
 | `--data-dir <path>` | Data directory (redb store and blob cache)      | `peryx-data` |
-| `--offline`         | Serve configured cached indexes from cache only | `false`        |
+| `--offline`         | Serve configured cached indexes from cache only | `false`      |
 
 ### Logging
 
@@ -184,8 +184,8 @@ peryx restore /backups/peryx-2026-07-03 --data-dir /var/lib/peryx --force
 ```
 
 `restore` verifies the backup before writing. It refuses a non-empty target data directory unless `--force` is passed.
-With `--force`, it replaces the target directory, then writes `peryx.redb`, `config.toml`, and the referenced blobs.
-It warns when the config snapshot in the backup names a different `data_dir` than the restore target.
+With `--force`, it replaces the target directory, then writes `peryx.redb`, `config.toml`, and the referenced blobs. It
+warns when the config snapshot in the backup names a different `data_dir` than the restore target.
 
 ## `import-dir`
 
