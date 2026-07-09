@@ -1,6 +1,6 @@
 +++
 title = "Tutorials"
-description = "Learning-oriented lessons for serving and publishing Python packages through velodex."
+description = "Learning-oriented lessons for serving and publishing Python packages through peryx."
 sort_by = "weight"
 template = "section.html"
 weight = 1

@@ -5,7 +5,7 @@ weight = 6
 +++
 
 Both operations take the same Basic-auth token as uploads, and both work on upstream files too: a cached index is
-read-only, so velodex records the change as a reversible override on the virtual index's hosted layer instead of
+read-only, so peryx records the change as a reversible override on the virtual index's hosted layer instead of
 touching the cached index. Removing an uploaded file that shadowed an upstream one makes the upstream version visible
 again.
 
@@ -28,7 +28,7 @@ curl -X DELETE -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/1.2.0
 ## Delete
 
 Deleting uploaded files removes their records outright and requires the hosted layer to be `volatile` (the default); set
-`volatile = false` on release indexes you want immutable, and velodex answers `403` instead. Deleting files that come
+`volatile = false` on release indexes you want immutable, and peryx answers `403` instead. Deleting files that come
 from a cached index hides them from the virtual index reversibly; `restore` undoes it.
 
 ```shell

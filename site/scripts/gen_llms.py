@@ -75,7 +75,7 @@ def collect(content: Path, base_url: str) -> tuple[str, list[tuple[str, list[Ent
 
 def render(base_url: str, root_desc: str, groups: list[tuple[str, list[Entry]]]) -> str:
     lines = [
-        "# velodex",
+        "# peryx",
         "",
         f"> {root_desc}",
         "",

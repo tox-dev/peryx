@@ -1,4 +1,4 @@
-Created accepted issue: https://github.com/tox-dev/velodex/issues/32
+Created accepted issue: https://github.com/gaborbernat/peryx/issues/32
 
 Candidate 6: Quotas, Retention, And Cleanup Policies
 
@@ -36,8 +36,8 @@ MVP scope I would propose:
 1. Add per-repository quota fields: max bytes, max projects, max versions per project, and max file size.
 1. Add cleanup policy rules: older-than, keep latest-N versions, package name prefixes, cached-only, hosted-only, and
    orphan blobs.
-1. Add velodex cleanup plan <repo> to show deletions without changing storage.
-1. Add velodex cleanup apply <repo> to delete only the planned objects after confirmation or --yes.
+1. Add peryx cleanup plan <repo> to show deletions without changing storage.
+1. Add peryx cleanup apply <repo> to delete only the planned objects after confirmation or --yes.
 1. Track enough metadata for age and usage rules: upload time, first cached time, last downloaded time, byte size,
    source repository, hosted versus cached.
 1. Prevent deletes from breaking the currently advertised Simple API response.

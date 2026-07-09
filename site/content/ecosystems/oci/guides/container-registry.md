@@ -4,9 +4,9 @@ description = "Proxy Docker Hub, host your own images, and shadow upstream with 
 weight = 11
 +++
 
-velodex speaks the [OCI distribution protocol](@/ecosystems/oci/_index.md), so `docker`, `podman`, and `crane` pull and
+peryx speaks the [OCI distribution protocol](@/ecosystems/oci/_index.md), so `docker`, `podman`, and `crane` pull and
 push against it the same way they do against Docker Hub or GHCR. This guide sets up the three roles for containers and
-points a client at each. It assumes a built velodex; see [Getting started](@/core/getting-started.md).
+points a client at each. It assumes a built peryx; see [Getting started](@/core/getting-started.md).
 
 ## Configure the indexes
 
@@ -15,7 +15,7 @@ An [index](@/core/glossary.md#index) is one of three [roles](@/core/glossary.md#
 your own images, and a virtual index that stacks them:
 
 ```toml
-# velodex.toml
+# peryx.toml
 host = "127.0.0.1"
 port = 4433
 
@@ -39,14 +39,14 @@ ecosystem = "oci"
 layers = ["images", "dockerhub"]
 ```
 
-Run it with `velodex serve --config velodex.toml`.
+Run it with `peryx serve --config peryx.toml`.
 
 ## A note on transport
 
 `docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http) registry (`localhost`, `127.0.0.0/8`) over
 plain HTTP with no configuration, so on the same host the commands below work as written. Over the network (or from
 Docker Desktop, whose engine runs in a VM where the host's `localhost` is not the engine's), a client demands HTTPS. For
-that, give velodex a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option.
+that, give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option.
 `crane` and `podman` take a per-command flag, shown below; `docker` needs `insecure-registries` in its daemon config.
 
 ## Pull through the proxy
@@ -76,7 +76,7 @@ crane pull --insecure 127.0.0.1:4433/dockerhub/library/alpine:latest alpine.tar
 
 ## Push your own images
 
-Pushing needs the hosted index's `upload_token`; velodex accepts any username, and the token is the Basic-auth password.
+Pushing needs the hosted index's `upload_token`; peryx accepts any username, and the token is the Basic-auth password.
 Blobs stream into the content-addressed store and are verified on commit:
 
 {% tabs(names="docker, podman, crane") %}
@@ -104,11 +104,11 @@ crane push --insecure my-app.tar 127.0.0.1:4433/images/my-app:1.0
 {% end %}
 
 The `upload_token` gates writes only. Reads are open: anyone who can reach the route can pull an image you pushed, so
-restrict who reaches velodex at the network layer (or front it with TLS) when a hosted index holds private images.
+restrict who reaches peryx at the network layer (or front it with TLS) when a hosted index holds private images.
 
 ## Combine both with a virtual index
 
-Pull through the `reg` route and velodex walks the members hosted-first: an image you pushed to `images` wins over a
+Pull through the `reg` route and peryx walks the members hosted-first: an image you pushed to `images` wins over a
 same-named one on Docker Hub, and anything you have not published falls through to the upstream. This is
 [shadowing](@/core/glossary.md#shadowing), the dependency-confusion defense, applied to containers:
 
@@ -124,7 +124,7 @@ A push to `reg` lands in the hosted layer, so clients read and write one route.
 ## Delete an image
 
 A hosted index with `volatile = true` (the default) accepts deletes. `crane delete` removes a manifest by digest;
-velodex answers `202` and later pulls of that digest return `404`:
+peryx answers `202` and later pulls of that digest return `404`:
 
 ```shell
 crane delete --insecure 127.0.0.1:4433/images/my-app@sha256:<digest>

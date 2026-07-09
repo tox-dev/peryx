@@ -4,7 +4,7 @@ description = "Upload distributions with twine or uv publish, authenticated by a
 weight = 5
 +++
 
-velodex accepts the [legacy upload API](https://docs.pypi.org/api/upload/), the wire protocol both
+peryx accepts the [legacy upload API](https://docs.pypi.org/api/upload/), the wire protocol both
 [twine](https://twine.readthedocs.io/) and [`uv publish`](https://docs.astral.sh/uv/guides/package/) speak. Uploads need
 a hosted index with an `upload_token`; the default topology's `hosted` index has none, so uploads are off until you set
 one:
@@ -24,7 +24,7 @@ layers = ["hosted", "pypi"]
 upload = "hosted"
 ```
 
-Then publish to the virtual index's route. velodex accepts any username; the token is the password, matching the
+Then publish to the virtual index's route. peryx accepts any username; the token is the password, matching the
 pypi.org `__token__` convention:
 
 ```shell
@@ -33,18 +33,18 @@ twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <
 uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
 ```
 
-velodex accepts wheels and modern `.tar.gz` source distributions. It rejects `.egg`, `.zip`, and ambiguous legacy
-archives on upload; those files can still be mirrored if an upstream index lists them. During upload, velodex checks the
+peryx accepts wheels and modern `.tar.gz` source distributions. It rejects `.egg`, `.zip`, and ambiguous legacy
+archives on upload; those files can still be mirrored if an upstream index lists them. During upload, peryx checks the
 declared sha256 and blake2b-256 digests while streaming the artifact into a staged blob. A lone md5 digest is rejected.
 
-Before publishing the staged blob, velodex validates the project name, PEP 440 version, safe filename shape, `filetype`,
+Before publishing the staged blob, peryx validates the project name, PEP 440 version, safe filename shape, `filetype`,
 archive readability, and metadata identity. Wheel uploads must contain one normalized `{name}-{version}.dist-info/`
 directory with `METADATA`, `WHEEL`, and `RECORD`. The `WHEEL` tags and optional build field must match the filename, and
 `RECORD` must cover each archive file except `RECORD` and deprecated RECORD signatures with sha256-or-better hashes.
 When `RECORD` includes a size, the size must match the archive member.
 
 Modern sdists must be `.tar.gz` files whose filename follows PEP 625. The archive must contain one top-level
-`{name}-{version}/` directory with `pyproject.toml` and `PKG-INFO`. velodex rejects tar entries with absolute paths,
+`{name}-{version}/` directory with `pyproject.toml` and `PKG-INFO`. peryx rejects tar entries with absolute paths,
 traversal, unsafe links, special files, or device entries. For Metadata 2.4 and newer, every `License-File` header must
 name a file inside the sdist.
 
@@ -54,7 +54,7 @@ metadata model can represent them. `Requires-Python`, when present in the form o
 specifiers.
 
 Accepted files are stored content-addressed and served from `/root/pypi/simple/<project>/` alongside the cached index's
-packages. Your file shadows an upstream file of the same name. For wheels, velodex extracts `METADATA`; for sdists, it
+packages. Your file shadows an upstream file of the same name. For wheels, peryx extracts `METADATA`; for sdists, it
 extracts the verified `PKG-INFO`. Both are served as PEP 658/714 `.metadata` siblings, so resolvers get the fast path
 for your uploads and the web UI can show the full package page.
 
@@ -65,22 +65,22 @@ credentials:
 
 ```ini
 [distutils]
-index-servers = velodex
+index-servers = peryx
 
-[velodex]
+[peryx]
 repository = http://127.0.0.1:4433/root/pypi/
 username = __token__
 password = <secret>
 ```
 
-`twine upload -r velodex dist/*` then works without flags.
+`twine upload -r peryx dist/*` then works without flags.
 
-`GET /root/pypi/+api` returns the same `.pypirc` shape when the request reaches Velodex with the public `Host` header.
+`GET /root/pypi/+api` returns the same `.pypirc` shape when the request reaches Peryx with the public `Host` header.
 The discovery document keeps the password as `<upload-token>`; replace it with the hosted index token before publishing.
 For offline setup, print the same snippet from the config file:
 
 ```shell
-velodex config-snippet --base-url http://127.0.0.1:4433 --index root/pypi .pypirc
+peryx config-snippet --base-url http://127.0.0.1:4433 --index root/pypi .pypirc
 ```
 
 ## Upload failures

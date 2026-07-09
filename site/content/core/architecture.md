@@ -4,15 +4,15 @@ description = "How one process serves a pull: the request path, the streaming ca
 weight = 1
 +++
 
-Start with two concrete cases against a velodex that has never seen the artifact. A CI job runs `uv pip install pandas`:
+Start with two concrete cases against a peryx that has never seen the artifact. A CI job runs `uv pip install pandas`:
 uv asks for the pandas index page, then for a handful of `.metadata` files, then for the wheels it chose. A developer
-runs `docker pull alpine`: docker asks for the `alpine` manifest, then for the config and layer blobs it names. velodex
+runs `docker pull alpine`: docker asks for the `alpine` manifest, then for the config and layer blobs it names. peryx
 has none of it. The naive proxy would download each thing, store it, and then serve it, adding a full download of
-buffering delay on top of each upstream fetch. Most of this page explains how velodex avoids that: the client receives
+buffering delay on top of each upstream fetch. Most of this page explains how peryx avoids that: the client receives
 bytes at upstream wire speed on a cold cache, and from local disk and memory afterwards. The two ecosystems differ in
 wire protocol, not in this shape.
 
-velodex is a single async Rust process built on [axum](https://github.com/tokio-rs/axum) and [tokio](https://tokio.rs/).
+peryx is a single async Rust process built on [axum](https://github.com/tokio-rs/axum) and [tokio](https://tokio.rs/).
 A request travels through three layers:
 
 1. **Routing.** The HTTP layer validates configured index routes at startup, then resolves each request path by longest
@@ -27,7 +27,7 @@ A request travels through three layers:
 {% mermaid() %}
 flowchart LR
 client["pip / uv / twine / docker"] --> router["route resolver"]
-subgraph velodex["velodex, one process"]
+subgraph peryx["peryx, one process"]
 router --> cache["cache layer"]
 cache --> hot["hot page cache (RAM)"]
 cache --> meta["metadata store (redb)"]
@@ -44,10 +44,10 @@ A simple-index page (say `/root/pypi/simple/pandas/`) can be answered three ways
 
 1. **Hot:** the transformed page sits in an in-memory cache, keyed by a mutation epoch so any upload or override
    invalidates it instantly. Serving is a lookup and a memcpy.
-1. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. velodex
+1. **Warm:** the raw upstream page sits in the metadata store and is still within its freshness window. peryx
    transforms it for the requesting route in one in-memory pass (file URLs rewritten, hosted uploads injected, yanked
    and hidden files applied) and remembers the result in the hot cache.
-1. **Cold:** nothing usable is stored. velodex opens the upstream request and streams.
+1. **Cold:** nothing usable is stored. peryx opens the upstream request and streams.
 
 {% mermaid() %}
 flowchart LR
@@ -68,14 +68,14 @@ any number of routes that layer it, each with different hosted files shadowing i
 
 ## How bytes reach the client before they reach the disk
 
-The cold path is where proxies lose their users. velodex never buffers a whole response to work on it; both index
+The cold path is where proxies lose their users. peryx never buffers a whole response to work on it; both index
 documents (a Simple page, an OCI manifest) and artifacts (a wheel, a blob) stream, with the caching work riding along.
 The PyPI shape, a page then the wheels it names:
 
 {% mermaid() %}
 sequenceDiagram
 participant C as uv
-participant V as velodex
+participant V as peryx
 participant U as upstream
 C->>+V: GET simple/pandas/
 V->>+U: GET (If-None-Match)
@@ -94,7 +94,7 @@ The OCI shape, a manifest then the blobs it names:
 {% mermaid() %}
 sequenceDiagram
 participant C as docker
-participant V as velodex
+participant V as peryx
 participant U as upstream
 C->>+V: GET /v2/…/manifests/alpine:latest
 V->>+U: GET (bearer handshake)
@@ -117,13 +117,13 @@ docker verify hashes themselves) but is never cached, and shows up as `rejected`
 [usage counters](@/core/monitor.md).
 
 File URLs put the sha256 in the path because it is the real storage key. The filename is kept for installer behavior,
-browser save names, and operator logs, but velodex treats it as one percent-encoded path segment and rejects decoded
+browser save names, and operator logs, but peryx treats it as one percent-encoded path segment and rejects decoded
 separators, traversal, and control characters. Archive inspection uses the same rule for the distribution filename and
 passes member paths in a query parameter so member names can contain `/` without becoming route structure. The inspector
 opens cached blobs from disk and returns member text by byte offset, so looking at a large generated file does not
 require loading the whole archive member into server memory or the browser.
 
-Nested ZIP inspection keeps the same constraint. Velodex reads stored ZIP members as seekable slices of the cached blob;
+Nested ZIP inspection keeps the same constraint. Peryx reads stored ZIP members as seekable slices of the cached blob;
 compressed nested archives stream into bounded temporary files because their inner directory cannot be addressed without
 decompression. Listing and preview endpoints cap nesting depth, entry count, nested archive size, and returned text
 bytes.
@@ -173,7 +173,7 @@ and header-only scans (the freshness sweep) skip the body.
 
 The cache CLI uses the same store boundaries. Listing and size reporting walk redb tables row by row and summarize
 framed page records without copying page bodies. Project purge deletes one page row, the project-display row, and only
-the file URL or PEP 658 rows whose digests no other cached page or upload references. Velodex checks shared digest
+the file URL or PEP 658 rows whose digests no other cached page or upload references. Peryx checks shared digest
 references before deletion, so a purge for one project does not break another project that shares a file digest.
 
 ## The artifact store
@@ -192,29 +192,29 @@ blake2b-256 are computed. Validation reads the archive back from that staged fil
 the HTTP handler. Wheel validation scans the ZIP directory, buffers capped `METADATA`, `WHEEL`, and `RECORD` files, and
 streams members through the RECORD hash checks instead of loading wheel payloads into memory.
 
-Sdist validation uses the same pattern. velodex streams the `.tar.gz` entries, rejects unsafe paths, unsafe links, and
+Sdist validation uses the same pattern. peryx streams the `.tar.gz` entries, rejects unsafe paths, unsafe links, and
 special files, and buffers only capped `PKG-INFO` content. Metadata 2.4+ `License-File` entries are checked against the
 member names seen during the scan; the archive is not unpacked.
 
 ## Why metadata-before-artifact matters here
 
-Both ecosystems let a client learn what it needs from a small document before pulling large ones, and velodex leans on
+Both ecosystems let a client learn what it needs from a small document before pulling large ones, and peryx leans on
 that. PyPI has PEP 658; OCI has the manifest.
 
 For PyPI: resolvers spend most of their network time learning dependencies. The
 [PEP 658/714](https://peps.python.org/pep-0658/) `.metadata` sibling lets pip and uv fetch a few kilobytes of core
-metadata instead of a multi-megabyte artifact per candidate. velodex uses an advertised upstream sibling first, verifies
+metadata instead of a multi-megabyte artifact per candidate. peryx uses an advertised upstream sibling first, verifies
 it against the digest from the index page, and caches it like any blob. When the upstream page lacks that sibling,
-velodex reads a wheel's ZIP central directory with HTTP byte ranges, fetches only the `METADATA` member, and records the
-generated sibling for later page responses. If an index does not satisfy range requests, velodex remembers that for the
+peryx reads a wheel's ZIP central directory with HTTP byte ranges, fetches only the `METADATA` member, and records the
+generated sibling for later page responses. If an index does not satisfy range requests, peryx remembers that for the
 process and streams the artifact into the blob store before extracting metadata from the cached file. Sdist backfill
-uses the same cached-file path and buffers only capped `PKG-INFO` content. For hosted uploads, velodex writes the
-sibling from verified wheel `METADATA` or sdist `PKG-INFO`. The per-index `velodex_index_metadata_total` metric counts
+uses the same cached-file path and buffers only capped `PKG-INFO` content. For hosted uploads, peryx writes the
+sibling from verified wheel `METADATA` or sdist `PKG-INFO`. The per-index `peryx_index_metadata_total` metric counts
 these; the end-to-end tests assert on it to prove real clients take this path. Few third-party indexes serve PEP 658
-yet, so fronting one with velodex can make resolution faster than the upstream itself once metadata is cached.
+yet, so fronting one with peryx can make resolution faster than the upstream itself once metadata is cached.
 
 For OCI the analogue is built into the protocol: a client fetches the manifest (a small JSON document) before pulling
-any config or layer blob, and often issues a `HEAD` to check a tag's digest without a body at all. velodex caches the
+any config or layer blob, and often issues a `HEAD` to check a tag's digest without a body at all. peryx caches the
 manifest like any other document, so once an image is warm a `docker pull` of an unchanged tag resolves from local disk
 before a single layer moves.
 
@@ -227,10 +227,10 @@ usage drill-down, and the per-index Prometheus counters.
 
 ## Distribution
 
-velodex ships one static binary through two channels. GitHub releases carry per-platform archives and installer scripts
+peryx ships one static binary through two channels. GitHub releases carry per-platform archives and installer scripts
 (built by [dist](https://axodotdev.github.io/cargo-dist/)); these copies carry the `self-update` feature and an install
-receipt, so `velodex self update` can replace them in place. PyPI carries the same binary wrapped in a
-`bindings = "bin"` wheel: Python-shop operators get velodex through the tooling they already run (`uv tool install`, a
+receipt, so `peryx self update` can replace them in place. PyPI carries the same binary wrapped in a
+`bindings = "bin"` wheel: Python-shop operators get peryx through the tooling they already run (`uv tool install`, a
 `requirements.txt` line, an internal mirror) without a second artifact channel, and since no Python ABI is involved, one
 wheel per platform serves every interpreter. Wheel installs have no self-update: pip owns that file, and the updater
 refuses copies without a receipt rather than fight it.
@@ -242,13 +242,13 @@ renders every page to HTML, and to WebAssembly (by [cargo-leptos](https://github
 hydrates the page in the browser for reactivity: live counters, filter-as-you-type, and the upload-management buttons.
 Pages work without the bundle, so the server never depends on a wasm toolchain.
 
-This split also decides how the UI is tested. The server half is ordinary Rust: velodex's test suite renders each page
+This split also decides how the UI is tested. The server half is ordinary Rust: peryx's test suite renders each page
 through the real router and asserts on the HTML. The browser half cannot feed the coverage gate, because
 `wasm32-unknown-unknown` has no coverage instrumentation and event handlers only execute in a browser; a Playwright
 suite drives the hydrated UI instead (search, package pages, the archive browser, and token-authenticated yank and
 delete), which is the stronger check for interactive behavior anyway.
 
-The UI reads velodex's own public API: `/+status` for the dashboard, `/+status?details=admin` for the admin status page,
+The UI reads peryx's own public API: `/+status` for the dashboard, `/+status?details=admin` for the admin status page,
 `/+stats` for usage, the PEP 691 simple endpoints for package data, and the `inspect` endpoints for archive contents.
 The admin status document summarizes metadata keys for observed project counts, uploaded file counts, and capped recent
 uploads; it does not fetch upstreams or read cached artifact bytes. Anything the UI shows, a script can fetch the same
@@ -262,8 +262,8 @@ way.
   cold cache behaves like pypi.org plus one hop until it has seen your working set once.
 - **redb has one writer.** Fine for an index server (reads dominate by orders of magnitude), wrong for a write-heavy
   workload.
-- **Trust follows the hash.** velodex verifies artifacts against the digests the index page advertises. If an upstream
-  lies about its own hashes, velodex caches the lie; it defends the transport, not the source.
+- **Trust follows the hash.** peryx verifies artifacts against the digests the index page advertises. If an upstream
+  lies about its own hashes, peryx caches the lie; it defends the transport, not the source.
 
 ## In practice
 

@@ -4,7 +4,7 @@ description = "Read the usage counters, drill down to files, watch for upstream 
 weight = 8
 +++
 
-velodex counts everything it serves, off the request path. Four surfaces show the same numbers: the dashboard, the admin
+peryx counts everything it serves, off the request path. Four surfaces show the same numbers: the dashboard, the admin
 status page, the `/+stats` JSON endpoint, and Prometheus `/metrics`.
 
 ## Drill down from the dashboard
@@ -30,8 +30,8 @@ index alongside the global request counter. The `ecosystem` label carries each i
 from OCI traffic:
 
 ```text
-velodex_index_downloads_total{index="root/pypi",ecosystem="pypi",role="virtual"}
-velodex_index_downloads_total{index="root/oci",ecosystem="oci",role="virtual"}
+peryx_index_downloads_total{index="root/pypi",ecosystem="pypi",role="virtual"}
+peryx_index_downloads_total{index="root/oci",ecosystem="oci",role="virtual"}
 ```
 
 ## Check operational status
@@ -60,10 +60,10 @@ Use the cache CLI when you need the state on disk, not request counters. It work
 blob store is content-addressed and shared, and `--index` selects a PyPI or an OCI index by route.
 
 ```shell
-velodex cache size --data-dir /var/lib/velodex
-velodex cache list --data-dir /var/lib/velodex --stale
-velodex cache list --data-dir /var/lib/velodex --index dockerhub
-velodex cache fsck --data-dir /var/lib/velodex
+peryx cache size --data-dir /var/lib/peryx
+peryx cache list --data-dir /var/lib/peryx --stale
+peryx cache list --data-dir /var/lib/peryx --index dockerhub
+peryx cache fsck --data-dir /var/lib/peryx
 ```
 
 `cache size` reports cached pages, stale pages, blob files, bytes, and metadata row counts. `cache list --stale` lists
@@ -73,10 +73,10 @@ against their sha256 path.
 Use two steps for project purge. First print the plan, then rerun with `--yes` if the row counts match what you expect.
 
 ```shell
-velodex cache purge project --data-dir /var/lib/velodex --index pypi --project flask
-velodex cache purge project --data-dir /var/lib/velodex --index pypi --project flask --yes
-velodex cache purge orphaned-blobs --data-dir /var/lib/velodex
-velodex cache purge orphaned-blobs --data-dir /var/lib/velodex --yes
+peryx cache purge project --data-dir /var/lib/peryx --index pypi --project flask
+peryx cache purge project --data-dir /var/lib/peryx --index pypi --project flask --yes
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx --yes
 ```
 
 Project purge removes metadata rows and leaves blobs in place. Orphaned-blob purge removes blob files that no metadata

@@ -4,7 +4,7 @@ description = "Search packages, browse indexes, read package pages, inspect stat
 weight = 7
 +++
 
-velodex serves a reactive web interface on its own port: server-rendered pages that hydrate in the browser, in the same
+peryx serves a reactive web interface on its own port: server-rendered pages that hydrate in the browser, in the same
 visual style as this site.
 
 ## Dashboard
@@ -63,7 +63,7 @@ display filename, selected member, and chunk offset as separate query parameters
 and member paths containing spaces, slashes, `#`, or `?`.
 
 Browse pages keep empty results separate from request failures. A failed project lookup, metadata fetch, archive list,
-or member preview shows the HTTP status and response body from velodex, including the index, project, digest, or file
+or member preview shows the HTTP status and response body from peryx, including the index, project, digest, or file
 context the server can provide.
 
 ## Managing uploads

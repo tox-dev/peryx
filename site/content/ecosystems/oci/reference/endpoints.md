@@ -1,11 +1,11 @@
 +++
 title = "HTTP endpoints"
-description = "The OCI distribution-spec /v2/ routes velodex serves: manifests, blobs, uploads, tags, and referrers."
+description = "The OCI distribution-spec /v2/ routes peryx serves: manifests, blobs, uploads, tags, and referrers."
 weight = 2
 +++
 
-velodex serves the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull-and-push
-API. Every route is `/v2/<name>/…`, and `<name>` carries the index route as a prefix: velodex matches the longest
+peryx serves the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull-and-push
+API. Every route is `/v2/<name>/…`, and `<name>` carries the index route as a prefix: peryx matches the longest
 configured OCI index route that segment-aligns with `<name>`, and the remainder is the upstream repository. An index at
 route `dockerhub` serves Docker Hub's `library/alpine` as `/v2/dockerhub/library/alpine/…`. A request whose `<name>`
 matches no OCI index route answers `404 NAME_UNKNOWN`. For the concept map, see [OCI](@/ecosystems/oci/_index.md); for
@@ -40,7 +40,7 @@ an empty body. It takes no authentication and is the first request every contain
 
 ## Manifests
 
-velodex stores a manifest byte-for-byte and addresses it by the sha256 of those exact bytes, so the
+peryx stores a manifest byte-for-byte and addresses it by the sha256 of those exact bytes, so the
 `Docker-Content-Digest` a client verifies always matches what it pushed or pulled.
 
 `GET`/`HEAD /v2/<name>/manifests/<reference>` resolves the reference through the index's members hosted-first (a hosted
@@ -76,12 +76,12 @@ member has is `404 BLOB_UNKNOWN`; a non-`sha256` digest is `400 DIGEST_INVALID`.
 
 ### Layer contents
 
-`GET /v2/<name>/blobs/<digest>/contents` is velodex's own layer browser, not a distribution-spec route (a plain registry
+`GET /v2/<name>/blobs/<digest>/contents` is peryx's own layer browser, not a distribution-spec route (a plain registry
 answers `404` here, so it never collides with a pull). It ensures the layer blob is present (fetching it once through
 the single-flight gate on a miss), then reads it as a tar. Without a query it answers `200` with
 `{"members": [{"path", "size", "kind", "previewable"}, …]}`, listing the layer's files. With `?member=<path>&offset=<n>`
-it previews one text member: `text/plain` bytes plus `x-velodex-member-size`, `x-velodex-member-offset`, and (when more
-follows) `x-velodex-next-offset` headers, so a large member pages in bounded chunks. A binary member is `415`, an
+it previews one text member: `text/plain` bytes plus `x-peryx-member-size`, `x-peryx-member-offset`, and (when more
+follows) `x-peryx-next-offset` headers, so a large member pages in bounded chunks. A binary member is `415`, an
 unknown member `404`, an offset past the member `416`, and an unreadable layer `422`. The web UI's file browser reads
 this route to show a layer's contents.
 
@@ -89,10 +89,10 @@ this route to show a layer's contents.
 
 A push writes blobs through an upload session started with `POST /v2/<name>/blobs/uploads/`. Three shapes:
 
-- **Cross-repo mount**: `POST …/uploads/?mount=<digest>[&from=<repo>]`. When `<digest>` is already stored, velodex
+- **Cross-repo mount**: `POST …/uploads/?mount=<digest>[&from=<repo>]`. When `<digest>` is already stored, peryx
   answers `201` immediately with `Location: /v2/<name>/blobs/<digest>` and `Docker-Content-Digest`; no bytes transfer.
   When it is not stored, the mount is ignored and an ordinary session opens.
-- **Monolithic**: `POST …/uploads/?digest=<digest>` with the blob as the body. velodex streams it in, verifies the
+- **Monolithic**: `POST …/uploads/?digest=<digest>` with the blob as the body. peryx streams it in, verifies the
   digest on commit, and answers `201`.
 - **Chunked**: a bare `POST …/uploads/` opens a session and answers `202` with
   `Location: /v2/<name>/blobs/uploads/<session>`, `Docker-Upload-UUID`, and `Range: 0-<n>`. The client appends with
@@ -123,20 +123,20 @@ index or a virtual index) unions its members' tags under the requested name, sor
 `GET /v2/<name>/referrers/<digest>` returns an OCI image index (`application/vnd.oci.image.index.v1+json`) whose
 `manifests` are the descriptors of every pushed manifest that declared `<digest>` as its `subject`, aggregated across
 the index's members. Each descriptor carries `mediaType`, `digest`, `size`, and (when the source manifest had them)
-`artifactType` and `annotations`. When nothing refers to `<digest>`, `manifests` is empty. velodex does not apply an
+`artifactType` and `annotations`. When nothing refers to `<digest>`, `manifests` is empty. peryx does not apply an
 `artifactType` filter or emit `OCI-Filters-Applied`.
 
 ## Discovery
 
-`GET /+api` is velodex's cross-ecosystem discovery document, not a `/v2/` route. It lists every configured index; an OCI
-index's entry carries its `/v2/` registry URL, the capabilities velodex serves for it, and a `docker pull` snippet (plus
+`GET /+api` is peryx's cross-ecosystem discovery document, not a `/v2/` route. It lists every configured index; an OCI
+index's entry carries its `/v2/` registry URL, the capabilities peryx serves for it, and a `docker pull` snippet (plus
 `docker login`/`docker push` when the index accepts writes) with the host taken from the request. `GET /<route>/+api`
 returns the single index's entry. The web UI reads the same data to show a copyable pull command on each tag.
 
 ## Authentication
 
 Pull requests (the version check and every `GET`/`HEAD` on manifests, blobs, tags, and referrers) take no
-authentication. The `401` + `WWW-Authenticate: Bearer` token handshake belongs to the pull-through path: velodex runs it
+authentication. The `401` + `WWW-Authenticate: Bearer` token handshake belongs to the pull-through path: peryx runs it
 as a *client* against an upstream registry that demands it (fetching a bearer token from the challenge realm and caching
 it per scope), never as a challenge to its own callers.
 
@@ -144,12 +144,12 @@ Writes (`PUT`/`DELETE` on manifests, `DELETE` on blobs, every blob upload verb, 
 `Authorization: Basic` where the password is the target hosted index's `upload_token`; the username is ignored. A
 virtual index routes the write to its configured upload-target member. Responses:
 
-- `401 UNAUTHORIZED` with `WWW-Authenticate: Basic realm="velodex"`: missing or wrong credentials.
+- `401 UNAUTHORIZED` with `WWW-Authenticate: Basic realm="peryx"`: missing or wrong credentials.
 - `403 DENIED`: the resolved index is read-only (proxy, or virtual with no upload target), or its `upload_token` is
   unset (uploads disabled).
 - `404 NAME_UNKNOWN`: `<name>` matches no OCI index route.
 
-`docker login` / `podman login` / `crane auth login` against velodex use Basic auth with the token as the password.
+`docker login` / `podman login` / `crane auth login` against peryx use Basic auth with the token as the password.
 
 ## Error responses
 

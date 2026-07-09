@@ -1,0 +1,27 @@
+[package]
+name = "peryx-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Comparative benchmark harness: peryx against direct PyPI and competing index servers."
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hdrhistogram.workspace = true
+reqwest.workspace = true
+statrs.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+toml.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

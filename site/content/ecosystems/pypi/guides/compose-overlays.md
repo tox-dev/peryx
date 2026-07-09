@@ -5,7 +5,7 @@ weight = 4
 +++
 
 A virtual index lists other indexes as `layers` and serves them under one route. Resolution is first-match per filename:
-velodex walks the layers in order and keeps the first occurrence of each file, so a file in an earlier layer shadows the
+peryx walks the layers in order and keeps the first occurrence of each file, so a file in an earlier layer shadows the
 same filename in a later one. Versions union across layers.
 
 ## A private layer over each cached index
@@ -39,7 +39,7 @@ Clients using `/team/dev/simple/` see the team's uploads in front of the corpora
 `/oss/simple/` see the same uploads in front of pypi.org. One hosted store can back any number of virtual indexes.
 
 Choose routes as stable URL prefixes. Segments may contain ASCII letters, digits, `-`, `.`, `_`, and `~`; separate
-nested routes with `/`. Velodex validates routes once at startup so request routing can stay a fast prefix lookup, and
+nested routes with `/`. Peryx validates routes once at startup so request routing can stay a fast prefix lookup, and
 it rejects routes that collide with built-in endpoints such as `browse`, `stats`, `+stats`, and `+status`.
 
 ## Chaining
@@ -57,7 +57,7 @@ upload = "staging-hosted"
 
 ## Where uploads land
 
-`upload` names the hosted layer that receives POSTs to the virtual index's route. Omit it and velodex picks the virtual
+`upload` names the hosted layer that receives POSTs to the virtual index's route. Omit it and peryx picks the virtual
 index's first hosted layer; a virtual index of only cached indexes rejects uploads with `405`.
 
 ## Failure behavior

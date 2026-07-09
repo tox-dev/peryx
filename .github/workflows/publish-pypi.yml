@@ -1,4 +1,4 @@
-# Build and publish the velodex wheels: one `bindings = "bin"` wheel per platform (the compiled
+# Build and publish the peryx wheels: one `bindings = "bin"` wheel per platform (the compiled
 # binary as a console script, no Python ABI coupling) plus the sdist. Invoked by the dist-generated
 # release pipeline; a manual dispatch builds everything but skips the publish.
 name: publish-pypi

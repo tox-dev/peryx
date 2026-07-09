@@ -18,13 +18,13 @@ over a same-named image on Docker Hub, even if someone registers that name upstr
 
 Container images are content-addressed, so `<name>` in `/v2/<name>/…` carries the index route as a prefix: an index at
 route `dockerhub` proxying Docker Hub serves `library/alpine` as `dockerhub/library/alpine`. Save this as
-`velodex.toml`:
+`peryx.toml`:
 
 ```toml
-# velodex.toml
+# peryx.toml
 host = "127.0.0.1"
 port = 4433
-data_dir = "velodex-data"
+data_dir = "peryx-data"
 
 [[index]] # cached: read-through cache of Docker Hub
 name = "dockerhub"
@@ -51,15 +51,15 @@ Read it bottom-up: `root/oci` is a virtual index that serves the hosted `team` s
 second, and its `upload` key sends pushes to `team`. Clients read and write that one route; the two building-block
 indexes live inside it.
 
-## Start velodex
+## Start peryx
 
 ```shell
-velodex serve --config velodex.toml
+peryx serve --config peryx.toml
 ```
 
-velodex is now listening on `127.0.0.1:4433`. `docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http)
+peryx is now listening on `127.0.0.1:4433`. `docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http)
 registry (`localhost`, `127.0.0.0/8`) over plain HTTP with no configuration, so on the same host the commands below work
-as written. Over the network (or from Docker Desktop, whose engine runs in a VM), a client demands HTTPS: give velodex a
+as written. Over the network (or from Docker Desktop, whose engine runs in a VM), a client demands HTTPS: give peryx a
 certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option. `crane` and `podman`
 take a per-command flag; the snippets show it.
 
@@ -68,7 +68,7 @@ The dashboard at [http://127.0.0.1:4433/](http://127.0.0.1:4433/) draws the topo
 
 ## A teammate pushes an image
 
-Pushing needs the hosted store's `upload_token`; velodex accepts any username, and the token is the Basic-auth password.
+Pushing needs the hosted store's `upload_token`; peryx accepts any username, and the token is the Basic-auth password.
 A teammate logs in, tags an image for the `root/oci` route, and pushes it. Blobs stream into the content-addressed store
 and are verified on commit:
 
@@ -143,5 +143,5 @@ registers `app` on Docker Hub tomorrow, nothing changes: the hosted layer answer
 
 - [Run a container registry](@/ecosystems/oci/guides/container-registry.md): the three roles in detail, plus deleting
   images you no longer want.
-- [OCI performance](@/ecosystems/oci/performance.md): how velodex compares to distribution and zot as a Docker Hub
+- [OCI performance](@/ecosystems/oci/performance.md): how peryx compares to distribution and zot as a Docker Hub
   cache.

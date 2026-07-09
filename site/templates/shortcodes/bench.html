@@ -1,7 +1,7 @@
 {%- set report = load_data(path="data/bench/report.toml") -%}
 {%- set feed = report.tables[file] -%}
-{#- optional `only`: a comma-separated list of party names to keep (e.g. "velodex,devpi"), so a
-    migration page can show just velodex against the one tool it covers instead of the whole field. -#}
+{#- optional `only`: a comma-separated list of party names to keep (e.g. "peryx,devpi"), so a
+    migration page can show just peryx against the one tool it covers instead of the whole field. -#}
 {%- set only_val = only | default(value="") -%}
 {%- set keep = only_val | split(pat=",") -%}
 {%- set filtering = only_val != "" -%}
@@ -9,7 +9,7 @@
   <table class="bench-table">
     <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}<br>
       <span class="bench-note">median over the run's rounds, ±&nbsp;coefficient&nbsp;of&nbsp;variation; a
-        <span class="bench-network-key">net</span> row is upstream-bound and not a velodex measurement</span></caption>
+        <span class="bench-network-key">net</span> row is upstream-bound and not a peryx measurement</span></caption>
     <thead>
       <tr>
         <th></th>
@@ -24,7 +24,7 @@
     <tbody>
       {%- for row in feed.rows %}
       <tr{% if row.network_bound %} class="bench-network-row"{% endif %}>
-        <th>{{ row.name }}{% if row.network_bound %} <span class="bench-network" title="Dominated by upstream/CDN variance velodex does not control; shown for context, not used to gate regressions.">net</span>{% endif %}</th>
+        <th>{{ row.name }}{% if row.network_bound %} <span class="bench-network" title="Dominated by upstream/CDN variance peryx does not control; shown for context, not used to gate regressions.">net</span>{% endif %}</th>
         {%- for cell in row.cells %}
         {%- set party = feed.parties[loop.index0] %}
         {%- set pname = party.name | default(value=party) %}

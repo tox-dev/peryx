@@ -1,0 +1,26 @@
+[package]
+name = "peryx-upstream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Upstream index client for peryx: fetch and revalidate simple pages and files."
+
+[dependencies]
+reqwest.workspace = true
+rustls.workspace = true
+url.workspace = true
+bytes.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

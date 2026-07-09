@@ -1,10 +1,10 @@
 +++
 title = "Capability matrix"
-description = "Which roles and cross-cutting features velodex supports per ecosystem, plus what each ecosystem implements of its own protocol."
+description = "Which roles and cross-cutting features peryx supports per ecosystem, plus what each ecosystem implements of its own protocol."
 weight = 5
 +++
 
-velodex is a `(role × ecosystem)` server: every index is one of three [roles](@/core/glossary.md#roles) paired with an
+peryx is a `(role × ecosystem)` server: every index is one of three [roles](@/core/glossary.md#roles) paired with an
 [ecosystem](@/core/glossary.md#ecosystem). The matrix below covers the roles and cross-cutting features shared by every
 ecosystem; a per-ecosystem list follows for the protocol features each one implements on its own.
 
@@ -35,7 +35,7 @@ wired in rather than whether the feature exists.
 | Range / partial artifact reads                              | ✓    | ✓   |
 | Single-flight upstream fetch                                | ✓    | ✓   |
 | Usage metrics (pages, downloads, uploads)                   | ✓    | ✓   |
-| `velodex mirror` sync + offline                             | ✓    | ✓   |
+| `peryx mirror` sync + offline                             | ✓    | ✓   |
 | Policy: name allow/deny + size limits                       | ✓    | ✓   |
 | Signed webhooks                                             | ✓    | ✓   |
 | Search (find packages and images)                           | ✓    | ✓   |
@@ -65,7 +65,7 @@ the full protocol map, see each ecosystem's [standards](@/core/standards.md) pag
 ### OCI
 
 - Distribution-spec `/v2/` pull and push, with byte-exact manifests addressed by their own digest
-- Bearer-token pull-through: velodex runs the `401` + `WWW-Authenticate: Bearer` handshake against upstreams
+- Bearer-token pull-through: peryx runs the `401` + `WWW-Authenticate: Bearer` handshake against upstreams
 - Referrers API and the `OCI-Subject` header for attestations and signatures
 - Chunked and monolithic blob uploads, plus cross-repo blob mount by digest
 - Tag listing with `n`/`last` pagination and a `Link` next-page header

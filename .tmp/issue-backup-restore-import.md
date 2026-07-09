@@ -24,17 +24,17 @@ References:
 
 ## Proposed scope
 
-- Add `velodex backup create <path>`.
+- Add `peryx backup create <path>`.
 - Include:
   - redb metadata
   - config snapshot
   - referenced blob digests
   - referenced blob bytes
 - Support full backup first.
-- Add `velodex backup verify <path>`.
-- Add `velodex restore <path> --data-dir <dir>`.
+- Add `peryx backup verify <path>`.
+- Add `peryx restore <path> --data-dir <dir>`.
 - Refuse restore into a non-empty data directory unless `--force` is passed.
-- Add `velodex import-dir <repo> <dir>` for local wheels and sdists.
+- Add `peryx import-dir <repo> <dir>` for local wheels and sdists.
 - Run imported artifacts through upload validation from #2, #3, and #4.
 - Report imported, skipped, and rejected files with filenames and reasons.
 - Add tests for:

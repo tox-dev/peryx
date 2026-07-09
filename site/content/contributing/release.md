@@ -28,8 +28,8 @@ exercised alone with `gh workflow run publish-pypi.yml`, which builds every whee
 
 ## One-time setup
 
-- PyPI: create the `velodex` project and add a [trusted publisher](https://docs.pypi.org/trusted-publishers/) for
-  `tox-dev/velodex`, workflow `publish-pypi.yml`, environment `pypi`. No API token is stored anywhere.
+- PyPI: create the `peryx` project and add a [trusted publisher](https://docs.pypi.org/trusted-publishers/) for
+  `gaborbernat/peryx`, workflow `publish-pypi.yml`, environment `pypi`. No API token is stored anywhere.
 - GitHub: create the `pypi` environment (Settings → Environments); restrict it to tag deployments if desired.
 
 ## Local dry runs
@@ -47,13 +47,13 @@ artifact bytes:
 
 ```shell
 curl -u __token__:prod-secret -X PUT \
-  'http://127.0.0.1:4433/prod/velodexpkg/1.0/promote?from=staging'
+  'http://127.0.0.1:4433/prod/peryxpkg/1.0/promote?from=staging'
 ```
 
-The target route supplies the upload token. velodex copies the stored file records, preserves sha256, size, upload time,
+The target route supplies the upload token. peryx copies the stored file records, preserves sha256, size, upload time,
 yank state, and metadata sibling hashes, and reuses the existing content-addressed blobs. A target filename with a
 different sha256 returns `409 Conflict`.
 
 Project status applies on the target route. Active and deprecated projects accept promotion; archived and quarantined
-projects return `403`. Direct hosted routes have no upstream project-status source today, so velodex treats them as
+projects return `403`. Direct hosted routes have no upstream project-status source today, so peryx treats them as
 active.

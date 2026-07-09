@@ -5,7 +5,7 @@ weight = 2
 +++
 
 Every configured index route serves the same surface; `{route}` below is the index's `route`, for example `root/pypi`.
-velodex resolves a request to the index with the longest matching route prefix. The [API explorer](@/core/api.md) breaks
+peryx resolves a request to the index with the longest matching route prefix. The [API explorer](@/core/api.md) breaks
 each endpoint down with copyable example requests and responses.
 
 - `GET /{route}/simple/`: project list, JSON or HTML by `Accept`.
@@ -38,10 +38,10 @@ pages).
 Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+json`
 ([PEP 691](https://peps.python.org/pep-0691/)) when the client asks for JSON, `text/html`
 ([PEP 503](https://peps.python.org/pep-0503/)) otherwise. Responses carry `Vary: Accept` and advertise
-`meta.api-version` 1.4. velodex preserves upstream Simple API fields it understands, including `versions`, `size`,
+`meta.api-version` 1.4. peryx preserves upstream Simple API fields it understands, including `versions`, `size`,
 `upload-time`, `project-status`, `provenance`, `gpg-sig`, and both `core-metadata` and `dist-info-metadata`.
 
-Legacy PyPI JSON API responses use `application/json`. Velodex builds `/pypi/<project>/json`-style responses from the
+Legacy PyPI JSON API responses use `application/json`. Peryx builds `/pypi/<project>/json`-style responses from the
 resolved Simple detail page for the requested index route, so `releases`, `urls`, hashes, yanked markers, upload time,
 size, and `requires_python` match the Simple API. Simple pages do not carry PyPI's upload-form metadata, vulnerability
 database, ownership data, download counts, last serial values, or MD5/BLAKE2 hashes when the upstream did not advertise
@@ -74,12 +74,12 @@ Upload and direct file-download denials use the same JSON shape:
 ## Discovery
 
 `GET /+api` returns a compact JSON document for the server and every configured index. `GET /{route}/+api` returns the
-same shape for one index. Velodex builds these documents from request headers and runtime index configuration; it does
+same shape for one index. Peryx builds these documents from request headers and runtime index configuration; it does
 not scan package pages or storage.
 
 When the request carries an origin (`Host`, or `X-Forwarded-Host` plus `X-Forwarded-Proto` behind a proxy), URL fields
 are absolute and `client_configuration` includes copyable `pip.conf`, `uv.toml`, and `.pypirc` text. The `.pypirc`
-snippet uses `__token__` as the username and `<upload-token>` as the password, and Velodex never returns the configured
+snippet uses `__token__` as the username and `<upload-token>` as the password, and Peryx never returns the configured
 upload token. Read-only indexes omit upload URLs and `.pypirc`.
 
 Capability flags describe the current route only. `uploads`, `yanking`, and `volatile_deletes` follow the configured
@@ -104,7 +104,7 @@ hosted index; the username is ignored. Promotion authenticates against the targe
 
 ## Webhooks
 
-Configured webhooks run after a write commits. Velodex enqueues one delivery per matching `[[index.webhook]]` target,
+Configured webhooks run after a write commits. Peryx enqueues one delivery per matching `[[index.webhook]]` target,
 then sends the JSON payload from a background task. Duplicate uploads with the same bytes and mutations that affect zero
 files do not enqueue webhook deliveries.
 
@@ -117,10 +117,10 @@ Each request carries these headers:
 
 | Header                | Meaning                               |
 | --------------------- | ------------------------------------- |
-| `X-Velodex-Event`     | Event name, such as `upload`          |
-| `X-Velodex-Delivery`  | Delivery ID, stable across retries    |
-| `X-Velodex-Timestamp` | Unix timestamp used for the signature |
-| `X-Velodex-Signature` | `sha256=<hex>` HMAC-SHA256 signature  |
+| `X-Peryx-Event`     | Event name, such as `upload`          |
+| `X-Peryx-Delivery`  | Delivery ID, stable across retries    |
+| `X-Peryx-Timestamp` | Unix timestamp used for the signature |
+| `X-Peryx-Signature` | `sha256=<hex>` HMAC-SHA256 signature  |
 | `Content-Type`        | `application/json`                    |
 
 The signature input is `{timestamp}.{delivery}.{body}`, where `body` is the exact request body bytes. Consumers should
@@ -136,18 +136,18 @@ verified `PKG-INFO` the same way.
 
 Archive inspection is broader than uploads. It can list and preview cached wheels, zips, zipped eggs, `.tar`, `.tar.gz`,
 and `.tgz` archives, including supported archives nested inside them. Other legacy compressed tar formats stay
-download-only until velodex adds decoders for them. Mirrored eggs remain downloadable when upstream lists them with a
+download-only until peryx adds decoders for them. Mirrored eggs remain downloadable when upstream lists them with a
 sha256 hash, but they do not get PEP 658 metadata.
 
 ## Rate limits
 
-When `[rate_limit] enabled = true` and a client exceeds a configured route-class window, velodex returns
+When `[rate_limit] enabled = true` and a client exceeds a configured route-class window, peryx returns
 `429 Too Many Requests` before the handler reads multipart bodies, cache state, or upstreams. The response includes
 `Retry-After` in seconds. A cached index leaves upstream fetches uncapped by default; when you set
 `upstream_concurrency` and the cap is saturated, requests wait for a free slot instead of failing, and only a wait
 longer than 30 seconds returns the same `429` with `Retry-After`.
 
-Velodex writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry
+Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry
 delay. It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class, plus upstream
 concurrency denials by cached index. HTTP request counters stay at zero while the request limiter is disabled.
 
@@ -178,20 +178,20 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 
 `GET /metrics` exposes Prometheus counters:
 
-- `velodex_requests_total`: HTTP requests served. This is the one global counter; everything else below is per index.
-- `velodex_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
-- `velodex_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
-- `velodex_upstream_rate_limit_denied_total{index="<name>"}`: cached index concurrency cap denials.
-- `velodex_upstream_inflight_fetches{index="<name>"}`: current upstream fetches holding a concurrency slot.
+- `peryx_requests_total`: HTTP requests served. This is the one global counter; everything else below is per index.
+- `peryx_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
+- `peryx_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
+- `peryx_upstream_rate_limit_denied_total{index="<name>"}`: cached index concurrency cap denials.
+- `peryx_upstream_inflight_fetches{index="<name>"}`: current upstream fetches holding a concurrency slot.
 
 Every per-index counter carries `{index="<route>",ecosystem="<ecosystem>",role="<role>"}` labels, and each family is
 scoped to the role that reports it:
 
-- Base (every role): `velodex_index_pages_total`, `velodex_index_downloads_total`, `velodex_index_download_bytes_total`,
-  `velodex_index_rejected_total`.
-- Caching indexes only: `velodex_index_refreshes_total`, `velodex_index_pages_changed_total`,
-  `velodex_index_stale_served_total`, `velodex_index_upstream_errors_total`.
-- Hosted indexes only: `velodex_index_uploads_total`.
-- Ecosystem families (declared by the ecosystem driver): `velodex_index_metadata_total` is PyPI's PEP 658/714
+- Base (every role): `peryx_index_pages_total`, `peryx_index_downloads_total`, `peryx_index_download_bytes_total`,
+  `peryx_index_rejected_total`.
+- Caching indexes only: `peryx_index_refreshes_total`, `peryx_index_pages_changed_total`,
+  `peryx_index_stale_served_total`, `peryx_index_upstream_errors_total`.
+- Hosted indexes only: `peryx_index_uploads_total`.
+- Ecosystem families (declared by the ecosystem driver): `peryx_index_metadata_total` is PyPI's PEP 658/714
   `.metadata` sibling counter; a rising value proves clients resolve via the metadata fast path rather than by
   downloading artifacts. Sum it across indexes for the instance-wide total.

@@ -1,10 +1,10 @@
 +++
 title = "Glossary (FAQ)"
-description = "Plain-language answers to the cross-cutting terms velodex uses: index, cached/hosted/virtual, ecosystem, shadowing, upstream, publish, artifact."
+description = "Plain-language answers to the cross-cutting terms peryx uses: index, cached/hosted/virtual, ecosystem, shadowing, upstream, publish, artifact."
 weight = 6
 +++
 
-Every term velodex uses, defined as a question with a self-contained answer and a stable anchor, so the docs, the web
+Every term peryx uses, defined as a question with a self-contained answer and a stable anchor, so the docs, the web
 UI, and `--help` can all link to one place. No packaging background is assumed. Start at the top if you are new; jump by
 anchor if you came here from a link.
 
@@ -17,27 +17,27 @@ An **index** is the list a package installer downloads from. When you run `pip i
 A **registry** is the same idea under a different name. Some tools and ecosystems say "registry" where Python says
 "index". This site says **index** throughout.
 
-velodex is an index server: you run it, point your installer at it instead of pypi.org, and it answers those same
+peryx is an index server: you run it, point your installer at it instead of pypi.org, and it answers those same
 questions: from its cache, from packages you uploaded, or by asking an upstream index on your behalf.
 
 ## Why "index", not "repository"? {#index-not-repository}
 
 Other tools call this a "repository" (Artifactory, Nexus) or a "registry" (npm, container tooling). They all mean the
-same thing: a place a client resolves and downloads packages from. velodex standardizes on **index** because that is the
+same thing: a place a client resolves and downloads packages from. peryx standardizes on **index** because that is the
 word Python's own tools and specifications use (`--index-url`, the "Simple **index**"), and because "repository"
 collides with the source-control meaning (a git repo). When you read another tool's docs, read its "repository" or
-"registry" as velodex's "index".
+"registry" as peryx's "index".
 
 ## What is an upstream? {#upstream}
 
-An **upstream** is an index that velodex fetches from when it does not already have what a client asked for. pypi.org is
+An **upstream** is an index that peryx fetches from when it does not already have what a client asked for. pypi.org is
 the usual upstream; a private Artifactory or GitLab registry can be one too. "Upstream" is a direction, not a role: it
-is whatever sits above velodex in the fetch chain. A [cached](#roles) index has exactly one upstream.
+is whatever sits above peryx in the fetch chain. A [cached](#roles) index has exactly one upstream.
 
 ## What does "publish" mean? {#publish}
 
 To **publish** (or "upload") a package is to push a file you built up to an index so others can install it. For Python
-you publish with [twine](https://twine.readthedocs.io/) or `uv publish`, which speak the standard upload API. In velodex
+you publish with [twine](https://twine.readthedocs.io/) or `uv publish`, which speak the standard upload API. In peryx
 you publish into a [hosted](#roles) index. Publishing a name privately is also what turns that name off upstream; see
 [shadowing](#shadowing).
 
@@ -49,7 +49,7 @@ small tree of content-addressed pieces: a manifest and its blobs. Each ecosystem
 see [PyPI](@/ecosystems/pypi/_index.md) for wheels and sdists, and [OCI](@/ecosystems/oci/_index.md) for manifests,
 blobs, and tags.
 
-Whatever the shape, velodex stores every artifact by the sha256 hash of its bytes (**content-addressed**), so a file
+Whatever the shape, peryx stores every artifact by the sha256 hash of its bytes (**content-addressed**), so a file
 needed by ten projects is stored once and is correct forever. A different file would have a different hash, and
 therefore a different address.
 
@@ -59,7 +59,7 @@ An **ecosystem** is a packaging format and the protocol that carries it: how cli
 versions are shaped, and what an [artifact](#artifact) looks like. PyPI (Python packages) is one ecosystem; OCI
 (container images) is another.
 
-velodex makes the ecosystem a first-class axis. Every index is a **role** (what it does) paired with an **ecosystem**
+peryx makes the ecosystem a first-class axis. Every index is a **role** (what it does) paired with an **ecosystem**
 (which format it speaks). The two are independent, so the same three roles work for any ecosystem. A [virtual](#roles)
 index may only combine members of the *same* ecosystem.
 
@@ -102,7 +102,7 @@ and your own packages win. See [the index model](@/core/indexes.md) for the full
 ## What is shadowing, and why does my uploaded package win? {#shadowing}
 
 **Shadowing** is what a [virtual](#roles) index does when two of its layers offer a file with the same name: the layer
-listed first wins, and the later one is hidden ("shadowed"). velodex resolves the `layers` in order, keeps the first
+listed first wins, and the later one is hidden ("shadowed"). peryx resolves the `layers` in order, keeps the first
 occurrence of each filename, and critically resolves [cached](#roles) layers **last**. So a package you published into a
 hosted layer always beats a same-named package from upstream.
 
@@ -134,7 +134,7 @@ The word **cached** appears in two places, and they are related but distinct:
 - **cached, the file provenance**: a label the web UI and search put on an individual *file* to say where it came from.
   A file is one of three:
   - **uploaded**: you [published](#publish) it into a hosted index.
-  - **cached**: velodex fetched it from an upstream and stored it.
+  - **cached**: peryx fetched it from an upstream and stored it.
   - **override**: an uploaded file that shadows a same-named upstream file (see [shadowing](#shadowing)); the UI marks
     it so you can see the local decision winning.
 
@@ -142,16 +142,16 @@ So a *file* served from a *cached index* has provenance "cached"; a *file* you u
 index has provenance "uploaded", or "override" when it hides an upstream namesake. The role describes the index; the
 provenance describes one file.
 
-## Why do docker and podman accept velodex over plain HTTP? {#loopback-http}
+## Why do docker and podman accept peryx over plain HTTP? {#loopback-http}
 
 Container clients refuse a plain-HTTP registry by default, assuming HTTPS, with one exception: a **loopback** address
 (`localhost`, or anything in `127.0.0.0/8`) is treated as inherently trusted, so `docker pull localhost:4433/…` works
-over HTTP with no configuration. This is why velodex is zero-config on the same host as the client, and why the standard
+over HTTP with no configuration. This is why peryx is zero-config on the same host as the client, and why the standard
 local registry (`registry:2`) runs on `localhost:5000`.
 
 Two situations fall outside the loopback rule and need HTTPS or an explicit insecure setting:
 
-- **Reaching velodex over the network**: a registry at a hostname or non-loopback IP is not trusted over HTTP.
+- **Reaching peryx over the network**: a registry at a hostname or non-loopback IP is not trusted over HTTP.
 - **Docker Desktop / a VM engine**: on macOS and Windows the engine runs in a VM, so the host's `localhost` is not the
   engine's `localhost`; you reach the host by another name, which is no longer loopback.
 

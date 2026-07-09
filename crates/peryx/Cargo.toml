@@ -1,0 +1,85 @@
+[package]
+name = "peryx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PyPI-compatible read-through cache and private-index overlay."
+default-run = "peryx"
+
+[[bin]]
+name = "peryx"
+path = "src/main.rs"
+test = false
+
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+required-features = ["e2e"]
+
+[features]
+# End-to-end tests that drive real pip/uv/twine against a spawned peryx binary. Off by default
+# (they need the clients and are not part of the coverage gate); CI runs them explicitly. `e2e` is
+# the fast, hermetic matrix (peryx proxies a local fixture index — no external network, no flake);
+# `e2e-live` adds smoke tests against the real pypi.org.
+e2e = []
+e2e-live = ["e2e"]
+# `peryx self update`, for binaries installed by the release installers (curl / PowerShell).
+# Only the dist release builds enable it: pip- and cargo-installed copies update through their own
+# package manager, mirroring how uv gates its self-update.
+self-update = ["dep:axoupdater"]
+
+[dependencies]
+axoupdater = { version = "0.10", default-features = false, features = ["github_releases", "blocking"], optional = true }
+peryx-format.workspace = true
+peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }
+peryx-ecosystem-oci.workspace = true
+async-trait.workspace = true
+peryx-policy.workspace = true
+peryx-storage.workspace = true
+peryx-upstream.workspace = true
+peryx-http.workspace = true
+peryx-web.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+rustls-acme.workspace = true
+rustls.workspace = true
+futures-util.workspace = true
+mimalloc.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+utoipa.workspace = true
+sha2.workspace = true
+blake2.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+syslog-tracing = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tracing-journald = "0.3"
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+base64.workspace = true
+sha2.workspace = true
+tar.workspace = true
+flate2.workspace = true
+redb.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

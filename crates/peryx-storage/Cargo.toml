@@ -1,0 +1,22 @@
+[package]
+name = "peryx-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Content-addressed blob store and metadata storage for peryx."
+
+[dependencies]
+sha2.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

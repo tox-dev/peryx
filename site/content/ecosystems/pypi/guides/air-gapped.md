@@ -1,6 +1,6 @@
 +++
 title = "Serve a restricted or air-gapped network"
-description = "velodex as the one approved path to PyPI, or as a warm-then-carry partial mirror when there is no path at all."
+description = "peryx as the one approved path to PyPI, or as a warm-then-carry partial mirror when there is no path at all."
 weight = 2
 +++
 
@@ -8,16 +8,16 @@ A full PyPI mirror is double-digit terabytes, almost all of which nobody on your
 read-through cache is the practical alternative: a partial mirror containing exactly the packages your users have asked
 for. Two topologies cover the common cases.
 
-## Controlled egress: velodex as the choke point
+## Controlled egress: peryx as the choke point
 
-The network allows outbound traffic only from approved hosts. Run velodex on one of them; everything else installs
+The network allows outbound traffic only from approved hosts. Run peryx on one of them; everything else installs
 through it and needs no internet route:
 
 ```toml
-# velodex.toml on the egress host
+# peryx.toml on the egress host
 host = "0.0.0.0"
 port = 4433
-data_dir = "/var/lib/velodex"
+data_dir = "/var/lib/peryx"
 ```
 
 Clients set `PIP_INDEX_URL`/`UV_INDEX_URL` to `http://<egress-host>:4433/root/pypi/simple/` and are done. You get one
@@ -25,7 +25,7 @@ place to firewall, one place to [watch](@/core/monitor.md) (every download is co
 place where [private packages shadow upstream](@/core/indexes.md).
 
 If the egress host itself must go through a corporate proxy, standard `HTTPS_PROXY` environment variables apply to
-velodex's upstream client.
+peryx's upstream client.
 
 ## True air gap: warm, carry, serve
 
@@ -34,22 +34,22 @@ requirements-bounded mirror:
 
 ```shell
 # connected side
-velodex mirror plan root/pypi --data-dir ./velodex-data --requirements requirements.txt
-velodex mirror sync root/pypi --data-dir ./velodex-data --requirements requirements.txt
-velodex mirror verify root/pypi --data-dir ./velodex-data --requirements requirements.txt
+peryx mirror plan root/pypi --data-dir ./peryx-data --requirements requirements.txt
+peryx mirror sync root/pypi --data-dir ./peryx-data --requirements requirements.txt
+peryx mirror verify root/pypi --data-dir ./peryx-data --requirements requirements.txt
 ```
 
-Everything selected (pages, PEP 658 metadata, wheels, and sdists) now sits under `./velodex-data`. Create a backup,
+Everything selected (pages, PEP 658 metadata, wheels, and sdists) now sits under `./peryx-data`. Create a backup,
 verify it, carry the backup directory across the gap, restore it, and serve it in offline mode:
 
 ```shell
 # connected side
-velodex backup create --data-dir ./velodex-data ./velodex-backup
-velodex backup verify ./velodex-backup
+peryx backup create --data-dir ./peryx-data ./peryx-backup
+peryx backup verify ./peryx-backup
 
 # isolated side
-velodex restore ./velodex-backup --data-dir ./velodex-data
-velodex serve --data-dir ./velodex-data --offline
+peryx restore ./peryx-backup --data-dir ./peryx-data
+peryx serve --data-dir ./peryx-data --offline
 ```
 
 The backup includes the metadata store, a config snapshot, and only the blob files referenced by metadata records.
@@ -63,8 +63,8 @@ only for things the carry-over contains.
 For a full upstream walk, use `--mode all` instead of a requirements file:
 
 ```shell
-velodex mirror sync pypi --data-dir ./velodex-data --mode all
-velodex mirror verify pypi --data-dir ./velodex-data --mode all
+peryx mirror sync pypi --data-dir ./peryx-data --mode all
+peryx mirror verify pypi --data-dir ./peryx-data --mode all
 ```
 
 Full PyPI consumes many terabytes. Use `--python-tag`, `--abi-tag`, `--platform-tag`, and `--max-file-size-bytes` when

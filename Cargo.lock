@@ -3084,6 +3084,283 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "peryx"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axoupdater",
+ "axum",
+ "axum-server",
+ "base64",
+ "blake2",
+ "clap",
+ "flate2",
+ "futures-util",
+ "http-body-util",
+ "mimalloc",
+ "peryx-ecosystem-oci",
+ "peryx-ecosystem-pypi",
+ "peryx-format",
+ "peryx-http",
+ "peryx-policy",
+ "peryx-storage",
+ "peryx-upstream",
+ "peryx-web",
+ "redb",
+ "rstest",
+ "rustls",
+ "rustls-acme",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "syslog-tracing",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-appender",
+ "tracing-journald",
+ "tracing-subscriber",
+ "utoipa",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
+name = "peryx-bench"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hdrhistogram",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "statrs",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "toml",
+ "url",
+]
+
+[[package]]
+name = "peryx-ecosystem-oci"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "codspeed-criterion-compat",
+ "flate2",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "peryx-format",
+ "peryx-http",
+ "peryx-identity",
+ "peryx-policy",
+ "peryx-storage",
+ "peryx-upstream",
+ "reqwest",
+ "rstest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "peryx-ecosystem-pypi"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "blake2",
+ "bytes",
+ "codspeed-criterion-compat",
+ "csv",
+ "flate2",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "insta",
+ "moka",
+ "pep440_rs",
+ "peryx-format",
+ "peryx-http",
+ "peryx-identity",
+ "peryx-policy",
+ "peryx-storage",
+ "peryx-upstream",
+ "redb",
+ "reqwest",
+ "rstest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tantivy",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tl",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
+name = "peryx-format"
+version = "0.0.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "peryx-http"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "blake2",
+ "bytes",
+ "csv",
+ "flate2",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "moka",
+ "peryx-format",
+ "peryx-identity",
+ "peryx-policy",
+ "peryx-storage",
+ "peryx-upstream",
+ "redb",
+ "reqwest",
+ "rstest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tantivy",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
+name = "peryx-identity"
+version = "0.0.1"
+dependencies = [
+ "base64",
+]
+
+[[package]]
+name = "peryx-policy"
+version = "0.0.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "peryx-replication"
+version = "0.0.1"
+
+[[package]]
+name = "peryx-storage"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "redb",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zip",
+]
+
+[[package]]
+name = "peryx-upstream"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "reqwest",
+ "rstest",
+ "rustls",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "peryx-web"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "base64",
+ "console_error_panic_hook",
+ "gloo-net 0.7.0",
+ "leptos",
+ "leptos_axum",
+ "leptos_meta",
+ "leptos_router",
+ "peryx-ecosystem-pypi",
+ "peryx-format",
+ "peryx-http",
+ "peryx-storage",
+ "pulldown-cmark",
+ "regex",
+ "send_wrapper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http 0.7.0",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5189,283 +5466,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "velodex"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axoupdater",
- "axum",
- "axum-server",
- "base64",
- "blake2",
- "clap",
- "flate2",
- "futures-util",
- "http-body-util",
- "mimalloc",
- "redb",
- "rstest",
- "rustls",
- "rustls-acme",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "syslog-tracing",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tower",
- "tracing",
- "tracing-appender",
- "tracing-journald",
- "tracing-subscriber",
- "utoipa",
- "velodex-ecosystem-oci",
- "velodex-ecosystem-pypi",
- "velodex-format",
- "velodex-http",
- "velodex-policy",
- "velodex-storage",
- "velodex-upstream",
- "velodex-web",
- "wiremock",
- "zip",
-]
-
-[[package]]
-name = "velodex-bench"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "clap",
- "hdrhistogram",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "statrs",
- "sysinfo",
- "tempfile",
- "tokio",
- "toml",
- "url",
-]
-
-[[package]]
-name = "velodex-ecosystem-oci"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "bytes",
- "codspeed-criterion-compat",
- "flate2",
- "futures-util",
- "http",
- "http-body-util",
- "reqwest",
- "rstest",
- "rustls",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "tokio",
- "tokio-util",
- "tower",
- "url",
- "velodex-format",
- "velodex-http",
- "velodex-identity",
- "velodex-policy",
- "velodex-storage",
- "velodex-upstream",
- "wiremock",
-]
-
-[[package]]
-name = "velodex-ecosystem-pypi"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "blake2",
- "bytes",
- "codspeed-criterion-compat",
- "csv",
- "flate2",
- "futures-util",
- "http",
- "http-body-util",
- "insta",
- "moka",
- "pep440_rs",
- "redb",
- "reqwest",
- "rstest",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tantivy",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "tl",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http 0.7.0",
- "tracing",
- "tracing-subscriber",
- "url",
- "utoipa",
- "velodex-format",
- "velodex-http",
- "velodex-identity",
- "velodex-policy",
- "velodex-storage",
- "velodex-upstream",
- "wiremock",
- "zip",
-]
-
-[[package]]
-name = "velodex-format"
-version = "0.0.1"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "velodex-http"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "blake2",
- "bytes",
- "csv",
- "flate2",
- "futures-util",
- "http",
- "http-body-util",
- "moka",
- "redb",
- "reqwest",
- "rstest",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tantivy",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http 0.7.0",
- "tracing",
- "tracing-subscriber",
- "url",
- "utoipa",
- "velodex-format",
- "velodex-identity",
- "velodex-policy",
- "velodex-storage",
- "velodex-upstream",
- "wiremock",
- "zip",
-]
-
-[[package]]
-name = "velodex-identity"
-version = "0.0.1"
-dependencies = [
- "base64",
-]
-
-[[package]]
-name = "velodex-policy"
-version = "0.0.1"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "velodex-replication"
-version = "0.0.1"
-
-[[package]]
-name = "velodex-storage"
-version = "0.0.1"
-dependencies = [
- "flate2",
- "redb",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "zip",
-]
-
-[[package]]
-name = "velodex-upstream"
-version = "0.0.1"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-util",
- "reqwest",
- "rstest",
- "rustls",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "wiremock",
-]
-
-[[package]]
-name = "velodex-web"
-version = "0.0.1"
-dependencies = [
- "axum",
- "base64",
- "console_error_panic_hook",
- "gloo-net 0.7.0",
- "leptos",
- "leptos_axum",
- "leptos_meta",
- "leptos_router",
- "pulldown-cmark",
- "regex",
- "send_wrapper",
- "serde",
- "serde_json",
- "tokio",
- "tower-http 0.7.0",
- "velodex-ecosystem-pypi",
- "velodex-format",
- "velodex-http",
- "velodex-storage",
- "wasm-bindgen",
- "web-sys",
-]
 
 [[package]]
 name = "version_check"

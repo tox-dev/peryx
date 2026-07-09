@@ -1,12 +1,12 @@
 +++
 title = "Standards"
-description = "The packaging PEPs and specifications velodex implements for PyPI, and how they fit together."
+description = "The packaging PEPs and specifications peryx implements for PyPI, and how they fit together."
 weight = 1
 +++
 
-velodex targets the interoperability standards a modern Python index and its clients rely on. The
+peryx targets the interoperability standards a modern Python index and its clients rely on. The
 [Simple Repository API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) is the living
-consolidation of most of them; velodex serves `meta.api-version` 1.4.
+consolidation of most of them; peryx serves `meta.api-version` 1.4.
 
 ## What a pip install asks for
 
@@ -27,11 +27,11 @@ I-->>-P: the wheel, which pip verifies against its sha256
 {% end %}
 
 Every hop names a standard: the page format is PEP 503/691, its fields are PEP 700, the yank markers are PEP 592, the
-metadata shortcut is PEP 658/714, and the filename pip parsed to pick a wheel is PEP 427. velodex sits on both sides of
+metadata shortcut is PEP 658/714, and the filename pip parsed to pick a wheel is PEP 427. peryx sits on both sides of
 this conversation, a server to your clients and a client to its upstreams, which is why the table below mixes "served"
 and "parsed".
 
-| Standard                                                                                                                                                                                    | Role in velodex                                                                                                                       |
+| Standard                                                                                                                                                                                    | Role in peryx                                                                                                                       |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | [PEP 503](https://peps.python.org/pep-0503/)                                                                                                                                                | The HTML simple index and project-name normalization; served to clients that do not ask for JSON, and parsed from HTML-only upstreams |
 | [PEP 691](https://peps.python.org/pep-0691/)                                                                                                                                                | The JSON simple index and its content negotiation; the primary wire format both directions                                            |
@@ -50,18 +50,18 @@ and "parsed".
 ## PEP 714 and the `core-metadata` key
 
 PEP 658 shipped with a bug in its `dist-info-metadata` key name, and PEP 714 renamed it to `core-metadata`. Indexes such
-as pypi.org emit both keys for compatibility. velodex parses both spellings, prefers `core-metadata` when both are
+as pypi.org emit both keys for compatibility. peryx parses both spellings, prefers `core-metadata` when both are
 present, and emits both spellings downstream for older clients.
 
 ## Graceful degradation
 
-Some upstreams implement only part of the stack; Artifactory and GitLab serve HTML alone. velodex negotiates JSON first,
+Some upstreams implement only part of the stack; Artifactory and GitLab serve HTML alone. peryx negotiates JSON first,
 parses PEP 503 HTML as the fallback, and re-serves the modern formats downstream, so a client gets api-version 1.4.
 Features the upstream cannot express (a missing `.metadata` sibling, absent sizes) degrade per file rather than per
-index. An upstream that advertises another Simple API major version is rejected with a 502 response; velodex supports
+index. An upstream that advertises another Simple API major version is rejected with a 502 response; peryx supports
 Simple API 1.x.
 
-The discovery documents at `/+api` and `/{route}/+api` report only capabilities velodex implements today. They advertise
+The discovery documents at `/+api` and `/{route}/+api` report only capabilities peryx implements today. They advertise
 Simple HTML/JSON, api-version 1.4, PEP 658 metadata siblings, project status, provenance, and legacy JSON. The legacy
 JSON responses are derived from Simple detail pages, so fields outside that source, such as ownership and vulnerability
 data, are empty.

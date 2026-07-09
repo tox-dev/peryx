@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Run the OCI distribution-spec conformance suite against a hosted velodex registry and gate on the
-# required (sha256) tests. sha512 is the optional digest algorithm velodex does not store, so its
+# Run the OCI distribution-spec conformance suite against a hosted peryx registry and gate on the
+# required (sha256) tests. sha512 is the optional digest algorithm peryx does not store, so its
 # failures are reported but not fatal.
 #
-# Usage: run-oci-conformance.sh <velodex-binary> <conformance.test-binary>
+# Usage: run-oci-conformance.sh <peryx-binary> <conformance.test-binary>
 set -euo pipefail
 
-velodex=${1:?path to the velodex binary}
+peryx=${1:?path to the peryx binary}
 conformance=${2:?path to the conformance.test binary}
 
 port=18102
 work=$(mktemp -d)
 trap 'kill "${server_pid:-0}" 2>/dev/null || true; rm -rf "$work"' EXIT
 
-cat >"$work/velodex.toml" <<EOF
+cat >"$work/peryx.toml" <<EOF
 host = "127.0.0.1"
 port = $port
 data_dir = "$work/data"
@@ -26,7 +26,7 @@ hosted = true
 upload_token = "conformance"
 EOF
 
-"$velodex" serve --config "$work/velodex.toml" >"$work/server.log" 2>&1 &
+"$peryx" serve --config "$work/peryx.toml" >"$work/server.log" 2>&1 &
 server_pid=$!
 
 for _ in $(seq 1 60); do
@@ -56,4 +56,4 @@ if [ -n "$required_failures" ]; then
 fi
 
 echo "PASS: all required (sha256) OCI conformance tests passed."
-echo "note: $optional_failures optional sha512 tests failed (velodex stores sha256 blobs only)."
+echo "note: $optional_failures optional sha512 tests failed (peryx stores sha256 blobs only)."

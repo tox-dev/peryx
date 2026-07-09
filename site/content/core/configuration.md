@@ -4,26 +4,26 @@ description = "Every TOML key, flag, and default. Precedence is defaults < TOML 
 weight = 1
 +++
 
-velodex reads one TOML file, passed with `--config <path>`. A few operational settings double as flags or `VELODEX_*`
+peryx reads one TOML file, passed with `--config <path>`. A few operational settings double as flags or `PERYX_*`
 environment variables, which override the file. Precedence is `defaults < TOML file < environment < flags`.
 
 ## Top level
 
 | Setting                   | Flag              | Environment              | TOML key         | Default        |
 | ------------------------- | ----------------- | ------------------------ | ---------------- | -------------- |
-| Bind host                 | `--host`          | `VELODEX_HOST`           | `host`           | `127.0.0.1`    |
-| Bind port                 | `--port`          | `VELODEX_PORT`           | `port`           | `4433`         |
-| Data directory            | `--data-dir`      | `VELODEX_DATA_DIR`       | `data_dir`       | `velodex-data` |
-| Offline mode              | `--offline`       | `VELODEX_OFFLINE`        | `offline`        | `false`        |
+| Bind host                 | `--host`          | `PERYX_HOST`           | `host`           | `127.0.0.1`    |
+| Bind port                 | `--port`          | `PERYX_PORT`           | `port`           | `4433`         |
+| Data directory            | `--data-dir`      | `PERYX_DATA_DIR`       | `data_dir`       | `peryx-data` |
+| Offline mode              | `--offline`       | `PERYX_OFFLINE`        | `offline`        | `false`        |
 | Config file               | `--config` / `-c` | (n/a)                    | (n/a)            | (none)         |
-| Cache freshness (seconds) | (file/env only)   | `VELODEX_CACHE_TTL_SECS` | `cache_ttl_secs` | `300`          |
+| Cache freshness (seconds) | (file/env only)   | `PERYX_CACHE_TTL_SECS` | `cache_ttl_secs` | `300`          |
 | Indexes                   | (file only)       | (n/a)                    | `[[index]]`      | (see below)    |
 | Rate limits               | (file only)       | (n/a)                    | `[rate_limit]`   | (see below)    |
 
-Environment variables sit between the file and flags: a `VELODEX_*` value overrides the TOML file, and a flag overrides
+Environment variables sit between the file and flags: a `PERYX_*` value overrides the TOML file, and a flag overrides
 the variable. Only scalar settings are environment-configurable. The `[[index]]` topology and `[rate_limit]` block stay
 file-only, since neither maps to a flat variable. An empty variable is treated as unset. The `[log]` block also reads
-variables (`VELODEX_LOG_LEVEL`, `VELODEX_LOG_FORMAT`, `VELODEX_LOG_SINK`, `VELODEX_LOG_FILE`); see [`[log]`](#log).
+variables (`PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, `PERYX_LOG_FILE`); see [`[log]`](#log).
 
 `cache_ttl_secs` is a fallback: when an upstream response carries a usable `Cache-Control` lifetime (`s-maxage` or
 `max-age`), that lifetime governs the page instead. The fallback applies when the header is absent,
@@ -32,12 +32,12 @@ is a new entry on the page rather than a mutation.
 
 `offline = true` disables upstream network access for configured cached indexes. Whatever an ecosystem has cached serves
 from disk: PyPI project pages, PEP 658 metadata siblings, and wheels; OCI manifests and blobs. A cold cached-index miss
-returns `503`; virtual-index routes still serve any hosted layer that can answer. Use `velodex mirror sync` before
+returns `503`; virtual-index routes still serve any hosted layer that can answer. Use `peryx mirror sync` before
 enabling offline mode on a machine that must run without network access.
 
 ## TLS
 
-velodex serves plain HTTP by default, which is the right choice for a laptop: `pip`/`uv` accept any URL, and
+peryx serves plain HTTP by default, which is the right choice for a laptop: `pip`/`uv` accept any URL, and
 `docker`/`podman` trust a loopback registry (`localhost`, `127.0.0.0/8`) over HTTP with no configuration. To serve over
 the network, where clients demand HTTPS, turn on TLS with one of two mutually exclusive tables. Neither is set by
 default, and an unconfigured server keeps the plain-HTTP path.
@@ -46,8 +46,8 @@ A `[tls]` table serves HTTPS from a certificate and key you provide:
 
 ```toml
 [tls]
-cert = "/etc/velodex/fullchain.pem"
-key = "/etc/velodex/privkey.pem"
+cert = "/etc/peryx/fullchain.pem"
+key = "/etc/peryx/privkey.pem"
 ```
 
 An `[acme]` table obtains and renews a certificate from an ACME provider (Let's Encrypt), so a publicly reachable
@@ -57,7 +57,7 @@ deployment serves trusted HTTPS with no manual certificate handling and no clien
 [acme]
 domains = ["registry.example.com"]
 contact = "admin@example.com"
-cache-dir = "/var/lib/velodex/acme" # where issued certificates are cached; default "acme-cache"
+cache-dir = "/var/lib/peryx/acme" # where issued certificates are cached; default "acme-cache"
 staging = false                     # true uses Let's Encrypt staging while testing
 ```
 
@@ -77,7 +77,7 @@ and let the proxy hold the certificate.
 ## `[[index]]`
 
 Each `[[index]]` table declares one index. `name` is required; exactly one of `cached`, `hosted`, or `layers` selects
-the role. velodex rejects unknown keys.
+the role. peryx rejects unknown keys.
 
 | Key                    | Role    | Meaning                                                               | Default            |
 | ---------------------- | ------- | --------------------------------------------------------------------- | ------------------ |
@@ -90,7 +90,7 @@ the role. velodex rejects unknown keys.
 | `token`                | cached  | Bearer token; takes precedence over username/password                 | (none)             |
 | `upstream_concurrency` | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default  | `0`                |
 | `offline`              | cached  | Serve this cached index from disk only                                | `false`            |
-| `prefetch`             | cached  | Package and artifact selection for `velodex mirror`                   | (see below)        |
+| `prefetch`             | cached  | Package and artifact selection for `peryx mirror`                   | (see below)        |
 | `hosted`               | hosted  | `true` marks this index as a hosted store (implied by `upload_token`) | `false`            |
 | `upload_token`         | hosted  | Basic-auth password uploads must present; unset disables uploads      | (none)             |
 | `volatile`             | hosted  | Allow delete and overwrite                                            | `true`             |
@@ -102,7 +102,7 @@ the role. velodex rejects unknown keys.
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
 segments, percent encoding, traversal segments, control characters, spaces, and routes whose first segment is reserved
-for Velodex endpoints such as `browse`, `stats`, `+stats`, `+status`, `api-docs`, `metrics`, and `pkg`.
+for Peryx endpoints such as `browse`, `stats`, `+stats`, `+status`, `api-docs`, `metrics`, and `pkg`.
 
 Declaring any `[[index]]` replaces the default topology, which ships a trio per ecosystem: a cached upstream, a hosted
 store, and a virtual index that layers the two.
@@ -181,7 +181,7 @@ max_project_size_bytes = 1073741824
 
 File and project size rules require declared sizes. A file without `size` is denied by `max_file_size_bytes`; a project
 page with any retained file lacking `size` is denied by `max_project_size_bytes`. Active policies use the buffered
-Simple-page path so file lists and PEP 691 `versions` are filtered together before velodex serves bytes.
+Simple-page path so file lists and PEP 691 `versions` are filtered together before peryx serves bytes.
 
 `allow_projects`, `block_projects`, `max_file_size_bytes`, and `max_project_size_bytes` are ecosystem-neutral and apply
 to an OCI index too, matching on image name and blob size: a blocked image is hidden on reads and refused on push, and a
@@ -192,8 +192,8 @@ matchers to the same neutral `[index.policy]` engine through a rule trait.
 
 ### `[index.prefetch]`
 
-Cached indexes can declare the default selection for `velodex mirror plan`, `velodex mirror sync`, and
-`velodex mirror verify`. CLI flags add package selectors and override booleans or `mode` for one run.
+Cached indexes can declare the default selection for `peryx mirror plan`, `peryx mirror sync`, and
+`peryx mirror verify`. CLI flags add package selectors and override booleans or `mode` for one run.
 
 ```toml
 [[index]]
@@ -229,20 +229,20 @@ metadata_only = false
 `mode = "all"` reads the upstream root Simple project list and then visits matching projects. Artifact filters apply
 after a project page is fetched. `mode = "metadata-only"` implies `metadata_only = true`.
 
-The wheel/sdist and wheel-tag keys above are the PyPI selection set and seed `velodex mirror` for a PyPI index. For an
-OCI index, `packages` is the image list `velodex mirror` pulls (image references such as `library/alpine:3.19`), the
+The wheel/sdist and wheel-tag keys above are the PyPI selection set and seed `peryx mirror` for a PyPI index. For an
+OCI index, `packages` is the image list `peryx mirror` pulls (image references such as `library/alpine:3.19`), the
 same way it seeds a PyPI index's project list; `--image <ref>` on the command line adds one-off references on top. The
 PyPI wheel/sdist/wheel-tag keys do not apply to an OCI index.
 
 ## `[rate_limit]`
 
-Rate limits are local to one velodex process and disabled by default. When `enabled = true`, they use fixed windows and
+Rate limits are local to one peryx process and disabled by default. When `enabled = true`, they use fixed windows and
 bounded in-memory buckets; restarting the process clears the buckets. `max_clients` caps the number of client/class
 buckets kept in memory. Set a class `requests` or `window_secs` to `0` to disable that class limit.
 
-For authenticated requests, velodex hashes the `Authorization` header and uses the hash as the bucket key. It does not
+For authenticated requests, peryx hashes the `Authorization` header and uses the hash as the bucket key. It does not
 store the credential value. Other requests use the peer IP address. In in-process tests and deployments without socket
-peer metadata, velodex falls back to `X-Forwarded-For`, then `X-Real-IP`, then `127.0.0.1`.
+peer metadata, peryx falls back to `X-Forwarded-For`, then `X-Real-IP`, then `127.0.0.1`.
 
 | Key           | Meaning                                     | Default |
 | ------------- | ------------------------------------------- | ------- |
@@ -289,8 +289,8 @@ upload = "hosted"
 
 [[index.webhook]]
 name = "ci"
-url = "https://ci.example/hooks/velodex"
-secret_env = "VELODEX_WEBHOOK_SECRET"
+url = "https://ci.example/hooks/peryx"
+secret_env = "PERYX_WEBHOOK_SECRET"
 events = ["upload", "delete", "restore"]
 ```
 
@@ -303,10 +303,10 @@ events = ["upload", "delete", "restore"]
 | `events`     | Event names to send; omit or leave empty for all supported event names                            | all     |
 
 Use one of `secret` or `secret_env`. Supported event names are `upload`, `yank`, `unyank`, `delete`, `restore`,
-`promote`, `project-status`, and `management`. Velodex emits `upload`, `yank`, `unyank`, `delete`, and `restore` from
+`promote`, `project-status`, and `management`. Peryx emits `upload`, `yank`, `unyank`, `delete`, and `restore` from
 the write endpoints in this release; the other names reserve the contract for management surfaces that use this runtime.
 
-Velodex stores pending deliveries in the metadata database and sends them outside the request path. A failed delivery
+Peryx stores pending deliveries in the metadata database and sends them outside the request path. A failed delivery
 retries up to five attempts with capped backoff of 5, 15, 45, and 135 seconds. The delivery log stores the payload,
 target name, attempt count, next retry time, response status, and last error. It does not store webhook secrets.
 
@@ -320,5 +320,5 @@ target name, attempt count, next retry time, response status, and last error. It
 | `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
 
 The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these, as do the
-`VELODEX_LOG_LEVEL`, `VELODEX_LOG_FORMAT`, `VELODEX_LOG_SINK`, and `VELODEX_LOG_FILE` variables (below the flags in
+`PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, and `PERYX_LOG_FILE` variables (below the flags in
 precedence).

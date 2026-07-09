@@ -1,0 +1,14 @@
+[package]
+name = "peryx-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ecosystem-neutral index policy engine for peryx: name allow/deny, size limits, and a rule seam."
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

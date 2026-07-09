@@ -6,7 +6,7 @@ Depends on #31 for mirror use cases. Supports future #23 HA and replication work
 
 ## Problem
 
-Velox stores blobs on the local filesystem under `velodex-data/blobs`. That is simple and fast for one node, but it ties
+Velox stores blobs on the local filesystem under `peryx-data/blobs`. That is simple and fast for one node, but it ties
 cache size, backup, restore, and mirror growth to local disk.
 
 Large mirrors and production deployments need object storage for package blobs. Metadata can stay in redb for this

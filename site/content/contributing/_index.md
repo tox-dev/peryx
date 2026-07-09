@@ -1,12 +1,12 @@
 +++
 title = "Contributing"
-description = "Set up a velodex working tree, the CI gates, the test suites, the docs site, and how to cut a release."
+description = "Set up a peryx working tree, the CI gates, the test suites, the docs site, and how to cut a release."
 sort_by = "weight"
 template = "section.html"
 weight = 20
 +++
 
-velodex lives at [github.com/tox-dev/velodex](https://github.com/tox-dev/velodex). Bug reports, feature discussions, and
+peryx lives at [github.com/gaborbernat/peryx](https://github.com/gaborbernat/peryx). Bug reports, feature discussions, and
 pull requests are welcome there.
 
 ## Setting up
@@ -39,24 +39,24 @@ can reach compiler-generated branches (async expansions, drop glue).
 
 ## End-to-end tests
 
-The e2e suite drives real pip, uv, and twine against a spawned velodex binary:
+The e2e suite drives real pip, uv, and twine against a spawned peryx binary:
 
 ```shell
-cargo test -p velodex --features e2e                    # hermetic: local fixture index, no network
-cargo test -p velodex --features e2e-live -- e2e_live   # live smoke tests against pypi.org
+cargo test -p peryx --features e2e                    # hermetic: local fixture index, no network
+cargo test -p peryx --features e2e-live -- e2e_live   # live smoke tests against pypi.org
 ```
 
 Each test owns an isolated server, fixture, and virtualenv on ephemeral ports, so the suite runs in parallel and
 finishes in about two seconds. New index features need a matching e2e test; a client exit code alone does not count as
-proof, so assert on velodex's own state or metrics.
+proof, so assert on peryx's own state or metrics.
 
 ## The web UI
 
 `cargo leptos build` compiles the UI's wasm bundle into `ui/pkg/` (mise provides cargo-leptos and node). The Playwright
-suite drives the hydrated UI against a real velodex with an uploaded fixture package:
+suite drives the hydrated UI against a real peryx with an uploaded fixture package:
 
 ```shell
-cargo build -p velodex
+cargo build -p peryx
 cargo leptos build
 cd tests/frontend
 npm ci
@@ -65,7 +65,7 @@ npx playwright test
 ```
 
 The UI crate sits outside the `llvm-cov` gate: wasm cannot be coverage-instrumented and event handlers only run in a
-browser, so the Playwright suite and velodex's server-side render tests are its gates instead.
+browser, so the Playwright suite and peryx's server-side render tests are its gates instead.
 
 ## The documentation site
 
@@ -86,13 +86,13 @@ Two dev-environment behaviors are non-obvious enough to have cost real debugging
 
 ### The SSR binary and the wasm bundle must come from one build
 
-`cargo leptos build` writes a matched pair: `target/debug/velodex` (the server that renders HTML) and
-`ui/pkg/velodex_web*.wasm` (the bundle that hydrates it). Both embed the same component tree, and hydration only works
+`cargo leptos build` writes a matched pair: `target/debug/peryx` (the server that renders HTML) and
+`ui/pkg/peryx_web*.wasm` (the bundle that hydrates it). Both embed the same component tree, and hydration only works
 when they agree. Mix two builds and the server emits hydration markers the wasm does not expect; Leptos then panics in
 the browser (`tachys::hydration::failed_to_cast_marker_node`, `RuntimeError: unreachable`), never sets
 `body[data-hydrated]`, and every Playwright test times out at navigation with no hint as to why.
 
-The Playwright harness (`tests/frontend/serve.mjs`) prefers `target/release/velodex` when it exists, and a plain
+The Playwright harness (`tests/frontend/serve.mjs`) prefers `target/release/peryx` when it exists, and a plain
 `cargo build --release` rebuilds only the binary, leaving it paired with a stale debug wasm. After touching UI source,
 rerun `cargo leptos build`. If you keep a release binary around, build it with `cargo leptos build --release` so both
 halves match, or delete it so the harness falls back to the debug pair.
@@ -104,7 +104,7 @@ the console. A hydration panic there points at a mismatched build pair, so rebui
 
 A subsystem that is disabled by default is an `Option<T>` that stays `None`, so it is absent from the request path
 rather than skipped on it (see the zero-overhead contract in the architecture docs). Integration tests that drive the
-default server therefore never reach its code. The rate limiter is the standard example: with it off, velodex omits the
+default server therefore never reach its code. The rate limiter is the standard example: with it off, peryx omits the
 enforce layer entirely, so a driver method like `classify_route` runs only under a direct unit test. The 100% coverage
 gate will catch the omission, but it is faster to write the unit test up front than to chase the uncovered line.
 

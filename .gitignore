@@ -1,6 +1,6 @@
 /target
 # trunk output for the web UI
-crates/velodex-web/dist/
+crates/peryx-web/dist/
 # coverage artifacts
 /lcov.info
 *.profraw
@@ -11,7 +11,7 @@ site/public/
 tests/frontend/node_modules/
 tests/frontend/test-results/
 tests/frontend/playwright-report/
-/velodex-data/
+/peryx-data/
 __pycache__/
 
 # Pagefind search index (generated at build time)

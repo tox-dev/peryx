@@ -1,4 +1,4 @@
-# Contributing to velodex
+# Contributing to peryx
 
 Thanks for helping. The short version:
 
@@ -8,4 +8,4 @@ cargo nextest run --workspace
 ```
 
 The full guide - environment setup, the coverage and e2e gates, documentation structure, and commit conventions - lives
-at [velodex.readthedocs.io/contributing](https://velodex.readthedocs.io/en/latest/contributing/).
+at [peryx.readthedocs.io/contributing](https://peryx.readthedocs.io/en/latest/contributing/).

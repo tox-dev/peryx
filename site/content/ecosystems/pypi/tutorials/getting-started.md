@@ -1,61 +1,61 @@
 +++
 title = "Getting started"
-description = "Serve Python packages through velodex: cache pypi.org, install with pip and uv, publish a private package, then yank and delete it."
+description = "Serve Python packages through peryx: cache pypi.org, install with pip and uv, publish a private package, then yank and delete it."
 weight = 1
 +++
 
-In this tutorial you point velodex at pypi.org, install packages through it with pip and uv, publish a package of your
+In this tutorial you point peryx at pypi.org, install packages through it with pip and uv, publish a package of your
 own to a private hosted store, then yank and delete it. It takes about ten minutes.
 
 A Python package ships as one or both of two **artifacts**: a **wheel** (`.whl`), a pre-built archive an installer
 unpacks as-is, and an **sdist** (`.tar.gz`), the source a wheel is built from. Installers find them through the Simple
-API, the HTTP protocol velodex speaks to `pip`, `uv`, and `twine`.
+API, the HTTP protocol peryx speaks to `pip`, `uv`, and `twine`.
 
 ## Prerequisites
 
-You need Python with `pip` or [`uv`](https://docs.astral.sh/uv/) as the client, and a velodex binary. Pick whichever
+You need Python with `pip` or [`uv`](https://docs.astral.sh/uv/) as the client, and a peryx binary. Pick whichever
 install channel fits; [installation](@/core/installation.md) lists them all:
 
 {% tabs(names="installer, uv, pip, from source") %}
 
 ```shell
 # standalone binary, no Python involved
-curl -LsSf https://github.com/tox-dev/velodex/releases/latest/download/velodex-installer.sh | sh
+curl -LsSf https://github.com/gaborbernat/peryx/releases/latest/download/peryx-installer.sh | sh
 ```
 
 %%%
 
 ```shell
-uv tool install velodex
+uv tool install peryx
 ```
 
 %%%
 
 ```shell
-pip install velodex
+pip install peryx
 ```
 
 %%%
 
 ```shell
 # needs a Rust toolchain (https://rustup.rs); rust-toolchain.toml pins the version
-git clone https://github.com/tox-dev/velodex.git
-cd velodex
+git clone https://github.com/gaborbernat/peryx.git
+cd peryx
 cargo build --release
 ```
 
 {% end %}
 
-## Start velodex
+## Start peryx
 
 The read path needs no configuration. The defaults give you a pypi.org cached index with a private hosted store,
 combined by a virtual index in front of them, served at route `root/pypi`:
 
 ```shell
-velodex serve            # ./target/release/velodex serve when built from source
+peryx serve            # ./target/release/peryx serve when built from source
 ```
 
-velodex is now listening on `127.0.0.1:4433`. Leave it running and use a second terminal for the rest of the tutorial.
+peryx is now listening on `127.0.0.1:4433`. Leave it running and use a second terminal for the rest of the tutorial.
 
 ## Install through the cache
 
@@ -78,7 +78,7 @@ demo/bin/pip install --index-url http://127.0.0.1:4433/root/pypi/simple/ request
 
 {% end %}
 
-Both clients use the [PEP 658](https://peps.python.org/pep-0658/) metadata fast path through velodex: they resolve
+Both clients use the [PEP 658](https://peps.python.org/pep-0658/) metadata fast path through peryx: they resolve
 dependency trees by fetching small `.metadata` files rather than whole wheels. You can watch it on the metrics endpoint:
 
 ```shell
@@ -87,10 +87,10 @@ curl -s http://127.0.0.1:4433/metrics | grep metadata
 
 ## Publish a private package
 
-Uploads are disabled until you set a token. Stop velodex, write a config that adds one, and restart:
+Uploads are disabled until you set a token. Stop peryx, write a config that adds one, and restart:
 
 ```toml
-# velodex.toml
+# peryx.toml
 [[index]] # cached: read-through cache of pypi.org
 name = "pypi"
 cached = "https://pypi.org/simple/"
@@ -106,7 +106,7 @@ upload = "hosted"
 ```
 
 ```shell
-velodex serve --config velodex.toml
+peryx serve --config peryx.toml
 ```
 
 Now publish a wheel with [twine](https://twine.readthedocs.io/) or uv (any username; the token is the password):
@@ -133,7 +133,7 @@ delete, the upstream version of `mypkg` (if pypi.org has one) is visible again.
 
 ## Verify
 
-velodex serves a web interface on the same port. Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for a live
+peryx serves a web interface on the same port. Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for a live
 dashboard of the configured indexes and request counters, click an index for a searchable project list, and click a
 project for a pypi.org-style page: description, dependencies, classifiers, and files with hashes. The same counters are
 JSON at `/+stats` and Prometheus at `/metrics`.
@@ -142,5 +142,5 @@ JSON at `/+stats` and Prometheus at `/metrics`.
 
 - [Front another index](@/ecosystems/pypi/tutorials/front-another-index.md): cache a private index alongside pypi.org.
 - [Build a team index](@/ecosystems/pypi/tutorials/team-index.md): a shared upload store your whole team installs from.
-- [PyPI performance](@/ecosystems/pypi/performance.md): how velodex compares to devpi, proxpi, and pip's own cache.
+- [PyPI performance](@/ecosystems/pypi/performance.md): how peryx compares to devpi, proxpi, and pip's own cache.
 - [Configuration reference](@/core/configuration.md): every TOML key, including TLS.

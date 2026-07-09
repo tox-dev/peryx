@@ -7,7 +7,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
-repository = "https://github.com/tox-dev/velodex"
+repository = "https://github.com/gaborbernat/peryx"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -18,16 +18,16 @@ nursery = { level = "warn", priority = -1 }
 unsafe_code = "forbid"
 
 [workspace.dependencies]
-velodex-format = { path = "crates/velodex-format" }
-velodex-ecosystem-pypi = { path = "crates/velodex-ecosystem-pypi", default-features = false }
-velodex-ecosystem-oci = { path = "crates/velodex-ecosystem-oci" }
-velodex-policy = { path = "crates/velodex-policy" }
-velodex-identity = { path = "crates/velodex-identity" }
-velodex-replication = { path = "crates/velodex-replication" }
-velodex-storage = { path = "crates/velodex-storage" }
-velodex-upstream = { path = "crates/velodex-upstream" }
-velodex-http = { path = "crates/velodex-http" }
-velodex-web = { path = "crates/velodex-web" }
+peryx-format = { path = "crates/peryx-format" }
+peryx-ecosystem-pypi = { path = "crates/peryx-ecosystem-pypi", default-features = false }
+peryx-ecosystem-oci = { path = "crates/peryx-ecosystem-oci" }
+peryx-policy = { path = "crates/peryx-policy" }
+peryx-identity = { path = "crates/peryx-identity" }
+peryx-replication = { path = "crates/peryx-replication" }
+peryx-storage = { path = "crates/peryx-storage" }
+peryx-upstream = { path = "crates/peryx-upstream" }
+peryx-http = { path = "crates/peryx-http" }
+peryx-web = { path = "crates/peryx-web" }
 axum = { version = "0.8", features = ["multipart"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
@@ -98,14 +98,14 @@ inherits = "release"
 lto = "thin"
 
 # cargo-leptos builds the web UI's browser bundle: `cargo leptos build --release` compiles
-# velodex-web to wasm and writes ui/pkg/, which the server serves at /pkg. The server itself renders
+# peryx-web to wasm and writes ui/pkg/, which the server serves at /pkg. The server itself renders
 # pages without the bundle, so this step is only needed for the interactive UI.
 [[workspace.metadata.leptos]]
-name = "velodex"
-bin-package = "velodex"
-lib-package = "velodex-web"
+name = "peryx"
+bin-package = "peryx"
+lib-package = "peryx-web"
 lib-features = ["hydrate"]
 lib-default-features = false
-output-name = "velodex_web"
+output-name = "peryx_web"
 site-root = "ui"
 site-pkg-dir = "pkg"

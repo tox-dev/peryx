@@ -16,10 +16,10 @@ either team must never be fetched from pypi.org, even if someone registers the s
 
 ## Write the topology
 
-Save this as `velodex.toml`:
+Save this as `peryx.toml`:
 
 ```toml
-data_dir = "velodex-data"
+data_dir = "peryx-data"
 
 [[index]]
 name = "pypi"
@@ -54,7 +54,7 @@ here: letters, digits, `-`, `.`, `_`, and `~` are accepted, and `/` creates nest
 Start it:
 
 ```shell
-velodex serve --config velodex.toml
+peryx serve --config peryx.toml
 ```
 
 The dashboard at `http://127.0.0.1:4433/` draws the topology you just wrote: two virtual-index cards, `data` and `web`,
@@ -100,7 +100,7 @@ curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     http://127.0.0.1:4433/data/simple/mypkg/ | python3 -m json.tool | grep url
 ```
 
-Every URL points back at velodex, and the versions listed are yours alone. If someone registers `mypkg` on pypi.org
+Every URL points back at peryx, and the versions listed are yours alone. If someone registers `mypkg` on pypi.org
 tomorrow with version `99.0`, nothing changes: the hosted layer answers first, and the cached index is never consulted
 for a name the hosted layer has. [The index model](@/core/indexes.md) explains why this ordering is the
 dependency-confusion defense.

@@ -29,6 +29,8 @@
     {% endfor %}
     {% set contributing = get_section(path="contributing/_index.md") %}
     {{ self::group(sec=contributing, current=current, icon="contributing") }}
+    {% set brand = get_section(path="brand/_index.md") %}
+    {{ self::group(sec=brand, current=current, icon="reference") }}
   </nav>
 </details>
 {% endmacro %}

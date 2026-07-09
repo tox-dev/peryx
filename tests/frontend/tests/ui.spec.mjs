@@ -1,5 +1,5 @@
 // Functional tests of the hydrated web UI: every reactive feature is driven the way a person would
-// drive it, against a real velodex with a real uploaded package.
+// drive it, against a real peryx with a real uploaded package.
 import { expect, test } from "@playwright/test";
 
 const PROJECT_URL = "/browse?index=root%2Fpypi&project=veloxdemo";
@@ -115,7 +115,7 @@ test("project page copies the install snippet and downloads artifacts", async ({
 });
 
 test("unknown routes render the not-found fallback", async ({ page }) => {
-  // An unmatched path never reaches the SPA shell — velodex answers with its own 404 body — so this
+  // An unmatched path never reaches the SPA shell — peryx answers with its own 404 body — so this
   // one skips the hydration wait the other tests rely on.
   const response = await page.goto("/does-not-exist");
   expect(response.status()).toBe(404);
@@ -158,7 +158,7 @@ test("every page sets the differentiated app favicon", async ({ page }) => {
   const response = await page.request.get("/favicon.svg");
   expect(response.headers()["content-type"]).toContain("image/svg+xml");
   const svg = await response.text();
-  // The velodex mark (no wordmark) with a green node: distinct from the docs site's blue node.
+  // The peryx mark (no wordmark) with a green node: distinct from the docs site's blue node.
   expect(svg).toContain("512 512");
   expect(svg).toContain("#22C55E");
   expect(svg).not.toContain("#4F9BE0");

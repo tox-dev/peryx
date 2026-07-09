@@ -1,5 +1,5 @@
 {
-  "name": "velodex-frontend-tests",
+  "name": "peryx-frontend-tests",
   "private": true,
   "scripts": {
     "test": "playwright test"

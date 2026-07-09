@@ -1288,7 +1288,7 @@ pre:hover .copy-snippet,
   .bench-ratio { color: var(--text-soft); font-size: 0.8rem; }
 
   // Opaque base for the frozen columns so a scrolled cell never shows through them. The tints below
-  // override it for cells that have one; a bench-none velodex cell keeps this solid fallback.
+  // override it for cells that have one; a bench-none peryx cell keeps this solid fallback.
   th:first-child,
   td:first-child,
   th:nth-child(2),
@@ -1326,9 +1326,9 @@ pre:hover .copy-snippet,
     vertical-align: middle;
   }
 
-  // Freeze the label column and the velodex baseline column. They only engage when the table is
+  // Freeze the label column and the peryx baseline column. They only engage when the table is
   // wider than its container (narrow screens); at full width every server shows at once. --label-w
-  // is set by JS to the first column's width so velodex sits flush against the widest label.
+  // is set by JS to the first column's width so peryx sits flush against the widest label.
   th:first-child,
   td:first-child {
     position: sticky;

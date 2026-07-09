@@ -1,11 +1,11 @@
 +++
 title = "Command line"
-description = "The velodex binary's commands and flags."
+description = "The peryx binary's commands and flags."
 weight = 4
 +++
 
 ```
-velodex <COMMAND>
+peryx <COMMAND>
 ```
 
 ## Commands
@@ -32,7 +32,7 @@ velodex <COMMAND>
 | `--config <path>`   | TOML configuration file                         | (none)         |
 | `--host <addr>`     | Bind address                                    | `127.0.0.1`    |
 | `--port <port>`     | Bind port                                       | `4433`         |
-| `--data-dir <path>` | Data directory (redb store and blob cache)      | `velodex-data` |
+| `--data-dir <path>` | Data directory (redb store and blob cache)      | `peryx-data` |
 | `--offline`         | Serve configured cached indexes from cache only | `false`        |
 
 ### Logging
@@ -55,23 +55,23 @@ ecosystem, kind, uploads); `show` prints one index's details, including a virtua
 or a cached index's upstream. `--ecosystem` filters `list` to one ecosystem (`pypi` or `oci`).
 
 ```
-velodex index list [--ecosystem pypi|oci] [--config <path>] [--data-dir <path>]
-velodex index show <index> [--config <path>] [--data-dir <path>]
+peryx index list [--ecosystem pypi|oci] [--config <path>] [--data-dir <path>]
+peryx index show <index> [--config <path>] [--data-dir <path>]
 ```
 
 ## `config-snippet`
 
 ```
-velodex config-snippet --base-url <url> [--config <path>] [--index <route>] <pip.conf|uv.toml|.pypirc>
+peryx config-snippet --base-url <url> [--config <path>] [--index <route>] <pip.conf|uv.toml|.pypirc>
 ```
 
 `--base-url` is required because the CLI cannot know the public URL in front of the server. Use the origin clients see,
 with any proxy path prefix and without the index route:
 
 ```shell
-velodex config-snippet --base-url https://packages.example --index root/pypi pip.conf
-velodex config-snippet --base-url https://packages.example --index root/pypi uv.toml
-velodex config-snippet --base-url https://packages.example --index root/pypi .pypirc
+peryx config-snippet --base-url https://packages.example --index root/pypi pip.conf
+peryx config-snippet --base-url https://packages.example --index root/pypi uv.toml
+peryx config-snippet --base-url https://packages.example --index root/pypi .pypirc
 ```
 
 `pip.conf` and `uv.toml` are available for read-only and writable indexes. `.pypirc` is available only when the route
@@ -88,13 +88,13 @@ Mirror commands read the same config, `--data-dir`, and logging flags as `serve`
 index name or route. It may point at a cached index directly, or at a virtual index with one cached layer.
 
 ```shell
-velodex mirror plan root/pypi --package "requests>=2,<3"
-velodex mirror sync root/pypi --requirements requirements.txt
-velodex mirror sync pypi --mode all --python-tag py3 --abi-tag none --platform-tag any
-velodex mirror verify pypi --mode all
+peryx mirror plan root/pypi --package "requests>=2,<3"
+peryx mirror sync root/pypi --requirements requirements.txt
+peryx mirror sync pypi --mode all --python-tag py3 --abi-tag none --platform-tag any
+peryx mirror verify pypi --mode all
 
-velodex mirror sync root/oci --image library/alpine:latest --image library/nginx:1.27
-velodex mirror verify root/oci --image library/alpine:latest
+peryx mirror sync root/oci --image library/alpine:latest --image library/nginx:1.27
+peryx mirror verify root/oci --image library/alpine:latest
 ```
 
 `plan` prints the selection without writing cache records. `sync` stores it; `verify` checks cached documents and blob
@@ -129,16 +129,16 @@ Cache commands read the same config and `--data-dir` flags as `serve`. Output is
 can be piped to `cut`, `awk`, or a spreadsheet without scraping prose.
 
 ```shell
-velodex cache list --data-dir /var/lib/velodex
-velodex cache list --index pypi --project flask
-velodex cache list --digest 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-velodex cache list --stale --min-age-secs 600 --min-size-bytes 1048576
-velodex cache size
-velodex cache fsck
-velodex cache purge project --index pypi --project flask
-velodex cache purge project --index pypi --project flask --yes
-velodex cache purge orphaned-blobs
-velodex cache purge orphaned-blobs --yes
+peryx cache list --data-dir /var/lib/peryx
+peryx cache list --index pypi --project flask
+peryx cache list --digest 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+peryx cache list --stale --min-age-secs 600 --min-size-bytes 1048576
+peryx cache size
+peryx cache fsck
+peryx cache purge project --index pypi --project flask
+peryx cache purge project --index pypi --project flask --yes
+peryx cache purge orphaned-blobs
+peryx cache purge orphaned-blobs --yes
 ```
 
 `cache list` streams metadata rows and blob paths. The index/project filters apply to cached simple-index pages; the
@@ -161,11 +161,11 @@ Purge commands dry-run by default. Add `--yes` to delete the planned rows or blo
 `backup create` reads the same config and `--data-dir` flags as `serve`.
 
 ```shell
-velodex backup create --data-dir /var/lib/velodex /backups/velodex-2026-07-03
-velodex backup verify /backups/velodex-2026-07-03
+peryx backup create --data-dir /var/lib/peryx /backups/peryx-2026-07-03
+peryx backup verify /backups/peryx-2026-07-03
 ```
 
-`backup create` writes a directory containing `manifest.json`, `config.toml`, `metadata/velodex.redb`, `blobs.tsv`, and
+`backup create` writes a directory containing `manifest.json`, `config.toml`, `metadata/peryx.redb`, `blobs.tsv`, and
 the referenced files under `blobs/sha256/...`. It copies only blob digests referenced by metadata records and streams
 file copies with hash checks. It refuses an existing non-empty backup directory.
 
@@ -179,19 +179,19 @@ rows and exits non-zero.
 ## `restore`
 
 ```shell
-velodex restore /backups/velodex-2026-07-03 --data-dir /var/lib/velodex
-velodex restore /backups/velodex-2026-07-03 --data-dir /var/lib/velodex --force
+peryx restore /backups/peryx-2026-07-03 --data-dir /var/lib/peryx
+peryx restore /backups/peryx-2026-07-03 --data-dir /var/lib/peryx --force
 ```
 
 `restore` verifies the backup before writing. It refuses a non-empty target data directory unless `--force` is passed.
-With `--force`, it replaces the target directory, then writes `velodex.redb`, `config.toml`, and the referenced blobs.
+With `--force`, it replaces the target directory, then writes `peryx.redb`, `config.toml`, and the referenced blobs.
 It warns when the config snapshot in the backup names a different `data_dir` than the restore target.
 
 ## `import-dir`
 
 ```shell
-velodex import-dir root/pypi ./dist --data-dir /var/lib/velodex
-velodex import-dir hosted ./dist --config velodex.toml
+peryx import-dir root/pypi ./dist --data-dir /var/lib/peryx
+peryx import-dir hosted ./dist --config peryx.toml
 ```
 
 The index argument may be a hosted index name, a hosted route, or a virtual-index route with a hosted upload target.
@@ -214,8 +214,8 @@ summary row with imported, skipped, and rejected counts.
 Policy commands read the same config and `--data-dir` flags as `serve`.
 
 ```shell
-velodex policy dry-run --data-dir /var/lib/velodex
-velodex policy dry-run --index root/pypi --project flask
+peryx policy dry-run --data-dir /var/lib/peryx
+peryx policy dry-run --index root/pypi --project flask
 ```
 
 `policy dry-run` scans cached Simple pages and uploaded file records, then prints tab-separated denial rows:

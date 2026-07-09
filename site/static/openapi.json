@@ -1,11 +1,11 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "velodex",
+    "title": "peryx",
     "description": "Read-through cache and private index for multiple ecosystems. A PyPI index serves the Simple API under `/{route}/`, where `{route}` is the index's route (for example `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write operations authenticate with HTTP Basic where the password is the target hosted index's upload token and the username is ignored.",
     "contact": {
       "name": "tox-dev",
-      "url": "https://github.com/tox-dev/velodex"
+      "url": "https://github.com/gaborbernat/peryx"
     },
     "license": {
       "name": "MIT"
@@ -15,7 +15,7 @@
   "servers": [
     {
       "url": "http://127.0.0.1:4433",
-      "description": "A local velodex with the default configuration"
+      "description": "A local peryx with the default configuration"
     }
   ],
   "paths": {
@@ -251,8 +251,8 @@
                       "project_count": 2,
                       "recent_uploads": [
                         {
-                          "filename": "velodexpkg-1.0-py3-none-any.whl",
-                          "project": "velodexpkg",
+                          "filename": "peryxpkg-1.0-py3-none-any.whl",
+                          "project": "peryxpkg",
                           "size": 1832,
                           "uploaded_at": "2026-01-01T00:00:00Z",
                           "version": "1.0"
@@ -331,7 +331,7 @@
             "description": "Prometheus text exposition",
             "content": {
               "text/plain; version=0.0.4": {
-                "example": "# HELP velodex_requests_total Total HTTP requests served.\n# TYPE velodex_requests_total counter\nvelodex_requests_total 128\n# HELP velodex_index_metadata_total PEP 658 metadata siblings served.\n# TYPE velodex_index_metadata_total counter\nvelodex_index_metadata_total{index=\"root/pypi\",ecosystem=\"pypi\",role=\"virtual\"} 37\n"
+                "example": "# HELP peryx_requests_total Total HTTP requests served.\n# TYPE peryx_requests_total counter\nperyx_requests_total 128\n# HELP peryx_index_metadata_total PEP 658 metadata siblings served.\n# TYPE peryx_index_metadata_total counter\nperyx_index_metadata_total{index=\"root/pypi\",ecosystem=\"pypi\",role=\"virtual\"} 37\n"
               }
             }
           }
@@ -581,7 +581,7 @@
           "oci"
         ],
         "summary": "Browse a layer's files",
-        "description": "velodex's own layer browser (not a distribution-spec route): lists a stored layer's tar members, or with `?member=` previews one text member in bounded chunks.",
+        "description": "peryx's own layer browser (not a distribution-spec route): lists a stored layer's tar members, or with `?member=` previews one text member in bounded chunks.",
         "parameters": [
           {
             "name": "name",
@@ -803,7 +803,7 @@
           "publish"
         ],
         "summary": "Upload a distribution",
-        "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries a wheel or modern `.tar.gz` sdist. velodex streams the bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and sdist top-level structure before the file lands in the index's local layer. Uploaded wheels and sdists get PEP 658/714 `.metadata` siblings from verified core metadata. The upload shadows any upstream file of the same name.",
+        "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries a wheel or modern `.tar.gz` sdist. peryx streams the bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and sdist top-level structure before the file lands in the index's local layer. Uploaded wheels and sdists get PEP 658/714 `.metadata` siblings from verified core metadata. The upload shadows any upstream file of the same name.",
         "parameters": [
           {
             "name": "route",
@@ -822,7 +822,7 @@
                 "blake2_256_digest": "5c7d8a29df3e0c4c752c02bff90615dd08d1d1aa9e23738a1e50c27f0415f95d",
                 "content": "<the distribution file>",
                 "filetype": "bdist_wheel",
-                "name": "velodexpkg",
+                "name": "peryxpkg",
                 "requires_python": ">=3.8",
                 "sha256_digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
                 "version": "1.0"
@@ -843,7 +843,7 @@
             "description": "Rejected",
             "content": {
               "text/plain": {
-                "example": "metadata Name \"other\" does not match upload name \"velodexpkg\""
+                "example": "metadata Name \"other\" does not match upload name \"peryxpkg\""
               }
             }
           },
@@ -913,9 +913,9 @@
                       "yanking": true
                     },
                     "client_configuration": {
-                      ".pypirc": "[distutils]\nindex-servers =\n    velodex\n\n[velodex]\nrepository = http://127.0.0.1:4433/root/pypi/\nusername = __token__\npassword = <upload-token>\n",
+                      ".pypirc": "[distutils]\nindex-servers =\n    peryx\n\n[peryx]\nrepository = http://127.0.0.1:4433/root/pypi/\nusername = __token__\npassword = <upload-token>\n",
                       "pip.conf": "[global]\nindex-url = http://127.0.0.1:4433/root/pypi/simple/\n",
-                      "uv.toml": "publish-url = \"http://127.0.0.1:4433/root/pypi/\"\n\n[[index]]\nname = \"velodex\"\nurl = \"http://127.0.0.1:4433/root/pypi/simple/\"\ndefault = true\n\n[pip]\nindex-url = \"http://127.0.0.1:4433/root/pypi/simple/\"\n"
+                      "uv.toml": "publish-url = \"http://127.0.0.1:4433/root/pypi/\"\n\n[[index]]\nname = \"peryx\"\nurl = \"http://127.0.0.1:4433/root/pypi/simple/\"\ndefault = true\n\n[pip]\nindex-url = \"http://127.0.0.1:4433/root/pypi/simple/\"\n"
                     },
                     "kind": "virtual",
                     "layers": [
@@ -1056,7 +1056,7 @@
             "in": "path",
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
-            "example": "velodexpkg-1.0-py3-none-any.whl"
+            "example": "peryxpkg-1.0-py3-none-any.whl"
           }
         ],
         "responses": {
@@ -1121,7 +1121,7 @@
             "in": "path",
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
-            "example": "velodexpkg-1.0-py3-none-any.whl.metadata"
+            "example": "peryxpkg-1.0-py3-none-any.whl.metadata"
           }
         ],
         "responses": {
@@ -1129,7 +1129,7 @@
             "description": "The core-metadata document",
             "content": {
               "application/octet-stream": {
-                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\nRequires-Python: >=3.8\n"
+                "example": "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\n"
               }
             }
           },
@@ -1182,7 +1182,7 @@
             "in": "path",
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
-            "example": "velodexpkg-1.0-py3-none-any.whl"
+            "example": "peryxpkg-1.0-py3-none-any.whl"
           },
           {
             "name": "container",
@@ -1196,7 +1196,7 @@
             "in": "query",
             "description": "Optional text member path to read as a bounded chunk",
             "required": false,
-            "example": "velodexpkg-1.0.dist-info/METADATA"
+            "example": "peryxpkg-1.0.dist-info/METADATA"
           },
           {
             "name": "offset",
@@ -1219,11 +1219,11 @@
             "content": {
               "application/json": {
                 "example": {
-                  "filename": "velodexpkg-1.0-py3-none-any.whl",
+                  "filename": "peryxpkg-1.0-py3-none-any.whl",
                   "members": [
                     {
                       "kind": "text",
-                      "path": "velodexpkg/__init__.py",
+                      "path": "peryxpkg/__init__.py",
                       "previewable": true,
                       "size": 20
                     },
@@ -1235,7 +1235,7 @@
                     },
                     {
                       "kind": "binary",
-                      "path": "velodexpkg/data.bin",
+                      "path": "peryxpkg/data.bin",
                       "previewable": false,
                       "size": 8192
                     }
@@ -1243,7 +1243,7 @@
                 }
               },
               "text/plain; charset=utf-8": {
-                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n"
+                "example": "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n"
               }
             }
           },
@@ -1295,13 +1295,13 @@
             "in": "path",
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
             "required": true,
-            "example": "velodexpkg-1.0-py3-none-any.whl"
+            "example": "peryxpkg-1.0-py3-none-any.whl"
           },
           {
             "name": "member",
             "in": "path",
             "required": true,
-            "example": "velodexpkg-1.0.dist-info/METADATA"
+            "example": "peryxpkg-1.0.dist-info/METADATA"
           }
         ],
         "responses": {
@@ -1309,7 +1309,7 @@
             "description": "The member content",
             "content": {
               "text/plain; charset=utf-8": {
-                "example": "Metadata-Version: 2.1\nName: velodexpkg\nVersion: 1.0\n"
+                "example": "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n"
               }
             }
           },
@@ -1331,7 +1331,7 @@
           "simple"
         ],
         "summary": "List projects",
-        "description": "The projects velodex has observed on this index: everything uploaded, plus every mirrored project a client has asked for. A virtual index unions its layers. Index policy filters denied projects before serialization. JSON or HTML by `Accept`.",
+        "description": "The projects peryx has observed on this index: everything uploaded, plus every mirrored project a client has asked for. A virtual index unions its layers. Index policy filters denied projects before serialization. JSON or HTML by `Accept`.",
         "parameters": [
           {
             "name": "route",
@@ -1362,7 +1362,7 @@
                       "name": "requests"
                     },
                     {
-                      "name": "velodexpkg"
+                      "name": "peryxpkg"
                     }
                   ]
                 }
@@ -1381,7 +1381,7 @@
           "simple"
         ],
         "summary": "Project detail",
-        "description": "All files of one project, merged across virtual-index layers (first match per filename wins, versions union). File URLs point back at velodex's own `files/` route; `core-metadata` advertises the PEP 658 sibling. Index policy filters denied files and their versions before serialization.",
+        "description": "All files of one project, merged across virtual-index layers (first match per filename wins, versions union). File URLs point back at peryx's own `files/` route; `core-metadata` advertises the PEP 658 sibling. Index policy filters denied files and their versions before serialization.",
         "parameters": [
           {
             "name": "route",
@@ -1419,16 +1419,16 @@
                       "dist-info-metadata": {
                         "sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
                       },
-                      "filename": "velodexpkg-1.0-py3-none-any.whl",
+                      "filename": "peryxpkg-1.0-py3-none-any.whl",
                       "gpg-sig": false,
                       "hashes": {
                         "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
                       },
-                      "provenance": "https://example.test/provenance/velodexpkg-1.0-py3-none-any.whl",
+                      "provenance": "https://example.test/provenance/peryxpkg-1.0-py3-none-any.whl",
                       "requires-python": ">=3.8",
                       "size": 1832,
                       "upload-time": "2026-01-01T00:00:00Z",
-                      "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
+                      "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/peryxpkg-1.0-py3-none-any.whl",
                       "yanked": false
                     }
                   ],
@@ -1436,7 +1436,7 @@
                     "api-version": "1.4",
                     "project-status": "active"
                   },
-                  "name": "velodexpkg",
+                  "name": "peryxpkg",
                   "versions": [
                     "1.0"
                   ]
@@ -1563,7 +1563,7 @@
                       "last_month": -1,
                       "last_week": -1
                     },
-                    "name": "velodexpkg",
+                    "name": "peryxpkg",
                     "requires_python": ">=3.8",
                     "summary": "",
                     "version": "1.0",
@@ -1583,7 +1583,7 @@
                           "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
                         },
                         "downloads": -1,
-                        "filename": "velodexpkg-1.0-py3-none-any.whl",
+                        "filename": "peryxpkg-1.0-py3-none-any.whl",
                         "has_sig": false,
                         "md5_digest": null,
                         "packagetype": "bdist_wheel",
@@ -1592,7 +1592,7 @@
                         "size": 1832,
                         "upload_time": "2026-01-01T00:00:00",
                         "upload_time_iso_8601": "2026-01-01T00:00:00Z",
-                        "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
+                        "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/peryxpkg-1.0-py3-none-any.whl",
                         "yanked": false,
                         "yanked_reason": null
                       }
@@ -1605,7 +1605,7 @@
                         "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
                       },
                       "downloads": -1,
-                      "filename": "velodexpkg-1.0-py3-none-any.whl",
+                      "filename": "peryxpkg-1.0-py3-none-any.whl",
                       "has_sig": false,
                       "md5_digest": null,
                       "packagetype": "bdist_wheel",
@@ -1614,7 +1614,7 @@
                       "size": 1832,
                       "upload_time": "2026-01-01T00:00:00",
                       "upload_time_iso_8601": "2026-01-01T00:00:00Z",
-                      "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/velodexpkg-1.0-py3-none-any.whl",
+                      "url": "/root/pypi/files/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08/peryxpkg-1.0-py3-none-any.whl",
                       "yanked": false,
                       "yanked_reason": null
                     }
@@ -1734,7 +1734,7 @@
                       "last_month": -1,
                       "last_week": -1
                     },
-                    "name": "velodexpkg",
+                    "name": "peryxpkg",
                     "requires_python": ">=3.8",
                     "summary": "",
                     "version": "1.0",
@@ -1753,7 +1753,7 @@
                         "sha256": "0ace7980f82c5815ede4cd7bf9f6693684cec2ae47b9b7ade9add533b8627c6b"
                       },
                       "downloads": -1,
-                      "filename": "velodexpkg-1.0.tar.gz",
+                      "filename": "peryxpkg-1.0.tar.gz",
                       "has_sig": false,
                       "md5_digest": null,
                       "packagetype": "sdist",
@@ -1762,7 +1762,7 @@
                       "size": 5760,
                       "upload_time": "2026-01-01T00:00:01",
                       "upload_time_iso_8601": "2026-01-01T00:00:01Z",
-                      "url": "/root/pypi/files/0ace7980f82c5815ede4cd7bf9f6693684cec2ae47b9b7ade9add533b8627c6b/velodexpkg-1.0.tar.gz",
+                      "url": "/root/pypi/files/0ace7980f82c5815ede4cd7bf9f6693684cec2ae47b9b7ade9add533b8627c6b/peryxpkg-1.0.tar.gz",
                       "yanked": false,
                       "yanked_reason": null
                     }

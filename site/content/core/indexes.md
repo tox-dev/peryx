@@ -5,19 +5,19 @@ weight = 3
 +++
 
 An index server earns its keep the day you have a package that must not come from the public internet. This page
-explains velodex's answer. An **index** is the list of packages a client installs from (pip and uv call it an
-index-url); a **registry** is the same idea under a different name. velodex builds every index from two independent
+explains peryx's answer. An **index** is the list of packages a client installs from (pip and uv call it an
+index-url); a **registry** is the same idea under a different name. peryx builds every index from two independent
 choices, a **role** (what the index does) and an **ecosystem** (which packaging format it speaks), and one composition
 rule. That rule is a security control before it is a convenience.
 
 ## Two axes: role and ecosystem
 
-Every index velodex serves is a triple: a **role**, an **ecosystem**, and a **key** (its name). The two axes are
+Every index peryx serves is a triple: a **role**, an **ecosystem**, and a **key** (its name). The two axes are
 independent.
 
 - **role** is what the index does. There are three:
-  - **cached** is a read-through cache of one upstream index. "Upstream" means the index velodex fetches from, e.g.
-    pypi.org. On a first request velodex fetches from upstream, stores the result, and serves it; later requests come
+  - **cached** is a read-through cache of one upstream index. "Upstream" means the index peryx fetches from, e.g.
+    pypi.org. On a first request peryx fetches from upstream, stores the result, and serves it; later requests come
     from local disk. (This was called a "mirror".)
   - **hosted** is an authoritative store you upload to. Nothing upstream; the packages live here because you published
     them. (This was called a "local" index.)
@@ -33,7 +33,7 @@ page shows the same shapes in its own protocol.
 
 ## Prior art
 
-The index servers teams run in production converged on the same role shape, and velodex adopts it:
+The index servers teams run in production converged on the same role shape, and peryx adopts it:
 
 - **Artifactory** aggregates *local* and *remote* repositories into a *virtual* repository behind one URL, with a
   default deployment target for writes and local-before-remote resolution.
@@ -41,9 +41,9 @@ The index servers teams run in production converged on the same role shape, and 
   documentation recommends hosted first.
 
 The shared pattern: a read-through cache primitive, a writable hosted primitive, and an ordered composition served at
-one URL where your own content wins over upstream. velodex names these cached, hosted, and virtual.
+one URL where your own content wins over upstream. peryx names these cached, hosted, and virtual.
 
-## velodex's three roles
+## peryx's three roles
 
 - A **cached** index proxies and caches one upstream, with its own credentials.
 - A **hosted** index stores uploads; `upload_token` gates writes and `volatile` gates deletion.
@@ -83,7 +83,7 @@ deny-list to maintain.
 
 ## Removal semantics
 
-velodex distinguishes hiding an artifact from destroying it, and keeps both (the PyPI names appear here; each ecosystem
+peryx distinguishes hiding an artifact from destroying it, and keeps both (the PyPI names appear here; each ecosystem
 maps them to its own protocol):
 
 - **Yank** ([PEP 592](https://peps.python.org/pep-0592/)) marks a file so resolvers skip it while exact-pin installs
@@ -98,7 +98,7 @@ maps them to its own protocol):
 
 ## The default topology
 
-Out of the box velodex runs one trio per ecosystem: a cached index of the public upstream, an empty hosted index, and a
+Out of the box peryx runs one trio per ecosystem: a cached index of the public upstream, an empty hosted index, and a
 virtual index combining them. For PyPI that is a pypi.org cache behind `root/pypi`; for OCI, a Docker Hub cache behind
 `root/oci`. Each virtual URL serves the whole public index for its ecosystem, and the day you need to host a private
 artifact you add a token to that ecosystem's hosted index; nothing about the client setup changes.

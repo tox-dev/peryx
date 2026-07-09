@@ -59,7 +59,7 @@ function render(source, tmp) {
 
 function main() {
   mkdirSync(outDir, { recursive: true });
-  const tmp = mkdtempSync(join(tmpdir(), "velodex-diagrams-"));
+  const tmp = mkdtempSync(join(tmpdir(), "peryx-diagrams-"));
   const kept = new Set();
   let count = 0;
   for (const file of markdownFiles(contentDir)) {

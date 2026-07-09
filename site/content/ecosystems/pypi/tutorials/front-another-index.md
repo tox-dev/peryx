@@ -1,10 +1,10 @@
 +++
 title = "Front another index"
-description = "Mirror an index that is not pypi.org, watch velodex upgrade its protocols, and layer it with PyPI under one URL."
+description = "Mirror an index that is not pypi.org, watch peryx upgrade its protocols, and layer it with PyPI under one URL."
 weight = 3
 +++
 
-In this tutorial you will point velodex at a second upstream, TestPyPI, and serve it two ways: on its own route, and
+In this tutorial you will point peryx at a second upstream, TestPyPI, and serve it two ways: on its own route, and
 layered with pypi.org under one URL. The same recipe fronts an Artifactory, a GitLab registry, or any other PEP 503
 index. It takes about ten minutes.
 
@@ -12,13 +12,13 @@ index. It takes about ten minutes.
 
 [TestPyPI](https://test.pypi.org/) is the packaging ecosystem's sandbox: public, credential-free for reads, and separate
 from the real index, which makes it a safe stand-in for "some other index you must serve". It also lacks some of
-pypi.org's polish, which is the point: you will watch velodex paper over the difference.
+pypi.org's polish, which is the point: you will watch peryx paper over the difference.
 
 ## Mirror it
 
 ```toml
-# velodex.toml
-data_dir = "velodex-data"
+# peryx.toml
+data_dir = "peryx-data"
 
 [[index]]
 name = "testpypi"
@@ -26,7 +26,7 @@ cached = "https://test.pypi.org/simple/"
 ```
 
 ```shell
-velodex serve --config velodex.toml
+peryx serve --config peryx.toml
 uv venv demo
 VIRTUAL_ENV=demo uv pip install --index-url http://127.0.0.1:4433/testpypi/simple/ sampleproject
 ```
@@ -43,7 +43,7 @@ curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     http://127.0.0.1:4433/testpypi/simple/sampleproject/ | python3 -m json.tool | head
 ```
 
-A PEP 691 JSON document with PEP 700 fields, whatever the upstream offered. velodex negotiates the best format the
+A PEP 691 JSON document with PEP 700 fields, whatever the upstream offered. peryx negotiates the best format the
 upstream has, canonicalizes it once, and serves the modern stack downstream; an HTML-only Artifactory gets the same
 treatment ([how the degradation works](@/ecosystems/pypi/reference/standards.md)).
 

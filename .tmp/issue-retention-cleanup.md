@@ -42,8 +42,8 @@ References:
   - cached files
   - hosted files
   - orphan blobs
-- Add `velodex cleanup plan <repo>` to show deletions without changing storage.
-- Add `velodex cleanup apply <repo>` to delete planned objects after confirmation or `--yes`.
+- Add `peryx cleanup plan <repo>` to show deletions without changing storage.
+- Add `peryx cleanup apply <repo>` to delete planned objects after confirmation or `--yes`.
 - Track metadata needed for cleanup:
   - upload time
   - first cached time

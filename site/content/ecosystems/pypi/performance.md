@@ -1,12 +1,12 @@
 +++
 title = "Performance"
-description = "velodex next to devpi, proxpi, pypiserver, and pypicloud: cold and warm installs, file throughput, a parallel CI fleet, and a request swarm, with the commands behind every number."
+description = "peryx next to devpi, proxpi, pypiserver, and pypicloud: cold and warm installs, file throughput, a parallel CI fleet, and a request swarm, with the commands behind every number."
 weight = 2
 +++
 
 Claims about speed are worthless without the commands behind them, so here are both. The headline: a **cold** install
-through velodex costs about what going straight to pypi.org costs, and a **warm** one is bounded by the installer's own
-CPU, not the network. This page measures that against every PyPI cache you could run instead. For why velodex behaves
+through peryx costs about what going straight to pypi.org costs, and a **warm** one is bounded by the installer's own
+CPU, not the network. This page measures that against every PyPI cache you could run instead. For why peryx behaves
 this way, see [performance and methodology](@/core/performance.md).
 
 ## The measurement
@@ -21,7 +21,7 @@ env VIRTUAL_ENV=$PWD/fresh-venv UV_CACHE_DIR=$PWD/fresh-cache \
     uv pip install pandas polars
 ```
 
-Setup: velodex release build and the client on the same Apple Silicon laptop, roughly 700 Mbit/s to PyPI's CDN. Each
+Setup: peryx release build and the client on the same Apple Silicon laptop, roughly 700 Mbit/s to PyPI's CDN. Each
 cell is the median over several independent rounds, each restarting the server on empty state; "cold" is that empty
 first pass, "warm" reruns against the now-full cache. See [performance and methodology](@/core/performance.md) for how
 the rounds, spread, and network-bound rows are handled.
@@ -29,20 +29,20 @@ the rounds, spread, and network-bound rows are handled.
 | Scenario                    | Wall time   | What dominates                                     |
 | --------------------------- | ----------- | -------------------------------------------------- |
 | uv direct to pypi.org       | 0.94–1.03 s | the network, end to end                            |
-| through velodex, cold cache | 1.13–1.38 s | the network; velodex adds ~0.1–0.3 s               |
-| through velodex, warm cache | 0.66–0.71 s | uv itself (0.76 s of CPU unzipping and installing) |
+| through peryx, cold cache | 1.13–1.38 s | the network; peryx adds ~0.1–0.3 s               |
+| through peryx, warm cache | 0.66–0.71 s | uv itself (0.76 s of CPU unzipping and installing) |
 
 Per-request server timings from the warm runs: simple pages and cached wheels serve in 0 ms; the largest page in the set
 (numpy's, 2.6 MB of JSON) transforms in under 30 ms on its first warm hit and is a memory copy afterwards.
 
-The run-to-run spread on the cold numbers is the CDN, not velodex: the same 47 MB wheel arrived in anything from 0.7 to
+The run-to-run spread on the cold numbers is the CDN, not peryx: the same 47 MB wheel arrived in anything from 0.7 to
 1.3 s across runs. And a laptop next to its cache is the *least* favorable setup for the warm numbers: the farther your
 machines sit from PyPI (CI in a private subnet, an office behind one uplink), the more the warm path wins, because it
 replaces your worst network hop instead of a loopback.
 
 ## The field
 
-The tables below put velodex next to every alternative that starts hermetically from a package, plus **direct**, meaning
+The tables below put peryx next to every alternative that starts hermetically from a package, plus **direct**, meaning
 [uv](https://docs.astral.sh/uv/) talking to pypi.org with no proxy in between, the baseline every ratio compares
 against. The servers overlap on features. They diverge on two things the benchmarks price: where the bytes go on a cache
 miss, and what happens when many clients miss the same thing at once. The rest of this section reads each server's
@@ -50,7 +50,7 @@ source for those two axes, so the tables that follow are readable in advance rat
 
 | Server                                                 | Stack                                                                                                                                                                | On a miss                                                  | Persisted cache                                                     | Private uploads   |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- | ----------------- |
-| [velodex](@/core/architecture.md)                      | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)), one process                                                     | streams the bytes through, teeing into the store           | content-addressed, on disk ([redb](https://www.redb.org/) + blobs)  | token per index   |
+| [peryx](@/core/architecture.md)                      | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)), one process                                                     | streams the bytes through, teeing into the store           | content-addressed, on disk ([redb](https://www.redb.org/) + blobs)  | token per index   |
 | [devpi](https://devpi.net/docs/)                       | Python/[Pyramid](https://docs.pylonsproject.org/projects/pyramid/) on [waitress](https://docs.pylonsproject.org/projects/waitress/) (~50 threads); primary + replica | pages: fetch, parse, store, render; files: stream and tee  | [SQLite](https://www.sqlite.org/) keyfs plus sha256-addressed files | per-user, per-ACL |
 | [proxpi](https://github.com/EpicWink/proxpi)           | Python/[Flask](https://flask.palletsprojects.com/) under [gunicorn](https://gunicorn.org/) (4 worker processes here)                                                 | download to a disk temp dir in a thread; client waits      | index in RAM (per worker), files on disk                            | none              |
 | [pypiserver](https://github.com/pypiserver/pypiserver) | Python/[Bottle](https://bottlepy.org/docs/dev/), serves a directory of files                                                                                         | `302` redirect to pypi.org, caching nothing                | none for upstream content                                           | htpasswd on a dir |
@@ -63,7 +63,7 @@ The cold rows come down to how each server moves an uncached wheel from pypi.org
 {% mermaid() %}
 flowchart TB
 miss["client requests an uncached wheel"]
-miss --> V["velodex, devpi:<br/>stream to the client while<br/>teeing into a content-addressed store"]
+miss --> V["peryx, devpi:<br/>stream to the client while<br/>teeing into a content-addressed store"]
 miss --> P["proxpi:<br/>download to a disk temp dir in a thread;<br/>client waits, or is redirected after 0.9 s"]
 miss --> S["pypiserver:<br/>302 redirect to pypi.org;<br/>nothing is downloaded or cached"]
 miss --> C["pypicloud:<br/>buffer the whole file to a temp file,<br/>write to store + DB, then serve"]
@@ -73,12 +73,12 @@ class V good
 class C,S warn
 {% end %}
 
-- **velodex** never buffers a whole response.
-  [Page and artifact bytes stream to the client and into the store at once](@/core/architecture.md); velodex transforms
+- **peryx** never buffers a whole response.
+  [Page and artifact bytes stream to the client and into the store at once](@/core/architecture.md); peryx transforms
   a page chunk by chunk mid-flight, and tees a wheel to a temp file, hashes it, and renames it into the store once the
   client already has its bytes. A miss costs upstream wire time plus one hop. That sets the cold-install and
   cold-throughput numbers.
-- **devpi** handles artifacts much as velodex does. `FileStreamer` writes each chunk to a local file and yields it to
+- **devpi** handles artifacts much as peryx does. `FileStreamer` writes each chunk to a local file and yields it to
   the client, then commits the sha256-addressed file once the body completes. Simple pages take the slower route: devpi
   fetches the upstream page, parses it, writes the link list into its SQLite keyfs, and only then renders a response
   from its own store. On PyPI-sized pages that parse-and-store step is real work on every refresh, and it runs under a
@@ -92,22 +92,22 @@ class C,S warn
 - **pypiserver** serves a directory of your own packages; with `--fallback-url` a miss is a bare `302` redirect to
   pypi.org's simple page. It downloads and caches nothing. That is why its CPU sits near zero and its cold and warm
   columns barely move: there is no cache to warm, and a miss is a formatted redirect string.
-- **pypicloud** was the closest design to velodex (a `fallback = cache` read-through mirror), but its cold path fully
+- **pypicloud** was the closest design to peryx (a `fallback = cache` read-through mirror), but its cold path fully
   buffers. It pulls the entire upstream file into a `TemporaryFile`, computes hashes, writes it to storage and a row
   into its cache DB, and only then sets the response body. The client waits for the download, the disk write, and the DB
   commit before its first byte. pypicloud stores files by `name/version/filename`, not by hash. The project has been
   archived since 2023 and runs only under Python 3.10 with [SQLAlchemy](https://www.sqlalchemy.org/) pinned below 2.
 
-Only velodex serves [PEP 658](https://peps.python.org/pep-0658/) `.metadata` by default (and
+Only peryx serves [PEP 658](https://peps.python.org/pep-0658/) `.metadata` by default (and
 [synthesizes it with byte-range reads](@/core/architecture.md) when an upstream lacks it); proxpi proxies it when the
 upstream advertises it, devpi hides it behind an experimental `--enable-core-metadata`, and pypiserver and pypicloud do
 not serve it at all. This drives the warm-resolution numbers: a resolver comparing ten versions fetches kilobytes from
-velodex and megabytes of wheels from the servers that cannot offer the sibling.
+peryx and megabytes of wheels from the servers that cannot offer the sibling.
 
 ### What a concurrent cold burst does
 
 The cold rows of the parallel-install and throughput tables turn on one question: what does a server do when several
-clients miss the *same* uncached thing at once? velodex answers with single-flight, where concurrent misses for one page
+clients miss the *same* uncached thing at once? peryx answers with single-flight, where concurrent misses for one page
 or file share a single upstream fetch and all tail its result. Two competitors answer with a failure the source
 explains.
 
@@ -152,21 +152,21 @@ where.
 
 ## The benchmark suite
 
-The tables below come from a [benchmark harness](https://github.com/tox-dev/velodex/tree/main/crates/velodex-bench) the
-repository carries as a Rust crate: it builds velodex, starts every competitor from its published package, times the
+The tables below come from a [benchmark harness](https://github.com/gaborbernat/peryx/tree/main/crates/peryx-bench) the
+repository carries as a Rust crate: it builds peryx, starts every competitor from its published package, times the
 same workload through each with a native HTTP client, samples each server's process tree while its workload runs, and
 writes one TOML report these tables render from. Cells tint from best-in-row green to worst-in-row red; the ratio in
 parentheses compares against **direct**, the no-proxy baseline, so each server's cell reads as the overhead (or win) it
 adds over talking to pypi.org yourself.
 
-The table covers every alternative that can be started hermetically from a published package: velodex, devpi, proxpi,
+The table covers every alternative that can be started hermetically from a published package: peryx, devpi, proxpi,
 pypiserver (whose upstream fallback is a redirect rather than a cache), and pypicloud (archived upstream; it still runs,
 but only under Python 3.10 with SQLAlchemy pinned below 2). Pulp needs PostgreSQL plus four services, nginx_pypi_cache
 is a Docker configuration rather than a package, and Artifactory, Nexus, and the cloud registries need licenses or
 accounts, so none of them can be measured this way.
 
 The install workload is the top 51 most-downloaded PyPI packages
-([the snapshot](https://github.com/tox-dev/velodex/blob/main/crates/velodex-bench/src/ecosystems/pypi/packages.rs),
+([the snapshot](https://github.com/gaborbernat/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs),
 torch included for one large wheel), installed with uv into a fresh virtualenv with a fresh client cache. **Cold** is
 the first install against a server with empty state; **warm** reruns it with the server's cache full and only the client
 reset.
@@ -181,7 +181,7 @@ client; through uv, the index is what you feel.
 
 The throughput workload moves one large wheel (torch, ~88 MB). The cold row is the moment a CI fleet fears: four clients
 ask for the same wheel the instant a release lands, and the server either fans one upstream transfer out to every waiter
-or serializes them. velodex runs the transfer as a detached task every client tails, so all four see their first byte in
+or serializes them. peryx runs the transfer as a detached task every client tails, so all four see their first byte in
 milliseconds and finish together in the time one download takes; pypicloud answers the same burst with HTTP 500. The hot
 rows measure how fast a cached wheel leaves the server, alone and under eight parallel readers. Every number past ~3
 GB/s outruns a 25 GbE link, so those cells compare server efficiency, not anything a client on a network would feel.
@@ -203,14 +203,14 @@ transfers, not header round-trips.
 {{ bench(file="load") }}
 
 Every table ends with two resource rows: the CPU seconds and peak resident memory of the server's whole process tree
-while its workload ran, compared against velodex (direct runs no server, so it cannot anchor them). Speed alone hides a
-trade: proxpi's hot-transfer lead comes from holding wheels in memory at three to five times velodex's footprint, and
+while its workload ran, compared against peryx (direct runs no server, so it cannot anchor them). Speed alone hides a
+trade: proxpi's hot-transfer lead comes from holding wheels in memory at three to five times peryx's footprint, and
 pypiserver's near-zero CPU reflects that it redirects file downloads to PyPI instead of serving them.
 
 Every server is measured the same way, on the same machine, in the same run, and one command reproduces every table:
 
 ```shell
-cargo run --release -p velodex-bench
+cargo run --release -p peryx-bench
 ```
 
 ## Related

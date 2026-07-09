@@ -3,7 +3,7 @@ requires = ["maturin<2,>=1.14.1"]
 build-backend = "maturin"
 
 [project]
-name = "velodex"
+name = "peryx"
 description = "A blazing-fast artifact server: caching proxy, hosted store, and virtual index — PyPI today"
 readme = "README.md"
 license = "MIT"
@@ -22,12 +22,12 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Documentation = "https://velodex.readthedocs.io/"
-Source = "https://github.com/tox-dev/velodex"
-Issues = "https://github.com/tox-dev/velodex/issues"
+Documentation = "https://peryx.readthedocs.io/"
+Source = "https://github.com/gaborbernat/peryx"
+Issues = "https://github.com/gaborbernat/peryx/issues"
 
 [tool.maturin]
-# The wheel carries the compiled `velodex` binary as a console script; there are no Python
+# The wheel carries the compiled `peryx` binary as a console script; there are no Python
 # bindings, so one wheel per platform serves every CPython and PyPy version.
 bindings = "bin"
-manifest-path = "crates/velodex/Cargo.toml"
+manifest-path = "crates/peryx/Cargo.toml"

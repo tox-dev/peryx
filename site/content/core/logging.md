@@ -9,10 +9,10 @@ file. `-v` raises the level to debug and `-vv` to trace. A directive can target 
 output quiet:
 
 ```shell
-velodex serve --log-level "info,velodex_upstream=debug"
+peryx serve --log-level "info,peryx_upstream=debug"
 ```
 
-velodex logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch
+peryx logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch
 pip and uv take the [PEP 658](https://peps.python.org/pep-0658/) `.metadata` path, or docker fetch a manifest before its
 blobs, without raising verbosity.
 
@@ -32,23 +32,23 @@ In the config file:
 level = "info"
 format = "json"
 sink = "file"
-file = "/var/log/velodex/velodex.log"
+file = "/var/log/peryx/peryx.log"
 ```
 
-velodex validates the combination at startup and refuses, for example, a `file` sink without a path.
+peryx validates the combination at startup and refuses, for example, a `file` sink without a path.
 
 ## Security Events
 
-Index actions emit structured records on the `velodex::security` target. Use JSON output when downstream tooling needs
+Index actions emit structured records on the `peryx::security` target. Use JSON output when downstream tooling needs
 to filter by actor, action, target, or result.
 
 ```shell
-velodex serve --log-format json --log-sink file --log-file /var/log/velodex/events.log
+peryx serve --log-format json --log-sink file --log-file /var/log/peryx/events.log
 ```
 
-Each record sets `security_event=true` and `event=index_action`. Velodex also writes `action`, `result`, `actor`,
+Each record sets `security_event=true` and `event=index_action`. Peryx also writes `action`, `result`, `actor`,
 `index`, `local_index`, `project`, `version`, `filename`, `digest`, `count`, `changed`, `reason`, `request_id`, and
-`user_agent`. Missing values use empty strings or zero values. Velodex leaves credentials, bearer tokens, Basic auth
+`user_agent`. Missing values use empty strings or zero values. Peryx leaves credentials, bearer tokens, Basic auth
 passwords, and URL secrets out of these records.
 
 The current action names are `token_use`, `upload`, `yank`, `unyank`, `delete`, `restore`, and `mirror_sync`. Results
@@ -57,15 +57,15 @@ are `success`, `denied`, `failure`, or `noop`.
 Plain-file queries:
 
 ```shell
-grep '"security_event":true' /var/log/velodex/events.log
-grep '"action":"delete"' /var/log/velodex/events.log | grep '"result":"denied"'
+grep '"security_event":true' /var/log/peryx/events.log
+grep '"action":"delete"' /var/log/peryx/events.log | grep '"result":"denied"'
 ```
 
 JSON queries:
 
 ```shell
-jq 'select(.fields.security_event == true and .fields.action == "upload")' /var/log/velodex/events.log
-jq 'select(.fields.security_event == true and .fields.actor == "__token__")' /var/log/velodex/events.log
+jq 'select(.fields.security_event == true and .fields.action == "upload")' /var/log/peryx/events.log
+jq 'select(.fields.security_event == true and .fields.actor == "__token__")' /var/log/peryx/events.log
 ```
 
 ## Related

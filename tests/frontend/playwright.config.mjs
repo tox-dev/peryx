@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-// The web server script builds a temp data dir, starts the velodex binary with an upload token, and
+// The web server script builds a temp data dir, starts the peryx binary with an upload token, and
 // uploads the fixture wheel, so every run starts from the same state.
 export default defineConfig({
   testDir: "tests",

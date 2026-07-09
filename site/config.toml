@@ -1,5 +1,5 @@
-base_url = "https://velodex.readthedocs.io"
-title = "velodex"
+base_url = "https://peryx.readthedocs.io"
+title = "peryx"
 description = "A read-through cache and private registry for PyPI and Docker, in one fast Rust binary."
 compile_sass = true
 build_search_index = false
@@ -9,4 +9,4 @@ generate_feeds = false
 highlighting = { theme = "ayu-dark" }
 
 [extra]
-repo = "https://github.com/tox-dev/velodex"
+repo = "https://github.com/gaborbernat/peryx"

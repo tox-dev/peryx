@@ -1,18 +1,18 @@
 +++
 title = "Cache packages for CI"
-description = "Put velodex between your runners and pypi.org: one environment variable, faster jobs, and one download per wheel instead of hundreds."
+description = "Put peryx between your runners and pypi.org: one environment variable, faster jobs, and one download per wheel instead of hundreds."
 weight = 1
 +++
 
-CI rebuilds environments from scratch, so every job downloads the same wheels again. Run one velodex where your runners
+CI rebuilds environments from scratch, so every job downloads the same wheels again. Run one peryx where your runners
 live and point the installers at it; the first job warms the cache and the rest install from local disk.
 
-## Run velodex next to the runners
+## Run peryx next to the runners
 
 On the CI host, or as a service in the runner network:
 
 ```shell
-velodex serve --host 0.0.0.0 --port 4433 --data-dir /var/lib/velodex
+peryx serve --host 0.0.0.0 --port 4433 --data-dir /var/lib/peryx
 ```
 
 The data directory is the cache; give it a persistent volume. Nothing else is stateful.
@@ -27,17 +27,17 @@ runner or organization level:
 
 {% tabs(names="uv, pip, project file") %}
 ```shell
-export UV_INDEX_URL=http://velodex.internal:4433/root/pypi/simple/
+export UV_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/
 ```
 %%%
 ```shell
-export PIP_INDEX_URL=http://velodex.internal:4433/root/pypi/simple/
+export PIP_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/
 ```
 %%%
 ```toml
 # pyproject.toml, for uv-managed projects
 [[tool.uv.index]]
-url = "http://velodex.internal:4433/root/pypi/simple/"
+url = "http://peryx.internal:4433/root/pypi/simple/"
 default = true
 ```
 {% end %}
@@ -54,21 +54,21 @@ RUN pip install -r requirements.txt
 ```
 
 ```shell
-docker build --build-arg PIP_INDEX_URL=http://velodex.internal:4433/root/pypi/simple/ .
+docker build --build-arg PIP_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/ .
 ```
 
-or run the build on a network where `velodex.internal` resolves (`--network` with BuildKit). BuildKit's own cache mounts
-still help per machine; velodex makes the cache shared across machines, tags, and projects.
+or run the build on a network where `peryx.internal` resolves (`--network` with BuildKit). BuildKit's own cache mounts
+still help per machine; peryx makes the cache shared across machines, tags, and projects.
 
 ## Verify it is working
 
 Watch a couple of jobs, then check what the cache absorbed:
 
 ```shell
-curl -s 'http://velodex.internal:4433/+stats?index=root/pypi' | jq .totals
+curl -s 'http://peryx.internal:4433/+stats?index=root/pypi' | jq .totals
 ```
 
-`downloads` and `bytes` count what velodex served; once the working set is warm, upstream traffic drops to page
+`downloads` and `bytes` count what peryx served; once the working set is warm, upstream traffic drops to page
 revalidations (`refreshes`, mostly `304`s with no body). The [dashboard](@/core/web-ui.md) shows the same numbers with
 per-project drill-down, and [`/metrics`](@/core/monitor.md) feeds Prometheus.
 

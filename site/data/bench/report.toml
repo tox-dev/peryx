@@ -3,8 +3,8 @@ baseline = "direct"
 label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
 
 [[tables.image-throughput.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.image-throughput.parties]]
 name = "direct"
@@ -113,8 +113,8 @@ baseline = "direct"
 label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
 
 [[tables.image-throughput-mirror.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.image-throughput-mirror.parties]]
 name = "direct"
@@ -223,8 +223,8 @@ baseline = "direct"
 label = "pip: install the top 51 PyPI packages"
 
 [[tables.install-pip.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.install-pip.parties]]
 name = "direct"
@@ -509,8 +509,8 @@ baseline = "direct"
 label = "uv: install the top 51 PyPI packages"
 
 [[tables.install-uv.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.install-uv.parties]]
 name = "direct"
@@ -795,8 +795,8 @@ baseline = "direct"
 label = "simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it"
 
 [[tables.load.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.load.parties]]
 name = "direct"
@@ -1211,8 +1211,8 @@ baseline = "direct"
 label = "PEP 658 metadata siblings for boto3"
 
 [[tables.metadata.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.metadata.parties]]
 name = "direct"
@@ -1556,8 +1556,8 @@ baseline = "direct"
 label = "uv: ten venvs install polars at once"
 
 [[tables.parallel-install.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.parallel-install.parties]]
 name = "direct"
@@ -1840,8 +1840,8 @@ baseline = "direct"
 label = "ten clients pull library/node:22-alpine at once"
 
 [[tables.parallel-pull.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.parallel-pull.parties]]
 name = "direct"
@@ -1950,8 +1950,8 @@ baseline = "direct"
 label = "ten clients pull library/node:22-alpine at once"
 
 [[tables.parallel-pull-mirror.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.parallel-pull-mirror.parties]]
 name = "direct"
@@ -2060,8 +2060,8 @@ baseline = "direct"
 label = "pull 6 images through each registry"
 
 [[tables.pull.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.pull.parties]]
 name = "direct"
@@ -2170,8 +2170,8 @@ baseline = "direct"
 label = "pull 6 images through each registry"
 
 [[tables.pull-mirror.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.pull-mirror.parties]]
 name = "direct"
@@ -2280,8 +2280,8 @@ baseline = "direct"
 label = "moving one large wheel (torch): cold under contention, hot at speed"
 
 [[tables.throughput.parties]]
-name = "velodex"
-url = "https://velodex.readthedocs.io/"
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
 
 [[tables.throughput.parties]]
 name = "direct"

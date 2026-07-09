@@ -16,7 +16,7 @@ Three indexes: a proxy that caches Docker Hub, a hosted store for your own image
 hosted-first. Members and the virtual index must share the `oci` ecosystem.
 
 ```toml
-# velodex.toml
+# peryx.toml
 host = "127.0.0.1"
 port = 4433
 
@@ -41,18 +41,18 @@ layers = ["images", "dockerhub"]
 upload = "images"
 ```
 
-Run it with `velodex serve --config velodex.toml`. Clients now read and write one route, `reg`.
+Run it with `peryx serve --config peryx.toml`. Clients now read and write one route, `reg`.
 
 `layers` order is the whole control: `images` before `dockerhub` means your images win. Reverse them and Docker Hub
 shadows yours: dependency confusion, self-inflicted. `upload` names the hosted layer that receives pushes to the virtual
-route; omit it and velodex picks the first hosted layer. A virtual index of only proxies rejects pushes.
+route; omit it and peryx picks the first hosted layer. A virtual index of only proxies rejects pushes.
 
 ## A note on transport
 
 `docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http) registry (`localhost`, `127.0.0.0/8`) over
 plain HTTP with no configuration, so on the same host the commands below work as written. Over the network (or from
 Docker Desktop, whose engine runs in a VM where the host's `localhost` is not the engine's), a client demands HTTPS.
-Give velodex a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option. `crane`
+Give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option. `crane`
 and `podman` take a per-command flag, shown below; `docker` needs `insecure-registries` in its daemon config.
 
 ## Pull through the virtual route
@@ -92,7 +92,7 @@ crane pull --insecure 127.0.0.1:4433/reg/my-app:1.0 my-app.tar
 
 ## Push into the stack
 
-A push to `reg` lands in the layer named by `upload` (here `images`), so one route reads and writes. velodex accepts any
+A push to `reg` lands in the layer named by `upload` (here `images`), so one route reads and writes. peryx accepts any
 username; the token is the Basic-auth password. Blobs stream into the content-addressed store and are verified on
 commit:
 

@@ -12,13 +12,13 @@ PyPI is the Python packaging ecosystem: the format of wheels and sdists, and the
 and download them. A **wheel** (`.whl`) is a pre-built, ready-to-install package; an **sdist** (source distribution,
 `.tar.gz`) is the source a wheel is built from. Both are **artifacts**: the actual files an installer fetches.
 
-## How PyPI concepts map to velodex
+## How PyPI concepts map to peryx
 
-velodex describes every ecosystem with one neutral vocabulary; for Python it mostly matches the terms you already use,
-since velodex borrows Python's own words (index, project). The neutral name is what the same idea is called across
+peryx describes every ecosystem with one neutral vocabulary; for Python it mostly matches the terms you already use,
+since peryx borrows Python's own words (index, project). The neutral name is what the same idea is called across
 ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/glossary.md)).
 
-| Python term                | velodex concept  | What it is                                                            |
+| Python term                | peryx concept  | What it is                                                            |
 | -------------------------- | ---------------- | --------------------------------------------------------------------- |
 | index (`--index-url`)      | index            | the endpoint a client points at; a cached index proxies one upstream  |
 | project / package          | project          | one distribution name, like `requests`                                |
@@ -26,16 +26,16 @@ ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/gloss
 | distribution (wheel/sdist) | artifact         | what you install: a `.whl` or a `.tar.gz` file                        |
 | file                       | file             | one content-addressed distribution file                               |
 | publish / upload           | upload / publish | putting a distribution into a hosted index with twine or `uv publish` |
-| install / download         | download         | fetching a distribution through velodex                               |
+| install / download         | download         | fetching a distribution through peryx                               |
 | pull-through mirror        | cached (role)    | a read-through proxy of one upstream index                            |
 
-The role names (**cached**, **hosted**, **virtual**) and **shadowing** are velodex's own, the same in every ecosystem.
+The role names (**cached**, **hosted**, **virtual**) and **shadowing** are peryx's own, the same in every ecosystem.
 
 ## The roles for PyPI
 
 The three [index roles](@/core/indexes.md) map onto PyPI like this:
 
-- **cached**: a read-through cache of an upstream Python index such as pypi.org. On a miss velodex fetches the project
+- **cached**: a read-through cache of an upstream Python index such as pypi.org. On a miss peryx fetches the project
   page or artifact from upstream, stores it, and serves it; later requests come from disk. Point one at pypi.org, a
   TestPyPI, an Artifactory, or a GitLab registry.
 - **hosted**: a store you publish your own wheels and sdists to over the standard upload API. Nothing upstream; the
@@ -47,14 +47,14 @@ The three [index roles](@/core/indexes.md) map onto PyPI like this:
 ## The wire protocol
 
 Python installers speak the **Simple API**: an index exposes a page per project listing that project's files, and the
-installer downloads what it resolves. velodex serves and understands every current form:
+installer downloads what it resolves. peryx serves and understands every current form:
 
-- **[PEP 503](https://peps.python.org/pep-0503/)**: the original HTML page of download links. velodex parses it from
+- **[PEP 503](https://peps.python.org/pep-0503/)**: the original HTML page of download links. peryx parses it from
   upstreams that only speak HTML.
-- **[PEP 691](https://peps.python.org/pep-0691/)**: the modern JSON form of the same data. velodex canonicalizes every
+- **[PEP 691](https://peps.python.org/pep-0691/)**: the modern JSON form of the same data. peryx canonicalizes every
   upstream to this once, at fetch time, and serves JSON (with HTML on request) downstream.
 - **[PEP 658/714](https://peps.python.org/pep-0658/)**: a `.metadata` sibling next to each file, so a resolver reads a
-  few kilobytes of dependency metadata instead of downloading a whole wheel. velodex serves it, and synthesizes it with
+  few kilobytes of dependency metadata instead of downloading a whole wheel. peryx serves it, and synthesizes it with
   byte-range reads when an upstream lacks it.
 - **[Legacy upload API](https://docs.pypi.org/api/upload/)**: the POST endpoint twine and `uv publish` use to publish
   into a hosted index.
@@ -63,7 +63,7 @@ For the full standards map, see [standards](@/ecosystems/pypi/reference/standard
 
 ## Set me up
 
-Assume velodex is running at `http://127.0.0.1:4433` with the default virtual route `root/pypi`. Installers read from
+Assume peryx is running at `http://127.0.0.1:4433` with the default virtual route `root/pypi`. Installers read from
 `.../simple/`; publishers post to the route root.
 
 ### Install
@@ -95,14 +95,14 @@ export UV_INDEX_URL=http://127.0.0.1:4433/root/pypi/simple/
 %%%
 
 ```shell
-poetry source add --priority=primary velodex http://127.0.0.1:4433/root/pypi/simple/
+poetry source add --priority=primary peryx http://127.0.0.1:4433/root/pypi/simple/
 ```
 
 {% end %}
 
 ### Publish
 
-Publishing needs a [hosted layer with an `upload_token`](@/ecosystems/pypi/guides/publish.md). velodex accepts any
+Publishing needs a [hosted layer with an `upload_token`](@/ecosystems/pypi/guides/publish.md). peryx accepts any
 username; the token is the password, matching pypi.org's `__token__` convention.
 
 {% tabs(names="twine, uv, .pypirc") %}
@@ -122,9 +122,9 @@ uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <token
 ```ini
 # ~/.pypirc
 [distutils]
-index-servers = velodex
+index-servers = peryx
 
-[velodex]
+[peryx]
 repository = http://127.0.0.1:4433/root/pypi/
 username = __token__
 password = <token>
@@ -136,7 +136,7 @@ password = <token>
 
 ## In practice
 
-- How velodex compares to devpi, proxpi, pypiserver, and pypicloud: [PyPI performance](@/ecosystems/pypi/performance.md)
+- How peryx compares to devpi, proxpi, pypiserver, and pypicloud: [PyPI performance](@/ecosystems/pypi/performance.md)
 - Front an index that is not pypi.org: [front another index](@/ecosystems/pypi/tutorials/front-another-index.md)
 - Add credentials for a private upstream: [proxy a private upstream](@/ecosystems/pypi/guides/private-mirror.md)
 - Publish your own packages: [publish](@/ecosystems/pypi/guides/publish.md)

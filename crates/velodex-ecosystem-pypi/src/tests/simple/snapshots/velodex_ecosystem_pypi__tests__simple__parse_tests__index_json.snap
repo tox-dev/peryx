@@ -1,5 +1,0 @@
----
-source: crates/velodex-core/src/pypi/tests/simple_tests.rs
-expression: to_json(&sample_list())
----
-{"meta":{"api-version":"1.4"},"projects":[{"name":"Flask"},{"name":"zope.interface"},{"name":"a&<>"}]}

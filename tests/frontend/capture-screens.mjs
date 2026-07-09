@@ -1,4 +1,4 @@
-// Capture the documentation screenshots: each page in both themes, against a live velodex.
+// Capture the documentation screenshots: each page in both themes, against a live peryx.
 // Usage: node capture-screens.mjs [base-url]  (default http://127.0.0.1:4499)
 import { chromium } from "@playwright/test";
 import { fileURLToPath } from "node:url";

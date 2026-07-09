@@ -61,9 +61,9 @@ projects and files.
 
 ## Proposed scope
 
-- Add `velodex mirror plan <repo>` to preview selected projects and files.
-- Add `velodex mirror sync <repo>` to prefetch selected Simple API pages, `.metadata` siblings, and artifacts.
-- Add `velodex mirror verify <repo>` to check cached metadata and blobs.
+- Add `peryx mirror plan <repo>` to preview selected projects and files.
+- Add `peryx mirror sync <repo>` to prefetch selected Simple API pages, `.metadata` siblings, and artifacts.
+- Add `peryx mirror verify <repo>` to check cached metadata and blobs.
 - Support selection from config, `--package`, `--requirements`, and policy rules.
 - Verify sha256 hashes when upstream provides them.
 - Record sync results:

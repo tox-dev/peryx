@@ -13,7 +13,7 @@ pieces stop composing.
 
 [dumb-pypi](https://github.com/chriskuehl/dumb-pypi) generates a static PEP 503 index from a list of filenames; the
 files live wherever a URL can reach (S3, nginx), and having no server is the design. Publishing means regenerating the
-site; PyPI itself still needs `--extra-index-url`; name normalization is your web server's problem. In velodex, uploads
+site; PyPI itself still needs `--extra-index-url`; name normalization is your web server's problem. In peryx, uploads
 are the write path (`twine upload`, index updated transactionally) and the same process mirrors PyPI, so clients keep
 one `index-url`. Migration is a one-time twine loop over the bucket's files.
 
@@ -35,13 +35,13 @@ keeps hashes, metadata, and the JSON API.
 
 [nginx_pypi_cache](https://github.com/hauntsaninja/nginx_pypi_cache) is an nginx config that reverse-proxies pypi.org
 and files.pythonhosted.org with `proxy_cache`: the read-through half of the job in one file, with the upstreams
-hard-coded and no uploads or private packages. velodex adds the index-aware half: digest verification,
+hard-coded and no uploads or private packages. peryx adds the index-aware half: digest verification,
 `Cache-Control`-driven refresh with a background sweep, private hosting, and [usage counters](@/core/monitor.md).
 (Flask-Pypi-Proxy, sometimes cited alongside it, last released in 2014 and predates every modern index PEP.)
 
 ## The renames
 
-| Setup                         | velodex                                        |
+| Setup                         | peryx                                        |
 | ----------------------------- | ---------------------------------------------- |
 | dumb-pypi regenerate + S3     | `twine upload` to a hosted index               |
 | `--find-links /shared/wheels` | `--index-url http://host:4433/{route}/simple/` |

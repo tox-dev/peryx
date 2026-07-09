@@ -1,4 +1,4 @@
-# <img src="assets/icon.svg" width="28" alt=""> velodex
+# <img src="assets/icon.svg" width="28" alt=""> peryx
 
 A blazing-fast artifact server written in Rust: a caching proxy of an upstream index, a hosted store you publish to, and
 a virtual index that merges the two so local packages transparently override upstream. It speaks PyPI today (point pip,
@@ -7,11 +7,11 @@ zero-config on a laptop and scales to a cluster when configured.
 
 ```shell
 cargo build --release
-./target/release/velodex serve
+./target/release/peryx serve
 uv pip install --index-url http://127.0.0.1:4433/root/pypi/simple/ requests
 ```
 
-**Documentation: [velodex.readthedocs.io](https://velodex.readthedocs.io/)** - tutorials, how-to guides, the
+**Documentation: [peryx.readthedocs.io](https://peryx.readthedocs.io/)** - tutorials, how-to guides, the
 configuration and endpoint reference, and design explanations. [proposal.md](proposal.md) holds the original design
 document and roadmap; [CONTRIBUTING.md](CONTRIBUTING.md) covers development.
 

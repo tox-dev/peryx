@@ -58,18 +58,18 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
       # Uncovered lines and functions fail CI. Region coverage is reported but not gated: it includes
       # compiler/macro-generated branches (tracing expansions, drop glue) that are not reachable from
-      # a test on stable. main.rs is the entrypoint shell; velodex-web is the UI, whose browser-event
-      # closures only execute as wasm. velodex's UI tests assert server rendering; Playwright asserts
+      # a test on stable. main.rs is the entrypoint shell; peryx-web is the UI, whose browser-event
+      # closures only execute as wasm. peryx's UI tests assert server rendering; Playwright asserts
       # browser interactivity.
       - run: >
-          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/velodex-web/|crates/velodex-bench/)' --fail-uncovered-lines 0 --fail-under-functions 100 --lcov --output-path lcov.info
+          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench/)' --fail-uncovered-lines 0 --fail-under-functions 100 --lcov --output-path lcov.info
       - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           files: lcov.info
           fail_ci_if_error: false
 
-  # Hermetic end-to-end: real pip/uv drive a spawned velodex that proxies a local fixture index, so no
-  # external network is touched. Proves downstream clients work through velodex on every PR.
+  # Hermetic end-to-end: real pip/uv drive a spawned peryx that proxies a local fixture index, so no
+  # external network is touched. Proves downstream clients work through peryx on every PR.
   e2e:
     runs-on: ubuntu-24.04
     steps:
@@ -87,9 +87,9 @@ jobs:
       - run: uv tool install twine
       - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build e2e tests
-        run: cargo build -p velodex --features e2e --tests
+        run: cargo build -p peryx --features e2e --tests
       - name: Run e2e tests
-        run: cargo nextest run -p velodex --features e2e
+        run: cargo nextest run -p peryx --features e2e
 
   # The same client flows against the real pypi.org, to catch upstream drift.
   e2e-live:
@@ -109,9 +109,9 @@ jobs:
       - run: uv tool install twine
       - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build e2e tests
-        run: cargo build -p velodex --features e2e-live --tests
+        run: cargo build -p peryx --features e2e-live --tests
       - name: Run live e2e tests
-        run: cargo nextest run -p velodex --features e2e-live -E 'test(e2e_live)'
+        run: cargo nextest run -p peryx --features e2e-live -E 'test(e2e_live)'
 
   # The hydrated web UI, driven by Playwright: the wasm bundle is built with cargo-leptos and the
   # suite exercises search, the project page, the archive browser, and token-authenticated actions.
@@ -130,7 +130,7 @@ jobs:
         run: |
           curl -sL "https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-x86_64-unknown-linux-musl.tar.gz" | tar xz --strip-components=1
           sudo mv cargo-leptos /usr/local/bin/
-      - run: cargo build -p velodex
+      - run: cargo build -p peryx
       - run: cargo leptos build
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

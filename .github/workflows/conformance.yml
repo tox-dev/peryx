@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The opencontainers/distribution-spec commit whose conformance suite velodex is tested against.
+  # The opencontainers/distribution-spec commit whose conformance suite peryx is tested against.
   DISTRIBUTION_SPEC_REF: fcfba1ec55526073f48b2f6d4e3d7eef410ddcbc
 
 jobs:
@@ -26,8 +26,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-      - name: Build velodex
-        run: cargo build --release --bin velodex
+      - name: Build peryx
+        run: cargo build --release --bin peryx
       - name: Build the conformance suite
         # ubuntu-24.04 ships a recent Go; the suite builds with any 1.22+.
         run: |
@@ -35,5 +35,5 @@ jobs:
           git -C "$RUNNER_TEMP/distribution-spec" checkout "$DISTRIBUTION_SPEC_REF"
           cd "$RUNNER_TEMP/distribution-spec/conformance"
           go test -c -o "$RUNNER_TEMP/conformance.test"
-      - name: Run conformance against velodex
-        run: ci/run-oci-conformance.sh ./target/release/velodex "$RUNNER_TEMP/conformance.test"
+      - name: Run conformance against peryx
+        run: ci/run-oci-conformance.sh ./target/release/peryx "$RUNNER_TEMP/conformance.test"

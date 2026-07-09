@@ -1,0 +1,662 @@
+<title>Peryx — Brand Book</title>
+<style>
+  :root{
+    --bg:#f7f4ef;--bg-panel:#fffdf9;--bg-sink:#efeae1;
+    --text:#1a1a1a;--text-soft:#3f3d3b;--text-faint:#6b6862;
+    --border:#e6dfd2;--border-strong:#d8cfbe;
+    --brand-a:#f74c00;--brand-b:#ffb600;--accent:#c53d00;--accent-strong:#b23800;
+    --chip:#1e2226;--tile-dark:#16130e;--tile-light:#fbfaf6;
+    --term-bg:#17140f;--term-text:#e7ddcf;--term-dim:#8a8175;
+    --ok:#0ca30c;--warn:#d98a00;--bad:#d03b3b;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --bg:#131110;--bg-panel:#1b1815;--bg-sink:#100e0c;
+    --text:#e7e7e9;--text-soft:#bcbcbe;--text-faint:#6f665a;
+    --border:#2c2822;--border-strong:#3a352d;--accent:#ff8a3d;--accent-strong:#ffb600;
+    --tile-light:#f3efe8;--tile-dark:#100d0a;}}
+  :root[data-theme=dark]{
+    --bg:#131110;--bg-panel:#1b1815;--bg-sink:#100e0c;
+    --text:#e7e7e9;--text-soft:#bcbcbe;--text-faint:#6f665a;
+    --border:#2c2822;--border-strong:#3a352d;--accent:#ff8a3d;--accent-strong:#ffb600;
+    --tile-light:#f3efe8;--tile-dark:#100d0a;}
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:5rem}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--text);line-height:1.62;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-underline-offset:2px}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+  .motion:focus-visible{outline-offset:4px}
+  .mono{font-family:var(--mono)}
+  .eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin:0}
+  .num{font-family:var(--mono);color:var(--accent);font-weight:600}
+  .mk{display:inline-block;line-height:0}
+
+  .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:.7rem;padding:.7rem 1.4rem;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--bg) 85%,transparent);backdrop-filter:blur(9px)}
+  .topbar .mk{width:26px;height:26px}
+  .topbar .nm{font-weight:800;letter-spacing:-.02em;font-size:1.05rem;background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .topbar .tag{color:var(--text-faint);font-size:.8rem;margin-left:.2rem}
+  .topbar .sp{flex:1}
+  .topbar .ver{font-family:var(--mono);font-size:.72rem;color:var(--text-soft);border:1px solid var(--border);border-radius:999px;padding:.15rem .6rem}
+
+  .shell{display:grid;grid-template-columns:14rem minmax(0,1fr);gap:3rem;max-width:76rem;margin:0 auto;padding:0 1.6rem}
+  @media (max-width:60rem){.shell{grid-template-columns:1fr;gap:0}}
+  .toc{position:sticky;top:4rem;align-self:start;max-height:calc(100vh - 5rem);overflow-y:auto;padding:2rem 0;font-size:.86rem}
+  @media (max-width:60rem){.toc{display:none}}
+  .toc ol{list-style:none;margin:0;padding:0}
+  .toc a{display:flex;gap:.6rem;color:var(--text-soft);text-decoration:none;padding:.22rem 0}
+  .toc a:hover{color:var(--text)}
+  .toc a .n{font-family:var(--mono);color:var(--text-faint);width:1.4rem;flex:none}
+  main{padding:2rem 0 5rem;min-width:0}
+
+  .cover{padding:3rem 0 2.6rem;border-bottom:1px solid var(--border);margin-bottom:1rem}
+  .cover .lock{display:flex;align-items:center;gap:1.3rem;margin:1.2rem 0 1.5rem}
+  .cover .lock .mk{width:96px;height:96px}
+  .cover h1{font-size:clamp(3rem,10vw,5.5rem);letter-spacing:-.02em;line-height:1;padding-bottom:.06em;margin:0;background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .cover .lede{font-size:clamp(1.15rem,2.6vw,1.5rem);max-width:32rem;margin:.2rem 0 .3rem;text-wrap:balance;font-weight:700;background:linear-gradient(90deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .cover .sub{color:var(--text-soft);max-width:40rem;margin:0}
+
+  section.sec{padding:2.6rem 0;border-bottom:1px solid var(--border);scroll-margin-top:4.5rem}
+  section.sec>.head{display:flex;align-items:baseline;gap:.8rem;margin-bottom:.4rem}
+  section.sec h2{font-size:1.5rem;letter-spacing:-.02em;margin:0;text-wrap:balance}
+  section.sec .lead{color:var(--text-soft);max-width:46rem;margin:.2rem 0 1.6rem}
+  h3.sub{font-size:.76rem;font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text-soft);margin:2rem 0 .9rem}
+
+  .cards3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+  @media (max-width:44rem){.cards3{grid-template-columns:1fr}}
+  .card{padding:1.2rem 1.4rem;border:1px solid var(--border);border-radius:16px;background:var(--bg-panel)}
+  .card .k{font-family:var(--mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+  .card .h{font-size:1.15rem;font-weight:700;letter-spacing:-.01em;margin:.15rem 0 .35rem}
+  .card p{margin:0;color:var(--text-soft);font-size:.94rem}
+  .etym{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:44rem){.etym{grid-template-columns:1fr}}
+
+  .tls{display:flex;flex-direction:column;gap:.5rem}
+  .tl{display:flex;align-items:baseline;gap:.9rem;padding:.7rem 1rem;border:1px solid var(--border);border-radius:11px;background:var(--bg-panel)}
+  .tl .role{font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);width:5.5rem;flex:none}
+  .tl .t{font-size:1.02rem}
+  .tl.primary{border-color:color-mix(in srgb,var(--brand-a) 45%,var(--border))}
+  .tl.primary .t{font-weight:600}
+  .voice{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem}
+  @media (max-width:44rem){.voice{grid-template-columns:1fr}}
+  .voice div{padding:1rem 1.2rem;border:1px solid var(--border);border-radius:12px;background:var(--bg-panel)}
+  .voice b{display:block;font-family:var(--mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.4rem}
+  .voice .is b{color:var(--ok)}.voice .not b{color:var(--bad)}
+  .voice p{margin:0;color:var(--text-soft);font-size:.92rem}
+
+  .logo-hero{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:44rem){.logo-hero{grid-template-columns:1fr}}
+  .tile{border-radius:16px;display:grid;place-items:center;height:210px;border:1px solid var(--border)}
+  .tile.d{background:radial-gradient(120% 120% at 30% 20%,#23201a,var(--tile-dark));--ground:var(--tile-dark)}
+  .tile.l{background:var(--tile-light);--ground:var(--tile-light)}
+  .tile .mk{width:120px;height:120px}
+  .origin{display:flex;gap:1.3rem;align-items:center;flex-wrap:wrap;margin-top:1rem;padding:1.2rem 1.4rem;border:1px dashed var(--border-strong);border-radius:14px}
+  .origin .step{display:flex;flex-direction:column;align-items:center;gap:.45rem}
+  .origin .frame{width:78px;height:78px;border-radius:12px;border:1px solid var(--border);display:grid;place-items:center;overflow:hidden;background:var(--tile-light);--ground:var(--tile-light)}
+  .origin .frame .mk{width:60px;height:60px}
+  .origin .cap{font-family:var(--mono);font-size:.6rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint)}
+  .origin .arr{color:var(--accent);font-size:1.3rem}
+  .origin .note{flex:1;min-width:13rem;color:var(--text-soft);font-size:.9rem}
+  .origin .note b{color:var(--text)}
+  .clearbox{border:1px solid var(--border);border-radius:14px;background:var(--bg-panel);padding:1.5rem;display:grid;place-items:center;margin-top:1rem}
+  .cs{position:relative;padding:24px}
+  .cs .guide{position:absolute;inset:0;border:1px dashed color-mix(in srgb,var(--accent) 55%,transparent);border-radius:8px}
+  .cs .mk{width:90px;height:90px;position:relative;z-index:1}
+
+  .capt{font-family:var(--mono);font-size:.6rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint);text-align:center;margin:.5rem 0 0}
+  .lockups{display:grid;grid-template-columns:1.4fr 1fr;gap:1rem}
+  @media (max-width:48rem){.lockups{grid-template-columns:1fr}}
+  .lockcell{border:1px solid var(--border);border-radius:14px;background:var(--bg-panel);display:grid;place-items:center;padding:2rem}
+  .wm-h{display:flex;align-items:center;gap:.7rem}.wm-h .mk{width:48px;height:48px}
+  .wm-v{display:flex;flex-direction:column;align-items:center;gap:.55rem}.wm-v .mk{width:56px;height:56px}
+  .wm-txt{font-weight:800;letter-spacing:-.02em;font-size:2.4rem;line-height:1;background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .wm-v .wm-txt{font-size:2rem}
+  .panel{border:1px solid var(--border);border-radius:16px;background:var(--bg-panel)}
+  .exprline{display:flex;align-items:flex-end;gap:1.4rem;flex-wrap:wrap;padding:1.3rem 1.5rem}
+  .ex{display:flex;flex-direction:column;align-items:center;gap:.5rem}
+  .appicon{border-radius:22%;background:var(--chip);--ground:var(--chip);display:grid;place-items:center;box-shadow:0 8px 20px rgba(0,0,0,.2)}
+  .appicon.a64{width:64px;height:64px}.appicon.a64 .mk{width:42px;height:42px}
+  .fav{border:1px solid var(--border);border-radius:5px;background:var(--tile-light);--ground:var(--tile-light);display:grid;place-items:center}
+  .fav.f32{width:40px;height:40px}.fav.f32 .mk{width:32px;height:32px}
+  .fav.f16{width:26px;height:26px}.fav.f16 .mk{width:16px;height:16px}
+  .monocell{width:56px;height:56px;border:1px solid var(--border);border-radius:10px;display:grid;place-items:center;color:var(--text);background:var(--bg)}
+  .monocell .mk{width:36px;height:36px}
+
+  /* motion */
+  .m-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:1rem}
+  @media (max-width:48rem){.m-grid{grid-template-columns:1fr}}
+  .motion{position:relative;height:250px;border-radius:16px;overflow:hidden;border:1px solid var(--border);background:radial-gradient(120% 120% at 30% 12%,#241f18,var(--tile-dark));display:grid;place-items:center;cursor:pointer}
+  .motion .mk{width:118px;height:118px;z-index:2}
+  .motion .hint{position:absolute;bottom:.7rem;right:.9rem;font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;color:#8a8175;z-index:3}
+  .streaks{position:absolute;inset:0;display:grid;place-items:center;z-index:1;pointer-events:none}
+  .col{position:relative;width:118px;height:118px}
+  .streak{position:absolute;top:-8px;width:3px;border-radius:3px;background:linear-gradient(#ffb600,rgba(255,182,0,0));opacity:0}
+  .streak:nth-child(1){left:34px;height:46px}.streak:nth-child(2){left:52px;height:64px}.streak:nth-child(3){left:72px;height:50px}.streak:nth-child(4){left:22px;height:36px}.streak:nth-child(5){left:88px;height:38px}
+  .falcon{transform-origin:50% 60%}
+  @keyframes dive{
+    0%{opacity:0;transform:translate3d(-22%,-64%,0) rotate(-18deg) scale(.5);animation-timing-function:cubic-bezier(.5,0,.82,.22)}
+    40%{opacity:1}
+    58%{transform:translate3d(3%,9%,0) rotate(3deg) scale(1.08);animation-timing-function:cubic-bezier(.2,.9,.3,1)}
+    74%{transform:translate3d(0,-2%,0) rotate(-1deg) scale(.98)}
+    100%{opacity:1;transform:none}}
+  @keyframes streakfall{0%{opacity:0;transform:translateY(-30px) scaleY(.3)}38%{opacity:.95}62%{opacity:.5;transform:translateY(16px) scaleY(1.4)}100%{opacity:0;transform:translateY(40px) scaleY(.5)}}
+  .run .falcon{animation:dive .7s both}
+  .run .streak{animation:streakfall .6s both}
+  .run .streak:nth-child(2){animation-delay:.03s}.run .streak:nth-child(4){animation-delay:.06s}.run .streak:nth-child(5){animation-delay:.05s}
+  @media (prefers-reduced-motion:reduce){.run .falcon,.run .streak{animation:none}.streak{display:none}}
+  .m-side{display:flex;flex-direction:column;gap:1rem}
+  .loader{position:relative;height:118px;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:var(--tile-dark);display:grid;place-items:center}
+  .loader .mk{width:44px;height:44px}
+  .falcon-loop{transform-origin:50% 50%}
+  @keyframes stoloop{0%{opacity:0;transform:translateY(-150%) scale(.7)}18%{opacity:1}52%{transform:translateY(0) scale(1);opacity:1}82%{opacity:1}100%{opacity:0;transform:translateY(150%) scale(.9)}}
+  .loop-on .falcon-loop{animation:stoloop 1.15s linear infinite}
+  @media (prefers-reduced-motion:reduce){.loop-on .falcon-loop{animation:none;opacity:1;transform:none}}
+  .loader .cap{position:absolute;bottom:.5rem;left:.7rem;font-family:var(--mono);font-size:.56rem;letter-spacing:.08em;text-transform:uppercase;color:#8a8175}
+
+  /* progress */
+  .prog{height:8px;border-radius:999px;background:var(--bg-sink);overflow:hidden}
+  .prog>span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--brand-a),var(--brand-b))}
+  .prog.det>span{width:0;animation:fill 2.4s ease-in-out infinite}
+  @keyframes fill{0%{width:4%}55%{width:82%}100%{width:100%}}
+  .prog.indet{position:relative}
+  .prog.indet>span{width:38%;border-radius:999px;animation:sweep 1.3s ease-in-out infinite}
+  @keyframes sweep{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}
+  @media (prefers-reduced-motion:reduce){.prog.det>span{width:66%;animation:none}.prog.indet>span{animation:none;width:66%}}
+  .progrow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.7rem;color:var(--text-soft);margin-bottom:.4rem}
+
+  /* colour */
+  .gradbar{height:60px;border-radius:12px;background:linear-gradient(115deg,#f74c00,#ffb600);border:1px solid var(--border)}
+  .sw{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr));gap:.7rem}
+  .swx{border:1px solid var(--border);border-radius:11px;overflow:hidden;background:var(--bg-panel)}
+  .swx .c{height:60px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 12%,transparent)}.swx .m{padding:.5rem .65rem}
+  .swx .n{font-size:.82rem;font-weight:600}.swx .h{font-family:var(--mono);font-size:.72rem;color:var(--text-soft);text-transform:uppercase}
+  .swx .t{font-family:var(--mono);font-size:.62rem;color:var(--text-faint)}
+  .themes2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:44rem){.themes2{grid-template-columns:1fr}}
+  .force-light{--bg:#f7f4ef;--bg-panel:#fffdf9;--text:#1a1a1a;--text-soft:#3f3d3b;--border:#e6dfd2;--accent:#d94400;--chip:#1e2226}
+  .force-dark{--bg:#131110;--bg-panel:#1b1815;--text:#e7e7e9;--text-soft:#bcbcbe;--border:#2c2822;--accent:#ff8a3d;--chip:#1e2226}
+  .themepanel{border:1px solid var(--border);border-radius:16px;background:var(--bg);color:var(--text);padding:1.4rem 1.5rem}
+  .themepanel .row1{display:flex;align-items:center;gap:.7rem;margin-bottom:.9rem}
+  .themepanel .row1 .mk{width:38px;height:38px}
+  .themepanel .row1 .wm{font-weight:800;letter-spacing:-.02em;font-size:1.9rem;line-height:1;background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .themepanel p{margin:0 0 1rem;color:var(--text-soft);font-size:.9rem}
+  .themepanel .tbtns{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+  .themepanel .tbtn{font:inherit;font-size:.82rem;font-weight:600;border-radius:8px;padding:.4rem .9rem;border:1px solid var(--border);background:var(--bg);color:var(--text)}
+  .themepanel .tbtn.p{border:0;color:#fff;background:linear-gradient(115deg,var(--brand-a),var(--brand-b))}
+  .themepanel .tlabel{font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);margin-top:.9rem}
+  .themepanel .tspec{margin-top:.7rem;border-top:1px solid var(--border);padding-top:.7rem;display:grid;grid-template-columns:1fr 1fr;gap:.3rem .8rem}
+  .themepanel .tspec div{display:flex;align-items:center;gap:.45rem;font-family:var(--mono);font-size:.66rem;color:var(--text-soft)}
+  .themepanel .tspec .sw{width:14px;height:14px;border-radius:4px;border:1px solid var(--border);flex:none}
+  .themepanel .tspec b{color:var(--text-faint);font-weight:400;text-transform:uppercase;letter-spacing:.05em;font-size:.58rem;width:3.2rem;flex:none}
+
+  /* ecosystem */
+  .ecohead{display:flex;align-items:center;gap:.7rem;margin:1.4rem 0 .8rem}
+  .ecohead h4{margin:0;font-size:1rem}.ecohead .c{font-family:var(--mono);font-size:.64rem;color:var(--text-faint)}
+  .chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr));gap:.5rem}
+  .eco{display:flex;align-items:center;gap:.55rem;border:1px solid var(--border);border-radius:10px;background:var(--bg-panel);padding:.45rem .6rem}
+  .eco .d{width:24px;height:24px;border-radius:7px;flex:none;position:relative;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 16%,transparent)}
+  .eco .d.live::after{content:"";position:absolute;right:-2px;top:-2px;width:8px;height:8px;border-radius:50%;background:#28c93f;border:2px solid var(--bg-panel)}
+  .eco .nm{display:block;font-size:.85rem;font-weight:600;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .eco .su{display:block;font-family:var(--mono);font-size:.56rem;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em}
+  .eco .hx{font-family:var(--mono);font-size:.58rem;color:var(--text-faint);margin-left:auto}
+  .device{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.4rem}
+  @media (max-width:44rem){.device{grid-template-columns:1fr}}
+  .dev{border:1px solid var(--border);border-radius:14px;background:var(--bg-panel);padding:1.1rem 1.3rem}
+  .dev .k{font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint)}
+  .wmini{font-weight:800;letter-spacing:-.02em;font-size:1.5rem}
+  .u-item{display:inline-flex;flex-direction:column;gap:.2rem;margin-top:.5rem}
+  .u-item .bar{height:4px;border-radius:3px}
+  .u-item .cap{font-family:var(--mono);font-size:.58rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint)}
+  .chiprow{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem}
+  .ec-chip{display:inline-flex;align-items:center;gap:.4rem;padding:.18rem .6rem;border-radius:999px;font-family:var(--mono);font-size:.72rem;color:var(--text);border:1px solid var(--border);background:var(--bg-panel)}
+  .ec-chip .dt{width:.6rem;height:.6rem;border-radius:2px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 22%,transparent)}
+
+  /* type */
+  .typerow{border:1px solid var(--border);border-radius:12px;padding:1rem 1.3rem;background:var(--bg-panel);margin-bottom:.7rem}
+  .typerow .m{font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);margin-bottom:.35rem}
+  .t-display{font-size:2.4rem;font-weight:800;letter-spacing:-.02em;line-height:1.05}
+  .t-h{font-size:1.5rem;font-weight:700;letter-spacing:-.02em}
+  .t-body{font-size:1.05rem}.t-mono{font-family:var(--mono);font-size:.95rem}
+
+  /* components */
+  .comp{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:48rem){.comp{grid-template-columns:1fr}}
+  .compcard{border:1px solid var(--border);border-radius:14px;background:var(--bg-panel);padding:1.2rem 1.3rem}
+  .compcard .k{font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);margin-bottom:.8rem}
+  .btnrow{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
+  .btn{font:inherit;font-size:.9rem;font-weight:600;border-radius:9px;padding:.5rem 1.1rem;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer}
+  .btn.primary{border:0;color:#fff;background:linear-gradient(115deg,var(--brand-a),var(--brand-b))}
+  .btn.ghost{background:none}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn.primary:hover{color:#fff;filter:brightness(1.07)}
+  .badges{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+  .badge{display:inline-flex;align-items:center;gap:.35rem;font-family:var(--mono);font-size:.72rem;padding:.2rem .6rem;border-radius:999px;border:1px solid var(--border);color:var(--text-soft)}
+  .badge.verified{color:#fff;border:0;background:linear-gradient(115deg,var(--brand-a),var(--brand-b))}
+  .badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--border))}
+  .badge .mk{width:.85rem;height:.85rem}
+  .badge .dot{width:.5rem;height:.5rem;border-radius:50%;background:currentColor}
+
+  /* terminal */
+  .terminal{border-radius:12px;overflow:hidden;border:1px solid #30363d;background:var(--term-bg);box-shadow:0 14px 40px rgba(0,0,0,.28)}
+  .terminal .bar{display:flex;gap:.45rem;padding:.7rem .9rem}
+  .terminal .bar span{width:.7rem;height:.7rem;border-radius:50%;background:#3a3630}
+  .terminal .bar span:first-child{background:var(--brand-a)}.terminal .bar span:nth-child(2){background:var(--brand-b)}
+  .terminal pre{margin:0;padding:.6rem 1.1rem 1.1rem;font-family:var(--mono);font-size:.82rem;line-height:1.5;color:var(--term-text);overflow-x:auto}
+  .terminal .banner{color:var(--brand-b);display:inline-block;line-height:1.35}
+  .terminal .banner-grad{background:linear-gradient(100deg,#f74c00,#ffb600);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block;line-height:.92}
+  .terminal .g{color:var(--brand-b);font-weight:700}
+  .terminal .dim{color:var(--term-dim)}
+  .terminal .ok{color:#4cc94c}
+  .startline{display:flex;align-items:center;gap:.8rem;padding:.2rem 0 .6rem}
+  .startline .mk{width:34px;height:34px;flex:none}
+  .startline .nm{font-family:var(--mono);font-weight:700;color:#fff;font-size:1.05rem}
+  .startline .v{color:var(--term-dim);font-size:.85rem}
+
+  /* usage */
+  .dd{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:44rem){.dd{grid-template-columns:1fr}}
+  .ddc{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--bg-panel)}
+  .ddc .stage{height:120px;display:grid;place-items:center;background:var(--bg-sink);--ground:var(--bg-sink)}
+  .ddc .stage .mk{width:60px;height:60px}
+  .ddc .cap{display:flex;align-items:center;gap:.5rem;padding:.7rem 1rem;font-size:.88rem;border-top:1px solid var(--border)}
+  .ddc .mark{width:1.1rem;height:1.1rem;flex:none;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:.72rem;font-weight:700}
+  .ddc.good .mark{background:var(--ok)}.ddc.bad .mark{background:var(--bad)}
+
+  .mtable{width:100%;border-collapse:collapse;font-size:.9rem}
+  .mtable th,.mtable td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--border);vertical-align:top;color:var(--text)}
+  .mtable td{color:var(--text-soft)}
+  .mtable th{font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);font-weight:600}
+  .mtable td code{font-family:var(--mono);font-size:.82rem;color:var(--accent)}
+  .scroll{overflow-x:auto}
+  /* copy-to-clipboard + toast */
+  .toast{position:fixed;left:50%;bottom:1.5rem;transform:translate(-50%,1rem);background:var(--text);color:var(--bg);font-family:var(--mono);font-size:.76rem;padding:.5rem .9rem;border-radius:9px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  [data-copy]{cursor:copy}
+  .swx[data-copy]:hover,.eco[data-copy]:hover,.gradbar[data-copy]:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));outline:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+  .swx .rgb{font-family:var(--mono);font-size:.62rem;color:var(--text-faint)}
+  .copyrow{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.8rem}
+  .copyhint{font-family:var(--mono);font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+  /* in the wild */
+  .wild{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:48rem){.wild{grid-template-columns:1fr}}
+  .wcard{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--bg-panel)}
+  .wcard .cap{font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);padding:.6rem .9rem;border-top:1px solid var(--border)}
+  .wnav{background:var(--bg);padding:.8rem 1rem;display:flex;align-items:center;gap:1rem}
+  .wnav .brand{display:flex;align-items:center;gap:.45rem;font-weight:800;letter-spacing:-.02em;font-size:1.05rem}
+  .wnav .brand .mk{width:22px;height:22px}
+  .wnav .brand .t{background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .wnav .links{display:flex;gap:.9rem;font-size:.82rem;color:var(--text-soft)}
+  .wnav .cta{margin-left:auto;font-size:.76rem;font-weight:600;color:#fff;background:linear-gradient(115deg,var(--brand-a),var(--brand-b));border-radius:7px;padding:.32rem .7rem}
+  .wrow{display:flex;gap:1rem;align-items:center;padding:1.6rem;justify-content:center;background:var(--bg-sink);min-height:118px;flex-wrap:wrap}
+  .wavatar{width:54px;height:54px;border-radius:50%;background:var(--chip);--ground:var(--chip);display:grid;place-items:center}
+  .wavatar.sq{border-radius:15px}
+  .wavatar .mk{width:34px;height:34px}
+  .wbadge{display:inline-flex;font-family:var(--mono);font-size:.72rem;border-radius:5px;overflow:hidden;border:1px solid var(--border)}
+  .wbadge span{padding:.22rem .55rem}
+  .wbadge .k{background:var(--bg-sink);color:var(--text-soft)}
+  .wbadge .v{color:#fff;background:linear-gradient(115deg,var(--brand-a),var(--brand-b))}
+  /* accessibility */
+  .a11y{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media (max-width:44rem){.a11y{grid-template-columns:1fr}}
+  .a11y .box{border:1px solid var(--border);border-radius:14px;background:var(--bg-panel);padding:1.1rem 1.3rem}
+  .a11y .box h4{margin:0 0 .6rem;font-size:.95rem}
+  .a11y .box ul{margin:0;padding-left:1.1rem;color:var(--text-soft);font-size:.9rem}
+  .a11y .box li{margin:.25rem 0}.a11y .box li b{color:var(--text)}
+  .crtable{width:100%;border-collapse:collapse;font-size:.82rem;font-family:var(--mono)}
+  .crtable td{padding:.32rem .4rem;border-bottom:1px solid var(--border)}
+  .crtable td:last-child{text-align:right}
+  .crtable .pass{color:var(--ok);font-weight:600}
+  footer{max-width:76rem;margin:0 auto;padding:2rem 1.6rem 4rem;color:var(--text-faint);font-size:.82rem}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gW" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f74c00"/><stop offset="1" stop-color="#ffb600"/></linearGradient>
+</defs></svg>
+
+<div class="topbar">
+  <span class="mk" data-mk></span><span class="nm">peryx</span><span class="tag">Brand Book</span>
+  <span class="sp"></span><span class="ver">v1.0 · Jul 2026</span>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<div class="shell">
+  <aside class="toc"><ol id="toc"></ol></aside>
+  <main>
+    <div class="cover">
+      <p class="eyebrow">Identity &amp; usage</p>
+      <div class="lock"><span class="mk" data-mk></span><h1>peryx</h1></div>
+      <p class="lede">Fast as the falcon, sealed as the pyx.</p>
+      <p class="sub">One blazing-fast, open-source vault for a wide range of ecosystems. The identity is built on a mark traced from a photo of a diving peregrine.</p>
+    </div>
+
+    <section class="sec" id="s1">
+      <div class="head"><span class="num">01</span><h2>The name</h2></div>
+      <p class="lead">Two real roots make one coined word. Between them they cover the three traits: open, fast, wide ecosystem support. Say it <span class="mono">PERR-iks</span>.</p>
+      <div class="etym">
+        <div class="card"><div class="k">per· · the peregrine</div><div class="h">Speed, and every land.</div><p>The fastest animal alive, over 380&nbsp;km/h in a dive. Its Latin root <em>peregrinus</em> means &ldquo;from every land,&rdquo; which stands for the wide-ecosystem axis: one vault, artifacts from many ecosystems.</p></div>
+        <div class="card"><div class="k">·yx · the pyx</div><div class="h">A sealed, assayed vault.</div><p>A <em>pyx</em> is a sealed box for safekeeping. In the <em>Trial of the Pyx</em>, sample coins are locked away, then assayed to prove they are genuine. That is the upload pipeline.</p></div>
+      </div>
+    </section>
+
+    <section class="sec" id="s2">
+      <div class="head"><span class="num">02</span><h2>What Peryx is</h2></div>
+      <p class="lead">A caching proxy of upstream indexes, a hosted store you publish to, and a virtual index that merges the two so local packages override upstream. One async Rust process. Zero-config on a laptop, clustered when you configure it.</p>
+      <div class="cards3">
+        <div class="card"><div class="k">Trait 01</div><div class="h">Open source</div><p>Free, inspectable, self-hosted. No seat tax to run your own registry.</p></div>
+        <div class="card"><div class="k">Trait 02</div><div class="h">Blazing fast</div><p>Features you do not enable cost nothing: no CPU, RAM, or latency for anything switched off.</p></div>
+        <div class="card"><div class="k">Trait 03</div><div class="h">Wide ecosystem support</div><p>PyPI and OCI today; npm, Maven, and Cargo next. Each is a driver behind one model.</p></div>
+      </div>
+    </section>
+
+    <section class="sec" id="s3">
+      <div class="head"><span class="num">03</span><h2>Voice &amp; taglines</h2></div>
+      <p class="lead">Concise, technical, plain. Describe what it does and let the numbers carry the boast.</p>
+      <div class="tls">
+        <div class="tl primary"><span class="role">Lead</span><span class="t">Fast as the falcon, sealed as the pyx.</span></div>
+        <div class="tl"><span class="role">Sub</span><span class="t">One blazing-fast vault for a wide range of ecosystems.</span></div>
+        <div class="tl"><span class="role">Dev</span><span class="t">Catch every package and prove every artifact, at falcon speed.</span></div>
+        <div class="tl"><span class="role">Security</span><span class="t">Held under seal. Proven on push. Served at falcon speed.</span></div>
+      </div>
+      <div class="voice">
+        <div class="is"><b>Voice is</b><p>Plain about packaging concepts. Active voice. A control says what happens. Numbers over adjectives.</p></div>
+        <div class="not"><b>Voice is not</b><p>Enterprise buzzwords, &ldquo;revolutionary,&rdquo; exclamation marks, or jargon a newcomer cannot decode.</p></div>
+      </div>
+    </section>
+
+    <section class="sec" id="s4">
+      <div class="head"><span class="num">04</span><h2>The logo</h2></div>
+      <p class="lead">A peregrine seen head-on in a full stoop, wings raised, diving. We traced it from a photograph rather than drawing it, mirrored it for symmetry, and reduced it to one gradient silhouette.</p>
+      <div class="logo-hero">
+        <div><div class="tile d"><span class="mk" data-mk></span></div><p class="capt">gradient · dark</p></div>
+        <div><div class="tile l"><span class="mk" data-mk></span></div><p class="capt">gradient · light</p></div>
+      </div>
+      <div class="copyrow">
+        <button class="btn ghost" id="copyMark">Copy mark SVG</button>
+        <button class="btn ghost" data-copy="linear-gradient(115deg, #f74c00, #ffb600)" data-copy-label="Gradient">Copy gradient CSS</button>
+      </div>
+      <div class="origin">
+        <div class="step"><span class="frame"><span class="mk" data-mk></span></span><span class="cap">the mark</span></div>
+        <span class="arr">&rarr;</span>
+        <div class="step"><span class="frame"><span class="mk" data-seal></span></span><span class="cap">the pyx seal</span></div>
+        <p class="note"><b>One silhouette, two uses.</b> The bare falcon is the everyday mark. Sealed inside the hexagonal pyx it becomes the app icon and the verified-artifact badge. The enclosure survives the OS icon masks that clip the bare mark.</p>
+      </div>
+      <h3 class="sub">Clear space &amp; minimum size</h3>
+      <div class="clearbox"><div class="cs"><span class="guide"></span><span class="mk" data-mk></span></div></div>
+      <p class="capt" style="text-align:left;margin-top:.6rem">Keep clear space of half the mark&rsquo;s height on all sides. Minimum size 16&nbsp;px, where it still reads as the falcon.</p>
+    </section>
+
+    <section class="sec" id="s5">
+      <div class="head"><span class="num">05</span><h2>Logo expressions</h2></div>
+      <p class="lead">Every form the mark ships in, all from one path plus the gradient.</p>
+      <h3 class="sub">Wordmark lockups</h3>
+      <div class="lockups">
+        <div class="lockcell"><div class="wm-h"><span class="mk" data-mk></span><span class="wm-txt">peryx</span></div></div>
+        <div class="lockcell"><div class="wm-v"><span class="mk" data-mk></span><span class="wm-txt">peryx</span></div></div>
+      </div>
+      <p class="capt" style="text-align:left;margin-top:.6rem">Lowercase, weight&nbsp;800, tracking&nbsp;&minus;2%. Gradient at display sizes, solid <span class="mono">--text</span> in body and nav. Never enclose the wordmark in the pyx.</p>
+      <h3 class="sub">Sizes, single-colour &amp; seal</h3>
+      <div class="panel"><div class="exprline">
+        <div class="ex"><span class="appicon a64"><span class="mk" data-seal></span></span><span class="capt">app icon · seal</span></div>
+        <div class="ex"><span class="appicon a64"><span class="mk" data-mk></span></span><span class="capt">avatar · mark</span></div>
+        <div class="ex"><span class="fav f32"><span class="mk" data-mk></span></span><span class="capt">32px</span></div>
+        <div class="ex"><span class="fav f16"><span class="mk" data-mk></span></span><span class="capt">16px</span></div>
+        <div class="ex"><span class="monocell"><span class="mk" data-mono></span></span><span class="capt">mono</span></div>
+      </div></div>
+    </section>
+
+    <section class="sec" id="s6">
+      <div class="head"><span class="num">06</span><h2>Motion</h2></div>
+      <p class="lead">The mark has one move: the stoop. It folds in from up and back, accelerates like gravity, throws off speed streaks, and settles in about 0.7&nbsp;s. Click to replay. The seal never animates.</p>
+      <div class="m-grid">
+        <div class="motion" id="motion" role="button" tabindex="0" aria-label="Replay the stoop animation">
+          <div class="streaks" aria-hidden="true"><div class="col"><span class="streak"></span><span class="streak"></span><span class="streak"></span><span class="streak"></span><span class="streak"></span></div></div>
+          <span class="mk" data-motion></span>
+          <span class="hint">click to replay</span>
+        </div>
+        <div class="m-side">
+          <div class="loader" id="loader"><span class="mk" data-loop></span><span class="cap">loading · the stoop, looped</span></div>
+          <div>
+            <div class="progrow"><span>mirror sync</span><span>determinate</span></div>
+            <div class="prog det"><span></span></div>
+          </div>
+          <div>
+            <div class="progrow"><span>indexing</span><span>indeterminate</span></div>
+            <div class="prog indet"><span></span></div>
+          </div>
+        </div>
+      </div>
+      <p class="capt" style="text-align:left;margin-top:.7rem">Transform and opacity only. Motion is a flourish, not a dependency: with reduced-motion the mark paints settled, the loop holds still, and progress bars show their value without animating.</p>
+    </section>
+
+    <section class="sec" id="s7">
+      <div class="head"><span class="num">07</span><h2>Colour</h2></div>
+      <p class="lead">One bold element, the rust-to-amber gradient, over quiet warm-graphite neutrals. Tokens map to <span class="mono">style.css</span>.</p>
+      <h3 class="sub">Signature gradient</h3>
+      <div class="gradbar" data-copy="linear-gradient(115deg, #f74c00, #ffb600)" data-copy-label="Gradient CSS"></div>
+      <p class="capt" style="text-align:left;margin-top:.5rem">115°, from <span class="mono">#f74c00</span> to <span class="mono">#ffb600</span>. Same direction on every mark. <span class="copyhint">click any swatch or the bar to copy</span></p>
+      <h3 class="sub">Palette</h3>
+      <div class="sw" id="swatches"></div>
+      <h3 class="sub">Semantic (state, not brand)</h3>
+      <div class="sw" id="semantic"></div>
+      <h3 class="sub">Light &amp; dark</h3>
+      <p class="lead" style="margin-bottom:1rem">The website ships both themes, so the brand carries both. The gradient stays fixed; the neutrals mirror. This page follows your system theme, and you can flip it with the toggle in the viewer.</p>
+      <div class="themes2">
+        <div class="themepanel force-light">
+          <div class="row1"><span class="mk" data-mk></span><span class="wm">peryx</span></div>
+          <p>One blazing-fast vault for a wide range of ecosystems.</p>
+          <div class="tbtns"><button class="tbtn p">Publish</button><button class="tbtn">Details</button><span class="ec-chip"><span class="dt" style="background:#3775A9"></span>PyPI</span></div>
+          <div class="tlabel">light theme</div>
+          <div class="tspec">
+            <div><span class="sw" style="background:#f7f4ef"></span><b>bg</b>#f7f4ef</div>
+            <div><span class="sw" style="background:#1a1a1a"></span><b>text</b>#1a1a1a</div>
+            <div><span class="sw" style="background:#fffdf9"></span><b>panel</b>#fffdf9</div>
+            <div><span class="sw" style="background:#d94400"></span><b>accent</b>#d94400</div>
+          </div>
+        </div>
+        <div class="themepanel force-dark">
+          <div class="row1"><span class="mk" data-mk></span><span class="wm">peryx</span></div>
+          <p>One blazing-fast vault for a wide range of ecosystems.</p>
+          <div class="tbtns"><button class="tbtn p">Publish</button><button class="tbtn">Details</button><span class="ec-chip"><span class="dt" style="background:#4f9be0"></span>OCI</span></div>
+          <div class="tlabel">dark theme</div>
+          <div class="tspec">
+            <div><span class="sw" style="background:#131110"></span><b>bg</b>#131110</div>
+            <div><span class="sw" style="background:#e7e7e9"></span><b>text</b>#e7e7e9</div>
+            <div><span class="sw" style="background:#1b1815"></span><b>panel</b>#1b1815</div>
+            <div><span class="sw" style="background:#ff8a3d"></span><b>accent</b>#ff8a3d</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="s8">
+      <div class="head"><span class="num">08</span><h2>Ecosystems</h2></div>
+      <p class="lead">A coloured device carries the ecosystem, kept off the mark. It maps across the package types Artifactory supports, each in that project&rsquo;s own brand colour. <span style="color:var(--ok)">&#9679;</span> marks the ones live in Peryx today.</p>
+      <div class="device">
+        <div class="dev"><span class="k">Device · underline</span>
+          <div style="margin-top:.5rem"><span class="wmini">peryx</span></div>
+          <div class="u-item" style="width:6rem"><div class="bar" style="background:#3775A9"></div><span class="cap">PyPI</span></div>
+        </div>
+        <div class="dev"><span class="k">Device · chip</span>
+          <div class="chiprow" id="chiprow"></div>
+          <p style="margin:.7rem 0 0;color:var(--text-soft);font-size:.85rem">Colour-coded name. Legible in dense UI and CLI.</p>
+        </div>
+      </div>
+      <div id="cats"></div>
+    </section>
+
+    <section class="sec" id="s9">
+      <div class="head"><span class="num">09</span><h2>Typography</h2></div>
+      <p class="lead">System stacks: a mono for labels, data, and the CLI the tool lives in, and a sans for UI and prose. No web fonts.</p>
+      <div class="typerow"><div class="m">Display / wordmark — sans 800, −2% tracking</div><div class="t-display" style="background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent">peryx</div></div>
+      <div class="typerow"><div class="m">Heading — sans 700</div><div class="t-h">Serve a wide range of ecosystems from one vault.</div></div>
+      <div class="typerow"><div class="m">Body — sans 400</div><div class="t-body">A caching proxy, a hosted store, and a virtual index that merges the two so local packages override upstream.</div></div>
+      <div class="typerow"><div class="m">Mono — labels, code, CLI</div><div class="t-mono">$ peryx mirror sync --ecosystem pypi &nbsp;<span style="color:var(--text-faint)"># 1,284 files · 0.6s</span></div></div>
+    </section>
+
+    <section class="sec" id="s10">
+      <div class="head"><span class="num">10</span><h2>In product</h2></div>
+      <p class="lead">The system in use: buttons, badges, and status, all drawn from the gradient and the neutrals.</p>
+      <div class="comp">
+        <div class="compcard"><div class="k">Buttons</div>
+          <div class="btnrow"><button class="btn primary">Publish</button><button class="btn">Cancel</button><button class="btn ghost">Details</button></div>
+        </div>
+        <div class="compcard"><div class="k">Badges &amp; status</div>
+          <div class="badges"><span class="badge verified"><span class="mk" data-mono></span>Verified</span><span class="badge ok"><span class="dot"></span>Healthy</span><span class="badge">cached</span><span class="badge">overridden</span></div>
+        </div>
+      </div>
+      <div class="comp" style="margin-top:1rem">
+        <div class="compcard"><div class="k">Ecosystem tags</div>
+          <div class="chiprow" id="chiprow2" style="margin-top:0"></div>
+        </div>
+        <div class="compcard"><div class="k">Progress</div>
+          <div class="prog det" style="margin-top:.3rem"><span></span></div>
+          <div class="prog indet" style="margin-top:.7rem"><span></span></div>
+        </div>
+      </div>
+      <h3 class="sub">In the wild</h3>
+      <div class="wild">
+        <div class="wcard">
+          <div class="wnav"><span class="brand"><span class="mk" data-mk></span><span class="t">peryx</span></span><span class="links"><span>Docs</span><span>Ecosystems</span><span>Pricing</span></span><span class="cta">Get started</span></div>
+          <div class="cap">website header</div>
+        </div>
+        <div class="wcard">
+          <div class="wrow"><span class="wavatar sq"><span class="mk" data-seal></span></span><span class="wavatar"><span class="mk" data-mk></span></span><span class="wbadge"><span class="k">peryx</span><span class="v">verified</span></span></div>
+          <div class="cap">app icon · social avatar · README badge</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="s11">
+      <div class="head"><span class="num">11</span><h2>Startup banner</h2></div>
+      <p class="lead">The startup logo prints when the service boots. Two separate builds for two eras of terminal. Pick one at runtime; keep both off for non-TTY output and CI.</p>
+      <h3 class="sub">Modern terminals — truecolor &amp; Unicode blocks</h3>
+      <div class="terminal"><div class="bar"><span></span><span></span><span></span></div><pre><span class="banner-grad" aria-hidden="true">  ██████  ███████ ██████  ██   ██ ██   ██
+  ██   ██ ██      ██   ██  ██ ██   ██ ██
+  ██████  █████   ██████    ███     ███
+  ██      ██      ██   ██    ██    ██ ██
+  ██      ███████ ██   ██    ██   ██   ██</span>
+   <span class="dim">the artifact vault · v0.1.0</span>
+
+   <span class="g">→</span> proxy   <span class="dim">pypi.org, ghcr.io</span>
+   <span class="g">→</span> hosted  <span class="dim">2,481 packages · 6.2 GB</span>
+   <span class="g">→</span> virtual <span class="dim">/simple, /v2</span>
+   <span class="ok">✓</span> ready in <span class="ok">0.42s</span> on <span class="ok">:8080</span></pre></div>
+      <h3 class="sub">Old terminals — ASCII only, 16-colour or mono</h3>
+      <div class="terminal"><div class="bar"><span></span><span></span><span></span></div><pre><span class="banner" aria-hidden="true">   _ __   ___ _ __ _   ___  __
+  | '_ \ / _ \ '__| | | \ \/ /
+  | |_) |  __/ |  | |_| |&gt;  &lt;
+  | .__/ \___|_|   \__, /_/\_\
+  |_|              |___/</span>
+  the artifact vault   v0.1.0
+  ------------------------------------
+  <span class="g">-&gt;</span> proxy    pypi.org, ghcr.io
+  <span class="g">-&gt;</span> hosted   2481 packages, 6.2 GB
+  <span class="g">-&gt;</span> virtual  /simple, /v2
+  [<span class="ok">ok</span>] ready in 0.42s on :8080</pre></div>
+      <p class="capt" style="text-align:left;margin-top:.7rem">Pick at runtime: truecolor plus UTF-8 selects the modern build; an older <span class="mono">TERM</span>, <span class="mono">NO_COLOR</span>, or a non-TTY pipe drops to the ASCII build in the terminal&rsquo;s own foreground.</p>
+    </section>
+
+    <section class="sec" id="s12">
+      <div class="head"><span class="num">12</span><h2>Accessibility</h2></div>
+      <p class="lead">Built to pass WCAG&nbsp;2.1&nbsp;AA. Contrast, focus, motion, and language are part of the system, not an afterthought.</p>
+      <div class="a11y">
+        <div class="box"><h4>Colour contrast (measured)</h4>
+          <table class="crtable">
+            <tr><td>Body text · light</td><td class="pass">9.9 : 1</td></tr>
+            <tr><td>Body text · dark</td><td class="pass">9.9 : 1</td></tr>
+            <tr><td>Headings · both</td><td class="pass">15 : 1</td></tr>
+            <tr><td>Secondary labels</td><td class="pass">≥ 5 : 1</td></tr>
+            <tr><td>Accent / links · light</td><td class="pass">4.7 : 1</td></tr>
+          </table>
+        </div>
+        <div class="box"><h4>Beyond contrast</h4>
+          <ul>
+            <li><b>Focus</b> &mdash; every control shows a visible focus ring.</li>
+            <li><b>Keyboard</b> &mdash; interactive demos run on Tab&nbsp;+&nbsp;Enter.</li>
+            <li><b>Motion</b> &mdash; <span class="mono">prefers-reduced-motion</span> stops the dive, loop, and progress bars.</li>
+            <li><b>Colour never carries meaning alone</b> &mdash; ecosystem is a dot plus its name; status is an icon plus a word.</li>
+            <li><b>Minimum sizes</b> &mdash; mark 16&nbsp;px, seal 32&nbsp;px, body 16&nbsp;px.</li>
+            <li><b>Plain language</b> &mdash; active voice, no jargon a newcomer cannot decode.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="s13">
+      <div class="head"><span class="num">13</span><h2>Usage</h2></div>
+      <p class="lead">A few rules keep it coherent.</p>
+      <div class="dd">
+        <div class="ddc good"><div class="stage"><span class="mk" data-mk></span></div><div class="cap"><span class="mark">&check;</span> Gradient mark on a clean, contrasting ground.</div></div>
+        <div class="ddc bad"><div class="stage" style="background:#7a4b2a"><span class="mk" data-mk></span></div><div class="cap"><span class="mark">&times;</span> Gradient on a busy or low-contrast field.</div></div>
+        <div class="ddc good"><div class="stage"><span class="mk" data-seal></span></div><div class="cap"><span class="mark">&check;</span> Pyx seal for app tiles, badges, anything masked.</div></div>
+        <div class="ddc bad"><div class="stage"><span class="mk" data-mk style="transform:rotate(18deg)"></span></div><div class="cap"><span class="mark">&times;</span> Do not rotate, skew, or recolour the mark.</div></div>
+      </div>
+    </section>
+
+    <section class="sec" id="s14" style="border-bottom:0">
+      <div class="head"><span class="num">14</span><h2>Asset manifest</h2></div>
+      <p class="lead">What ships to the repo, and which form fills each file.</p>
+      <div class="scroll"><table class="mtable">
+        <thead><tr><th>File</th><th>Form</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>assets/icon.svg</code></td><td>Pyx seal on dark chip</td><td>App / installer icon, 512², 22% radius.</td></tr>
+          <tr><td><code>site/static/mark.svg</code></td><td>Falcon, gradient</td><td>Primary web mark.</td></tr>
+          <tr><td><code>site/static/mark-mono.svg</code></td><td>Falcon, mono</td><td>Single-colour via <span class="mono">currentColor</span>.</td></tr>
+          <tr><td><code>site/static/lockup.svg</code></td><td>Falcon + wordmark</td><td>Horizontal; nav and README.</td></tr>
+          <tr><td><code>site/static/lockup-stacked.svg</code></td><td>Falcon + wordmark</td><td>Vertical; square placements.</td></tr>
+          <tr><td><code>assets/seal.svg</code> <span style="color:var(--ok)">new</span></td><td>Pyx seal, colour + mono</td><td>Verified-artifact / signing badge.</td></tr>
+          <tr><td><code>crates/peryx/src/banner.rs</code> <span style="color:var(--ok)">new</span></td><td>ASCII banner + start line</td><td>Amber via ANSI; off for non-TTY.</td></tr>
+          <tr><td><code>BRAND.md</code> <span style="color:var(--ok)">new</span></td><td>&mdash;</td><td>The rules from §04–§12.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+  </main>
+</div>
+<footer><p>Peryx Brand Book · v1.0 · July 2026. Mark traced from a diving-peregrine photo, mirrored and smoothed. Gradient <span class="mono">#f74c00 → #ffb600</span> · warm-graphite neutrals · system type · motion in transform and opacity only.</p></footer>
+
+<script>
+  const FAL="M45.2 8.2C40.5 9.5 40.4 10.5 41.3 31.7C41.8 42.9 41.7 43.3 37.4 43.3C34.3 43.3 31.7 44.0 29.7 45.3C27.6 46.6 24.0 46.9 22.7 45.8C20.8 44.4 16.9 36.2 15.3 30.6C14.7 28.7 13.7 25.5 13.0 23.7C12.2 21.8 11.4 19.6 11.1 18.8C9.8 15.2 8.3 14.8 6.8 17.8C6.0 19.3 6.2 20.8 7.7 26.8C8.4 29.9 9.8 36.1 10.7 40.7C12.2 47.7 14.6 57.0 15.6 59.7C15.8 60.2 16.4 62.4 17.0 64.7C19.0 72.4 23.1 79.6 25.5 79.6C26.6 79.6 29.2 78.1 29.2 77.5C29.2 77.1 32.0 75.3 32.9 75.1C35.3 74.6 40.5 79.8 42.6 84.8C43.5 87.1 46.0 91.1 47.2 92.2C47.7 92.7 48.3 92.8 50.0 92.8C51.7 92.8 52.3 92.7 52.8 92.2C54.0 91.1 56.5 87.1 57.4 84.8C59.5 79.8 64.7 74.6 67.1 75.1C68.0 75.3 70.8 77.1 70.8 77.5C70.8 78.1 73.4 79.6 74.5 79.6C76.9 79.6 81.0 72.4 83.0 64.7C83.6 62.4 84.2 60.2 84.4 59.7C85.4 57.0 87.8 47.7 89.3 40.7C90.2 36.1 91.6 29.9 92.3 26.8C93.8 20.8 94.0 19.3 93.2 17.8C91.7 14.8 90.2 15.2 88.9 18.8C88.6 19.6 87.8 21.8 87.0 23.7C86.3 25.5 85.3 28.7 84.7 30.6C83.1 36.2 79.2 44.4 77.3 45.8C76.0 46.9 72.4 46.6 70.3 45.3C68.3 44.0 65.7 43.3 62.6 43.3C58.3 43.3 58.2 42.9 58.7 31.7C59.5 14.2 59.3 11.0 57.4 9.3C55.9 7.8 48.8 7.2 45.2 8.2Z";
+  const HEX="M50 6 L88 28 L88 72 L50 94 L12 72 L12 28 Z";
+  const mkSVG=f=>`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block" aria-hidden="true"><path fill="${f}" d="${FAL}"/></svg>`;
+  const sealSVG=`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block" aria-hidden="true"><path d="${HEX}" fill="none" stroke="url(#gW)" stroke-width="6" stroke-linejoin="round"/><g transform="translate(27.5,29) scale(0.45)"><path fill="url(#gW)" d="${FAL}"/></g></svg>`;
+  document.querySelectorAll('[data-mk]').forEach(e=>e.innerHTML=mkSVG('url(#gW)'));
+  document.querySelectorAll('[data-mono]').forEach(e=>e.innerHTML=mkSVG('currentColor'));
+  document.querySelectorAll('[data-seal]').forEach(e=>e.innerHTML=sealSVG);
+  document.querySelectorAll('[data-motion]').forEach(e=>e.innerHTML=`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block"><g class="falcon"><path fill="url(#gW)" d="${FAL}"/></g></svg>`);
+  document.querySelectorAll('[data-loop]').forEach(e=>e.innerHTML=`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block"><g class="falcon-loop"><path fill="url(#gW)" d="${FAL}"/></g></svg>`);
+
+  const PALETTE=[['Brand A','#f74c00','--brand-a'],['Brand B','#ffb600','--brand-b'],['Accent','#d94400','--accent'],['Accent strong','#b23800','--accent-strong'],['Ink','#1c2026','--text (light)'],['Paper','#ffffff','--bg (light)'],['Ink soft','#555d68','--text-soft'],['Border','#e7e4df','--border'],['Chip','#1e2226','icon container'],['Graphite','#4b5058','neutral'],['Night','#12151a','--bg (dark)'],['Mist','#9aa4b0','--text-soft (dark)']];
+  const SEM=[['Faster / OK','#0ca30c'],['Warn','#d98a00'],['Slow','#ec835a'],['Critical','#d03b3b']];
+  const rgb=h=>{const n=parseInt(h.slice(1),16);return `rgb(${n>>16} ${n>>8&255} ${n&255})`;};
+  document.getElementById('swatches').innerHTML=PALETTE.map(([n,h,t])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div><div class="t">${t}</div></div></div>`).join('');
+  document.getElementById('semantic').innerHTML=SEM.map(([n,h])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div></div></div>`).join('');
+
+  const CATS=[['Languages & build',[['PyPI','Python','#3775A9',1],['npm','Node','#CB3837',0],['Maven','Java','#C71A36',0],['Gradle','JVM','#02B9DF',0],['Go','Modules','#00ADD8',0],['Cargo','Rust','#CE422B',0],['NuGet','.NET','#004880',0],['RubyGems','Ruby','#CC342D',0],['Composer','PHP','#777BB4',0],['CocoaPods','ObjC','#E63E52',0],['Swift','SwiftPM','#F05138',0],['Conan','C/C++','#6699CB',0],['CRAN','R','#276DC3',0],['Conda','DS','#44A833',0],['Pub','Dart','#0175C2',0],['Hugging Face','ML','#FFD21E',0],['SBT','Scala','#DC322F',0],['Ivy','Ant','#B36D43',0]]],
+   ['Containers & charts',[['OCI','Docker','#2496ED',1],['Helm','K8s','#0F1689',0]]],
+   ['OS packages',[['Debian','APT','#A80030',0],['RPM','YUM','#CC0000',0],['Alpine','APK','#0D597F',0],['Opkg','embedded','#8A8A8A',0]]],
+   ['Infra & config',[['Terraform','modules','#7B42BC',0],['Vagrant','boxes','#1868F2',0],['Chef','cookbooks','#F09820',0],['Puppet','modules','#FFAE1A',0]]],
+   ['Source & generic',[['Git LFS','large files','#F05032',0],['VCS','repos','#6E5494',0],['Bower','web','#EF5734',0],['Generic','any blob','#6D6455',0]]]];
+  document.getElementById('cats').innerHTML=CATS.map(([t,items])=>`<div class="ecohead"><h4>${t}</h4><span class="c">${items.length}</span></div><div class="chips">${items.map(([n,s,h,l])=>`<div class="eco" data-copy="${h}" data-copy-label="${n}"><span class="d ${l?'live':''}" style="background:${h}"></span><span style="min-width:0"><span class="nm">${n}</span><span class="su">${s}</span></span><span class="hx">${h.toUpperCase()}</span></div>`).join('')}</div>`).join('');
+  const chipHTML=[['OCI','#2496ED'],['npm','#CB3837'],['Go','#00ADD8'],['Cargo','#CE422B']].map(([n,h])=>`<span class="ec-chip"><span class="dt" style="background:${h}"></span>${n}</span>`).join('');
+  document.getElementById('chiprow').innerHTML=chipHTML;
+  document.getElementById('chiprow2').innerHTML=chipHTML;
+
+  const SECS=[['s1','01','The name'],['s2','02','What it is'],['s3','03','Voice'],['s4','04','The logo'],['s5','05','Expressions'],['s6','06','Motion'],['s7','07','Colour'],['s8','08','Ecosystems'],['s9','09','Typography'],['s10','10','In product'],['s11','11','Startup banner'],['s12','12','Accessibility'],['s13','13','Usage'],['s14','14','Assets']];
+  document.getElementById('toc').innerHTML=SECS.map(([id,n,t])=>`<li><a href="#${id}"><span class="n">${n}</span><span>${t}</span></a></li>`).join('');
+
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  const mo=document.getElementById('motion'), loader=document.getElementById('loader');
+  function play(){if(reduce)return;mo.classList.remove('run');void mo.offsetWidth;mo.classList.add('run');loader.classList.add('loop-on');}
+  mo.addEventListener('click',play);
+  mo.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();play();}});
+  addEventListener('DOMContentLoaded',()=>setTimeout(play,300)); play();
+
+  // copy-to-clipboard + toast
+  const _toast=document.getElementById('toast'); let _tt;
+  const MARK_SVG=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="peryx" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f74c00"/><stop offset="1" stop-color="#ffb600"/></linearGradient></defs><path fill="url(#peryx)" d="${FAL}"/></svg>`;
+  function showCopy(text,label){ try{navigator.clipboard&&navigator.clipboard.writeText(text);}catch(e){} const disp=text.length>40?(label||'Copied'):((label?label+' · ':'')+text); _toast.textContent=disp+'  ✓ copied'; _toast.classList.add('show'); clearTimeout(_tt); _tt=setTimeout(()=>_toast.classList.remove('show'),1500); }
+  document.addEventListener('click',e=>{const el=e.target.closest('[data-copy]'); if(el) showCopy(el.getAttribute('data-copy'), el.getAttribute('data-copy-label')||'');});
+  const cm=document.getElementById('copyMark'); if(cm) cm.addEventListener('click',()=>showCopy(MARK_SVG,'Mark SVG'));
+</script>

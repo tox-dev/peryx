@@ -1,4 +1,4 @@
-// Start a velodex configured with an upload token, then upload the fixture wheel so the UI has a
+// Start a peryx configured with an upload token, then upload the fixture wheel so the UI has a
 // metadata-rich package to show. Playwright polls /+status for readiness.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,14 +9,14 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
-const binary = ["release", "debug"].map((profile) => join(repo, "target", profile, "velodex")).find(existsSync);
+const binary = ["release", "debug"].map((profile) => join(repo, "target", profile, "peryx")).find(existsSync);
 if (!binary) {
-  console.error("build velodex first: cargo build -p velodex");
+  console.error("build peryx first: cargo build -p peryx");
   process.exit(1);
 }
 
-const data = mkdtempSync(join(tmpdir(), "velodex-frontend-"));
-const config = join(data, "velodex.toml");
+const data = mkdtempSync(join(tmpdir(), "peryx-frontend-"));
+const config = join(data, "peryx.toml");
 writeFileSync(
   config,
   `[[index]]
@@ -43,15 +43,15 @@ upload_token = "playwright-secret"
 `,
 );
 
-const velodex = spawn(binary, ["serve", "--port", "4455", "--data-dir", data, "--config", config], {
+const peryx = spawn(binary, ["serve", "--port", "4455", "--data-dir", data, "--config", config], {
   cwd: repo, // the /pkg asset route serves ui/pkg relative to the working directory
   stdio: "inherit",
 });
-process.on("exit", () => velodex.kill());
+process.on("exit", () => peryx.kill());
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-  // A plain signal skips the exit handler, which leaks velodex on the port; forward and quit.
+  // A plain signal skips the exit handler, which leaks peryx on the port; forward and quit.
   process.on(signal, () => {
-    velodex.kill();
+    peryx.kill();
     process.exit(0);
   });
 }
@@ -150,4 +150,4 @@ if (!manifestResponse.ok) {
   process.exit(1);
 }
 
-console.log("velodex ready with the fixture uploaded");
+console.log("peryx ready with the fixture uploaded");
