@@ -1,28 +1,38 @@
 :root {
-  --bg: #ffffff;
-  --bg-soft: #f7f6f4;
-  --text: #1c2026;
-  --text-soft: #555d68;
-  --accent: #d94400;
+  --bg: #f7f4ef;
+  --bg-soft: #fffdf9;
+  --bg-sink: #efeae1;
+  --text: #1a1a1a;
+  --text-soft: #3f3d3b;
+  --text-faint: #6b6862;
+  --accent: #c53d00;
   --accent-strong: #b23800;
   --brand-a: #f74c00;
   --brand-b: #ffb600;
-  --border: #e7e4df;
-  --code-bg: #f3f1ed;
-  --terminal-bg: #1e2226;
-  --terminal-text: #e7ebf0;
+  --border: #e6dfd2;
+  --border-strong: #d8cfbe;
+  --code-bg: #efeae1;
+  --terminal-bg: #17140f;
+  --terminal-text: #e7ddcf;
+  --terminal-dim: #8a8175;
+  --ok: #0ca30c;
+  --warn: #d98a00;
+  --bad: #d03b3b;
   color-scheme: light;
 }
 
 @mixin dark-vars {
-  --bg: #12151a;
-  --bg-soft: #191d24;
-  --text: #e8ebee;
-  --text-soft: #9aa4b0;
+  --bg: #131110;
+  --bg-soft: #1b1815;
+  --bg-sink: #100e0c;
+  --text: #e7e7e9;
+  --text-soft: #bcbcbe;
+  --text-faint: #6f665a;
   --accent: #ff8a3d;
   --accent-strong: #ffb600;
-  --border: #2a2f38;
-  --code-bg: #1c212a;
+  --border: #2c2822;
+  --border-strong: #3a352d;
+  --code-bg: #1c1915;
   color-scheme: dark;
 }
 
@@ -407,7 +417,7 @@ a {
   }
 
   .gradient-text {
-    background: linear-gradient(120deg, var(--brand-a), var(--brand-b));
+    background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -433,11 +443,68 @@ a {
     gap: 1.25rem;
   }
 
+  .hero-stage {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+
   .hero-mark {
     width: 11rem;
     height: auto;
     filter: drop-shadow(0 12px 30px color-mix(in srgb, var(--brand-a) 30%, transparent));
   }
+
+  // The stoop: the falcon folds in from up and back, accelerates like gravity, then settles. Transform and
+  // opacity only, so it stays cheap. transform-box keeps the percentage origin on the mark's own box.
+  .hero-falcon {
+    transform-box: fill-box;
+    transform-origin: 50% 60%;
+    animation: hero-dive 0.7s both;
+  }
+
+  .hero-streaks {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+
+    span {
+      position: absolute;
+      top: 8%;
+      width: 3px;
+      border-radius: 3px;
+      background: linear-gradient(var(--brand-b), color-mix(in srgb, var(--brand-b) 0%, transparent));
+      opacity: 0;
+      animation: hero-streak 0.6s both;
+    }
+
+    span:nth-child(1) { left: 40%; height: 30%; }
+    span:nth-child(2) { left: 52%; height: 42%; animation-delay: 0.03s; }
+    span:nth-child(3) { left: 63%; height: 32%; }
+    span:nth-child(4) { left: 32%; height: 24%; animation-delay: 0.06s; }
+    span:nth-child(5) { left: 71%; height: 25%; animation-delay: 0.05s; }
+  }
+}
+
+@keyframes hero-dive {
+  0% { opacity: 0; transform: translate3d(-22%, -64%, 0) rotate(-18deg) scale(0.5); animation-timing-function: cubic-bezier(0.5, 0, 0.82, 0.22); }
+  40% { opacity: 1; }
+  58% { transform: translate3d(3%, 9%, 0) rotate(3deg) scale(1.08); animation-timing-function: cubic-bezier(0.2, 0.9, 0.3, 1); }
+  74% { transform: translate3d(0, -2%, 0) rotate(-1deg) scale(0.98); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes hero-streak {
+  0% { opacity: 0; transform: translateY(-30px) scaleY(0.3); }
+  38% { opacity: 0.95; }
+  62% { opacity: 0.5; transform: translateY(16px) scaleY(1.4); }
+  100% { opacity: 0; transform: translateY(40px) scaleY(0.5); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero .hero-falcon { animation: none; }
+  .hero .hero-streaks { display: none; }
 }
 
 .terminal {
@@ -511,7 +578,7 @@ a {
   }
 
   &.primary {
-    background: linear-gradient(120deg, var(--brand-a), var(--brand-b));
+    background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
     border: none;
     color: #ffffff;
 

@@ -1,6 +1,6 @@
 base_url = "https://peryx.readthedocs.io"
 title = "peryx"
-description = "A read-through cache and private registry for PyPI and Docker, in one fast Rust binary."
+description = "peryx — one blazing-fast, open-source vault for a wide range of ecosystems. Fast as the falcon, sealed as the pyx."
 compile_sass = true
 build_search_index = false
 generate_feeds = false

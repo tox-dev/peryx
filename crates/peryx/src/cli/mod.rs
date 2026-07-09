@@ -33,7 +33,7 @@ const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Cyan.on_default());
 
-/// peryx: a blazing-fast artifact server: caching proxy, hosted store, and virtual index.
+/// peryx: one blazing-fast vault for a wide range of ecosystems — caching proxy, hosted store, and virtual index.
 #[derive(Debug, Parser)]
 #[command(
     name = "peryx",

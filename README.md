@@ -1,14 +1,16 @@
 # <img src="assets/icon.svg" width="28" alt=""> peryx
 
-A blazing-fast artifact server written in Rust: a caching proxy of an upstream index, a hosted store you publish to, and
-a virtual index that merges the two so local packages transparently override upstream. It speaks PyPI today (point pip,
-uv, or twine at it), and its architecture is built to add more ecosystems without a rewrite. One async process runs
-zero-config on a laptop and scales to a cluster when configured.
+**Fast as the falcon, sealed as the pyx.** peryx is one blazing-fast, open-source vault for a wide range of ecosystems:
+a caching proxy of upstream indexes, a hosted store you publish to, and a virtual index that merges the two so your own
+packages override upstream. It speaks PyPI (point pip, uv, or twine at it) and OCI (point docker or any registry client
+at it) today, with more ecosystems arriving as drivers rather than rewrites. One async Rust process runs zero-config on
+a laptop and scales to a cluster when configured.
 
 ```shell
 cargo build --release
 ./target/release/peryx serve
 uv pip install --index-url http://127.0.0.1:4433/root/pypi/simple/ requests
+docker pull 127.0.0.1:4433/dockerhub/library/alpine
 ```
 
 **Documentation: [peryx.readthedocs.io](https://peryx.readthedocs.io/)** - tutorials, how-to guides, the configuration
