@@ -26,10 +26,16 @@ the variable. Only scalar settings are environment-configurable. The `[[index]]`
 file-only, since neither maps to a flat variable. An empty variable is treated as unset. The `[log]` block also reads
 variables (`PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, `PERYX_LOG_FILE`); see [`[log]`](#log).
 
-`cache_ttl_secs` is a fallback: when an upstream response carries a usable `Cache-Control` lifetime (`s-maxage` or
-`max-age`), that lifetime governs the page instead. The fallback applies when the header is absent,
-`no-cache`/`no-store`, or zero. Artifacts never expire; they are content-addressed by sha256, so a changed upstream file
-is a new entry on the page rather than a mutation.
+`cache_ttl_secs` is both a fallback and a ceiling. When an upstream response carries a usable `Cache-Control` lifetime
+(`s-maxage` or `max-age`) that is **shorter**, that lifetime governs the page; a longer one is clamped to
+`cache_ttl_secs`. The fallback applies when the header is absent, `no-cache`/`no-store`, or zero.
+
+The ceiling matters because `Cache-Control` is the upstream's opinion, not yours. An upstream — or any CDN in front of
+it — answering `max-age=31536000` would otherwise pin a page in your cache for a year with no revalidation. Raise
+`cache_ttl_secs` if you want to trust a long upstream lifetime; lower it to revalidate sooner than the upstream asks.
+
+Artifacts never expire; they are content-addressed by sha256, so a changed upstream file is a new entry on the page
+rather than a mutation.
 
 `hot_cache_bytes` is the memory budget for the transformed-page cache, where a warm request is a lookup, an expiry
 check, and a memcpy. It trades memory against warm-serve speed and nothing else: every entry is re-derivable from the

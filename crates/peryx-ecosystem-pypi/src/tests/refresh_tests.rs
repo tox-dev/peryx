@@ -44,6 +44,35 @@ fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
 }
 
 #[tokio::test]
+async fn test_upstream_max_age_cannot_outlive_the_configured_ttl() {
+    let h = harness().await;
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    let first = Digest::of(b"wheel-v1");
+    mount_page(
+        &h.server,
+        detail_json(first.as_str(), &file_url),
+        ResponseTemplate::new(200).insert_header("cache-control", "public, max-age=31536000"),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    let second = Digest::of(b"wheel-v2");
+    mount_page(
+        &h.server,
+        detail_json(second.as_str(), &file_url),
+        ResponseTemplate::new(200),
+    )
+    .await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+
+    // The upstream granted a year. The configured ttl is 60s, and it is the ceiling: the sweep must
+    // still find this page stale and revalidate it.
+    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    assert_eq!((summary.checked, summary.changed), (1, 1));
+}
+
+#[tokio::test]
 async fn test_refresh_sweep_detects_changed_page() {
     let h = harness().await;
     let digest = Digest::of(b"wheel-v1");

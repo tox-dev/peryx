@@ -154,8 +154,21 @@ pub(crate) fn fresh_cached(state: &AppState, key: &str) -> Result<Option<CachedI
 }
 
 /// A record's freshness lifetime in seconds.
-fn freshness(state: &AppState, record: &CachedIndex) -> i64 {
-    record.fresh_secs.unwrap_or(state.ttl_secs)
+const fn freshness(state: &AppState, record: &CachedIndex) -> i64 {
+    freshness_secs(state.ttl_secs, record.fresh_secs)
+}
+
+/// How long a page stays fresh: the lifetime upstream granted, never longer than the configured one.
+///
+/// `Cache-Control` is the upstream's opinion, and an upstream — or any CDN that fronts it — answering
+/// `max-age=31536000` would otherwise pin a page for a year with no revalidation. `ttl_secs` is both
+/// the fallback when no lifetime is granted and the ceiling when too much is: a shorter upstream
+/// lifetime is honoured, a longer one is not.
+pub(crate) const fn freshness_secs(ttl_secs: i64, fresh_secs: Option<i64>) -> i64 {
+    match fresh_secs {
+        Some(granted) if granted < ttl_secs => granted,
+        _ => ttl_secs,
+    }
 }
 
 /// The route a cached index's pages are attributed to in metrics.

@@ -315,7 +315,7 @@ impl FreshJsonStream {
                     fresh_secs: max_age,
                     body: raw,
                 };
-                let expires_at = record.fetched_at_unix + record.fresh_secs.unwrap_or(self.state.ttl_secs);
+                let expires_at = record.fetched_at_unix + super::freshness_secs(self.state.ttl_secs, record.fresh_secs);
                 #[rustfmt::skip]
                 persist_streamed(&self.state, &self.key, &self.cached_name, &self.project, &record, &summary)?;
                 spawn_metadata_backfill(self.state.clone(), self.route.clone(), &summary.registrations);
@@ -603,7 +603,7 @@ fn live_stream(
                         fresh_secs: live.fresh_secs,
                         body: std::mem::take(&mut raw),
                     };
-                    let expires_at = record.fetched_at_unix + record.fresh_secs.unwrap_or(state.ttl_secs);
+                    let expires_at = record.fetched_at_unix + super::freshness_secs(state.ttl_secs, record.fresh_secs);
                     // One batched transaction, awaited before the body closes: every byte has been
                     // sent already, and a client cannot act on the page before EOF, so downloads
                     // always find their file registrations.

@@ -141,7 +141,7 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
     let now = (state.clock)();
     let mut summary = RefreshSummary::default();
     for (key, fetched_at, fresh_secs) in state.meta.list_index_pages()? {
-        if now - fetched_at < fresh_secs.unwrap_or(state.ttl_secs) {
+        if now - fetched_at < super::freshness_secs(state.ttl_secs, fresh_secs) {
             continue;
         }
         let Some((index, client, offline, project)) = mirror_for_key(state, &key) else {
