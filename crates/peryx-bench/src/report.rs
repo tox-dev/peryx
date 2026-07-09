@@ -122,8 +122,9 @@ pub fn network_row(name: &str, values: &[Option<Summary>], baseline: usize, metr
 /// overhead (or win) a server adds on top of talking to the upstream itself. A `None` marks a party
 /// without a number; `absent` says whether that is a failure (red) or a non-entity (plain).
 ///
-/// # Panics
-/// Never in practice: the caller always measures the baseline party.
+/// A baseline that produced no number leaves the ratios out rather than aborting the run: `--only`
+/// can leave the baseline party unselected, and a baseline whose every round failed should cost the
+/// table its ratios, not the whole suite its results.
 fn build_row(
     name: &str,
     values: &[Option<Summary>],
@@ -132,10 +133,10 @@ fn build_row(
     absent: Absent,
     network_bound: bool,
 ) -> Row {
-    let reference = values[baseline]
-        .as_ref()
-        .expect("the baseline party always has a number")
-        .median;
+    let reference = values
+        .get(baseline)
+        .and_then(Option::as_ref)
+        .map_or(f64::NAN, |summary| summary.median);
     let higher_is_better = matches!(metric, Metric::Rate(_));
     let cost = |value: f64| if higher_is_better { 1.0 / value } else { value };
     let finite: Vec<f64> = values.iter().flatten().map(|summary| cost(summary.median)).collect();
@@ -158,7 +159,11 @@ fn build_row(
                     let index = ((position * LADDER.len() as f64) as usize).min(LADDER.len() - 1);
                     Cell {
                         text: format_value(summary.median, metric),
-                        ratio: format!("{:.2}x", summary.median / reference),
+                        ratio: if reference.is_finite() {
+                            format!("{:.2}x", summary.median / reference)
+                        } else {
+                            "-".to_owned()
+                        },
                         tint: LADDER[index].to_owned(),
                         spread: format_spread(summary),
                         range: format_range(summary, metric),
