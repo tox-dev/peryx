@@ -1,0 +1,55 @@
+{%- set profile = load_data(path="data/bench/machine.toml") -%}
+{#- Rendered from `site/data/bench/machine.toml`, which `peryx-bench` regenerates on every run, so
+    the published tables always describe the machine that produced them. -#}
+<div class="bench">
+  <table class="bench-table machine-table">
+    <caption>the host every table on this page was measured on</caption>
+    <tbody>
+      <tr><th>model</th><td><code>{{ profile.host.model }}</code></td></tr>
+      <tr><th>CPU</th><td>{{ profile.host.cpu }} ({{ profile.host.architecture }})</td></tr>
+      <tr><th>cores</th><td>{{ profile.host.cores }}</td></tr>
+      <tr><th>memory</th><td>{{ profile.host.memory }}</td></tr>
+      <tr><th>OS</th><td>{{ profile.host.os }} (kernel {{ profile.host.kernel }})</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="bench">
+  <table class="bench-table machine-table">
+    <caption>the volumes the run touches; only the benchmarked one ever holds benchmark data</caption>
+    <thead>
+      <tr><th>mount</th><th>disk</th><th>size</th><th>role</th></tr>
+    </thead>
+    <tbody>
+      {%- for volume in profile.volumes %}
+      <tr>
+        <td><code>{{ volume.mount }}</code></td>
+        <td>{{ volume.kind }}, {{ volume.file_system }}{% if volume.removable %}, removable{% endif %}</td>
+        <td>{{ volume.size }}</td>
+        <td>{{ volume.role }}{% if volume.benchmarked %} <strong>&mdash; benchmarked below</strong>{% endif %}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="bench">
+  <table class="bench-table machine-table">
+    <caption>what the bare machine can do, measured the same run<br>
+      <span class="bench-note">median of five samples after a discarded warm-up, ±&nbsp;coefficient&nbsp;of&nbsp;variation;
+        a warm registry lives between the page-cache read and the socket</span></caption>
+    <thead>
+      <tr><th></th><th>single</th><th>8 parallel</th><th>measures</th></tr>
+    </thead>
+    <tbody>
+      {%- for baseline in profile.baselines %}
+      <tr>
+        <th>{{ baseline.name }}</th>
+        <td>{{ baseline.single }}</td>
+        <td>{{ baseline.parallel }}</td>
+        <td>{{ baseline.measures }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</div>

@@ -1456,6 +1456,23 @@ pre:hover .copy-snippet,
   td.bench-worst { background: color-mix(in srgb, rgb(208, 59, 59) 44%, var(--bg)); }
 }
 
+// The host profile: descriptive rather than comparative, so it drops the tints and the frozen
+// baseline column the comparison tables need, and lets its trailing prose column wrap.
+.machine-table {
+  th:first-child,
+  td:first-child,
+  th:nth-child(2),
+  td:nth-child(2) {
+    position: static;
+    box-shadow: none;
+  }
+
+  td:last-child {
+    white-space: normal;
+    color: var(--text-soft);
+  }
+}
+
 
 .docs img[src^="/screens/"],
 .docs img[src*="screens/"] {

@@ -13,10 +13,14 @@
 //! - **load**: request-level throughput, one user and a concurrent swarm, against each warm server.
 //!
 //! Every table also reports what the server itself burned while its workload ran: CPU seconds and
-//! peak resident memory across the whole process tree. Results land in
-//! `site/data/bench/report.toml`; the documentation renders them as tinted tables (best-in-row
-//! green to worst-in-row red) via the `bench` shortcode. One command reproduces every table
-//! (peryx is built automatically when the release binary is missing):
+//! peak resident memory across the whole process tree. Before any of them, the run profiles the
+//! machine — CPU, memory, the volume the stores live on, and the raw memory/disk/loopback ceilings
+//! those tables are read against — into `site/data/bench/machine.toml`.
+//!
+//! Results land in `site/data/bench/report.toml`; the documentation renders them as tinted tables
+//! (best-in-row green to worst-in-row red) via the `bench` shortcode, and the host profile via the
+//! `machine` shortcode. One command reproduces every table (peryx is built automatically when the
+//! release binary is missing):
 //!
 //! ```shell
 //! cargo run --release -p peryx-bench
@@ -24,6 +28,7 @@
 
 mod compare;
 mod ecosystems;
+mod machine;
 mod report;
 mod servers;
 mod stats;
@@ -42,7 +47,7 @@ use crate::report::repo_root;
 ///
 /// Selection is two-axis: `--ecosystem` picks the suite, `--skip` leaves parts of it out. Each suite
 /// names its own parts: `PyPI` has install/pip/throughput/parallel/metadata/load, `OCI` has
-/// pull/throughput/parallel/load.
+/// pull/throughput/parallel/load. Every suite also profiles the host first as the part `machine`.
 #[derive(Parser, Clone)]
 struct Cli {
     /// The package ecosystem to benchmark.
@@ -105,7 +110,13 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Run the selected ecosystem's suite with the current settings.
+///
+/// The host profile comes first, before any server is up: it is ecosystem-neutral, and its loopback
+/// number is the ceiling the serving rows below are read against.
 async fn run_suite(cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
+    if !cli.skip.iter().any(|part| part == "machine") {
+        machine::publish().await?;
+    }
     match cli.ecosystem {
         Ecosystem::Pypi => ecosystems::pypi::run(cli.rounds, &cli.skip, &cli.only, http).await,
         Ecosystem::Oci => ecosystems::oci::run(cli.rounds, cli.mirror, &cli.skip, &cli.only, http).await,

@@ -1,0 +1,50 @@
+[host]
+model = "Mac16,10"
+cpu = "Apple M4"
+architecture = "arm64"
+cores = "10 (4 performance + 6 efficiency)"
+memory = "16 GB"
+os = "macOS 26.5 Tahoe"
+kernel = "25.5.0"
+
+[[volumes]]
+role = "benchmark scratch: every server's store and cache"
+mount = "/System/Volumes/Data"
+file_system = "apfs"
+kind = "SSD"
+size = "245.1 GB"
+removable = false
+benchmarked = true
+
+[[volumes]]
+role = "the checkout the peryx binary is built and run from"
+mount = "/Volumes/T9Mini"
+file_system = "hfs"
+kind = "SSD"
+size = "2.0 TB"
+removable = true
+benchmarked = false
+
+[[baselines]]
+name = "memory copy"
+measures = "moving bytes between two buffers larger than L2"
+single = "44.3 GB/s ±2%"
+parallel = "52.9 GB/s ±1%"
+
+[[baselines]]
+name = "disk write"
+measures = "a sequential write to /System/Volumes/Data (SSD), flushed to the device"
+single = "1.5 GB/s ±17%"
+parallel = "1.8 GB/s ±3%"
+
+[[baselines]]
+name = "file read, warm"
+measures = "reading a file on /System/Volumes/Data (SSD) that the page cache already holds, as a warm registry does"
+single = "15.4 GB/s ±7%"
+parallel = "31.3 GB/s ±2%"
+
+[[baselines]]
+name = "minimal HTTP server"
+measures = "a 30 MB body over 127.0.0.1 from a server that only writes a buffer"
+single = "10.2 GB/s ±3%"
+parallel = "7.1 GB/s ±2%"
