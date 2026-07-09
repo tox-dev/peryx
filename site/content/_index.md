@@ -9,11 +9,9 @@ template = "index.html"
 - **Private packages that shadow upstream** Publish over each ecosystem's own upload API into virtual indexes, where
   your `utils` beats the `utils` someone registered upstream and your image beats the one on the public registry. One
   URL, no second index to configure, no [dependency confusion](@/core/indexes.md).
-- **One model, every ecosystem** The same cache/host/merge roles serve Python packages over the
-  [PyPI Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) (PEP 691 JSON with PEP
-  503 HTML fallback, PEP 700 fields, the PEP 658/714 `.metadata` fast path) and container images over the
-  [OCI `/v2/` distribution API](https://github.com/opencontainers/distribution-spec). Adding a format is a driver, not a
-  rewrite. See [ecosystems](@/ecosystems/_index.md).
+- **One model, every ecosystem** The same cache/host/merge roles sit behind every packaging format peryx speaks, each
+  one a driver that owns its wire protocol and artifact rules. Adding a format is a driver, not a rewrite. See
+  [ecosystems](@/ecosystems/_index.md) for what each speaks today.
 - **Honest freshness** Upstream `Cache-Control` decides how long a page serves from cache; a background sweep catches
   upstream changes even for things nobody is requesting; outages degrade to stale-but-working. Concurrent misses for one
   page, wheel, or layer share a single upstream fetch.

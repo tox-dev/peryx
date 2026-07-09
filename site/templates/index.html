@@ -1,22 +1,34 @@
 {% extends "base.html" %}
+{% import "macros/logo.html" as logo %}
 
 {% block content %}
+{% set ecosystems = get_section(path="ecosystems/_index.md") %}
+{% set ecosystem_count = ecosystems.subsections | length %}
 <section class="hero">
   <div class="glow" aria-hidden="true"></div>
   <div class="container hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">PyPI · OCI · one binary</p>
+      <p class="eyebrow">{{ ecosystem_count }} ecosystems · one binary</p>
       <h1>Fast as the <span class="gradient-text">falcon</span>, sealed as the <span class="gradient-text">pyx</span>.</h1>
       <p class="tagline">
-        peryx is one blazing-fast, open-source vault for a wide range of ecosystems. It caches upstream indexes,
+        peryx is one blazing-fast, MIT-licensed vault for a wide range of ecosystems. It caches upstream indexes,
         hosts the packages you publish, and merges the two so your own artifacts override upstream. One Rust
         binary, zero-config on a laptop: the first pull runs at upstream speed while the cache fills, every one
         after comes from your own disk.
       </p>
       <div class="actions">
         <a class="button primary" href="{{ get_url(path='@/core/getting-started.md') }}">Get started</a>
-        <a class="button" href="{{ config.extra.repo }}">Source on GitHub</a>
+        <a class="button" href="{{ config.extra.repo }}" rel="external">
+          <svg fill="currentColor" aria-hidden="true"><use href="#icon-github"/></svg>
+          Source on GitHub</a>
       </div>
+      {# One badge per ecosystems/ subsection, so a new ecosystem folder lands here on its own. #}
+      <ul class="eco-badges">
+        {%- for subpath in ecosystems.subsections %}
+        {%- set eco = get_section(path=subpath) %}
+        <li><a href="{{ eco.permalink }}">{{ logo::imgs(item=eco, size=20) }}<span>{{ eco.title }}</span></a></li>
+        {%- endfor %}
+      </ul>
     </div>
     <div class="hero-visual">
       <!-- The stoop: the mark folds in from up and back, sheds speed streaks, and settles. It plays once on
@@ -54,10 +66,9 @@
 <section class="stats">
   <div class="container stats-grid">
     <div><strong>1</strong><span>binary, no database or broker</span></div>
-    <a href="{{ get_url(path='@/core/performance.md') }}"><strong>0.7s · 1.6s</strong><span>warm PyPI install · OCI image pull</span></a>
+    <a href="{{ config.extra.repo }}" rel="external"><strong>MIT</strong><span>open source, no seat tax</span></a>
     <a href="{{ config.extra.repo }}/actions/workflows/ci.yml"><strong>100%</strong><span>line &amp; function coverage</span></a>
-    {% set ecosystems = get_section(path="ecosystems/_index.md") %}
-    <a href="{{ ecosystems.permalink }}"><strong>{% for sub in ecosystems.subsections %}{% set subsec = get_section(path=sub) %}{{ subsec.title }}{% if not loop.last %} · {% endif %}{% endfor %}</strong><span>ecosystems — set me up</span></a>
+    <a href="{{ ecosystems.permalink }}"><strong>{{ ecosystem_count }}</strong><span>ecosystems — set me up</span></a>
   </div>
 </section>
 
@@ -73,7 +84,6 @@
       <h3>{{ core.title }}</h3>
       <p>Install, configure, and operate peryx: the CLI, the index model, TLS, logging, monitoring, and the web UI — shared by every ecosystem.</p>
     </a>
-    {% set ecosystems = get_section(path="ecosystems/_index.md") %}
     {% for subpath in ecosystems.subsections %}
     {% set eco = get_section(path=subpath) %}
     <a class="card" href="{{ eco.permalink }}">
