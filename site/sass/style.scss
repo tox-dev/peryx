@@ -563,13 +563,20 @@ a {
 }
 
 .button {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.65rem 1.4rem;
   border-radius: 9px;
   border: 1px solid var(--border);
   color: var(--text);
   font-weight: 600;
   background: var(--bg);
+
+  svg {
+    width: 1.05em;
+    height: 1.05em;
+  }
 
   &:hover {
     text-decoration: none;
