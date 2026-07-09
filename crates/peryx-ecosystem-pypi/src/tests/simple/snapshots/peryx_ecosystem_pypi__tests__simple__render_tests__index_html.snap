@@ -1,5 +1,5 @@
 ---
-source: crates/peryx-core/src/pypi/tests/simple_tests.rs
+source: crates/peryx-ecosystem-pypi/src/tests/simple/render_tests.rs
 expression: render_index_html(&sample_list())
 ---
 <!DOCTYPE html>

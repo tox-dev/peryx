@@ -22,8 +22,8 @@ async fn collect(body: Body) -> Vec<u8> {
 }
 
 #[rstest]
-#[case::streams_whole_file(b"hello peryx".to_vec(), 0, 13, b"hello peryx".to_vec())]
-#[case::serves_offset_range(b"hello peryx world".to_vec(), 6, 7, b"peryx".to_vec())]
+#[case::streams_whole_file(b"hello peryx".to_vec(), 0, 11, b"hello peryx".to_vec())]
+#[case::serves_offset_range(b"hello peryx world".to_vec(), 6, 5, b"peryx".to_vec())]
 #[case::stops_at_eof_past_length(b"abc".to_vec(), 0, 4096, b"abc".to_vec())]
 #[case::streams_multiple_chunks(vec![7u8; 3 * 1024 * 1024], 0, 3 * 1024 * 1024, vec![7u8; 3 * 1024 * 1024])]
 #[tokio::test]
