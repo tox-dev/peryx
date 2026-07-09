@@ -1,0 +1,60 @@
+# The ecosystem colour system: each package type in its own project's brand colour, never the peryx
+# gradient. `live = true` marks the ecosystems peryx serves today; the rest are the roadmap the
+# (role × ecosystem) model is built for. Mirrors the palette in static/brand-book.html.
+
+[[groups]]
+name = "Languages & build"
+items = [
+  { name = "PyPI", subtitle = "Python", color = "#3775A9", live = true },
+  { name = "npm", subtitle = "Node", color = "#CB3837" },
+  { name = "Maven", subtitle = "Java", color = "#C71A36" },
+  { name = "Gradle", subtitle = "JVM", color = "#02B9DF" },
+  { name = "Go", subtitle = "Modules", color = "#00ADD8" },
+  { name = "Cargo", subtitle = "Rust", color = "#CE422B" },
+  { name = "NuGet", subtitle = ".NET", color = "#004880" },
+  { name = "RubyGems", subtitle = "Ruby", color = "#CC342D" },
+  { name = "Composer", subtitle = "PHP", color = "#777BB4" },
+  { name = "CocoaPods", subtitle = "ObjC", color = "#E63E52" },
+  { name = "Swift", subtitle = "SwiftPM", color = "#F05138" },
+  { name = "Conan", subtitle = "C/C++", color = "#6699CB" },
+  { name = "CRAN", subtitle = "R", color = "#276DC3" },
+  { name = "Conda", subtitle = "DS", color = "#44A833" },
+  { name = "Pub", subtitle = "Dart", color = "#0175C2" },
+  { name = "Hugging Face", subtitle = "ML", color = "#FFD21E" },
+  { name = "SBT", subtitle = "Scala", color = "#DC322F" },
+  { name = "Ivy", subtitle = "Ant", color = "#B36D43" },
+]
+
+[[groups]]
+name = "Containers & charts"
+items = [
+  { name = "OCI", subtitle = "Docker", color = "#2496ED", live = true },
+  { name = "Helm", subtitle = "K8s", color = "#0F1689" },
+]
+
+[[groups]]
+name = "OS packages"
+items = [
+  { name = "Debian", subtitle = "APT", color = "#A80030" },
+  { name = "RPM", subtitle = "YUM", color = "#CC0000" },
+  { name = "Alpine", subtitle = "APK", color = "#0D597F" },
+  { name = "Opkg", subtitle = "embedded", color = "#8A8A8A" },
+]
+
+[[groups]]
+name = "Infra & config"
+items = [
+  { name = "Terraform", subtitle = "modules", color = "#7B42BC" },
+  { name = "Vagrant", subtitle = "boxes", color = "#1868F2" },
+  { name = "Chef", subtitle = "cookbooks", color = "#F09820" },
+  { name = "Puppet", subtitle = "modules", color = "#FFAE1A" },
+]
+
+[[groups]]
+name = "Source & generic"
+items = [
+  { name = "Git LFS", subtitle = "large files", color = "#F05032" },
+  { name = "VCS", subtitle = "repos", color = "#6E5494" },
+  { name = "Bower", subtitle = "web", color = "#EF5734" },
+  { name = "Generic", subtitle = "any blob", color = "#6D6455" },
+]

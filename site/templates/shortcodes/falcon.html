@@ -1,0 +1,11 @@
+{#- One falcon instance. `group` puts a class on the transform wrapper so motion can drive it;
+    `mono` swaps the gradient for currentColor (the single-colour expression). Requires brand_defs()
+    earlier on the page. -#}
+{%- set group = group | default(value="") -%}
+{%- set mono = mono | default(value=false) -%}
+{%- set label = label | default(value="") -%}
+<svg class="brand-falcon" viewBox="0 0 100 100"{% if label %} role="img" aria-label="{{ label }}"{% else %} aria-hidden="true" focusable="false"{% endif %}>
+  <g{% if group %} class="{{ group }}"{% endif %}>
+    <use href="#peryx-falcon-path" fill="{% if mono %}currentColor{% else %}url(#peryx-grad){% endif %}"/>
+  </g>
+</svg>

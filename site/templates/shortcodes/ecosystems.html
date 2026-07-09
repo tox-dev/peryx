@@ -1,0 +1,18 @@
+{%- set data = load_data(path="data/ecosystems.toml") -%}
+<div class="eco-groups">
+  {%- for group in data.groups %}
+  <div class="eco-group">
+    <h4>{{ group.name }}<span class="eco-count">{{ group.items | length }}</span></h4>
+    <div class="eco-grid">
+      {%- for item in group.items %}
+      {%- set live = item.live | default(value=false) %}
+      <div class="eco">
+        <span class="eco-dot{% if live %} eco-dot-live{% endif %}" style="background:{{ item.color }}"></span>
+        <span class="eco-name">{{ item.name }}<span class="eco-sub">{{ item.subtitle }}</span></span>
+        <span class="eco-hex">{{ item.color | upper }}</span>
+      </div>
+      {%- endfor %}
+    </div>
+  </div>
+  {%- endfor %}
+</div>

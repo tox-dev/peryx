@@ -274,7 +274,7 @@
       heads.forEach(function (head) { observer.observe(head); });
     })();
     document.querySelectorAll("main pre").forEach(function (pre) {
-      if (pre.classList.contains("mermaid")) return;
+      if (pre.classList.contains("mermaid") || pre.closest(".brand-terminal")) return;
       var button = document.createElement("button");
       button.className = "copy-snippet";
       button.type = "button";

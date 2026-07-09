@@ -1,0 +1,47 @@
+{#- The stoop, live. The tile replays on click/Enter by removing and re-adding the `run` class;
+    prefers-reduced-motion is handled in CSS, so this script stays motion-agnostic.
+    falcon.html is included rather than called: a shortcode is not a Tera function, so its params
+    are passed by setting them in the surrounding context first. -#}
+<div class="brand-motion">
+  <div class="brand-stoop run" id="brand-stoop" role="button" tabindex="0" aria-label="Replay the stoop animation">
+    <div class="brand-streaks" aria-hidden="true">
+      <span class="brand-streak"></span><span class="brand-streak"></span><span class="brand-streak"></span>
+      <span class="brand-streak"></span><span class="brand-streak"></span>
+    </div>
+    {% set group = "brand-dive" %}{% set label = "peryx mark, diving" %}{% set mono = false %}
+    {% include "shortcodes/falcon.html" %}
+    <span class="brand-stoop-hint">click to replay</span>
+  </div>
+  <div class="brand-motion-side">
+    <div class="brand-loader">
+      {% set group = "brand-loop" %}{% set label = "" %}{% set mono = false %}
+      {% include "shortcodes/falcon.html" %}
+      <span class="brand-loader-cap">loading · the stoop, looped</span>
+    </div>
+    <div>
+      <div class="brand-progress-row"><span>mirror sync</span><span>determinate</span></div>
+      <div class="brand-prog brand-prog-det"><span></span></div>
+    </div>
+    <div>
+      <div class="brand-progress-row"><span>indexing</span><span>indeterminate</span></div>
+      <div class="brand-prog brand-prog-indet"><span></span></div>
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    var tile = document.getElementById("brand-stoop");
+    function replay() {
+      tile.classList.remove("run");
+      void tile.offsetWidth;
+      tile.classList.add("run");
+    }
+    tile.addEventListener("click", replay);
+    tile.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        replay();
+      }
+    });
+  })();
+</script>

@@ -1465,3 +1465,770 @@ pre:hover .copy-snippet,
     border-radius: 5px;
   }
 }
+
+// The brand page renders the identity rather than describing it: live marks, the stoop, the
+// ecosystem palette, and the terminal banners. Everything below is scoped to that page's markup.
+$brand-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+.brand-falcon {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.brand-capt {
+  font-family: $brand-mono;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 0.45rem 0 0;
+}
+
+.brand-k {
+  font-family: $brand-mono;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 0.6rem;
+}
+
+.brand-dim { color: var(--terminal-dim); }
+.brand-g { color: var(--brand-b); }
+.brand-ok { color: var(--ok); }
+
+.brand-specimens {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.brand-logo-hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+
+  @media (max-width: 40rem) { grid-template-columns: 1fr; }
+}
+
+.brand-tile {
+  height: 190px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+
+  .brand-falcon { width: 92px; height: 92px; }
+}
+
+.brand-tile-dark { background: radial-gradient(120% 120% at 30% 12%, #241f18, #17140f); }
+.brand-tile-light { background: radial-gradient(120% 120% at 30% 12%, #fffdf9, #efeae1); }
+
+.brand-origin {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin: 1.4rem 0 0.8rem;
+}
+
+.brand-frame {
+  width: 84px;
+  height: 84px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  display: grid;
+  place-items: center;
+
+  .brand-falcon { width: 56px; height: 56px; }
+}
+
+.brand-arrow {
+  color: var(--text-faint);
+  font-size: 1.3rem;
+}
+
+.brand-clearbox {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-soft);
+  padding: 2rem;
+  display: grid;
+  place-items: center;
+}
+
+// The dashed guide is exactly half the mark's height on every side, so the rule is legible as a
+// picture instead of a number.
+.brand-cs {
+  position: relative;
+  width: 96px;
+  height: 96px;
+
+  .brand-falcon { width: 96px; height: 96px; }
+}
+
+.brand-guide {
+  position: absolute;
+  inset: -48px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 8px;
+}
+
+.brand-lockups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+
+  @media (max-width: 40rem) { grid-template-columns: 1fr; }
+}
+
+.brand-lockcell {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  min-height: 130px;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.brand-expr {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.6rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  padding: 1.4rem;
+}
+
+.brand-ex {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.brand-appicon {
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: #1e2226;
+  display: grid;
+  place-items: center;
+
+  .brand-falcon { width: 40px; height: 40px; }
+}
+
+.brand-fav {
+  display: grid;
+  place-items: center;
+}
+
+.brand-fav-32 { width: 32px; height: 32px; }
+.brand-fav-16 { width: 16px; height: 16px; }
+
+.brand-monocell {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+}
+
+.brand-motion {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 1rem;
+  margin: 1.2rem 0;
+
+  @media (max-width: 48rem) { grid-template-columns: 1fr; }
+}
+
+.brand-stoop {
+  position: relative;
+  height: 250px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: radial-gradient(120% 120% at 30% 12%, #241f18, #17140f);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+
+  .brand-falcon {
+    width: 118px;
+    height: 118px;
+    position: relative;
+    z-index: 2;
+  }
+}
+
+.brand-stoop-hint {
+  position: absolute;
+  bottom: 0.7rem;
+  right: 0.9rem;
+  font-family: $brand-mono;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+  z-index: 3;
+}
+
+.brand-streaks {
+  position: absolute;
+  width: 118px;
+  height: 118px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.brand-streak {
+  position: absolute;
+  top: -8px;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(#ffb600, rgba(255, 182, 0, 0));
+  opacity: 0;
+
+  &:nth-child(1) { left: 34px; height: 46px; }
+  &:nth-child(2) { left: 52px; height: 64px; }
+  &:nth-child(3) { left: 72px; height: 50px; }
+  &:nth-child(4) { left: 22px; height: 36px; }
+  &:nth-child(5) { left: 88px; height: 38px; }
+}
+
+.brand-dive { transform-origin: 50% 60%; }
+
+@keyframes brand-dive {
+  0% {
+    opacity: 0;
+    transform: translate3d(-22%, -64%, 0) rotate(-18deg) scale(0.5);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.82, 0.22);
+  }
+  40% { opacity: 1; }
+  58% {
+    transform: translate3d(3%, 9%, 0) rotate(3deg) scale(1.08);
+    animation-timing-function: cubic-bezier(0.2, 0.9, 0.3, 1);
+  }
+  74% { transform: translate3d(0, -2%, 0) rotate(-1deg) scale(0.98); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes brand-streakfall {
+  0% { opacity: 0; transform: translateY(-30px) scaleY(0.3); }
+  38% { opacity: 0.95; }
+  62% { opacity: 0.5; transform: translateY(16px) scaleY(1.4); }
+  100% { opacity: 0; transform: translateY(40px) scaleY(0.5); }
+}
+
+.brand-stoop.run {
+  .brand-dive { animation: brand-dive 0.7s both; }
+  .brand-streak { animation: brand-streakfall 0.6s both; }
+  .brand-streak:nth-child(2) { animation-delay: 0.03s; }
+  .brand-streak:nth-child(4) { animation-delay: 0.06s; }
+  .brand-streak:nth-child(5) { animation-delay: 0.05s; }
+}
+
+.brand-motion-side {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.brand-loader {
+  position: relative;
+  height: 118px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #17140f;
+  display: grid;
+  place-items: center;
+
+  .brand-falcon { width: 44px; height: 44px; }
+}
+
+.brand-loop { transform-origin: 50% 50%; }
+
+@keyframes brand-stoloop {
+  0% { opacity: 0; transform: translateY(-150%) scale(0.7); }
+  18% { opacity: 1; }
+  52% { opacity: 1; transform: translateY(0) scale(1); }
+  82% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(150%) scale(0.9); }
+}
+
+.brand-loop { animation: brand-stoloop 1.15s linear infinite; }
+
+.brand-loader-cap {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.7rem;
+  font-family: $brand-mono;
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+}
+
+.brand-progress-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: $brand-mono;
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  margin-bottom: 0.4rem;
+}
+
+.brand-prog {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-sink);
+  overflow: hidden;
+
+  & + .brand-prog { margin-top: 0.7rem; }
+
+  > span {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--brand-a), var(--brand-b));
+  }
+}
+
+@keyframes brand-fill {
+  0% { width: 4%; }
+  55% { width: 82%; }
+  100% { width: 100%; }
+}
+
+@keyframes brand-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+
+.brand-prog-det > span { width: 0; animation: brand-fill 2.4s ease-in-out infinite; }
+.brand-prog-indet > span { width: 38%; animation: brand-sweep 1.3s ease-in-out infinite; }
+
+// The page promises reduced motion, so it has to keep it: every animated element paints its settled
+// state instead.
+@media (prefers-reduced-motion: reduce) {
+  .brand-stoop.run .brand-dive,
+  .brand-stoop.run .brand-streak,
+  .brand-loop {
+    animation: none;
+  }
+
+  .brand-loop { opacity: 1; transform: none; }
+  .brand-streak { display: none; }
+  .brand-prog-det > span { width: 66%; animation: none; }
+  .brand-prog-indet > span { width: 66%; animation: none; }
+}
+
+.brand-gradient {
+  height: 2.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
+  margin: 1rem 0 1.5rem;
+}
+
+.eco-group h4 {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 1.4rem 0 0.8rem;
+  font-size: 1rem;
+}
+
+.eco-count {
+  font-family: $brand-mono;
+  font-size: 0.64rem;
+  color: var(--text-faint);
+}
+
+.eco-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.5rem;
+}
+
+.eco {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  padding: 0.45rem 0.6rem;
+}
+
+.eco-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  flex: none;
+  position: relative;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+// The live pip rides the ecosystem swatch, so it needs a ring in the card colour to stay legible
+// against arbitrary brand hexes.
+.eco-dot-live::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  border: 2px solid var(--bg-soft);
+}
+
+.eco-name {
+  display: block;
+  min-width: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eco-sub {
+  display: block;
+  font-family: $brand-mono;
+  font-size: 0.56rem;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 400;
+}
+
+.eco-hex {
+  font-family: $brand-mono;
+  font-size: 0.58rem;
+  color: var(--text-faint);
+  margin-left: auto;
+}
+
+.brand-typerow {
+  display: grid;
+  grid-template-columns: 14rem 1fr;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--border);
+
+  @media (max-width: 48rem) { grid-template-columns: 1fr; }
+}
+
+.brand-typelabel {
+  font-family: $brand-mono;
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.brand-type-display {
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.brand-type-h { font-size: 1.25rem; font-weight: 700; }
+.brand-type-body { font-size: 1rem; color: var(--text-soft); }
+.brand-type-mono { font-family: $brand-mono; font-size: 0.85rem; }
+
+.brand-comp {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+
+  @media (max-width: 48rem) { grid-template-columns: 1fr; }
+}
+
+.brand-compcard {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  padding: 1rem 1.1rem;
+}
+
+.brand-btnrow {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.brand-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.brand-btn-primary {
+  border-color: transparent;
+  background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
+  color: #fff;
+  font-weight: 600;
+}
+
+.brand-btn-ghost {
+  background: transparent;
+  color: var(--text-soft);
+}
+
+.brand-badges {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.brand-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: $brand-mono;
+  font-size: 0.68rem;
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-soft);
+}
+
+.brand-badge-mk {
+  width: 13px;
+  height: 13px;
+  display: block;
+  color: var(--accent);
+}
+
+.brand-badge-verified { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+.brand-badge-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+
+.brand-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.brand-chiprow {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.brand-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: $brand-mono;
+  font-size: 0.68rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-soft);
+}
+
+.brand-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.brand-wild {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+
+  @media (max-width: 48rem) { grid-template-columns: 1fr; }
+}
+
+.brand-wcard {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  padding: 0.9rem;
+}
+
+.brand-wnav {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  background: var(--bg-sink);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  min-height: 60px;
+}
+
+.brand-wbrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+
+  .brand-falcon { width: 22px; height: 22px; }
+}
+
+.brand-wtitle { font-weight: 800; letter-spacing: -0.02em; }
+
+.brand-wlinks {
+  display: flex;
+  gap: 0.7rem;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  margin-left: auto;
+}
+
+.brand-wcta {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
+  border-radius: 7px;
+  padding: 0.3rem 0.6rem;
+  white-space: nowrap;
+}
+
+.brand-wrow {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-sink);
+  border-radius: 10px;
+  padding: 1.2rem;
+  min-height: 100px;
+  flex-wrap: wrap;
+}
+
+.brand-wavatar {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: #1e2226;
+  display: grid;
+  place-items: center;
+
+  .brand-falcon { width: 34px; height: 34px; }
+}
+
+.brand-wavatar-sq { border-radius: 13px; }
+
+.brand-wbadge {
+  display: inline-flex;
+  font-family: $brand-mono;
+  font-size: 0.72rem;
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+}
+
+.brand-wbadge-k {
+  padding: 0.22rem 0.55rem;
+  background: var(--bg);
+  color: var(--text-soft);
+}
+
+.brand-wbadge-v {
+  padding: 0.22rem 0.55rem;
+  color: #fff;
+  background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
+}
+
+.brand-terminal {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--terminal-bg);
+  margin: 0.8rem 0;
+
+  pre {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    background: transparent;
+    color: var(--terminal-text);
+    font-family: $brand-mono;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    overflow-x: auto;
+  }
+}
+
+.brand-terminal-bar {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--terminal-text) 12%, transparent);
+
+  span {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--terminal-text) 22%, transparent);
+  }
+}
+
+.brand-banner-grad {
+  background: linear-gradient(115deg, var(--brand-a), var(--brand-b));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.brand-dd {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 1rem;
+}
+
+.brand-ddc {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  padding: 0.9rem;
+  border-top-width: 3px;
+}
+
+.brand-good { border-top-color: var(--ok); }
+.brand-bad { border-top-color: var(--bad); }
+
+.brand-stage {
+  height: 110px;
+  border-radius: 10px;
+  background: var(--bg-sink);
+  display: grid;
+  place-items: center;
+
+  .brand-falcon { width: 56px; height: 56px; }
+}
+
+.brand-skewed {
+  display: block;
+  width: 56px;
+  height: 56px;
+  transform: rotate(18deg) skewX(8deg);
+}
+
+.brand-mark-good { color: var(--ok); font-weight: 700; }
+.brand-mark-bad { color: var(--bad); font-weight: 700; }
