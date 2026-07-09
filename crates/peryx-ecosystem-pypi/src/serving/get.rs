@@ -159,6 +159,12 @@ async fn file_route(state: &Arc<AppState>, index: &Index, file: &str) -> Respons
 }
 
 fn download_policy_response(state: &AppState, index: &Index, filename: &str, digest: &Digest) -> Option<Response> {
+    // No configured policy can deny a download, so skip the two blocking stats it would take to
+    // learn the file size. This is the zero-config default and keeps the warm wheel path off the
+    // filesystem until the byte stream itself opens the file.
+    if !index.policy.active() {
+        return None;
+    }
     let size = if state.blobs.exists(digest) {
         std::fs::metadata(state.blobs.path_for(digest))
             .ok()
