@@ -104,6 +104,25 @@ the field, and the numbers stop moving with Docker Hub's weather.
 
 {{ bench(file="parallel-pull-mirror") }}
 
+## Every endpoint, not just the three a pull touches
+
+`crane pull` needs three endpoints: the version check, a manifest, and a blob. The workloads above therefore never
+measure the rest of what a registry serves, and an unmeasured endpoint is where a regression hides. Unlike a PyPI index,
+an OCI registry's paths are fixed by the distribution spec, so these rows compare like for like across the field.
+
+{{ bench(file="image-endpoints-mirror") }}
+
+peryx answers a cached manifest, by tag or by digest, in tens of microseconds, and a `HEAD` costs what the `GET` costs
+without the body. That is worth reading carefully rather than as a win. A **tag is mutable**, so distribution and Docker
+Hub ask upstream whether it still points where it did, on every request; peryx serves a tag from cache while it is fresh
+and revalidates once its freshness window elapses, and zot re-checks its sync. The microseconds buy you a tag that can
+be up to one freshness window stale, which is the trade a caching proxy exists to make. A manifest **by digest** is
+immutable, and there the comparison is clean.
+
+The `tag list` rows are marked `net` for a reason: on a single-member proxy peryx passes the request straight to its
+upstream, every time, so the row is a round trip rather than a measure of peryx serving something it holds. zot answers
+in microseconds because its sync extension has already mirrored the repository and it lists from its own store.
+
 ## Reproducing
 
 Both readings come from the same harness, one straight against Docker Hub and one behind a local pull-through cache that

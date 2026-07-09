@@ -205,20 +205,48 @@ concludes the package does not exist.
 
 The request workload drives a swarm against each warm server: one user, then 32, each a client that fetches project
 pages and reads every byte of the body, the way a resolver does. The pages average ~480 KB, so this row prices full page
-transfers, not header round-trips.
+transfers, not header round-trips. Every client sends the `Accept` header pip and uv send, because peryx picks the
+representation from it: a swarm asking for `*/*` receives the PEP 503 HTML render instead, which is not the page an
+installer ever gets, and prices work no install performs.
+
+peryx answers **7,658 requests a second** to a single client at a 2.3 ms p95, and **17,707** to thirty-two at 3.8 ms;
+the next-fastest local cache manages 176 and 752. The gap is the cached page: a warm hit is a lookup and a copy of bytes
+peryx has already transformed, so it serves a thousand of those requests on **168 ms of CPU** where devpi spends 9.6 s
+and proxpi 6.3 s.
 
 {{ bench(file="load") }}
 
 Every table ends with two resource rows: the CPU the server's whole process tree burned while its workload ran, and its
 peak resident memory, compared against peryx (direct runs no server, so it cannot anchor them). The load table prices
 that CPU **per thousand requests served**, which is the only way to read it. A fixed-duration swarm hands the slowest
-server the smallest bill, and unnormalized it rewards failure: devpi answers 80 requests a second to peryx's 2,703, so
-its absolute CPU looks modest until you divide by the work done, at which point it costs **13.4 s per thousand requests
-against peryx's 2.6 s**.
+server the smallest bill, and unnormalized it rewards failure: devpi answers 114 requests a second to peryx's 17,707, so
+its absolute CPU looks modest until you divide by the work done.
+
+Read the ratios against `direct` with care here. Every other party is a process on this machine, while `direct` is
+pypi.org across the internet, so its rows carry a wide-area round trip no local cache pays.
 
 Speed alone hides a trade. proxpi's eight-way transfer lead comes from holding wheels in memory at nearly seven times
 peryx's 44 MB footprint, and pypiserver's near-zero CPU reflects that it redirects file downloads to PyPI instead of
 serving them.
+
+## Every endpoint, not just the three an installer touches
+
+The workloads above drive real clients, so they exercise the three endpoints an install needs: the project page, the
+wheel, and its PEP 658 metadata sibling. Everything else peryx serves went unmeasured, and an unmeasured endpoint is
+where a regression hides. This table prices one warm request to each of them.
+
+It is peryx against itself, not against the field. A PyPI server chooses its own url shapes and decides what its index
+root contains: pypi.org answers `/pypi/{project}/json` where peryx answers `{index}/{project}/json`, devpi addresses
+files by an internal path, and a proxy's index root lists what it has cached while pypi.org's lists every project that
+exists. Rows across those servers would compare different work and read as a ranking. The comparisons live in the tables
+above, which drive one client against everyone.
+
+{{ bench(file="endpoints") }}
+
+Two rows stand out, and both are the same fact. The JSON project page is served from the transformed-page cache, so it
+costs a lookup and a copy. The HTML render and the legacy `/{project}/json` API are not cached at all: each request
+parses the stored page and renders it again, which is why HTML costs about nine times the JSON page and the legacy API
+about twenty. Installers ask for JSON, so no install pays this; a browser and an old client do.
 
 Every server is measured the same way, on the same machine, in the same run, and one command reproduces every table: see
 [run the benchmarks](@/contributing/benchmarking.md).

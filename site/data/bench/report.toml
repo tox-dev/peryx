@@ -1,3 +1,571 @@
+[tables.endpoints]
+baseline = "peryx"
+label = "peryx only: one warm request to each endpoint it serves. A PyPI server shapes its own urls, so these rows do not compare across the field"
+
+[[tables.endpoints.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "simple index (JSON)"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = true
+outliers = 0
+range = "74 µs–84 µs"
+ratio = "1.00x"
+spread = "±6%"
+text = "78 µs"
+tint = "faster"
+value = 0.000078
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "simple index (HTML)"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = true
+outliers = 0
+range = "60 µs–73 µs"
+ratio = "1.00x"
+spread = "±10%"
+text = "69 µs"
+tint = "faster"
+value = 0.000068542
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "project detail (JSON)"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = true
+outliers = 0
+range = "262 µs–670 µs"
+ratio = "1.00x"
+spread = "±43%"
+text = "615 µs"
+tint = "faster"
+value = 0.000614959
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "project detail (HTML)"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = false
+outliers = 0
+range = "5.6 ms–5.9 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "5.7 ms"
+tint = "faster"
+value = 0.005658833
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "legacy project JSON"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = false
+outliers = 0
+range = "13 ms–14 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "13 ms"
+tint = "faster"
+value = 0.01329425
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "PEP 658 metadata sibling"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = true
+outliers = 0
+range = "102 µs–115 µs"
+ratio = "1.00x"
+spread = "±6%"
+text = "107 µs"
+tint = "faster"
+value = 0.00010675
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "archive inspect listing"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = true
+outliers = 0
+range = "191 µs–222 µs"
+ratio = "1.00x"
+spread = "±8%"
+text = "215 µs"
+tint = "faster"
+value = 0.000215
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "server CPU"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = false
+outliers = 0
+range = "468 ms–488 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "471 ms"
+tint = "faster"
+value = 0.471
+
+[[tables.endpoints.rows]]
+higher_is_better = false
+name = "server peak memory"
+network_bound = false
+
+[[tables.endpoints.rows.cells]]
+noisy = true
+outliers = 0
+range = "78 MB–93 MB"
+ratio = "1.00x"
+spread = "±9%"
+text = "84 MB"
+tint = "faster"
+value = 83.607552
+
+[tables.image-endpoints-mirror]
+baseline = "direct"
+label = "one warm request to each served endpoint; an empty cell is an endpoint the registry does not offer"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "version check"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "38 µs–66 µs"
+ratio = "0.12x"
+spread = "±27%"
+text = "55 µs"
+tint = "faster"
+value = 0.000054708
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "437 µs–497 µs"
+ratio = "1.00x"
+spread = "±7%"
+text = "461 µs"
+tint = "worst"
+value = 0.00046125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "514 µs–700 µs"
+ratio = "1.35x"
+spread = "±15%"
+text = "624 µs"
+tint = "worst"
+value = 0.000624166
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "53 µs–74 µs"
+ratio = "0.15x"
+spread = "±17%"
+text = "71 µs"
+tint = "faster"
+value = 0.000070958
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "manifest by tag"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "49 µs–74 µs"
+ratio = "0.00x"
+spread = "±21%"
+text = "58 µs"
+tint = "faster"
+value = 0.000058
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "227 ms–238 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "231 ms"
+tint = "worst"
+value = 0.231066959
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "243 ms–263 ms"
+ratio = "1.06x"
+spread = "±4%"
+text = "245 ms"
+tint = "worst"
+value = 0.244997083
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "951 ms–967 ms"
+ratio = "4.18x"
+spread = "±1%"
+text = "967 ms"
+tint = "worst"
+value = 0.966681542
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "manifest by tag (HEAD)"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "31 µs–65 µs"
+ratio = "0.00x"
+spread = "±34%"
+text = "53 µs"
+tint = "faster"
+value = 0.000052709
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "229 ms–242 ms"
+ratio = "1.00x"
+spread = "±3%"
+text = "236 ms"
+tint = "worst"
+value = 0.23589125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "242 ms–254 ms"
+ratio = "1.03x"
+spread = "±3%"
+text = "243 ms"
+tint = "worst"
+value = 0.2430755
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "946 ms–957 ms"
+ratio = "4.02x"
+spread = "±1%"
+text = "948 ms"
+tint = "worst"
+value = 0.948495041
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "manifest by digest"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "33 µs–68 µs"
+ratio = "0.05x"
+spread = "±35%"
+text = "59 µs"
+tint = "faster"
+value = 0.000058667
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.2 ms–1.6 ms"
+ratio = "1.00x"
+spread = "±19%"
+text = "1.2 ms"
+tint = "worst"
+value = 0.0012325
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.2 ms–1.9 ms"
+ratio = "1.32x"
+spread = "±23%"
+text = "1.6 ms"
+tint = "worst"
+value = 0.001630125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "135 µs–166 µs"
+ratio = "0.12x"
+spread = "±10%"
+text = "149 µs"
+tint = "par"
+value = 0.000148833
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "blob (HEAD)"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "60 µs–104 µs"
+ratio = "0.10x"
+spread = "±27%"
+text = "83 µs"
+tint = "faster"
+value = 0.000082875
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "724 µs–872 µs"
+ratio = "1.00x"
+spread = "±10%"
+text = "842 µs"
+tint = "worst"
+value = 0.0008425
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "872 µs–1.0 ms"
+ratio = "1.04x"
+spread = "±10%"
+text = "877 µs"
+tint = "worst"
+value = 0.000877209
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "257 µs–318 µs"
+ratio = "0.34x"
+spread = "±11%"
+text = "287 µs"
+tint = "slow"
+value = 0.000287042
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "config blob"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "61 µs–107 µs"
+ratio = "0.10x"
+spread = "±27%"
+text = "97 µs"
+tint = "faster"
+value = 0.000097333
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "987 µs–1.1 ms"
+ratio = "1.00x"
+spread = "±8%"
+text = "988 µs"
+tint = "worst"
+value = 0.000987917
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "1.2 ms–1.2 ms"
+ratio = "1.25x"
+spread = "±2%"
+text = "1.2 ms"
+tint = "worst"
+value = 0.001237833
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "87 µs–107 µs"
+ratio = "0.10x"
+spread = "±11%"
+text = "102 µs"
+tint = "faster"
+value = 0.000102375
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "layer range (1 MiB)"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "257 µs–381 µs"
+ratio = "0.06x"
+spread = "±20%"
+text = "368 µs"
+tint = "faster"
+value = 0.000368167
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "5.3 ms–8.1 ms"
+ratio = "1.00x"
+spread = "±21%"
+text = "6.3 ms"
+tint = "worst"
+value = 0.00629225
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "4.7 ms–5.7 ms"
+ratio = "0.85x"
+spread = "±10%"
+text = "5.4 ms"
+tint = "worst"
+value = 0.005375459
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "294 µs–509 µs"
+ratio = "0.07x"
+spread = "±27%"
+text = "461 µs"
+tint = "faster"
+value = 0.000461208
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "tag list"
+network_bound = true
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "339 ms–342 ms"
+ratio = "1.01x"
+spread = "±1%"
+text = "341 ms"
+tint = "worst"
+value = 0.341260958
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "331 ms–345 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "337 ms"
+tint = "worst"
+value = 0.337065125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "347 ms–358 ms"
+ratio = "1.06x"
+spread = "±2%"
+text = "356 ms"
+tint = "worst"
+value = 0.355773417
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "81 µs–105 µs"
+ratio = "0.00x"
+spread = "±13%"
+text = "97 µs"
+tint = "faster"
+value = 0.000097375
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "tag list (paginated)"
+network_bound = true
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "333 ms–336 ms"
+ratio = "0.98x"
+spread = "±1%"
+text = "335 ms"
+tint = "worst"
+value = 0.334596666
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "337 ms–348 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "341 ms"
+tint = "worst"
+value = 0.340565625
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "351 ms–363 ms"
+ratio = "1.05x"
+spread = "±2%"
+text = "358 ms"
+tint = "worst"
+value = 0.357572542
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "75 µs–102 µs"
+ratio = "0.00x"
+spread = "±16%"
+text = "94 µs"
+tint = "faster"
+value = 0.000094458
+
 [tables.image-throughput]
 baseline = "direct"
 label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
@@ -792,7 +1360,7 @@ value = 375.652352
 
 [tables.load]
 baseline = "direct"
-label = "simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it"
+label = "PEP 691 JSON simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it"
 
 [[tables.load.parties]]
 name = "peryx"
@@ -826,62 +1394,62 @@ network_bound = false
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "555 req/s–587 req/s"
-ratio = "2.66x"
-spread = "±3%"
-text = "571 req/s"
-tint = "faster"
-value = 570.6
-
-[[tables.load.rows.cells]]
-noisy = true
-outliers = 0
-range = "204 req/s–240 req/s"
-ratio = "1.00x"
-spread = "±9%"
-text = "215 req/s"
-tint = "mild"
-value = 214.8
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "76 req/s–78 req/s"
-ratio = "0.36x"
-spread = "±1%"
-text = "77 req/s"
-tint = "worst"
-value = 77.4
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "97 req/s–99 req/s"
-ratio = "0.46x"
-spread = "±1%"
-text = "99 req/s"
-tint = "worst"
-value = 98.6
-
-[[tables.load.rows.cells]]
-noisy = true
-outliers = 0
-range = "183 req/s–228 req/s"
-ratio = "0.94x"
-spread = "±11%"
-text = "201 req/s"
-tint = "slow"
-value = 201.2
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "200 req/s–207 req/s"
-ratio = "0.95x"
+range = "7,510 req/s–7,883 req/s"
+ratio = "128.49x"
 spread = "±2%"
-text = "205 req/s"
-tint = "mild"
-value = 204.6
+text = "7,658 req/s"
+tint = "faster"
+value = 7658.2
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "59 req/s–67 req/s"
+ratio = "1.00x"
+spread = "±7%"
+text = "60 req/s"
+tint = "worst"
+value = 59.6
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "107 req/s–107 req/s"
+ratio = "1.80x"
+spread = "±0%"
+text = "107 req/s"
+tint = "worst"
+value = 107.4
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "113 req/s–119 req/s"
+ratio = "1.97x"
+spread = "±2%"
+text = "117 req/s"
+tint = "worst"
+value = 117.4
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "63 req/s–66 req/s"
+ratio = "1.09x"
+spread = "±2%"
+text = "65 req/s"
+tint = "worst"
+value = 65.2
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "174 req/s–189 req/s"
+ratio = "2.96x"
+spread = "±4%"
+text = "176 req/s"
+tint = "veryslow"
+value = 176.2
 
 [[tables.load.rows]]
 higher_is_better = false
@@ -891,62 +1459,62 @@ network_bound = false
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "9 ms–9 ms"
-ratio = "0.55x"
+range = "2.3 ms–2.3 ms"
+ratio = "0.06x"
 spread = "±2%"
-text = "9 ms"
+text = "2.3 ms"
 tint = "faster"
-value = 0.009311
+value = 0.002279
 
 [[tables.load.rows.cells]]
 noisy = true
 outliers = 0
-range = "16 ms–18 ms"
+range = "39 ms–488 ms"
 ratio = "1.00x"
-spread = "±6%"
-text = "17 ms"
-tint = "par"
-value = 0.016895
-
-[[tables.load.rows.cells]]
-noisy = true
-outliers = 0
-range = "91 ms–102 ms"
-ratio = "5.84x"
-spread = "±6%"
-text = "99 ms"
+spread = "±137%"
+text = "39 ms"
 tint = "worst"
-value = 0.098687
+value = 0.039263
 
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "43 ms–44 ms"
-ratio = "2.57x"
-spread = "±0%"
+range = "43 ms–43 ms"
+ratio = "1.10x"
+spread = "±1%"
 text = "43 ms"
-tint = "slow"
-value = 0.043423
+tint = "worst"
+value = 0.043263
 
 [[tables.load.rows.cells]]
-noisy = true
+noisy = false
 outliers = 0
-range = "15 ms–27 ms"
-ratio = "0.96x"
-spread = "±35%"
-text = "16 ms"
-tint = "par"
-value = 0.016175
-
-[[tables.load.rows.cells]]
-noisy = true
-outliers = 0
-range = "21 ms–30 ms"
-ratio = "1.68x"
-spread = "±19%"
+range = "27 ms–28 ms"
+ratio = "0.70x"
+spread = "±1%"
 text = "28 ms"
-tint = "mild"
-value = 0.028383
+tint = "worst"
+value = 0.027535
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "21 ms–35 ms"
+ratio = "0.75x"
+spread = "±25%"
+text = "30 ms"
+tint = "worst"
+value = 0.029599
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "30 ms–31 ms"
+ratio = "0.76x"
+spread = "±1%"
+text = "30 ms"
+tint = "worst"
+value = 0.030015
 
 [[tables.load.rows]]
 higher_is_better = true
@@ -954,64 +1522,64 @@ name = "32 users: requests/s"
 network_bound = false
 
 [[tables.load.rows.cells]]
-noisy = false
+noisy = true
 outliers = 0
-range = "2,646 req/s–2,711 req/s"
-ratio = "3.16x"
-spread = "±1%"
-text = "2,703 req/s"
+range = "16,910 req/s–18,757 req/s"
+ratio = "23.84x"
+spread = "±5%"
+text = "17,707 req/s"
 tint = "faster"
-value = 2702.8
+value = 17706.6
 
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "851 req/s–863 req/s"
+range = "739 req/s–746 req/s"
 ratio = "1.00x"
-spread = "±1%"
-text = "854 req/s"
-tint = "par"
-value = 854.4
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "79 req/s–81 req/s"
-ratio = "0.09x"
-spread = "±1%"
-text = "80 req/s"
-tint = "worst"
-value = 79.6
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "427 req/s–431 req/s"
-ratio = "0.50x"
 spread = "±0%"
-text = "428 req/s"
+text = "743 req/s"
 tint = "slow"
-value = 427.8
+value = 742.8
 
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "807 req/s–853 req/s"
-ratio = "0.99x"
-spread = "±3%"
-text = "846 req/s"
-tint = "par"
-value = 846.2
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "213 req/s–218 req/s"
-ratio = "0.25x"
+range = "113 req/s–114 req/s"
+ratio = "0.15x"
 spread = "±1%"
-text = "216 req/s"
+text = "114 req/s"
+tint = "worst"
+value = 113.8
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "567 req/s–592 req/s"
+ratio = "0.78x"
+spread = "±2%"
+text = "583 req/s"
 tint = "veryslow"
-value = 215.8
+value = 582.8
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "752 req/s–753 req/s"
+ratio = "1.01x"
+spread = "±0%"
+text = "752 req/s"
+tint = "slow"
+value = 752.0
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "173 req/s–202 req/s"
+ratio = "0.25x"
+spread = "±8%"
+text = "186 req/s"
+tint = "worst"
+value = 185.8
 
 [[tables.load.rows]]
 higher_is_better = false
@@ -1019,64 +1587,64 @@ name = "32 users: p95 latency"
 network_bound = false
 
 [[tables.load.rows.cells]]
-noisy = false
+noisy = true
 outliers = 0
-range = "15 ms–15 ms"
-ratio = "0.30x"
-spread = "±1%"
-text = "15 ms"
+range = "3.6 ms–4.0 ms"
+ratio = "0.04x"
+spread = "±6%"
+text = "3.8 ms"
 tint = "faster"
-value = 0.015151
+value = 0.003751
 
 [[tables.load.rows.cells]]
-noisy = true
+noisy = false
 outliers = 0
-range = "47 ms–59 ms"
+range = "90 ms–95 ms"
 ratio = "1.00x"
-spread = "±12%"
-text = "51 ms"
-tint = "mild"
-value = 0.050591
+spread = "±3%"
+text = "93 ms"
+tint = "veryslow"
+value = 0.092607
 
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "474 ms–486 ms"
-ratio = "9.38x"
-spread = "±1%"
-text = "475 ms"
+range = "300 ms–309 ms"
+ratio = "3.31x"
+spread = "±2%"
+text = "307 ms"
 tint = "worst"
-value = 0.474623
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "81 ms–82 ms"
-ratio = "1.60x"
-spread = "±1%"
-text = "81 ms"
-tint = "mild"
-value = 0.080959
+value = 0.306943
 
 [[tables.load.rows.cells]]
 noisy = true
 outliers = 0
-range = "110 ms–128 ms"
-ratio = "2.22x"
-spread = "±9%"
-text = "112 ms"
+range = "59 ms–121 ms"
+ratio = "0.64x"
+spread = "±45%"
+text = "59 ms"
 tint = "slow"
-value = 0.112383
+value = 0.059135
 
 [[tables.load.rows.cells]]
-noisy = false
+noisy = true
 outliers = 0
-range = "171 ms–177 ms"
-ratio = "3.42x"
-spread = "±2%"
-text = "173 ms"
-tint = "veryslow"
-value = 0.172927
+range = "300 ms–384 ms"
+ratio = "3.31x"
+spread = "±14%"
+text = "307 ms"
+tint = "worst"
+value = 0.306943
+
+[[tables.load.rows.cells]]
+noisy = true
+outliers = 0
+range = "195 ms–226 ms"
+ratio = "2.12x"
+spread = "±9%"
+text = "196 ms"
+tint = "worst"
+value = 0.196351
 
 [[tables.load.rows]]
 higher_is_better = false
@@ -1086,12 +1654,12 @@ network_bound = false
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "2.6 s–2.6 s"
+range = "168 ms–171 ms"
 ratio = "1.00x"
 spread = "±1%"
-text = "2.6 s"
-tint = "slow"
-value = 2.598738667717777
+text = "168 ms"
+tint = "faster"
+value = 0.16803700983370937
 
 [[tables.load.rows.cells]]
 noisy = false
@@ -1105,42 +1673,42 @@ tint = "none"
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "13.4 s–13.4 s"
-ratio = "5.15x"
-spread = "±0%"
-text = "13.4 s"
-tint = "worst"
-value = 13.372972972972974
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "8.5 s–8.6 s"
-ratio = "3.30x"
-spread = "±0%"
-text = "8.6 s"
-tint = "worst"
-value = 8.573584905660377
-
-[[tables.load.rows.cells]]
-noisy = true
-outliers = 0
-range = "161 ms–185 ms"
-ratio = "0.07x"
-spread = "±7%"
-text = "182 ms"
-tint = "faster"
-value = 0.1822274417694265
-
-[[tables.load.rows.cells]]
-noisy = false
-outliers = 0
-range = "4.8 s–4.9 s"
-ratio = "1.84x"
+range = "9.5 s–9.7 s"
+ratio = "57.16x"
 spread = "±1%"
-text = "4.8 s"
-tint = "veryslow"
-value = 4.787230815893237
+text = "9.6 s"
+tint = "worst"
+value = 9.605707629586487
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.2 s–6.6 s"
+ratio = "37.62x"
+spread = "±4%"
+text = "6.3 s"
+tint = "worst"
+value = 6.322033898305085
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "190 ms–206 ms"
+ratio = "1.21x"
+spread = "±4%"
+text = "204 ms"
+tint = "faster"
+value = 0.20355871886120996
+
+[[tables.load.rows.cells]]
+noisy = false
+outliers = 0
+range = "5.4 s–5.7 s"
+ratio = "34.01x"
+spread = "±3%"
+text = "5.7 s"
+tint = "worst"
+value = 5.715642358000358
 
 [[tables.load.rows]]
 higher_is_better = false
@@ -1148,14 +1716,14 @@ name = "server peak memory"
 network_bound = false
 
 [[tables.load.rows.cells]]
-noisy = false
+noisy = true
 outliers = 0
-range = "340 MB–370 MB"
+range = "98 MB–109 MB"
 ratio = "1.00x"
-spread = "±5%"
-text = "368 MB"
-tint = "slow"
-value = 368.427008
+spread = "±6%"
+text = "108 MB"
+tint = "faster"
+value = 108.265472
 
 [[tables.load.rows.cells]]
 noisy = false
@@ -1169,42 +1737,42 @@ tint = "none"
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "1,191 MB–1,192 MB"
-ratio = "3.23x"
+range = "1,192 MB–1,193 MB"
+ratio = "11.02x"
 spread = "±0%"
-text = "1,192 MB"
+text = "1,193 MB"
 tint = "worst"
-value = 1191.641088
+value = 1193.115648
 
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
-range = "391 MB–411 MB"
-ratio = "1.08x"
-spread = "±3%"
-text = "397 MB"
+range = "393 MB–405 MB"
+ratio = "3.64x"
+spread = "±2%"
+text = "394 MB"
 tint = "slow"
-value = 397.279232
+value = 393.986048
 
 [[tables.load.rows.cells]]
 noisy = false
 outliers = 0
 range = "67 MB–71 MB"
-ratio = "0.18x"
+ratio = "0.63x"
 spread = "±3%"
-text = "67 MB"
+text = "68 MB"
 tint = "faster"
-value = 67.371008
+value = 67.796992
 
 [[tables.load.rows.cells]]
 noisy = true
 outliers = 0
-range = "198 MB–246 MB"
-ratio = "0.54x"
-spread = "±13%"
-text = "199 MB"
+range = "200 MB–219 MB"
+ratio = "1.86x"
+spread = "±5%"
+text = "201 MB"
 tint = "mild"
-value = 199.278592
+value = 201.162752
 
 [tables.metadata]
 baseline = "direct"
