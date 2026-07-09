@@ -44,17 +44,38 @@ function svgBody(path) {
   return text.slice(text.indexOf("<svg"));
 }
 
-function render(source, tmp) {
+const VIEWBOX = /viewBox="[-\d.]+ [-\d.]+ ([\d.]+) ([\d.]+)"/;
+
+// mmdc sizes the root as `width="100%" style="max-width: Npx; background-color: white"`. A percentage
+// width leaves the SVG with no intrinsic width inside the centering container, so it collapses to the
+// 300px CSS default for replaced elements, and the baked-in white survives into the dark variant.
+// Carry the viewBox dimensions on the element instead and let the stylesheet cap it at the column.
+function normalizeRoot(svg) {
+  const end = svg.indexOf(">") + 1;
+  const [, width, height] = VIEWBOX.exec(svg.slice(0, end));
+  const open = svg
+    .slice(0, end)
+    .replace(/\s(?:style|width|height)="[^"]*"/g, "")
+    .replace("<svg", `<svg width="${width}" height="${height}"`);
+  return open + svg.slice(end);
+}
+
+function render(source, hash, tmp) {
   const input = join(tmp, "diagram.mmd");
   writeFileSync(input, source);
-  const variant = (config) => {
-    const out = join(tmp, "out.svg");
-    execFileSync(mmdc, ["--input", input, "--output", out, "--configFile", config, "--quiet"], {
+  // Both variants sit in the DOM at once, so they cannot share mermaid's default `my-svg` id: an
+  // SVG `<style>` applies document-wide even under `display: none`, so the later block would repaint
+  // the visible variant in the other palette, and every `url(#…)` marker reference would resolve to
+  // whichever copy came first.
+  const variant = (config, name) => {
+    const out = join(tmp, `${name}.svg`);
+    const id = `peryx-${hash}-${name}`;
+    execFileSync(mmdc, ["--input", input, "--output", out, "--configFile", config, "--svgId", id, "--quiet"], {
       stdio: ["ignore", "ignore", "inherit"],
     });
-    return svgBody(out);
+    return normalizeRoot(svgBody(out));
   };
-  return { light: variant(light), dark: variant(dark) };
+  return { light: variant(light, "light"), dark: variant(dark, "dark") };
 }
 
 function main() {
@@ -68,7 +89,7 @@ function main() {
       const source = raw.trim();
       const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
       kept.add(`${hash}.html`);
-      const { light: l, dark: d } = render(source, tmp);
+      const { light: l, dark: d } = render(source, hash, tmp);
       const partial =
         `<figure class="mermaid-figure">` +
         `<div class="mermaid-svg mermaid-light">${l}</div>` +

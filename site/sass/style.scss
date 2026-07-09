@@ -1243,8 +1243,7 @@ table {
 // Diagrams are pre-rendered to two SVGs (light + dark); show the one matching the active theme.
 .mermaid-figure {
   margin: 1.5rem 0;
-  display: flex;
-  justify-content: center;
+  text-align: center;
 
   svg {
     max-width: 100%;
