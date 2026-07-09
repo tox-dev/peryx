@@ -71,7 +71,7 @@ Keep clear space of half the mark's height on all sides. Minimum size 16 px, whe
 ## Logo expressions
 
 Every form the mark ships in, all from one path plus the gradient. The complete interactive brand book, with
-copy-to-clipboard swatches and the live ecosystem palette, is at [brand-book.html](../brand-book.html).
+copy-to-clipboard swatches and the live ecosystem palette, is at [the brand book](../brand-book/).
 
 ### Wordmark lockups
 
@@ -177,12 +177,7 @@ The system in use: buttons, badges, and status, all drawn from the gradient and 
 <div class="brand-comp">
   <div class="brand-compcard">
     <div class="brand-k">Ecosystem tags</div>
-    <div class="brand-chiprow">
-      <span class="brand-chip"><span class="brand-chip-dot" style="background:#2496ED"></span>OCI</span>
-      <span class="brand-chip"><span class="brand-chip-dot" style="background:#CB3837"></span>npm</span>
-      <span class="brand-chip"><span class="brand-chip-dot" style="background:#00ADD8"></span>Go</span>
-      <span class="brand-chip"><span class="brand-chip-dot" style="background:#CE422B"></span>Cargo</span>
-    </div>
+    {{ ecosystem_chips() }}
   </div>
   <div class="brand-compcard">
     <div class="brand-k">Progress</div>

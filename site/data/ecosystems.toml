@@ -1,16 +1,17 @@
 # The ecosystem colour system: each package type in its own project's brand colour, never the peryx
 # gradient. `live = true` marks the ecosystems peryx serves today; the rest are the roadmap the
-# (role × ecosystem) model is built for. Mirrors the palette in static/brand-book.html.
+# (role × ecosystem) model is built for. `chip = true` picks the sample tags the brand book renders
+# in its "In product" component row. Both the brand page and the brand book render from this file.
 
 [[groups]]
 name = "Languages & build"
 items = [
   { name = "PyPI", subtitle = "Python", color = "#3775A9", live = true },
-  { name = "npm", subtitle = "Node", color = "#CB3837" },
+  { name = "npm", subtitle = "Node", color = "#CB3837", chip = true },
   { name = "Maven", subtitle = "Java", color = "#C71A36" },
   { name = "Gradle", subtitle = "JVM", color = "#02B9DF" },
-  { name = "Go", subtitle = "Modules", color = "#00ADD8" },
-  { name = "Cargo", subtitle = "Rust", color = "#CE422B" },
+  { name = "Go", subtitle = "Modules", color = "#00ADD8", chip = true },
+  { name = "Cargo", subtitle = "Rust", color = "#CE422B", chip = true },
   { name = "NuGet", subtitle = ".NET", color = "#004880" },
   { name = "RubyGems", subtitle = "Ruby", color = "#CC342D" },
   { name = "Composer", subtitle = "PHP", color = "#777BB4" },
@@ -28,7 +29,7 @@ items = [
 [[groups]]
 name = "Containers & charts"
 items = [
-  { name = "OCI", subtitle = "Docker", color = "#2496ED", live = true },
+  { name = "OCI", subtitle = "Docker", color = "#2496ED", live = true, chip = true },
   { name = "Helm", subtitle = "K8s", color = "#0F1689" },
 ]
 

@@ -1,3 +1,4 @@
+{%- set ECO = load_data(path="data/ecosystems.toml") -%}
 <title>Peryx — Brand Book</title>
 <style>
   :root{
@@ -633,13 +634,11 @@
   document.getElementById('swatches').innerHTML=PALETTE.map(([n,h,t])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div><div class="t">${t}</div></div></div>`).join('');
   document.getElementById('semantic').innerHTML=SEM.map(([n,h])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div></div></div>`).join('');
 
-  const CATS=[['Languages & build',[['PyPI','Python','#3775A9',1],['npm','Node','#CB3837',0],['Maven','Java','#C71A36',0],['Gradle','JVM','#02B9DF',0],['Go','Modules','#00ADD8',0],['Cargo','Rust','#CE422B',0],['NuGet','.NET','#004880',0],['RubyGems','Ruby','#CC342D',0],['Composer','PHP','#777BB4',0],['CocoaPods','ObjC','#E63E52',0],['Swift','SwiftPM','#F05138',0],['Conan','C/C++','#6699CB',0],['CRAN','R','#276DC3',0],['Conda','DS','#44A833',0],['Pub','Dart','#0175C2',0],['Hugging Face','ML','#FFD21E',0],['SBT','Scala','#DC322F',0],['Ivy','Ant','#B36D43',0]]],
-   ['Containers & charts',[['OCI','Docker','#2496ED',1],['Helm','K8s','#0F1689',0]]],
-   ['OS packages',[['Debian','APT','#A80030',0],['RPM','YUM','#CC0000',0],['Alpine','APK','#0D597F',0],['Opkg','embedded','#8A8A8A',0]]],
-   ['Infra & config',[['Terraform','modules','#7B42BC',0],['Vagrant','boxes','#1868F2',0],['Chef','cookbooks','#F09820',0],['Puppet','modules','#FFAE1A',0]]],
-   ['Source & generic',[['Git LFS','large files','#F05032',0],['VCS','repos','#6E5494',0],['Bower','web','#EF5734',0],['Generic','any blob','#6D6455',0]]]];
+  {#- The ecosystem palette renders from site/data/ecosystems.toml, the same file the brand page
+      reads, so the two documents cannot drift apart. -#}
+  const CATS=[{% for group in ECO.groups %}[{{ group.name | json_encode | safe }},[{% for item in group.items %}[{{ item.name | json_encode | safe }},{{ item.subtitle | json_encode | safe }},{{ item.color | json_encode | safe }},{% if item.live %}1{% else %}0{% endif %}]{% if not loop.last %},{% endif %}{% endfor %}]]{% if not loop.last %},{% endif %}{% endfor %}];
   document.getElementById('cats').innerHTML=CATS.map(([t,items])=>`<div class="ecohead"><h4>${t}</h4><span class="c">${items.length}</span></div><div class="chips">${items.map(([n,s,h,l])=>`<div class="eco" data-copy="${h}" data-copy-label="${n}"><span class="d ${l?'live':''}" style="background:${h}"></span><span style="min-width:0"><span class="nm">${n}</span><span class="su">${s}</span></span><span class="hx">${h.toUpperCase()}</span></div>`).join('')}</div>`).join('');
-  const chipHTML=[['OCI','#2496ED'],['npm','#CB3837'],['Go','#00ADD8'],['Cargo','#CE422B']].map(([n,h])=>`<span class="ec-chip"><span class="dt" style="background:${h}"></span>${n}</span>`).join('');
+  const chipHTML=[{% for group in ECO.groups %}{% for item in group.items %}{% if item.chip %}[{{ item.name | json_encode | safe }},{{ item.color | json_encode | safe }}],{% endif %}{% endfor %}{% endfor %}].map(([n,h])=>`<span class="ec-chip"><span class="dt" style="background:${h}"></span>${n}</span>`).join('');
   document.getElementById('chiprow').innerHTML=chipHTML;
   document.getElementById('chiprow2').innerHTML=chipHTML;
 

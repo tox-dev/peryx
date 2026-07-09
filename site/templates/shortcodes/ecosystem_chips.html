@@ -1,0 +1,12 @@
+{#- The sample ecosystem tags, drawn from the `chip = true` entries in the same data file the full
+    palette renders from. -#}
+{%- set data = load_data(path="data/ecosystems.toml") -%}
+<div class="brand-chiprow">
+  {%- for group in data.groups %}
+  {%- for item in group.items %}
+  {%- if item.chip %}
+  <span class="brand-chip"><span class="brand-chip-dot" style="background:{{ item.color }}"></span>{{ item.name }}</span>
+  {%- endif %}
+  {%- endfor %}
+  {%- endfor %}
+</div>
