@@ -617,6 +617,9 @@ mod tests {
             "bytes=-xyz",
             "bytes=5-2",
             "items=0-1",
+            // One half of the pair reads and the other does not; still not a range.
+            "bytes=1-abc",
+            "bytes=abc-9",
         ] {
             assert_eq!(parse_range(header, 10), RangeSpec::Ignore, "{header}");
         }

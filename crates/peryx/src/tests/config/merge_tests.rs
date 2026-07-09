@@ -102,6 +102,7 @@ fn test_apply_overlays_only_present_fields() {
             offline: Some(true),
             cache_ttl_secs: Some(60),
             hot_cache_bytes: Some(1_048_576),
+            max_stale_secs: Some(30),
             ..PartialConfig::default()
         })
         .unwrap();
@@ -110,6 +111,7 @@ fn test_apply_overlays_only_present_fields() {
     assert!(merged.offline);
     assert_eq!(merged.cache_ttl_secs, 60);
     assert_eq!(merged.hot_cache_bytes, 1_048_576);
+    assert_eq!(merged.max_stale_secs, 30);
     assert_eq!(merged.data_dir, PathBuf::from("peryx-data"));
     assert_eq!(merged.indexes.len(), 6); // untouched, so the defaults remain (PyPI trio + OCI trio)
 }

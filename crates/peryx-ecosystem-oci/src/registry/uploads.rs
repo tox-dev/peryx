@@ -240,3 +240,44 @@ fn range_not_satisfiable(offset: u64) -> Response {
         .body(Body::empty())
         .expect("range response builds from validated parts")
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderValue;
+
+    use super::{ChunkStart, chunk_start};
+
+    fn headers(value: HeaderValue) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::CONTENT_RANGE, value);
+        headers
+    }
+
+    #[test]
+    fn test_chunk_start_reads_an_offset_with_or_without_the_bytes_prefix() {
+        assert_eq!(
+            chunk_start(&headers(HeaderValue::from_static("5-9"))),
+            ChunkStart::At(5)
+        );
+        assert_eq!(
+            chunk_start(&headers(HeaderValue::from_static("bytes 5-9"))),
+            ChunkStart::At(5)
+        );
+    }
+
+    #[test]
+    fn test_chunk_start_rejects_a_header_that_is_not_a_range() {
+        // A `Content-Range` whose bytes are not text at all: the client made a claim nothing can read.
+        let opaque = HeaderValue::from_bytes(&[0xff, 0xfe]).expect("bytes are a valid header value");
+        assert_eq!(chunk_start(&headers(opaque)), ChunkStart::Malformed);
+        assert_eq!(
+            chunk_start(&headers(HeaderValue::from_static("nowhere"))),
+            ChunkStart::Malformed
+        );
+    }
+
+    #[test]
+    fn test_chunk_start_is_absent_without_the_header() {
+        assert_eq!(chunk_start(&axum::http::HeaderMap::new()), ChunkStart::Absent);
+    }
+}

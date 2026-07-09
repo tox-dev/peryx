@@ -64,13 +64,8 @@ impl MetaStore {
                 let key = format!("{}/{}", file.index, file.normalized);
                 table.insert(key.as_str(), file.display)?;
             }
-            append_in_txn(
-                &txn,
-                "add-file",
-                file.normalized,
-                Some(file.version),
-                Some(file.filename),
-            )?
+            let (version, filename) = (Some(file.version), Some(file.filename));
+            append_in_txn(&txn, "add-file", file.normalized, version, filename)?
         };
         txn.commit()?;
         Ok(serial)
