@@ -1,4 +1,4 @@
-Created accepted issue: https://github.com/gaborbernat/peryx/issues/32
+Created accepted issue: https://github.com/tox-dev/peryx/issues/32
 
 Candidate 6: Quotas, Retention, And Cleanup Policies
 

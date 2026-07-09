@@ -7,7 +7,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
-repository = "https://github.com/gaborbernat/peryx"
+repository = "https://github.com/tox-dev/peryx"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

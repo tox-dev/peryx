@@ -1,4 +1,4 @@
-Created accepted issue: https://github.com/gaborbernat/peryx/issues/34
+Created accepted issue: https://github.com/tox-dev/peryx/issues/34
 
 Candidate 8: CI Identity Publishing
 

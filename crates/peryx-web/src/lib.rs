@@ -98,7 +98,7 @@ fn Header() -> impl IntoView {
                     <a href="/search?page_size=25">"Search"</a>
                     <a href="/admin/status">"Status"</a>
                     <a href="https://peryx.readthedocs.io/" rel="external">"Docs"</a>
-                    <a href="https://github.com/gaborbernat/peryx" rel="external">"GitHub"</a>
+                    <a href="https://github.com/tox-dev/peryx" rel="external">"GitHub"</a>
                     <ThemeToggle />
                 </div>
             </nav>

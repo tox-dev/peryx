@@ -7,7 +7,7 @@ weight = 2
 peryx streams an image's blobs to the client while teeing them into a content-addressed store, and concurrent pulls of
 one uncached layer share a single upstream fetch. This page measures what that buys against the registries you would
 otherwise put in front of Docker Hub, from a
-[benchmark harness](https://github.com/gaborbernat/peryx/tree/main/crates/peryx-bench) driving
+[benchmark harness](https://github.com/tox-dev/peryx/tree/main/crates/peryx-bench) driving
 [crane](https://github.com/google/go-containerregistry) against each registry on one Apple Silicon laptop.
 
 ## How this is measured, two ways

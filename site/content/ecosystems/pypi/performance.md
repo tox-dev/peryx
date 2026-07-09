@@ -152,7 +152,7 @@ where.
 
 ## The benchmark suite
 
-The tables below come from a [benchmark harness](https://github.com/gaborbernat/peryx/tree/main/crates/peryx-bench) the
+The tables below come from a [benchmark harness](https://github.com/tox-dev/peryx/tree/main/crates/peryx-bench) the
 repository carries as a Rust crate: it builds peryx, starts every competitor from its published package, times the
 same workload through each with a native HTTP client, samples each server's process tree while its workload runs, and
 writes one TOML report these tables render from. Cells tint from best-in-row green to worst-in-row red; the ratio in
@@ -166,7 +166,7 @@ is a Docker configuration rather than a package, and Artifactory, Nexus, and the
 accounts, so none of them can be measured this way.
 
 The install workload is the top 51 most-downloaded PyPI packages
-([the snapshot](https://github.com/gaborbernat/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs),
+([the snapshot](https://github.com/tox-dev/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs),
 torch included for one large wheel), installed with uv into a fresh virtualenv with a fresh client cache. **Cold** is
 the first install against a server with empty state; **warm** reruns it with the server's cache full and only the client
 reset.

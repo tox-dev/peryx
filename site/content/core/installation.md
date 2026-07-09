@@ -8,8 +8,8 @@ Every channel ships the same single static binary; pick by how you manage tools.
 
 | Channel                    | Command                                                                                                        | Updates with              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| Installer script (Unix)    | `curl -LsSf https://github.com/gaborbernat/peryx/releases/latest/download/peryx-installer.sh \| sh`            | `peryx self update`     |
-| Installer script (Windows) | `powershell -c "irm https://github.com/gaborbernat/peryx/releases/latest/download/peryx-installer.ps1 \| iex"` | `peryx self update`     |
+| Installer script (Unix)    | `curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh \| sh`            | `peryx self update`     |
+| Installer script (Windows) | `powershell -c "irm https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.ps1 \| iex"` | `peryx self update`     |
 | PyPI wheel                 | `uv tool install peryx` or `pip install peryx`                                                             | `uv tool upgrade` / `pip` |
 | From source                | `cargo build --release` in a checkout                                                                          | `git pull` and rebuild    |
 

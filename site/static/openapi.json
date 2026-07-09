@@ -5,7 +5,7 @@
     "description": "Read-through cache and private index for multiple ecosystems. A PyPI index serves the Simple API under `/{route}/`, where `{route}` is the index's route (for example `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write operations authenticate with HTTP Basic where the password is the target hosted index's upload token and the username is ignored.",
     "contact": {
       "name": "tox-dev",
-      "url": "https://github.com/gaborbernat/peryx"
+      "url": "https://github.com/tox-dev/peryx"
     },
     "license": {
       "name": "MIT"

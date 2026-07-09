@@ -23,8 +23,8 @@ dynamic = ["version"]
 
 [project.urls]
 Documentation = "https://peryx.readthedocs.io/"
-Source = "https://github.com/gaborbernat/peryx"
-Issues = "https://github.com/gaborbernat/peryx/issues"
+Source = "https://github.com/tox-dev/peryx"
+Issues = "https://github.com/tox-dev/peryx/issues"
 
 [tool.maturin]
 # The wheel carries the compiled `peryx` binary as a console script; there are no Python

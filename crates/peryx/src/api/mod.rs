@@ -44,7 +44,7 @@ pub fn openapi() -> OpenApi {
                 .contact(Some(
                     ContactBuilder::new()
                         .name(Some("tox-dev"))
-                        .url(Some("https://github.com/gaborbernat/peryx"))
+                        .url(Some("https://github.com/tox-dev/peryx"))
                         .build(),
                 ))
                 .license(Some(LicenseBuilder::new().name("MIT").build()))

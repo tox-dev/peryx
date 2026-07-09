@@ -20,7 +20,7 @@ install channel fits; [installation](@/core/installation.md) lists them all:
 
 ```shell
 # standalone binary, no Python involved
-curl -LsSf https://github.com/gaborbernat/peryx/releases/latest/download/peryx-installer.sh | sh
+curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh | sh
 ```
 
 %%%
@@ -39,7 +39,7 @@ pip install peryx
 
 ```shell
 # needs a Rust toolchain (https://rustup.rs); rust-toolchain.toml pins the version
-git clone https://github.com/gaborbernat/peryx.git
+git clone https://github.com/tox-dev/peryx.git
 cd peryx
 cargo build --release
 ```

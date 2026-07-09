@@ -21,14 +21,14 @@ peryx binary. Pick whichever install channel fits; [installation](@/core/install
 
 ```shell
 # standalone binary, no toolchain involved
-curl -LsSf https://github.com/gaborbernat/peryx/releases/latest/download/peryx-installer.sh | sh
+curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh | sh
 ```
 
 %%%
 
 ```shell
 # needs a Rust toolchain (https://rustup.rs); rust-toolchain.toml pins the version
-git clone https://github.com/gaborbernat/peryx.git
+git clone https://github.com/tox-dev/peryx.git
 cd peryx
 cargo build --release
 ```
