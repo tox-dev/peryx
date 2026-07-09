@@ -35,6 +35,7 @@ pub fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialCo
         offline: parse_env(&get, "PERYX_OFFLINE")?,
         cache_ttl_secs: parse_env(&get, "PERYX_CACHE_TTL_SECS")?,
         hot_cache_bytes: parse_env(&get, "PERYX_HOT_CACHE_BYTES")?,
+        max_stale_secs: parse_env(&get, "PERYX_MAX_STALE_SECS")?,
         indexes: None,
         tls: None,
         acme: None,

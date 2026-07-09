@@ -23,6 +23,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::{LogCapture, field};
 use crate::cache;
 use crate::upload::Uploaded;
+use peryx_http::DEFAULT_MAX_STALE_SECS;
 use peryx_http::path_safety::local_file_url;
 use peryx_http::router;
 use peryx_http::state::{AppState, Index, IndexKind};
@@ -49,6 +50,26 @@ pub(super) async fn harness_with_policies(
     mirror_policy: Policy,
     local_policy: Policy,
     overlay_policy: Policy,
+) -> Harness {
+    harness_with_stale(
+        token,
+        volatile,
+        mirror_policy,
+        local_policy,
+        overlay_policy,
+        DEFAULT_MAX_STALE_SECS,
+    )
+    .await
+}
+
+/// A harness whose stale-on-error bound the caller chooses; `0` serves stale without limit.
+pub(super) async fn harness_with_stale(
+    token: bool,
+    volatile: bool,
+    mirror_policy: Policy,
+    local_policy: Policy,
+    overlay_policy: Policy,
+    max_stale_secs: i64,
 ) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
@@ -89,13 +110,15 @@ pub(super) async fn harness_with_policies(
             },
         },
     ];
-    let state = super::wired(AppState::with_clock(
+    let mut state = AppState::with_clock(
         meta,
         blobs,
         60,
         indexes,
         Arc::new(move || ticks.load(Ordering::Relaxed)),
-    ));
+    );
+    state.max_stale_secs = max_stale_secs;
+    let state = super::wired(state);
     Harness {
         _dir: dir,
         server,
@@ -1123,6 +1146,64 @@ async fn test_mirror_detail_revalidate_304_serves_cached() {
     assert!(body.contains("flask"));
 }
 
+/// Build a mirror harness whose cached flask page was fetched at `fetched_at`, and whose upstream
+/// is unreachable, so the only question is whether the stale copy may still answer.
+async fn stale_page_harness(max_stale_secs: i64, fetched_at: i64) -> Harness {
+    let h = harness_with_stale(
+        true,
+        true,
+        Policy::default(),
+        Policy::default(),
+        Policy::default(),
+        max_stale_secs,
+    )
+    .await;
+    let body = crate::to_json(&crate::ProjectDetail {
+        meta: crate::Meta::default(),
+        name: "flask".to_owned(),
+        versions: vec!["1.0".to_owned()],
+        files: vec![],
+    });
+    h.state
+        .meta
+        .put_index(
+            "pypi/flask",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: fetched_at,
+                content_type: None,
+                fresh_secs: None,
+                body: body.into_bytes(),
+            },
+        )
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&h.server)
+        .await;
+    h
+}
+
+#[tokio::test]
+async fn test_mirror_detail_refuses_a_page_staler_than_the_bound() {
+    // Fetched at 0, clock at 1000: past the 60s freshness and the 300s stale bound alike.
+    let h = stale_page_harness(300, 0).await;
+    let (status, _, _) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_mirror_detail_serves_any_age_when_the_bound_is_zero() {
+    // The same ancient page, with the bound switched off: an operator mirroring an unreliable
+    // upstream asked for exactly this.
+    let h = stale_page_harness(0, 0).await;
+    let (status, _, served) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(served.contains("flask"));
+}
+
 #[tokio::test]
 async fn test_mirror_detail_stale_on_5xx() {
     let h = harness().await;
@@ -1139,7 +1220,7 @@ async fn test_mirror_detail_stale_on_5xx() {
             &CachedIndex {
                 etag: None,
                 last_serial: None,
-                fetched_at_unix: 0,
+                fetched_at_unix: 900,
                 content_type: None,
 
                 fresh_secs: None,
@@ -1194,7 +1275,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
         &CachedIndex {
             etag: None,
             last_serial: None,
-            fetched_at_unix: 0,
+            fetched_at_unix: 99_900,
             content_type: None,
 
             fresh_secs: None,

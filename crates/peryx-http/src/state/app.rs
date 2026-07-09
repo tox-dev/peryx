@@ -37,7 +37,17 @@ pub struct RuntimeOptions<I> {
     /// are re-derivable from the cached raw page, so a smaller budget costs hit rate, never
     /// correctness; `0` disables the cache and every warm page pays its transform again.
     pub hot_cache_bytes: u64,
+    /// How long past its freshness window a cached page may still answer while the upstream is
+    /// unreachable. `0` means without limit: a mirror in front of a flaky upstream can be told to
+    /// keep serving whatever it last saw, but that is an operator's explicit choice, not a default.
+    pub max_stale_secs: i64,
 }
+
+/// How long an outage may be papered over with a stale page, when an operator configures no bound.
+///
+/// One further freshness window: long enough to ride out an upstream blip or a redeploy, short enough
+/// that a lasting outage surfaces as an error rather than as quietly ancient data.
+pub const DEFAULT_MAX_STALE_SECS: i64 = 300;
 
 /// The transformed-page cache budget when an operator configures none.
 ///
@@ -54,6 +64,8 @@ pub struct AppState {
     /// Fallback freshness for cached simple pages, in seconds: applies only when upstream's
     /// `Cache-Control` granted no usable lifetime.
     pub ttl_secs: i64,
+    /// The bound on stale-on-error serving; see [`RuntimeOptions::max_stale_secs`].
+    pub max_stale_secs: i64,
     pub clock: Clock,
     pub requests: AtomicU64,
     pub indexes: Vec<Index>,
@@ -188,6 +200,7 @@ impl AppState {
                 upstream_concurrency,
                 webhooks: WebhookRuntime::disabled(),
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
+                max_stale_secs: DEFAULT_MAX_STALE_SECS,
             },
         )
     }
@@ -245,6 +258,7 @@ impl AppState {
                 upstream_concurrency,
                 webhooks: WebhookRuntime::disabled(),
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
+                max_stale_secs: DEFAULT_MAX_STALE_SECS,
             },
         )
     }
@@ -273,6 +287,7 @@ impl AppState {
                 upstream_concurrency: std::iter::empty(),
                 webhooks,
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
+                max_stale_secs: DEFAULT_MAX_STALE_SECS,
             },
         )
     }
@@ -293,6 +308,7 @@ impl AppState {
             upstream_concurrency,
             webhooks,
             hot_cache_bytes,
+            max_stale_secs,
         } = runtime;
         let configured: HashMap<_, _> = upstream_concurrency.into_iter().collect();
         let upstream_limits = indexes
@@ -312,6 +328,7 @@ impl AppState {
             meta,
             blobs,
             ttl_secs,
+            max_stale_secs,
             clock,
             requests: AtomicU64::new(0),
             indexes,

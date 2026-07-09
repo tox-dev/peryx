@@ -158,6 +158,19 @@ const fn freshness(state: &AppState, record: &CachedIndex) -> i64 {
     freshness_secs(state.ttl_secs, record.fresh_secs)
 }
 
+/// Whether a page past its freshness window may still answer while the upstream cannot be reached.
+///
+/// Serving something old beats serving nothing while an upstream reboots, but only for a while: a
+/// cache that answers with whatever it last saw, forever, has stopped being a cache and started being
+/// a fork. `max_stale_secs` bounds the outage a stale page papers over. `0` removes the bound, which
+/// is what an operator deliberately mirroring an unreliable upstream asks for.
+pub(crate) fn servable_stale(state: &AppState, record: &CachedIndex) -> bool {
+    if state.max_stale_secs == 0 {
+        return true;
+    }
+    (state.clock)() - record.fetched_at_unix < freshness(state, record) + state.max_stale_secs
+}
+
 /// How long a page stays fresh: the lifetime upstream granted, never longer than the configured one.
 ///
 /// `Cache-Control` is the upstream's opinion, and an upstream — or any CDN that fronts it — answering

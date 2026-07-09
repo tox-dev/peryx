@@ -166,6 +166,7 @@ impl RuntimeArgs {
             offline: self.offline.then_some(true),
             cache_ttl_secs: None,
             hot_cache_bytes: None,
+            max_stale_secs: None,
             indexes: None,
             tls: None,
             acme: None,

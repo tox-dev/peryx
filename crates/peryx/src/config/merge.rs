@@ -30,6 +30,9 @@ impl Config {
         if let Some(offline) = partial.offline {
             self.offline = offline;
         }
+        if let Some(max_stale_secs) = partial.max_stale_secs {
+            self.max_stale_secs = max_stale_secs;
+        }
         if let Some(hot_cache_bytes) = partial.hot_cache_bytes {
             self.hot_cache_bytes = hot_cache_bytes;
         }

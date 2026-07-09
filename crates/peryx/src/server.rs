@@ -53,6 +53,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
             upstream_concurrency: upstream_concurrency(&config.indexes),
             webhooks,
             hot_cache_bytes: config.hot_cache_bytes,
+            max_stale_secs: config.max_stale_secs,
         },
     )
     .context(format!("open search index {}", search_path.display()))?;

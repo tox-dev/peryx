@@ -52,6 +52,8 @@ pub struct PartialConfig {
     pub offline: Option<bool>,
     pub cache_ttl_secs: Option<i64>,
     pub hot_cache_bytes: Option<u64>,
+    /// Bound on stale-on-error serving, in seconds; `0` serves stale without limit.
+    pub max_stale_secs: Option<i64>,
     /// The `[[index]]` array from the TOML file. When present it replaces the default topology.
     #[serde(rename = "index")]
     pub indexes: Option<Vec<RawIndex>>,

@@ -4,7 +4,7 @@ mod app;
 mod describe;
 mod index;
 
-pub use app::{AppState, Clock, DEFAULT_HOT_CACHE_BYTES, RuntimeOptions};
+pub use app::{AppState, Clock, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, RuntimeOptions};
 pub use describe::{
     HostedDescription, IndexDescription, SecretDescription, UpstreamDescription, describe_index, describe_indexes,
 };

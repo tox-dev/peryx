@@ -21,6 +21,7 @@ fn state_with_budget(hot_cache_bytes: u64) -> (tempfile::TempDir, AppState) {
             upstream_concurrency: std::iter::empty(),
             webhooks: WebhookRuntime::disabled(),
             hot_cache_bytes,
+            max_stale_secs: crate::DEFAULT_MAX_STALE_SECS,
         },
     )
     .unwrap();
