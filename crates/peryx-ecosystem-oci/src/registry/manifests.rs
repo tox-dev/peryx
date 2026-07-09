@@ -182,10 +182,32 @@ impl OciRegistry {
                 let (manifest, canonical) = store_manifest(state, index, repo, Some(tag), response).await?;
                 Ok(Some(manifest_response(&manifest, &canonical, head)))
             }
-            Err(UpstreamError::Status(status)) if absent_upstream(status) => Ok(None),
-            Err(err) => Ok(Some(upstream_manifest_error(&err))),
+            // A `404` is upstream saying the tag is gone, which is an answer. Everything else is a
+            // failure to get one, and a failure to confirm a tag is not a reason to forget it: Docker
+            // Hub answers `401` for any repository it will not discuss with the credentials at hand,
+            // so an expired token would otherwise turn a cached image into `manifest unknown`.
+            Err(UpstreamError::Status(StatusCode::NOT_FOUND)) => Ok(None),
+            Err(UpstreamError::Status(status)) if absent_upstream(status) => stale_tag(state, index, repo, tag, head),
+            Err(err) => Ok(Some(
+                stale_tag(state, index, repo, tag, head)?.unwrap_or_else(|| upstream_manifest_error(&err)),
+            )),
         }
     }
+}
+
+/// Serve a proxy tag past its freshness window while the upstream cannot confirm it, bounded by
+/// `max_stale_secs` exactly as a cached `PyPI` page is. `0` removes the bound.
+///
+/// Only reached once revalidation has already failed: a tag whose upstream answered is never stale.
+fn stale_tag(state: &AppState, index: &str, repo: &str, tag: &str, head: bool) -> Result<Option<Response>, ServeError> {
+    let Some((fetched_at, digest)) = store::tag_freshness(&state.meta, index, repo, tag)? else {
+        return Ok(None);
+    };
+    let age = (state.clock)().saturating_sub(fetched_at);
+    if state.max_stale_secs != 0 && age >= state.ttl_secs + state.max_stale_secs {
+        return Ok(None);
+    }
+    Ok(store::get_manifest(&state.meta, &digest)?.map(|manifest| manifest_response(&manifest, &digest, head)))
 }
 
 /// Store a manifest a client pushed, mapping the tag or verifying the digest reference.

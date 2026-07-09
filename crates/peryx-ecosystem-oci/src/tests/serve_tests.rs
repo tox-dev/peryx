@@ -143,6 +143,43 @@ async fn test_proxy_tag_is_cached_within_ttl_then_revalidated() {
 }
 
 #[tokio::test]
+async fn test_expired_upstream_credentials_do_not_delete_a_cached_tag() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let server = MockServer::start().await;
+    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let uri = "/v2/hub/library/nginx/manifests/latest";
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::proxy_with_clock(
+        &tempfile::tempdir().unwrap(),
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+    );
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+
+    // The token expires, so the revalidation after the freshness window is answered 401. Docker Hub
+    // says that about a repository it will not discuss, not about one that is gone: the cached image
+    // must still pull rather than become `manifest unknown`.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    now.store(1000 + 61, Ordering::Relaxed);
+    let (status, _, body) = send(&app, Method::GET, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, manifest.to_vec());
+}
+
+#[tokio::test]
 async fn test_proxy_tag_revalidates_when_the_cached_manifest_is_gone() {
     let server = MockServer::start().await;
     let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
