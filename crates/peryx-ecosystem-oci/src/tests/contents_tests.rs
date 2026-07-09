@@ -106,7 +106,7 @@ async fn test_contents_previews_a_text_member() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers["content-type"].to_str().unwrap().starts_with("text/plain"));
-    assert_eq!(headers["x-peryx-member-size"], "29");
+    assert_eq!(headers["x-peryx-member-size"], "27");
     assert_eq!(headers["x-peryx-member-offset"], "0");
     assert!(headers.get("x-peryx-next-offset").is_none());
     assert_eq!(&body[..], b"name = \"peryx\"\nport = 8080\n");

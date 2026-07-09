@@ -169,7 +169,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
 
 /// Prints the startup banner once, on a TTY only, so piped and CI output stays clean. Two builds,
 /// following the brand guidelines: UTF-8 locales get the Unicode block, older terminals the ASCII
-/// form; colour is truecolor or 256-colour amber, and none under NO_COLOR or a basic TERM. The
+/// form; colour is truecolor or 256-colour amber, and none under `NO_COLOR` or a basic `TERM`. The
 /// structured `tracing` line still carries the machine-readable listen event regardless.
 fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str) {
     use std::io::IsTerminal as _;
