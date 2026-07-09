@@ -143,6 +143,84 @@ async fn test_proxy_tag_is_cached_within_ttl_then_revalidated() {
 }
 
 #[tokio::test]
+async fn test_unchanged_tag_revalidates_without_refetching_the_manifest() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let server = MockServer::start().await;
+    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let digest = oci_digest(manifest);
+    // Exactly one GET: the cold pull. The revalidation after the window must be answered by the HEAD,
+    // or wiremock's expect(1) fails on drop.
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", digest.as_str()))
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::proxy_with_clock(
+        &tempfile::tempdir().unwrap(),
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+    );
+    let uri = "/v2/hub/library/nginx/manifests/latest";
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+
+    now.store(1000 + 61, Ordering::Relaxed);
+    let (status, _, body) = send(&app, Method::GET, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, manifest.to_vec());
+}
+
+#[tokio::test]
+async fn test_moved_tag_is_refetched_after_the_window() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let server = MockServer::start().await;
+    let first = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let second = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","x":1}"#;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(first.to_vec(), MANIFEST_TYPE))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::proxy_with_clock(
+        &tempfile::tempdir().unwrap(),
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+    );
+    let uri = "/v2/hub/library/nginx/manifests/latest";
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+
+    // The tag now points somewhere else, so the HEAD's digest no longer matches and the manifest is
+    // fetched: the shortcut must never pin a moved tag.
+    server.reset().await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", oci_digest(second).as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(second.to_vec(), MANIFEST_TYPE))
+        .mount(&server)
+        .await;
+    now.store(1000 + 61, Ordering::Relaxed);
+    let (status, _, body) = send(&app, Method::GET, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, second.to_vec());
+}
+
+#[tokio::test]
 async fn test_expired_upstream_credentials_do_not_delete_a_cached_tag() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};

@@ -173,6 +173,9 @@ impl OciRegistry {
         tag: &str,
         head: bool,
     ) -> Result<Option<Response>, ServeError> {
+        if let Some(response) = self.unchanged_tag(state, client, index, repo, tag, head).await? {
+            return Ok(Some(response));
+        }
         match self
             .upstream
             .manifest(client.base_url(), client.auth(), repo, tag)
@@ -192,6 +195,40 @@ impl OciRegistry {
                 stale_tag(state, index, repo, tag, head)?.unwrap_or_else(|| upstream_manifest_error(&err)),
             )),
         }
+    }
+
+    /// Confirm a stale tag still points where it did, without fetching what it points at.
+    ///
+    /// A `HEAD` answers with the digest and no body, so the common revalidation — a tag that has not
+    /// moved — costs one round trip rather than a manifest. Anything unexpected (no digest header, a
+    /// moved tag, an upstream that will not answer a `HEAD`) returns `None`, and the caller fetches.
+    async fn unchanged_tag(
+        &self,
+        state: &AppState,
+        client: &UpstreamClient,
+        index: &str,
+        repo: &str,
+        tag: &str,
+        head: bool,
+    ) -> Result<Option<Response>, ServeError> {
+        let Some((_, cached)) = store::tag_freshness(&state.meta, index, repo, tag)? else {
+            return Ok(None);
+        };
+        let Ok(Some(upstream)) = self
+            .upstream
+            .manifest_digest(client.base_url(), client.auth(), repo, tag)
+            .await
+        else {
+            return Ok(None);
+        };
+        if upstream != cached {
+            return Ok(None);
+        }
+        let Some(manifest) = store::get_manifest(&state.meta, &cached)? else {
+            return Ok(None);
+        };
+        store::set_tag_freshness(&state.meta, index, repo, tag, &cached, (state.clock)())?;
+        Ok(Some(manifest_response(&manifest, &cached, head)))
     }
 }
 

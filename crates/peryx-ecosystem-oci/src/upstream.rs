@@ -108,6 +108,32 @@ impl Upstream {
             .await
     }
 
+    /// Ask what a tag points at, without asking for what it points at.
+    ///
+    /// A `HEAD` on a manifest answers with `Docker-Content-Digest` and no body, so a revalidation of
+    /// an unchanged tag costs a round trip instead of the manifest. `None` means the upstream did not
+    /// name a digest, and the caller must fetch to find out.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError`] on a non-success status or a transport failure.
+    pub async fn manifest_digest(
+        &self,
+        base: &str,
+        auth: &Auth,
+        repo: &str,
+        reference: &str,
+    ) -> Result<Option<String>, UpstreamError> {
+        let url = format!("{base}v2/{repo}/manifests/{reference}");
+        let response = self
+            .send(Method::HEAD, base, auth, &url, repo, Some(ACCEPT_MANIFESTS))
+            .await?;
+        Ok(response
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned))
+    }
+
     /// Fetch a blob from `base` for `repo`/`digest`, returning the raw response for streaming.
     ///
     /// # Errors

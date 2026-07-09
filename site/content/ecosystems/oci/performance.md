@@ -119,6 +119,11 @@ and revalidates once its freshness window elapses, and zot re-checks its sync. T
 be up to one freshness window stale, which is the trade a caching proxy exists to make. A manifest **by digest** is
 immutable, and there the comparison is clean.
 
+The revalidation itself is cheap: peryx asks what the tag points at with a `HEAD`, which answers with a digest and no
+body, and only fetches the manifest when that digest has moved. So the freshness window is not buying a round trip, it
+is buying the absence of one — and a burst of pulls of the same stale tag collapses into a single upstream check through
+the single-flight gate. The window is [`cache_ttl_secs`](@/core/configuration.md), five minutes by default.
+
 The `tag list` rows are marked `net` for a reason: on a single-member proxy peryx passes the request straight to its
 upstream, every time, so the row is a round trip rather than a measure of peryx serving something it holds. zot answers
 in microseconds because its sync extension has already mirrored the repository and it lists from its own store.
