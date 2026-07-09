@@ -133,7 +133,7 @@ async fn stress_wheel_filename(http: &reqwest::Client) -> anyhow::Result<String>
 async fn wheel_url(index_url: &str, project: &str, filename: &str, http: &reqwest::Client) -> anyhow::Result<String> {
     let response = http
         .get(format!("{index_url}{project}/"))
-        .header("Accept", "application/vnd.pypi.simple.v1+json, text/html;q=0.5")
+        .header("Accept", super::SIMPLE_ACCEPT)
         .send()
         .await?
         .error_for_status()?;

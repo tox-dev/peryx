@@ -35,6 +35,13 @@ pub use throughput::throughput;
 /// loudly instead of silently turning the benchmark into a compile.
 const BENCH_PYTHON: &str = "3.14";
 
+/// What pip and uv ask a simple index for, and so what any workload standing in for them must send.
+///
+/// peryx picks the representation by looking for `json` anywhere in `Accept`, so a workload sending
+/// `*/*` silently measures the PEP 503 HTML render instead of the PEP 691 JSON an installer receives.
+/// The two paths are not comparable: HTML re-parses and re-renders the page per request.
+pub(super) const SIMPLE_ACCEPT: &str = "application/vnd.pypi.simple.v1+json, text/html;q=0.5";
+
 /// One server's per-round samples for a workload: a column of numbers per sub-metric, plus the
 /// resource costs of the rounds that produced a server process.
 struct Rounds {

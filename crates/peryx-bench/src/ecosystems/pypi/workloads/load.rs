@@ -88,7 +88,7 @@ pub async fn load(servers: &[Server], users: &[usize], rounds: usize, http: &req
     publish(
         "load",
         table(
-            "simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it",
+            "PEP 691 JSON simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it",
             servers,
             base,
             rows,
@@ -111,7 +111,7 @@ async fn load_round(index_url: &str, users: &[usize], http: &reqwest::Client) ->
 async fn warm_pages(index_url: &str, http: &reqwest::Client) -> anyhow::Result<()> {
     for package in &TOP_PACKAGES[..10] {
         http.get(format!("{index_url}{package}/"))
-            .header("Accept", "*/*")
+            .header("Accept", super::SIMPLE_ACCEPT)
             .send()
             .await?
             .error_for_status()?;
@@ -245,7 +245,7 @@ async fn tail_client(index_url: &str, user: usize, interval: Duration) -> Histog
 async fn fetch_page(client: &reqwest::Client, target: &str) -> anyhow::Result<()> {
     client
         .get(target)
-        .header("Accept", "*/*")
+        .header("Accept", super::SIMPLE_ACCEPT)
         .send()
         .await?
         .error_for_status()?

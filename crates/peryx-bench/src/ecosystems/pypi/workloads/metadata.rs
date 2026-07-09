@@ -94,7 +94,7 @@ async fn metadata_urls(index_url: &str, http: &reqwest::Client) -> anyhow::Resul
     const LIMIT: usize = 16;
     let response = http
         .get(format!("{index_url}{METADATA_PROJECT}/"))
-        .header("Accept", "application/vnd.pypi.simple.v1+json, text/html;q=0.5")
+        .header("Accept", super::SIMPLE_ACCEPT)
         .send()
         .await?
         .error_for_status()?;
