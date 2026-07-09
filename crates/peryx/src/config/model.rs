@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
 use peryx_ecosystem_pypi::policy::PypiPolicyConfig;
 use peryx_format::Ecosystem;
 use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
 use peryx_policy::PolicyConfig;
+use serde::Deserialize;
 
 /// A fully resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]

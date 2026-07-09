@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 
 use axum::http::{HeaderValue, Method, StatusCode};
+use peryx_upstream::Auth;
 use reqwest::Response;
 use tokio::sync::Mutex;
-use peryx_upstream::Auth;
 
 /// The manifest media types a puller accepts, mirroring containerd/docker: the Docker v2 schema and
 /// manifest list, the OCI image manifest and index, then `*/*` so a registry that only knows one of

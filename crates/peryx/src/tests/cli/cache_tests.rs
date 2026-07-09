@@ -96,15 +96,7 @@ fn test_parse_cache_purge_project_requires_yes_for_mutation() {
 
 #[test]
 fn test_parse_cache_purge_orphaned_blobs_confirmation() {
-    let cli = parse(&[
-        "peryx",
-        "cache",
-        "purge",
-        "orphaned-blobs",
-        "--data-dir",
-        "/d",
-        "--yes",
-    ]);
+    let cli = parse(&["peryx", "cache", "purge", "orphaned-blobs", "--data-dir", "/d", "--yes"]);
     let Command::Cache(CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(args))) = cli.command else {
         panic!("expected cache purge orphaned-blobs");
     };

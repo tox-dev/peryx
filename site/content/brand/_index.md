@@ -4,9 +4,8 @@ description = "The peryx identity: the falcon mark, the rust-to-amber gradient, 
 sort_by = "weight"
 template = "section.html"
 weight = 50
-
 [extra]
-logos = ["mark.svg"]
+logos = [ "mark.svg"]
 +++
 
 peryx is **fast as the falcon, sealed as the pyx**: one blazing-fast, open-source vault for a wide range of ecosystems.
@@ -39,11 +38,11 @@ field. Never enclose the wordmark in the pyx. The wordmark is lowercase, weight 
 
 One bold element, the rust-to-amber gradient, over neutral graphite.
 
-| Token                       | Hex                     | RGB                  |
-| --------------------------- | ----------------------- | -------------------- |
-| `--brand-a`                 | `#f74c00`               | 247 76 0             |
-| `--brand-b`                 | `#ffb600`               | 255 182 0            |
-| `--accent` (light / dark)   | `#d94400` / `#ff8a3d`   | 217 68 0 / 255 138 61 |
+| Token                     | Hex                   | RGB                   |
+| ------------------------- | --------------------- | --------------------- |
+| `--brand-a`               | `#f74c00`             | 247 76 0              |
+| `--brand-b`               | `#ffb600`             | 255 182 0             |
+| `--accent` (light / dark) | `#d94400` / `#ff8a3d` | 217 68 0 / 255 138 61 |
 
 The signature gradient is `linear-gradient(115deg, #f74c00, #ffb600)`, the same direction on every mark.
 

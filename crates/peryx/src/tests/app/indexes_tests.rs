@@ -1,5 +1,5 @@
-use rstest::rstest;
 use peryx_ecosystem_pypi::discovery::SnippetKind;
+use rstest::rstest;
 
 use super::*;
 use crate::app::{self, init_data_dir};

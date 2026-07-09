@@ -13,7 +13,7 @@ use std::process::Command;
 use anyhow::{Context as _, bail};
 
 use super::images::{FLEET_IMAGE, PULL_IMAGES, STRESS_IMAGE};
-use crate::report::{repo_root, peryx_binary};
+use crate::report::{peryx_binary, repo_root};
 use crate::servers::Server;
 
 /// The upstream every proxy caches and `direct` pulls from, when no local mirror is set.

@@ -11,9 +11,9 @@ use crate::{
     is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
     parse_version_specifiers, to_json,
 };
-use serde::{Deserialize, Serialize};
 use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
 use peryx_storage::meta::{MetaError, MetaStore};
+use serde::{Deserialize, Serialize};
 
 use peryx_http::path_safety::{local_file_url, validate_filename};
 

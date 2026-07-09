@@ -25,8 +25,6 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
-use std::io::Read as _;
-use std::sync::Arc;
 use peryx_format::Ecosystem;
 use peryx_http::serving::NamespaceServing;
 use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
@@ -35,6 +33,8 @@ use peryx_policy::PolicyAction;
 use peryx_storage::blob::PendingBlob;
 use peryx_storage::meta::MetaError;
 use peryx_upstream::UpstreamClient;
+use std::io::Read as _;
+use std::sync::Arc;
 
 mod blobs;
 mod discovery;

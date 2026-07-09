@@ -18,14 +18,14 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
-use tempfile::TempDir;
-use tower::ServiceExt as _;
 use peryx_format::Ecosystem;
 use peryx_http::{AppState, Index, IndexKind, router};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
+use tempfile::TempDir;
+use tower::ServiceExt as _;
 
 /// Build an app over a single OCI index at route `route`, wiring the real driver.
 fn app_with(dir: &TempDir, index: Index) -> (Arc<AppState>, axum::Router) {

@@ -9,8 +9,8 @@ use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use sha2::{Digest as _, Sha256, Sha384, Sha512};
 use peryx_storage::blob::{BlobStore, Digest};
+use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
 use crate::upload::{StagedUpload, UploadError, UploadForm, prepare};
 
@@ -392,9 +392,7 @@ fn test_prepare_rejects_invalid_wheel_file() {
         "invalid Wheel-Version \"999999999999999999999999999999999999999999999999999999999999999.0\"",
     );
     assert_wheel_invalid(
-        &wheel_with_wheel_file(
-            b"Wheel-Version: 1\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-        ),
+        &wheel_with_wheel_file(b"Wheel-Version: 1\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"),
         "invalid Wheel-Version \"1\"",
     );
     assert_wheel_invalid(

@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
 use peryx_ecosystem_pypi::policy::PypiPolicyConfig;
 use peryx_policy::PolicyConfig;
+use serde::Deserialize;
 
 use super::model::{LogFormat, LogSink, PrefetchConfig, PrefetchMode};
 

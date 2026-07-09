@@ -9,14 +9,14 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::{Stream, TryStreamExt as _};
-use std::path::Path;
-use std::sync::Arc;
 use peryx_http::metrics::Event;
 use peryx_http::webhook::WebhookEventKind;
 use peryx_http::{AppState, Index};
 use peryx_policy::PolicyAction;
 use peryx_storage::archive::{self, ArchiveError, MemberChunk};
 use peryx_storage::blob::{BlobError, BlobStore, Digest, PendingBlob};
+use std::path::Path;
+use std::sync::Arc;
 
 impl OciRegistry {
     /// Serve a blob from the store, pulling it through the members' online proxies on a miss. Blobs

@@ -40,8 +40,7 @@ pub fn backup_create(config: &Config, path: &Path, out: &mut dyn Write) -> anyho
     let mut blob_count = 0_u64;
     let mut blob_bytes = 0_u64;
     {
-        let meta =
-            MetaStore::open_existing(path.join("metadata/peryx.redb")).context("open copied metadata store")?;
+        let meta = MetaStore::open_existing(path.join("metadata/peryx.redb")).context("open copied metadata store")?;
         let mut index = BufWriter::new(File::create(path.join("blobs.tsv")).context("create blobs.tsv")?);
         writeln!(index, "{BLOB_INDEX_HEADER}")?;
         for digest in crate::app::referenced_blob_digests(&meta).context("scan metadata blob references")? {

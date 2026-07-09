@@ -3,9 +3,9 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-use tower::ServiceExt as _;
 use peryx_http::IndexKind;
 use peryx_storage::blob::Digest;
+use tower::ServiceExt as _;
 
 use super::{
     app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, oci_index, proxy, send, send_body,

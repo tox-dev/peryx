@@ -13,9 +13,6 @@ use axum::body::Body;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::Request;
 use http_body_util::BodyExt as _;
-use tokio::runtime::Runtime;
-use tower::ServiceExt as _;
-use url::Url;
 use peryx_ecosystem_pypi::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked, normalize_name,
     parse_detail, parse_detail_html, parse_distribution_filename, parse_index, parse_index_html, parse_metadata,
@@ -28,6 +25,9 @@ use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::{CachedIndex, MetaStore};
 use peryx_upstream::UpstreamClient;
+use tokio::runtime::Runtime;
+use tower::ServiceExt as _;
+use url::Url;
 
 const SMALL: usize = 3;
 const LARGE: usize = 400;

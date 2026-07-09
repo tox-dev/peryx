@@ -1129,8 +1129,8 @@ async fn test_buffered_fetch_registers_metadata_siblings() {
 async fn test_oci_index_rejects_pypi_protocol_dispatch() {
     use axum::body::Body;
     use axum::http::{Method, Request, header};
-    use tower::ServiceExt as _;
     use peryx_http::router;
+    use tower::ServiceExt as _;
 
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, "http://127.0.0.1:9/simple/", |_client| {

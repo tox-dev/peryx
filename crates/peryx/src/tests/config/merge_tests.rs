@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use rstest::rstest;
 use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use rstest::rstest;
 
 use super::toml_config;
 use crate::config::{

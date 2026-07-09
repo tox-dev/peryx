@@ -31,9 +31,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use peryx_storage::blob::Digest;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
-use peryx_storage::blob::Digest;
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
@@ -519,11 +519,7 @@ fn uv_install_fails(venv: &TempDir, peryx: &Peryx, spec: &str) {
 fn run_against(cmd: &mut Command, what: &str, peryx: &Peryx) {
     let output = cmd.output().unwrap_or_else(|err| panic!("spawn {what}: {err}"));
     if !output.status.success() {
-        eprintln!(
-            "=== peryx server log (port {}) ===\n{}",
-            peryx.port,
-            peryx.server_log()
-        );
+        eprintln!("=== peryx server log (port {}) ===\n{}", peryx.port, peryx.server_log());
         panic!("{what} failed:\n{}", String::from_utf8_lossy(&output.stderr));
     }
 }
@@ -531,11 +527,7 @@ fn run_against(cmd: &mut Command, what: &str, peryx: &Peryx) {
 fn run_against_fails(cmd: &mut Command, what: &str, peryx: &Peryx) {
     let output = cmd.output().unwrap_or_else(|err| panic!("spawn {what}: {err}"));
     if output.status.success() {
-        eprintln!(
-            "=== peryx server log (port {}) ===\n{}",
-            peryx.port,
-            peryx.server_log()
-        );
+        eprintln!("=== peryx server log (port {}) ===\n{}", peryx.port, peryx.server_log());
         panic!("{what} succeeded but should have failed");
     }
 }
@@ -735,10 +727,7 @@ fn e2e_yank_and_delete_round_trip() {
     assert!(yanked.contains("\"yanked\":true"), "yank marker missing");
 
     // Un-yank restores it.
-    assert_eq!(
-        http_verb(peryx.port, "DELETE", "/root/pypi/peryxremove/1.0/yank"),
-        200
-    );
+    assert_eq!(http_verb(peryx.port, "DELETE", "/root/pypi/peryxremove/1.0/yank"), 200);
     let (_, restored) = http_get(peryx.port, "/root/pypi/simple/peryxremove/").expect("detail");
     assert!(!restored.contains("\"yanked\":true"), "yank marker not cleared");
 

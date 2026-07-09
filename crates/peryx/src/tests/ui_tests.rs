@@ -6,13 +6,13 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
-use rstest::{fixture, rstest};
-use sha2::{Digest as _, Sha256};
-use tower::ServiceExt as _;
 use peryx_ecosystem_pypi::upload::Uploaded;
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use peryx_http::path_safety::local_file_url;
 use peryx_storage::blob::Digest;
+use rstest::{fixture, rstest};
+use sha2::{Digest as _, Sha256};
+use tower::ServiceExt as _;
 
 use crate::config::{Config, IndexConfig, IndexKind};
 use crate::server::{build_router, build_state, router_for};

@@ -9,9 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, bail};
 use blake2::Blake2bVar;
 use blake2::digest::VariableOutput as _;
+use peryx_storage::blob::Digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use peryx_storage::blob::Digest;
 
 mod backup;
 mod import;

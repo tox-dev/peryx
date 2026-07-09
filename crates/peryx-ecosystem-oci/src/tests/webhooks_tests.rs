@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use tower::ServiceExt as _;
 use peryx_format::Ecosystem;
 use peryx_http::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::{AppState, Index, IndexKind, router};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::{MetaStore, WebhookDeliveryRecord};
+use tower::ServiceExt as _;
 
 use super::{auth, oci_digest};
 

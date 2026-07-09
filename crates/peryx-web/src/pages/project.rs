@@ -12,8 +12,8 @@ use std::sync::Arc;
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::hooks::{use_navigate, use_query_map};
-use regex::Regex;
 use peryx_ecosystem_pypi::CoreMetadataDoc;
+use regex::Regex;
 
 use super::{ErrorMessage, copy_to_clipboard, human_size};
 use crate::data::load_project;

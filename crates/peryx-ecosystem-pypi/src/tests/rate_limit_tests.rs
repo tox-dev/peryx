@@ -6,10 +6,10 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-use tower::ServiceExt as _;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
+use tower::ServiceExt as _;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

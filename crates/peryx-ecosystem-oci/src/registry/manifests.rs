@@ -8,13 +8,13 @@ use crate::upstream::UpstreamError;
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use std::sync::Arc;
 use peryx_http::metrics::Event;
 use peryx_http::webhook::WebhookEventKind;
 use peryx_http::{AppState, Index};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
 use peryx_upstream::UpstreamClient;
+use std::sync::Arc;
 
 impl OciRegistry {
     /// Serve a manifest by tag or digest. A virtual index walks its members hosted-first, so a hosted

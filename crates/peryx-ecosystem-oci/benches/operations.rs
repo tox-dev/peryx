@@ -14,13 +14,13 @@ use axum::body::Body;
 use criterion::{Criterion, criterion_group, criterion_main};
 use http::Request;
 use http_body_util::BodyExt as _;
-use tokio::runtime::Runtime;
-use tower::ServiceExt as _;
 use peryx_format::Ecosystem;
 use peryx_http::{AppState, Index, IndexKind, router};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
+use tokio::runtime::Runtime;
+use tower::ServiceExt as _;
 
 const TOKEN: &str = "bench-token";
 

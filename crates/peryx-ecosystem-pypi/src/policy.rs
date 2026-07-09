@@ -11,8 +11,8 @@ use std::str::FromStr as _;
 use std::sync::Arc;
 
 use pep440_rs::{Version, VersionSpecifiers};
-use serde::Deserialize;
 use peryx_policy::{ArtifactFacts, ArtifactRule, Policy, PolicyAction, PolicyDenial, retain_versions};
+use serde::Deserialize;
 
 use crate::{DistributionKind, File, ProjectDetail, ProjectList, normalize_name, parse_distribution_filename};
 

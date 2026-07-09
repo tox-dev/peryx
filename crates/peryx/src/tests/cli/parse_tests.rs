@@ -67,11 +67,7 @@ fn test_parse_init_with_flags() {
 #[test]
 fn test_verbose_maps_to_levels() {
     assert_eq!(
-        runtime(parse(&["peryx", "serve", "-v"]))
-            .overlay()
-            .log
-            .level
-            .as_deref(),
+        runtime(parse(&["peryx", "serve", "-v"])).overlay().log.level.as_deref(),
         Some("debug")
     );
     assert_eq!(

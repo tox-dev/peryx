@@ -1,10 +1,10 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;
-use rstest::rstest;
-use tower::ServiceExt as _;
 use peryx_http::IndexKind as RuntimeKind;
 use peryx_upstream::Auth;
+use rstest::rstest;
+use tower::ServiceExt as _;
 
 use crate::config::{Config, IndexConfig, IndexKind, WebhookConfig, WebhookSecret};
 use crate::server::{build_indexes, build_router, build_state, upstream_auth};

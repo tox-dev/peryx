@@ -1,9 +1,9 @@
 //! Index identity and role: the resolved shape of one configured index.
 
-use serde::Serialize;
 use peryx_format::Ecosystem;
 use peryx_policy::Policy;
 use peryx_upstream::UpstreamClient;
+use serde::Serialize;
 
 /// One resolved index. `layers`/`upload` in a virtual index are indices into [`AppState::indexes`], so
 /// resolution is a plain vector walk with no name lookups at request time.

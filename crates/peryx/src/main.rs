@@ -167,9 +167,6 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     })
 }
 
-/// Serve HTTPS with certificates obtained and renewed automatically from Let's Encrypt. The ACME
-/// event stream runs in the background so renewals and the TLS-ALPN-01 challenge are handled without
-/// blocking traffic. Excluded from coverage: it drives a live ACME provider.
 /// Prints the startup banner once, on a TTY only, so piped and CI output stays clean. Two builds,
 /// following the brand guidelines: UTF-8 locales get the Unicode block, older terminals the ASCII
 /// form; colour is truecolor or 256-colour amber, and none under NO_COLOR or a basic TERM. The
@@ -179,9 +176,7 @@ fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str) {
     if !std::io::stdout().is_terminal() {
         return;
     }
-    let env_has = |key: &str, needle: &str| {
-        std::env::var(key).is_ok_and(|v| v.to_ascii_lowercase().contains(needle))
-    };
+    let env_has = |key: &str, needle: &str| std::env::var(key).is_ok_and(|v| v.to_ascii_lowercase().contains(needle));
     let unicode = ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
         .any(|k| env_has(k, "utf-8") || env_has(k, "utf8"));
@@ -210,7 +205,11 @@ fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str) {
         "  | .__/ \\___|_|   \\__, /_/\\_\\",
         "  |_|              |___/",
     ];
-    let (art, dot, arrow) = if unicode { (modern, " · ", "→") } else { (ascii, " - ", "->") };
+    let (art, dot, arrow) = if unicode {
+        (modern, " · ", "→")
+    } else {
+        (ascii, " - ", "->")
+    };
     let plural = if indexes == 1 { "" } else { "es" };
 
     println!();
@@ -223,6 +222,9 @@ fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str) {
     println!();
 }
 
+/// Serve HTTPS with certificates obtained and renewed automatically from Let's Encrypt. The ACME
+/// event stream runs in the background so renewals and the TLS-ALPN-01 challenge are handled without
+/// blocking traffic. Excluded from coverage: it drives a live ACME provider.
 async fn serve_acme(
     addr: std::net::SocketAddr,
     acme: config::AcmeConfig,

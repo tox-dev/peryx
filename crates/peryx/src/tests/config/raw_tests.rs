@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use rstest::rstest;
 use peryx_ecosystem_pypi::policy::PackageType;
+use rstest::rstest;
 
 use super::toml_config;
 use crate::config::{self, IndexKind, PrefetchMode};

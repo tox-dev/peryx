@@ -7,9 +7,9 @@
 
 use std::fmt::Write as _;
 
-use serde_json::{Value, json};
 use peryx_http::discovery::{BaseUrl, browse_path, link, stats_path};
 use peryx_http::state::IndexDescription;
+use serde_json::{Value, json};
 
 const IMAGE_PLACEHOLDER: &str = "<image>";
 const TAG_PLACEHOLDER: &str = "<tag>";

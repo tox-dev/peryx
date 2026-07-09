@@ -3,8 +3,8 @@
 //! Descriptions come from arbitrary packages, so inline HTML is escaped rather than passed through:
 //! markdown formatting works, embedded tags render as text.
 
-use pulldown_cmark::{Event, Options, Parser, html};
 use peryx_ecosystem_pypi::CoreMetadataDoc;
+use pulldown_cmark::{Event, Options, Parser, html};
 
 /// Render a long description to safe HTML.
 ///

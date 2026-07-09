@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
 use peryx_http::{AppState, Index};
 use peryx_storage::blob::Digest;
 use peryx_upstream::Auth;
+use serde::Serialize;
 
 use crate::registry::{download_blob, proxy_client, serving_members};
 use crate::store::{self, Manifest};

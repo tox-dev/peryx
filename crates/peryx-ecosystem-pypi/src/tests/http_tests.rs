@@ -11,12 +11,12 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
-use rstest::rstest;
-use sha2::{Digest as _, Sha256};
-use tower::ServiceExt as _;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::{CachedIndex, MetaStore};
 use peryx_upstream::{Auth, UpstreamClient};
+use rstest::rstest;
+use sha2::{Digest as _, Sha256};
+use tower::ServiceExt as _;
 use wiremock::matchers::{header as match_header, header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2656,10 +2656,7 @@ async fn test_upload_rejects_archived_and_quarantined_projects() {
             post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await;
 
         assert_eq!(code, StatusCode::FORBIDDEN);
-        assert_eq!(
-            body,
-            format!("project \"peryxpkg\" is {status}; uploads are disabled")
-        );
+        assert_eq!(body, format!("project \"peryxpkg\" is {status}; uploads are disabled"));
     }
 }
 
@@ -2745,13 +2742,7 @@ async fn test_yank_and_unyank_and_delete() {
 
     // Un-yank via DELETE .../yank.
     assert_eq!(
-        request(
-            &h.state,
-            "DELETE",
-            "/root/pypi/peryxpkg/1.0/yank",
-            Some(&upload_auth())
-        )
-        .await,
+        request(&h.state, "DELETE", "/root/pypi/peryxpkg/1.0/yank", Some(&upload_auth())).await,
         StatusCode::OK
     );
     let (_, _, unyanked) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
@@ -2804,13 +2795,7 @@ async fn test_admin_routes_reject_decoded_separators() {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(
-            &h.state,
-            "DELETE",
-            "/hosted/peryxpkg/1.0%2Fbad/",
-            Some(&upload_auth())
-        )
-        .await,
+        request(&h.state, "DELETE", "/hosted/peryxpkg/1.0%2Fbad/", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -2818,13 +2803,7 @@ async fn test_admin_routes_reject_decoded_separators() {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        request(
-            &h.state,
-            "DELETE",
-            "/hosted/peryxpkg/1.0%xxbad/",
-            Some(&upload_auth())
-        )
-        .await,
+        request(&h.state, "DELETE", "/hosted/peryxpkg/1.0%xxbad/", Some(&upload_auth())).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -2961,10 +2940,7 @@ async fn test_longest_prefix_wins() {
     ];
     let state = super::wired(AppState::new(meta, blobs, 60, indexes));
     // Uploading requires a token; only "a/b" has one, so a 401-vs-200 proves which matched.
-    assert_eq!(
-        upload_peryxpkg(&state, "/a/b/", &fixture_wheel()).await,
-        StatusCode::OK
-    );
+    assert_eq!(upload_peryxpkg(&state, "/a/b/", &fixture_wheel()).await, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -3528,10 +3504,7 @@ async fn test_promote_copies_release_records_without_copying_blobs() {
             .as_str()
             .is_some_and(|sha256| sha256.len() == 64)
     );
-    let metadata_uri = format!(
-        "/prod/files/{}/peryxpkg-1.0-py3-none-any.whl.metadata",
-        digest.as_str()
-    );
+    let metadata_uri = format!("/prod/files/{}/peryxpkg-1.0-py3-none-any.whl.metadata", digest.as_str());
     let (metadata_status, _, metadata) = get(&h.state, &metadata_uri, None).await;
     assert_eq!(metadata_status, StatusCode::OK);
     assert!(metadata.contains("Name: peryxpkg"));
@@ -3778,10 +3751,7 @@ async fn test_promote_rejects_archived_and_quarantined_targets() {
         .await;
 
         assert_eq!(code, StatusCode::FORBIDDEN);
-        assert_eq!(
-            body,
-            format!("project \"peryxpkg\" is {status}; uploads are disabled")
-        );
+        assert_eq!(body, format!("project \"peryxpkg\" is {status}; uploads are disabled"));
         assert_eq!(
             get(&h.state, "/prod/simple/peryxpkg/", Some("application/json"))
                 .await
@@ -3861,9 +3831,7 @@ fn fixture_wheel_with_body(version: &str, body: &[u8]) -> Vec<u8> {
     fixture_wheel_with_body_and_metadata(
         version,
         body,
-        Some(
-            format!("Metadata-Version: 2.1\nName: peryxpkg\nVersion: {version}\nRequires-Python: >=3.8\n").as_bytes(),
-        ),
+        Some(format!("Metadata-Version: 2.1\nName: peryxpkg\nVersion: {version}\nRequires-Python: >=3.8\n").as_bytes()),
     )
 }
 
@@ -4161,10 +4129,7 @@ async fn test_inspect_query_without_member_lists_archive() {
 async fn test_inspect_legacy_member_rejects_invalid_encoding() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "peryxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
-    let uri = format!(
-        "/hosted/inspect/{}/peryxpkg-1.0-py3-none-any.whl/%FF",
-        digest.as_str()
-    );
+    let uri = format!("/hosted/inspect/{}/peryxpkg-1.0-py3-none-any.whl/%FF", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("invalid percent-encoded path segment"));
@@ -4454,13 +4419,7 @@ async fn test_yank_overlay_with_uploaded_file_skips_override() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Un-yank with no upstream override to clear only rewrites the record.
     assert_eq!(
-        request(
-            &h.state,
-            "DELETE",
-            "/root/pypi/peryxpkg/1.0/yank",
-            Some(&upload_auth())
-        )
-        .await,
+        request(&h.state, "DELETE", "/root/pypi/peryxpkg/1.0/yank", Some(&upload_auth())).await,
         StatusCode::OK
     );
 }
