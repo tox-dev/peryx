@@ -11,7 +11,7 @@ pub mod workloads;
 
 /// Run the OCI suite: every workload not in `skip`, against every registry named in `only`.
 ///
-/// Parts, any of which `--skip` leaves out by name: `pull`, `throughput`, `parallel`. Set
+/// Parts, any of which `--skip` leaves out by name: `pull`, `throughput`, `parallel`, `endpoints`. Set
 /// `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` to pull authenticated (a higher rate ceiling than the
 /// anonymous 100/hour); every proxy and crane pick them up.
 ///
@@ -48,6 +48,9 @@ pub async fn run(
     }
     if enabled("parallel") {
         workloads::fleet(&servers, rounds, http).await?;
+    }
+    if enabled("endpoints") {
+        workloads::endpoints(&servers, rounds, http).await?;
     }
     Ok(())
 }

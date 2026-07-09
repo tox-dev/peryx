@@ -388,8 +388,14 @@ fn format_seconds(seconds: f64) -> String {
         format!("{}m {:04.1}s", (seconds / 60.0) as u64, seconds % 60.0)
     } else if seconds >= 1.0 {
         format!("{seconds:.1} s")
-    } else {
+    } else if seconds >= 0.01 {
         format!("{:.0} ms", seconds * 1000.0)
+    } else if seconds >= 0.001 {
+        format!("{:.1} ms", seconds * 1000.0)
+    } else {
+        // The per-endpoint rows land here, where rounding to whole milliseconds prints every one of
+        // them as "0 ms" and erases the differences the table exists to show.
+        format!("{:.0} µs", seconds * 1e6)
     }
 }
 

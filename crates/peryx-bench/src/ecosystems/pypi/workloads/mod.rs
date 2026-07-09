@@ -14,12 +14,14 @@ use anyhow::{Context as _, bail};
 
 use crate::usage::{Cost, Usage};
 
+mod endpoints;
 mod fleet;
 mod install;
 mod load;
 mod metadata;
 mod throughput;
 
+pub use endpoints::endpoints;
 pub use fleet::fleet;
 pub use install::installs;
 pub use load::load;
@@ -41,6 +43,9 @@ const BENCH_PYTHON: &str = "3.14";
 /// `*/*` silently measures the PEP 503 HTML render instead of the PEP 691 JSON an installer receives.
 /// The two paths are not comparable: HTML re-parses and re-renders the page per request.
 pub(super) const SIMPLE_ACCEPT: &str = "application/vnd.pypi.simple.v1+json, text/html;q=0.5";
+
+/// The PEP 503 HTML an installer never asks for, but a browser and an old client do.
+pub(super) const SIMPLE_ACCEPT_HTML: &str = "text/html";
 
 /// One server's per-round samples for a workload: a column of numbers per sub-metric, plus the
 /// resource costs of the rounds that produced a server process.

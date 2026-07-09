@@ -9,7 +9,7 @@ pub mod workloads;
 /// Run the `PyPI` suite: every workload not in `skip`, against every server named in `only`.
 ///
 /// Parts, any of which `--skip` leaves out by name: `install`, `pip` (the pip client inside the
-/// install workload; uv still runs), `throughput`, `parallel`, `metadata`, `load`.
+/// install workload; uv still runs), `throughput`, `parallel`, `metadata`, `load`, `endpoints`.
 ///
 /// # Errors
 /// Returns an error when a server cannot start or a workload against a healthy server fails.
@@ -34,6 +34,9 @@ pub async fn run(rounds: usize, skip: &[String], only: &str, http: &reqwest::Cli
     }
     if enabled("load") {
         workloads::load(&servers, &[1, 32], rounds, http).await?;
+    }
+    if enabled("endpoints") {
+        workloads::endpoints(&servers, rounds, http).await?;
     }
     Ok(())
 }
