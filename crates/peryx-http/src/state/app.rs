@@ -97,9 +97,11 @@ pub struct AppState {
     pub upstream_limits: UpstreamLimits,
     /// Signed webhook delivery runtime.
     pub webhooks: WebhookRuntime,
-    /// The ecosystem serving driver requests are dispatched to. One per process today (`PyPI`); a
-    /// registry keyed by an index's ecosystem once a second ecosystem lands.
-    pub serving: Arc<dyn crate::serving::EcosystemServing>,
+    /// The route-mounted serving drivers, one slot per [`Ecosystem`]. A request is dispatched to the
+    /// driver of the index it resolved to, so several route-mounted ecosystems coexist; a slot stays
+    /// `None` for an ecosystem nobody installed, and for one whose wire protocol owns a top-level
+    /// prefix instead (see `namespaces`).
+    serving: [Option<Arc<dyn crate::serving::EcosystemServing>>; Ecosystem::COUNT],
     /// Ecosystems whose wire protocol owns top-level path prefixes and resolves indexes itself (`OCI`'s
     /// `/v2/`). Empty until a namespace ecosystem is installed; the router and rate limiter read the
     /// prefixes each declares so neither names an ecosystem.
@@ -351,7 +353,7 @@ impl AppState {
             rate_limits: RateLimiter::new(rate_limit),
             upstream_limits: UpstreamLimits::new(upstream_limits),
             webhooks,
-            serving: default_serving(),
+            serving: std::array::from_fn(|_| None),
             namespaces: Vec::new(),
             lexicons: LexiconRegistry::default(),
             openapi: std::sync::Arc::from(STUB_OPENAPI),
@@ -390,17 +392,44 @@ impl AppState {
         }
     }
 
-    /// Wire in the ecosystem serving driver and its search indexer. The binary calls this once at
-    /// startup with the configured ecosystem's implementations; a state built without it serves the
-    /// neutral defaults ([`UnconfiguredServing`](crate::serving::UnconfiguredServing) and
-    /// [`EmptyIndexer`](peryx_search::EmptyIndexer)).
-    pub fn set_ecosystem(
+    /// Register a route-mounted ecosystem's serving driver and its search indexer. Each driver's own
+    /// [`ecosystem`](crate::serving::EcosystemServing::ecosystem) picks its slot, so installing one
+    /// never displaces another.
+    pub fn register_ecosystem(
         &mut self,
         serving: Arc<dyn crate::serving::EcosystemServing>,
         indexer: Arc<dyn peryx_search::PackageIndexer>,
     ) {
-        self.serving = serving;
-        self.search.set_indexer(indexer);
+        let slot = serving.ecosystem().slot();
+        self.serving[slot] = Some(serving);
+        self.search.add_indexer(indexer);
+    }
+
+    /// The route-mounted driver serving `ecosystem`, or `None` when none is installed for it.
+    #[must_use]
+    pub fn serving_for(&self, ecosystem: Ecosystem) -> Option<&Arc<dyn crate::serving::EcosystemServing>> {
+        self.serving[ecosystem.slot()].as_ref()
+    }
+
+    /// The route-mounted driver that would serve `path`, found by resolving the index it addresses.
+    ///
+    /// `path` is a request URI path, so it carries a leading slash; index routes do not.
+    #[must_use]
+    pub fn serving_for_path(&self, path: &str) -> Option<&Arc<dyn crate::serving::EcosystemServing>> {
+        let (position, _) = self.resolve_position(path.trim_start_matches('/'))?;
+        self.serving_for(self.index_at(position).ecosystem)
+    }
+
+    /// Every installed route-mounted driver, in ecosystem declaration order.
+    pub fn servings(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::EcosystemServing>> {
+        self.serving.iter().flatten()
+    }
+
+    /// Whether any ecosystem driver at all has been wired in. A process with none serves `503` rather
+    /// than quietly answering nothing.
+    #[must_use]
+    pub fn has_any_driver(&self) -> bool {
+        self.serving.iter().any(Option::is_some) || !self.namespaces.is_empty()
     }
 
     /// Add another ecosystem's search indexer, composing with any already installed. An ecosystem
@@ -539,7 +568,3 @@ fn system_now() -> i64 {
 /// The minimal `OpenAPI` document a state serves until the binary installs the assembled one. It names
 /// no ecosystem; the real per-ecosystem paths are merged in by the binary at startup.
 const STUB_OPENAPI: &str = r#"{"openapi":"3.1.0","info":{"title":"peryx","version":"0"},"paths":{}}"#;
-
-fn default_serving() -> Arc<dyn crate::serving::EcosystemServing> {
-    Arc::new(crate::serving::UnconfiguredServing)
-}

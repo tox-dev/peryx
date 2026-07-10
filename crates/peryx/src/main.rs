@@ -113,17 +113,25 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                let serving = refresher.serving.clone();
-                match serving.refresh_stale(refresher.clone()).await {
-                    Ok(sweep) if sweep.checked > 0 => {
-                        tracing::info!(
-                            checked = sweep.checked,
-                            changed = sweep.changed,
-                            "background refresh sweep"
-                        );
+                // Every registered driver sweeps its own cached pages; one whose ecosystem has no
+                // read-through cache sweeps nothing.
+                let servings: Vec<_> = refresher.servings().cloned().collect();
+                for serving in servings {
+                    let ecosystem = serving.ecosystem();
+                    match serving.refresh_stale(refresher.clone()).await {
+                        Ok(sweep) if sweep.checked > 0 => {
+                            tracing::info!(
+                                ecosystem = %ecosystem,
+                                checked = sweep.checked,
+                                changed = sweep.changed,
+                                "background refresh sweep"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::error!(ecosystem = %ecosystem, error = %err, "background refresh sweep failed");
+                        }
                     }
-                    Ok(_) => {}
-                    Err(err) => tracing::error!(error = %err, "background refresh sweep failed"),
                 }
             }
         });

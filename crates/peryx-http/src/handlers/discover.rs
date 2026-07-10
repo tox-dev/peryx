@@ -27,8 +27,13 @@ fn discover_index_entry(
 ) -> serde_json::Value {
     if let Some(driver) = state.namespace_for_ecosystem(index.ecosystem) {
         driver.discover_index(index, base)
-    } else if state.serving.ecosystem().as_str() == index.ecosystem {
-        state.serving.discover_index(index, base)
+    } else if let Some(serving) = index
+        .ecosystem
+        .parse()
+        .ok()
+        .and_then(|ecosystem| state.serving_for(ecosystem))
+    {
+        serving.discover_index(index, base)
     } else {
         crate::discovery::minimal_entry(&index)
     }

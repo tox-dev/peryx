@@ -380,7 +380,11 @@ pub(crate) async fn enforce(
         // URL boundary the router dispatches on: a namespace ecosystem that owns the path, else the
         // per-index ecosystem's Simple-style API.
         state.namespace_for_path(path).map_or_else(
-            || state.serving.classify_route(path),
+            || {
+                state
+                    .serving_for_path(path)
+                    .map_or(RouteClass::Listing, |driver| driver.classify_route(path))
+            },
             |driver| driver.classify_route(path),
         )
     });

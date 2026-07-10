@@ -25,6 +25,17 @@ impl Ecosystem {
     /// Every known ecosystem, in a stable order, for help text and the UI.
     pub const ALL: &'static [Self] = &[Self::Pypi, Self::Oci];
 
+    /// How many ecosystems exist, so a registry keyed by one is a fixed-size array.
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// This ecosystem's slot in such a registry. Discriminants follow [`ALL`](Self::ALL), which
+    /// `test_slots_match_the_declaration_order` pins, so the lookup is an array index rather than a
+    /// hash.
+    #[must_use]
+    pub const fn slot(self) -> usize {
+        self as usize
+    }
+
     /// The stable lowercase identifier used in config, routes, the API, and the UI.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -79,6 +90,14 @@ mod tests {
         assert_eq!(Ecosystem::ALL, &[Ecosystem::Pypi, Ecosystem::Oci]);
         assert_eq!("pypi".parse::<Ecosystem>().unwrap(), Ecosystem::Pypi);
         assert_eq!("oci".parse::<Ecosystem>().unwrap(), Ecosystem::Oci);
+    }
+
+    #[test]
+    fn test_slots_match_the_declaration_order() {
+        for (expected, ecosystem) in Ecosystem::ALL.iter().enumerate() {
+            assert_eq!(ecosystem.slot(), expected, "slot of {ecosystem} moved");
+        }
+        assert_eq!(Ecosystem::COUNT, Ecosystem::ALL.len());
     }
 
     #[test]

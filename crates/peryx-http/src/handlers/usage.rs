@@ -58,9 +58,8 @@ pub fn ecosystem_summaries(state: &AppState) -> Vec<peryx_events::metrics::Ecosy
 #[must_use]
 pub fn family_descriptors(state: &AppState) -> Vec<peryx_events::metrics::FamilyDescriptor> {
     state
-        .serving
-        .metric_families()
-        .iter()
+        .servings()
+        .flat_map(|serving| serving.metric_families())
         .map(|family| peryx_events::metrics::FamilyDescriptor {
             key: family.key.to_owned(),
             label: family.ui_label.to_owned(),
@@ -178,7 +177,7 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
             }
         }
     }
-    for family in state.serving.metric_families() {
+    for family in state.servings().flat_map(|serving| serving.metric_families()) {
         let _ = writeln!(body, "# HELP {} {}", family.prom_name, family.help);
         let _ = writeln!(body, "# TYPE {} counter", family.prom_name);
         for (index, counters) in &indexes {

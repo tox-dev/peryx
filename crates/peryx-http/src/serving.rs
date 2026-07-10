@@ -2,16 +2,16 @@
 //!
 //! The router is ecosystem-neutral: it resolves a request to a configured index and hands the request
 //! to that index's ecosystem driver. Each ecosystem implements [`EcosystemServing`] to serve its own
-//! wire protocol (`PyPI`'s Simple API today; an `OCI` `/v2/` or npm registry later). The driver is held on
-//! [`AppState`] and dispatched dynamically once per request, so adding an ecosystem is a new driver,
-//! not a change to the router.
+//! wire protocol (`PyPI`'s Simple API today; an `OCI` `/v2/` or npm registry later). Drivers are held in
+//! a registry on [`AppState`], one slot per ecosystem, and dispatched once per request, so adding an
+//! ecosystem is a new driver rather than a change to the router.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::{Multipart, Request};
-use axum::http::{HeaderMap, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, Uri};
+use axum::response::Response;
 use peryx_core::Ecosystem;
 
 use crate::state::AppState;
@@ -106,60 +106,5 @@ pub trait EcosystemServing: Send + Sync {
     /// without a read-through cache sweeps nothing, so the default is a no-op.
     async fn refresh_stale(&self, _state: Arc<AppState>) -> Result<RefreshSweep, String> {
         Ok(RefreshSweep::default())
-    }
-}
-
-/// The driver installed when no ecosystem is wired into [`AppState`]: every request gets a `503`.
-///
-/// A build that forgot to inject a driver fails loudly rather than silently serving nothing. The
-/// binary replaces this with a real driver at startup.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct UnconfiguredServing;
-
-impl UnconfiguredServing {
-    fn unavailable() -> Response {
-        (StatusCode::SERVICE_UNAVAILABLE, "no ecosystem driver configured").into_response()
-    }
-}
-
-#[async_trait]
-impl EcosystemServing for UnconfiguredServing {
-    fn ecosystem(&self) -> Ecosystem {
-        Ecosystem::Pypi
-    }
-
-    async fn get(
-        &self,
-        _state: Arc<AppState>,
-        _position: usize,
-        _rest: String,
-        _uri: Uri,
-        _headers: HeaderMap,
-    ) -> Response {
-        Self::unavailable()
-    }
-
-    async fn post(&self, _state: Arc<AppState>, _path: String, _headers: HeaderMap, _multipart: Multipart) -> Response {
-        Self::unavailable()
-    }
-
-    async fn put(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
-        Self::unavailable()
-    }
-
-    async fn delete(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
-        Self::unavailable()
-    }
-
-    fn discover_index(
-        &self,
-        index: crate::state::IndexDescription,
-        _base: Option<&crate::discovery::BaseUrl>,
-    ) -> serde_json::Value {
-        crate::discovery::minimal_entry(&index)
-    }
-
-    fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
-        crate::rate_limit::RouteClass::Listing
     }
 }

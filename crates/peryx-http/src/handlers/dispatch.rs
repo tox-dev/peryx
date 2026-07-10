@@ -9,7 +9,46 @@ use axum::response::{IntoResponse, Response};
 
 use super::discover::index_api;
 use super::query::index_search;
+use crate::serving::EcosystemServing;
 use crate::state::AppState;
+
+/// Why a request reached no driver.
+enum NoDriver {
+    /// No index owns the path, or the index's ecosystem serves under its own top-level prefix
+    /// (`OCI`'s `/v2/`) and so is not reachable through its per-index route.
+    Unroutable,
+    /// Nothing was wired in at all. That is a build fault, not a missing index, so it says so.
+    Unconfigured,
+}
+
+impl NoDriver {
+    fn response(self) -> Response {
+        match self {
+            Self::Unroutable => not_found(),
+            Self::Unconfigured => (StatusCode::SERVICE_UNAVAILABLE, "no ecosystem driver configured").into_response(),
+        }
+    }
+}
+
+/// The driver for the index already resolved to `position`.
+fn driver_at(state: &AppState, position: usize) -> Result<&Arc<dyn EcosystemServing>, NoDriver> {
+    state.serving_for(state.index_at(position).ecosystem).ok_or_else(|| {
+        if state.has_any_driver() {
+            NoDriver::Unroutable
+        } else {
+            NoDriver::Unconfigured
+        }
+    })
+}
+
+/// The driver serving the index `path` resolves to. Used by the write methods, which have not already
+/// resolved the route; `GET` resolves once and calls [`driver_at`] instead.
+fn driver_for<'a>(state: &'a AppState, path: &str) -> Result<&'a Arc<dyn EcosystemServing>, NoDriver> {
+    let Some((position, _)) = state.resolve_position(path) else {
+        return Err(NoDriver::Unroutable);
+    };
+    driver_at(state, position)
+}
 
 /// `GET /{route}/...`: resolve the index's ecosystem driver and let it serve the request.
 ///
@@ -29,23 +68,15 @@ pub async fn dispatch_get(
     match rest {
         "+api" | "+api/" => index_api(&state, position, &uri, &headers),
         "+search" | "+search/" => index_search(state, position, &uri).await,
-        _ if state.index_at(position).ecosystem != state.serving.ecosystem() => not_found(),
         _ => {
+            let serving = match driver_at(&state, position) {
+                Ok(serving) => serving.clone(),
+                Err(reason) => return reason.response(),
+            };
             let rest = rest.to_owned();
-            let serving = state.serving.clone();
             serving.get(state, position, rest, uri, headers).await
         }
     }
-}
-
-/// True when the index at `path` belongs to an ecosystem the per-index serving driver does not serve
-/// (a namespace ecosystem reached through the wrong route, or an unwired build). Rejecting it here
-/// keeps a driver serving only indexes of its own ecosystem. An unresolvable path is not foreign; it
-/// falls through to the driver, whose own lookup returns the not-found.
-fn foreign_to_serving(state: &AppState, path: &str) -> bool {
-    state
-        .resolve_position(path)
-        .is_some_and(|(position, _)| state.index_at(position).ecosystem != state.serving.ecosystem())
 }
 
 /// `POST /{route}/`: hand the upload to the index's ecosystem driver.
@@ -55,10 +86,10 @@ pub async fn dispatch_post(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> Response {
-    if foreign_to_serving(&state, &path) {
-        return not_found();
-    }
-    let serving = state.serving.clone();
+    let serving = match driver_for(&state, &path) {
+        Ok(serving) => serving.clone(),
+        Err(reason) => return reason.response(),
+    };
     serving.post(state, path, headers, multipart).await
 }
 
@@ -68,10 +99,10 @@ pub async fn dispatch_put(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
-    if foreign_to_serving(&state, uri.path().trim_start_matches('/')) {
-        return not_found();
-    }
-    let serving = state.serving.clone();
+    let serving = match driver_for(&state, uri.path().trim_start_matches('/')) {
+        Ok(serving) => serving.clone(),
+        Err(reason) => return reason.response(),
+    };
     serving.put(state, uri, headers).await
 }
 
@@ -81,10 +112,10 @@ pub async fn dispatch_delete(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
-    if foreign_to_serving(&state, uri.path().trim_start_matches('/')) {
-        return not_found();
-    }
-    let serving = state.serving.clone();
+    let serving = match driver_for(&state, uri.path().trim_start_matches('/')) {
+        Ok(serving) => serving.clone(),
+        Err(reason) => return reason.response(),
+    };
     serving.delete(state, uri, headers).await
 }
 

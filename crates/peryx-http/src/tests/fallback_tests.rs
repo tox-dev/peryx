@@ -1,4 +1,5 @@
-//! The neutral no-op driver and indexer a state carries until an ecosystem is wired in.
+//! The serving registry: what a state does before any ecosystem driver is wired in, and how it
+//! keeps several route-mounted ecosystems apart once they are.
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
@@ -127,34 +128,148 @@ async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
     assert_eq!(entry["urls"], serde_json::Value::Null);
 }
 
-#[test]
-fn test_unconfigured_serving_classifies_index_routes_as_listing() {
-    use crate::rate_limit::RouteClass;
-    use crate::serving::{EcosystemServing as _, UnconfiguredServing};
+/// A driver that answers with its own ecosystem's name, so a test can tell which one served.
+struct StubServing(peryx_core::Ecosystem);
 
-    assert_eq!(UnconfiguredServing.classify_route("/pypi/simple/"), RouteClass::Listing);
-    assert_eq!(
-        UnconfiguredServing.classify_route("/pypi/files/abc/x.whl"),
-        RouteClass::Listing
-    );
+#[async_trait::async_trait]
+impl crate::serving::EcosystemServing for StubServing {
+    fn ecosystem(&self) -> peryx_core::Ecosystem {
+        self.0
+    }
+
+    async fn get(
+        &self,
+        _state: std::sync::Arc<AppState>,
+        _position: usize,
+        _rest: String,
+        _uri: axum::http::Uri,
+        _headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        axum::response::IntoResponse::into_response(self.0.as_str().to_owned())
+    }
+
+    async fn post(
+        &self,
+        _state: std::sync::Arc<AppState>,
+        _path: String,
+        _headers: axum::http::HeaderMap,
+        _multipart: axum::extract::Multipart,
+    ) -> axum::response::Response {
+        axum::response::IntoResponse::into_response(StatusCode::OK)
+    }
+
+    async fn put(
+        &self,
+        _state: std::sync::Arc<AppState>,
+        _uri: axum::http::Uri,
+        _headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        axum::response::IntoResponse::into_response(StatusCode::OK)
+    }
+
+    async fn delete(
+        &self,
+        _state: std::sync::Arc<AppState>,
+        _uri: axum::http::Uri,
+        _headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        axum::response::IntoResponse::into_response(StatusCode::OK)
+    }
+
+    fn discover_index(
+        &self,
+        index: crate::state::IndexDescription,
+        _base: Option<&crate::discovery::BaseUrl>,
+    ) -> serde_json::Value {
+        crate::discovery::minimal_entry(&index)
+    }
+
+    fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
+        crate::rate_limit::RouteClass::Listing
+    }
 }
 
 #[test]
-fn test_unconfigured_serving_publishes_no_metric_families() {
-    use crate::serving::{EcosystemServing as _, UnconfiguredServing};
+fn test_a_driver_publishes_no_metric_families_by_default() {
+    use crate::serving::EcosystemServing as _;
 
-    assert!(UnconfiguredServing.metric_families().is_empty());
+    assert!(StubServing(peryx_core::Ecosystem::Pypi).metric_families().is_empty());
 }
 
 #[tokio::test]
-async fn test_unconfigured_serving_sweeps_nothing() {
-    use crate::serving::{EcosystemServing as _, RefreshSweep, UnconfiguredServing};
+async fn test_a_driver_sweeps_nothing_by_default() {
+    use crate::serving::{EcosystemServing as _, RefreshSweep};
 
     let (_dir, state) = unwired_state();
     assert_eq!(
-        UnconfiguredServing.refresh_stale(state).await.unwrap(),
+        StubServing(peryx_core::Ecosystem::Pypi)
+            .refresh_stale(state)
+            .await
+            .unwrap(),
         RefreshSweep::default()
     );
+}
+
+#[test]
+fn test_an_unwired_state_holds_no_driver_for_any_ecosystem() {
+    let (_dir, state) = unwired_state();
+    assert!(!state.has_any_driver());
+    for ecosystem in peryx_core::Ecosystem::ALL {
+        assert!(state.serving_for(*ecosystem).is_none(), "{ecosystem} was wired in");
+    }
+}
+
+#[test]
+fn test_serving_for_path_resolves_a_request_uri_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::new(meta, blobs, 60, vec![pypi_index("pypi")]);
+    state.register_ecosystem(
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::Pypi)),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    // A request URI path carries a leading slash; index routes do not. The rate limiter classes a
+    // route by the driver this finds, so failing to resolve here silently downgrades every artifact
+    // request to the listing limit.
+    assert!(state.serving_for_path("/pypi/files/abc/x.whl").is_some());
+    assert!(state.serving_for_path("/unconfigured/simple/").is_none());
+}
+
+#[tokio::test]
+async fn test_two_route_mounted_ecosystems_each_serve_their_own_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let mut oci = pypi_index("images");
+    oci.ecosystem = peryx_core::Ecosystem::Oci;
+    let mut state = AppState::new(meta, blobs, 60, vec![pypi_index("pypi"), oci]);
+    // Registering a second driver must not displace the first: each keeps its own slot.
+    state.register_ecosystem(
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::Pypi)),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    state.register_ecosystem(
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::Oci)),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let app = crate::router(std::sync::Arc::new(state));
+
+    for (route, expected) in [("pypi", "pypi"), ("images", "oci")] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{route}/anything"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body, expected.as_bytes(), "/{route} was served by the wrong driver");
+    }
 }
 
 #[tokio::test]
