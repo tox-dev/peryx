@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use peryx_policy::PolicyDenial;
 
 use crate::cache::CacheError;
-use crate::{ProjectDetail, ProjectList, render_detail_html, render_index_html, render_legacy_json, to_json};
+use crate::{ProjectDetail, ProjectList, render_index_html, to_json};
 
 use super::{Format, MIME_HTML, MIME_JSON, MIME_LEGACY_JSON};
 
@@ -30,12 +30,21 @@ pub fn index_response(result: Result<ProjectList, CacheError>, format: Format, i
 
 /// Map a resolved project detail to a negotiated response. Kept sync so every arm is directly
 /// unit-testable.
-pub fn detail_response(
-    result: Result<Option<ProjectDetail>, CacheError>,
-    format: Format,
-    index: &str,
-    project: &str,
-) -> Response {
+/// Serve an already-rendered PEP 503 page, from the hot cache or from the render that just filled it.
+pub(super) fn html_bytes_response(body: bytes::Bytes) -> Response {
+    ([(header::CONTENT_TYPE, MIME_HTML), (header::VARY, "Accept")], body).into_response()
+}
+
+/// Serve an already-rendered legacy JSON document.
+pub(super) fn legacy_bytes_response(body: bytes::Bytes) -> Response {
+    ([(header::CONTENT_TYPE, MIME_LEGACY_JSON)], body).into_response()
+}
+
+/// The PEP 691 JSON representation of a project, or the status its resolution earned.
+///
+/// Only JSON: the HTML render is served (and cached) by the route, because rendering it twice to
+/// discover which of the two representations was asked for is the cost this cache exists to remove.
+pub fn detail_response(result: Result<Option<ProjectDetail>, CacheError>, index: &str, project: &str) -> Response {
     let detail = match result {
         Ok(Some(detail)) => detail,
         Ok(None) => {
@@ -57,11 +66,11 @@ pub fn detail_response(
             return cache_error_response(&err, CacheContext::project(index, project));
         }
     };
-    let vary = (header::VARY, "Accept");
-    match format {
-        Format::Json => ([(header::CONTENT_TYPE, MIME_JSON), vary], to_json(&detail)).into_response(),
-        Format::Html => ([(header::CONTENT_TYPE, MIME_HTML), vary], render_detail_html(&detail)).into_response(),
-    }
+    (
+        [(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")],
+        to_json(&detail),
+    )
+        .into_response()
 }
 
 pub(super) fn legacy_json_response(
@@ -70,35 +79,31 @@ pub(super) fn legacy_json_response(
     project: &str,
     version: Option<&str>,
 ) -> Response {
-    let detail = match result {
-        Ok(Some(detail)) => detail,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                format!("project {project:?} was not found on index {index:?}"),
-            )
-                .into_response();
-        }
+    match result {
+        // The route renders and answers a project that resolves, so reaching here with one means the
+        // release it asked for is not among that project's files.
+        Ok(Some(_)) => (
+            StatusCode::NOT_FOUND,
+            format!("version {version:?} was not found for project {project:?} on index {index:?}"),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            format!("project {project:?} was not found on index {index:?}"),
+        )
+            .into_response(),
         Err(CacheError::Upstream(
             err @ (peryx_upstream::UpstreamError::MissingContentType { .. }
             | peryx_upstream::UpstreamError::UnsupportedContentType { .. }),
         )) => {
             tracing::warn!(error = ?err, "unsupported upstream simple api content type");
-            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+            (StatusCode::BAD_GATEWAY, err.to_string()).into_response()
         }
         Err(err) => {
             tracing::error!(error = ?err, "legacy project json failed");
-            return cache_error_response(&err, CacheContext::project(index, project));
+            cache_error_response(&err, CacheContext::project(index, project))
         }
-    };
-    let Some(body) = render_legacy_json(&detail, version) else {
-        return (
-            StatusCode::NOT_FOUND,
-            format!("version {version:?} was not found for project {project:?} on index {index:?}"),
-        )
-            .into_response();
-    };
-    ([(header::CONTENT_TYPE, MIME_LEGACY_JSON)], body).into_response()
+    }
 }
 
 /// Map a file-bytes result to a response. Sync so every arm is directly unit-testable.

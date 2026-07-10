@@ -21,8 +21,8 @@ use crate::policy::PypiPolicy;
 
 use super::inspect::inspect_route;
 use super::response::{
-    CacheContext, cache_error_response, detail_response, file_response, index_response, legacy_json_response,
-    policy_denial_response,
+    CacheContext, cache_error_response, detail_response, file_response, html_bytes_response, index_response,
+    legacy_bytes_response, legacy_json_response, policy_denial_response,
 };
 use super::{Format, METADATA_FAMILY, MIME_JSON, negotiate, path_error_response, safe_filename};
 
@@ -55,12 +55,24 @@ async fn pypi_get(
                 route: index.route.clone(),
                 project: target.project.clone(),
             });
-            return legacy_json_response(
-                cache::resolve_detail(state, index, &target.project, &index.route).await,
-                &index.route,
-                &target.project,
-                target.version.as_deref(),
+            // The release form of this API answers differently per version, so the version is part of
+            // what the cached bytes are.
+            let variant = target.version.as_deref().map_or_else(
+                || cache::LEGACY_JSON.to_owned(),
+                |version| format!("{}/{version}", cache::LEGACY_JSON),
             );
+            if let Some(bytes) = state.hot_fresh(&state.hot_key(&index.route, &target.project, &variant)) {
+                return legacy_bytes_response(bytes);
+            }
+            let detail = cache::resolve_detail(state, index, &target.project, &index.route).await;
+            if let Ok(Some(found)) = &detail
+                && let Some(body) = crate::render_legacy_json(found, target.version.as_deref())
+            {
+                let body = bytes::Bytes::from(body);
+                remember_rendered(state, index, &target.project, &variant, &body);
+                return legacy_bytes_response(body);
+            }
+            return legacy_json_response(detail, &index.route, &target.project, target.version.as_deref());
         }
         Ok(None) => {}
         Err(response) => return response,
@@ -91,7 +103,7 @@ async fn pypi_get(
                 }
                 Ok(PageOutcome::Fallback) => {}
                 Err(err @ CacheError::Simple(_)) => {
-                    return detail_response(Err(err), Format::Json, &index.route, &normalized);
+                    return detail_response(Err(err), &index.route, &normalized);
                 }
                 Err(err) => {
                     tracing::error!(error = ?err, "streaming page failed, serving buffered");
@@ -99,8 +111,21 @@ async fn pypi_get(
             }
         }
         let index = state.index_at(position);
+        let format = negotiate(headers);
+        if matches!(format, Format::Html) {
+            if let Some(bytes) = state.hot_fresh(&state.hot_key(&index.route, &normalized, cache::SIMPLE_HTML)) {
+                return html_bytes_response(bytes);
+            }
+            let detail = cache::resolve_detail(state, index, &normalized, &index.route).await;
+            if let Ok(Some(found)) = &detail {
+                let body = bytes::Bytes::from(crate::render_detail_html(found));
+                remember_rendered(state, index, &normalized, cache::SIMPLE_HTML, &body);
+                return html_bytes_response(body);
+            }
+            return detail_response(detail, &index.route, &normalized);
+        }
         let detail = cache::resolve_detail(state, index, &normalized, &index.route).await;
-        return detail_response(detail, negotiate(headers), &index.route, &normalized);
+        return detail_response(detail, &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
         return file_route(state, index, file).await;
@@ -241,5 +266,20 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
             tracing::error!(error = ?err, "file stream failed");
             cache_error_response(&err, CacheContext::file(&route, &digest_hex, filename))
         }
+    }
+}
+
+/// Keep a rendered representation for as long as the page it was rendered from stays fresh.
+///
+/// A miss costs the render again and nothing else, so a failure to cache is never a failure to serve.
+/// Keep a rendered page under the epoch that is current *now*, not the one the request started with.
+///
+/// Resolving a cold page fetches it from upstream and persists it, and persisting bumps the epoch. A
+/// key captured before that carries the old epoch, so the entry it writes is one no later reader can
+/// compute: the cache would fill and never hit.
+fn remember_rendered(state: &AppState, index: &Index, project: &str, variant: &str, body: &bytes::Bytes) {
+    if let Ok(Some(expires_at)) = cache::rendered_expiry(state, index, project) {
+        let key = state.hot_key(&index.route, project, variant);
+        state.hot.insert(key, (expires_at, body.clone()));
     }
 }

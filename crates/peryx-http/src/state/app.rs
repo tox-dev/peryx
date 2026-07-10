@@ -461,11 +461,15 @@ impl AppState {
         ((self.clock)() < expires_at).then_some(bytes)
     }
 
-    /// The hot-cache key for a page as served on `route` right now.
+    /// The hot-cache key for one representation of a page as served on `route` right now.
+    ///
+    /// `variant` separates the representations a page has: the same project answers with PEP 691 JSON,
+    /// PEP 503 HTML, or the legacy release JSON, and they are different bytes. The epoch is what makes
+    /// a mutation invalidate them all at once, since every mutation bumps it.
     #[must_use]
-    pub fn hot_key(&self, route: &str, project: &str) -> String {
+    pub fn hot_key(&self, route: &str, project: &str, variant: &str) -> String {
         let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
-        format!("{route}\u{0}{project}\u{0}{epoch}")
+        format!("{route}\u{0}{project}\u{0}{variant}\u{0}{epoch}")
     }
 
     /// Whether a remembered upstream miss is still inside its injected-clock expiry.

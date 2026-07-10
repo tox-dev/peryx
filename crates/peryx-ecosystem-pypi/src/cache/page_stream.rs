@@ -106,7 +106,7 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
         return Ok(PageOutcome::Fallback);
     }
     let route = index.route.clone();
-    let hot_key = state.hot_key(&route, &project);
+    let hot_key = state.hot_key(&route, &project, super::SIMPLE_JSON);
     // A hot hit is a lookup and a memcpy; take it before the per-request work in `streaming_parts`
     // (upstream client build, upload/override scans, page context). Only a page that already streamed
     // through the transform path can be hot, so this never shadows a Fallback the miss path would pick.
@@ -134,7 +134,7 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
 
     let gate = flight_gate(&state, &key);
     let guard = gate.lock_owned().await;
-    if let Some(bytes) = state.hot_fresh(&state.hot_key(&route, &project)) {
+    if let Some(bytes) = state.hot_fresh(&state.hot_key(&route, &project, super::SIMPLE_JSON)) {
         return Ok(PageOutcome::Ready(bytes));
     }
     if let Some(record) = fresh_cached(&state, &key)? {

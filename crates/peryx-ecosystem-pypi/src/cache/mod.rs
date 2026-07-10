@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::upload;
 use peryx_http::rate_limit::UpstreamPermit;
-use peryx_http::state::{AppState, IndexKind};
+use peryx_http::state::{AppState, Index, IndexKind};
 use peryx_policy::PolicyDenial;
 use peryx_storage::meta::CachedIndex;
 use peryx_upstream::UpstreamClient;
@@ -156,6 +156,29 @@ pub(crate) fn fresh_cached(state: &AppState, key: &str) -> Result<Option<CachedI
 /// A record's freshness lifetime in seconds.
 const fn freshness(state: &AppState, record: &CachedIndex) -> i64 {
     freshness_secs(state.ttl_secs, record.fresh_secs)
+}
+
+/// The hot-cache variant holding a project's PEP 691 JSON page.
+pub(crate) const SIMPLE_JSON: &str = "simple.json";
+/// The hot-cache variant holding a project's PEP 503 HTML page.
+pub const SIMPLE_HTML: &str = "simple.html";
+/// The hot-cache variant holding a project's legacy JSON, whose release form carries its version.
+pub const LEGACY_JSON: &str = "legacy.json";
+
+/// When a rendered representation of `project` may be cached, and until when.
+///
+/// A rendered page is only safe to keep while the page it was rendered from is itself fresh, so the
+/// expiry is that page's, never a new one. `None` means do not cache: the index is not a proxy holding
+/// a cached page, or its policy filters what a project serves and the filtering is not in this key.
+///
+/// # Errors
+/// Returns a store error when the cached page cannot be read.
+pub fn rendered_expiry(state: &AppState, index: &Index, project: &str) -> Result<Option<i64>, CacheError> {
+    if index.policy.active() || !matches!(index.kind, IndexKind::Cached { .. }) {
+        return Ok(None);
+    }
+    let key = format!("{}/{project}", index.name);
+    Ok(fresh_cached(state, &key)?.map(|record| record.fetched_at_unix + freshness(state, &record)))
 }
 
 /// Whether a page past its freshness window may still answer while the upstream cannot be reached.
