@@ -17,7 +17,7 @@ mod search_tests;
 mod serve;
 mod simple;
 mod stream;
-mod upload_tests;
+mod upload;
 mod version_tests;
 mod virtual_tests;
 mod webhooks_tests;
