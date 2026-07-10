@@ -1,6 +1,6 @@
 //! Human-facing descriptions of configured indexes, shared by `/+status` and the web UI.
 
-use super::index::{Index, IndexKind};
+use peryx_index::{Index, IndexKind};
 
 /// Describe every runtime index without touching storage or upstream state.
 #[must_use]

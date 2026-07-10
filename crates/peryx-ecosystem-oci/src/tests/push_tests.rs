@@ -3,7 +3,7 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-use peryx_http::IndexKind;
+use peryx_index::IndexKind;
 use peryx_storage::blob::Digest;
 use tower::ServiceExt as _;
 

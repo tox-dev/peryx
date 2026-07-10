@@ -12,7 +12,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use peryx_http::handlers::not_found;
 use peryx_http::metrics::Event;
-use peryx_http::state::{AppState, Index};
+use peryx_http::state::AppState;
+use peryx_index::Index;
 use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_policy::PolicyAction;
 

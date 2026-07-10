@@ -6,7 +6,8 @@ use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
 use peryx_http::path_safety::local_file_url;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::meta::CachedIndex;
 use peryx_upstream::UpstreamClient;
@@ -68,20 +69,13 @@ async fn virtual_detail(
     project: &str,
     serve_route: &str,
 ) -> Result<Option<ProjectDetail>, CacheError> {
-    // Layers resolve concurrently; the sort below imposes the merge precedence, and being stable it
-    // keeps the configured order within the cached and the non-cached group alike.
-    let mut resolved: Vec<(usize, Result<Option<ProjectDetail>, CacheError>)> = layers
-        .iter()
-        .copied()
-        .zip(
-            futures_util::future::join_all(layers.iter().map(|&pos| {
-                let layer = state.index_at(pos);
-                Box::pin(resolve_detail(state, layer, project, serve_route))
-            }))
-            .await,
-        )
-        .collect();
-    resolved.sort_by_key(|(pos, _)| matches!(state.index_at(*pos).kind, IndexKind::Cached { .. }));
+    // Layers resolve concurrently; `shadow_order` fixes the merge precedence.
+    let ordered = peryx_index::shadow_order(&state.indexes, layers);
+    let resolved = futures_util::future::join_all(ordered.iter().map(|&pos| {
+        let layer = state.index_at(pos);
+        Box::pin(resolve_detail(state, layer, project, serve_route))
+    }))
+    .await;
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     let mut versions = BTreeSet::new();
@@ -89,7 +83,7 @@ async fn virtual_detail(
     let mut found = false;
     let mut offline_missing = None;
     let mut rate_limited = None;
-    for (pos, outcome) in resolved {
+    for (pos, outcome) in ordered.into_iter().zip(resolved) {
         // A layer being unavailable (a down upstream with a cold cache) must not break the others.
         let detail = match outcome {
             Ok(detail) => detail,

@@ -28,11 +28,11 @@ use futures_util::StreamExt as _;
 use peryx_core::Ecosystem;
 use peryx_http::serving::NamespaceServing;
 use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
-use peryx_http::{AppState, Index, IndexKind};
+use peryx_http::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::PendingBlob;
 use peryx_storage::meta::MetaError;
-use peryx_upstream::UpstreamClient;
 use std::io::Read as _;
 use std::sync::Arc;
 
@@ -252,17 +252,17 @@ fn policy_size_denial(index: &Index, repo: &str, size: u64) -> Option<Response> 
         .err()
         .map(|denial| error_response(ErrorCode::Denied, &denial.to_string()))
 }
-/// The members a request serves from, in shadowing order. A virtual index yields its hosted members
-/// first, then its proxy members (so hosted images shadow upstream, the dependency-confusion
-/// defense); any other index is its own single member.
+/// The members a request serves from, in shadowing order; any non-virtual index is its own single
+/// member. The order comes from the neutral role engine, so an OCI image shadows upstream by the same
+/// rule a `PyPI` wheel does.
 pub fn serving_members<'a>(state: &'a AppState, index: &'a Index) -> Vec<&'a Index> {
     let IndexKind::Virtual { layers, .. } = &index.kind else {
         return vec![index];
     };
-    let members = layers.iter().map(|&pos| state.index_at(pos));
-    let (hosted, proxied): (Vec<_>, Vec<_>) =
-        members.partition(|member| !matches!(member.kind, IndexKind::Cached { .. }));
-    hosted.into_iter().chain(proxied).collect()
+    peryx_index::shadow_order(&state.indexes, layers)
+        .into_iter()
+        .map(|position| state.index_at(position))
+        .collect()
 }
 /// Enqueue a webhook for an OCI mutation on a hosted index. `version` is the tag when a tagged
 /// reference was affected; `digest` is the manifest or blob digest. The webhook subsystem is neutral,
@@ -332,16 +332,6 @@ fn flight_gate(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
         .entry(key.to_owned())
         .or_default()
         .clone()
-}
-/// The upstream client of a cached (proxy) index that is online, or `None` for hosted/virtual and
-/// offline proxies. It carries the base URL and the credentials: the token-auth flow presents the
-/// credentials to the realm so peryx pulls authenticated (Docker Hub's higher rate tier), never
-/// anonymous, and never sends them to the object endpoint or a blob CDN it redirects to.
-pub fn proxy_client(kind: &IndexKind) -> Option<&UpstreamClient> {
-    match kind {
-        IndexKind::Cached { client, offline } if !offline => Some(client),
-        _ => None,
-    }
 }
 /// Find the OCI index whose route is the longest segment-aligned prefix of `name`, and the upstream
 /// repository (the remainder). An empty route matches at the root, losing every tie to a real prefix.

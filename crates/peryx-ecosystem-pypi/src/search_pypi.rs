@@ -19,7 +19,8 @@ use peryx_http::path_safety::local_file_url;
 use peryx_http::search::{
     INDEXED_TEXT_BYTES, PackageDocument, PackageIndexer, PackageSource, SearchError, truncate_to_chars,
 };
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 
 /// Produces `PyPI` search documents for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]
@@ -198,9 +199,7 @@ fn virtual_detail(
     let mut seen = HashSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
-    let mut ordered: Vec<usize> = layers.to_vec();
-    ordered.sort_by_key(|&position| matches!(state.index_at(position).kind, IndexKind::Cached { .. }));
-    for position in ordered {
+    for position in peryx_index::shadow_order(&state.indexes, layers) {
         let detail = cached_detail(state, state.index_at(position), normalized, serve_route)?;
         if detail.files.is_empty() {
             continue;

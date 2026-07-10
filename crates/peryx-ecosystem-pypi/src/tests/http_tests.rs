@@ -26,7 +26,8 @@ use crate::upload::Uploaded;
 use peryx_http::DEFAULT_MAX_STALE_SECS;
 use peryx_http::path_safety::local_file_url;
 use peryx_http::router;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 
 use crate::policy::{PackageType, PypiPolicyConfig, compile_rules};

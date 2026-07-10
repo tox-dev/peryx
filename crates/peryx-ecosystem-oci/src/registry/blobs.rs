@@ -11,7 +11,8 @@ use axum::response::{IntoResponse, Response};
 use futures_util::{Stream, TryStreamExt as _};
 use peryx_http::metrics::Event;
 use peryx_http::webhook::WebhookEventKind;
-use peryx_http::{AppState, Index};
+use peryx_http::AppState;
+use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::archive::{self, ArchiveError, MemberChunk};
 use peryx_storage::blob::{BlobError, BlobStore, Digest, PendingBlob};
@@ -76,7 +77,7 @@ impl OciRegistry {
             return serve_stored_blob(&state.blobs, storage, digest, true, range).await;
         }
         for member in serving_members(state, index) {
-            let Some(client) = proxy_client(&member.kind) else {
+            let Some(client) = member.proxy_client() else {
                 continue;
             };
             match self
@@ -165,7 +166,7 @@ impl OciRegistry {
         storage: &Digest,
     ) -> Result<BlobFetch, ServeError> {
         for member in serving_members(state, index) {
-            let Some(client) = proxy_client(&member.kind) else {
+            let Some(client) = member.proxy_client() else {
                 continue;
             };
             match self.upstream.blob(client.base_url(), client.auth(), repo, digest).await {

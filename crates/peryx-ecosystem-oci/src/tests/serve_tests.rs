@@ -930,7 +930,7 @@ async fn test_unresolvable_name_is_name_unknown() {
 
 #[tokio::test]
 async fn test_resolution_skips_a_non_oci_index() {
-    use peryx_http::{Index, IndexKind};
+    use peryx_index::{Index, IndexKind};
     let dir = tempfile::tempdir().unwrap();
     let pypi = Index {
         name: "pypi".to_owned(),
@@ -969,7 +969,7 @@ async fn test_resolution_skips_a_non_oci_index() {
 
 #[tokio::test]
 async fn test_root_route_resolves_the_whole_name_as_the_repository() {
-    use peryx_http::IndexKind;
+    use peryx_index::IndexKind;
     let dir = tempfile::tempdir().unwrap();
     let root = oci_index(
         "root",
@@ -998,7 +998,7 @@ async fn test_root_route_resolves_the_whole_name_as_the_repository() {
 
 #[tokio::test]
 async fn test_longest_route_wins_among_overlapping_oci_indexes() {
-    use peryx_http::IndexKind;
+    use peryx_index::IndexKind;
     let dir = tempfile::tempdir().unwrap();
     // Three routes all prefix `a/b/c/app`; ordered so the middle candidate replaces the first (a
     // longer match) and the last does not (a shorter one), exercising both tie-break outcomes.
@@ -1269,11 +1269,11 @@ async fn test_upstream_manifest_digest_header_is_verified() {
 #[tokio::test]
 async fn test_catalog_lists_oci_repositories_with_pagination() {
     let dir = tempfile::tempdir().unwrap();
-    let pypi = peryx_http::Index {
+    let pypi = peryx_index::Index {
         name: "py".to_owned(),
         route: "py".to_owned(),
         ecosystem: peryx_core::Ecosystem::Pypi,
-        kind: peryx_http::IndexKind::Hosted {
+        kind: peryx_index::IndexKind::Hosted {
             upload_token: None,
             volatile: false,
         },
@@ -1283,7 +1283,7 @@ async fn test_catalog_lists_oci_repositories_with_pagination() {
         oci_index(
             name,
             route,
-            peryx_http::IndexKind::Hosted {
+            peryx_index::IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
             },

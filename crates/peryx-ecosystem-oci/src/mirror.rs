@@ -4,12 +4,13 @@
 
 use std::sync::Arc;
 
-use peryx_http::{AppState, Index};
+use peryx_http::AppState;
+use peryx_index::Index;
 use peryx_storage::blob::Digest;
 use peryx_upstream::Auth;
 use serde::Serialize;
 
-use crate::registry::{download_blob, proxy_client, serving_members};
+use crate::registry::{download_blob, serving_members};
 use crate::store::{self, Manifest};
 use crate::upstream::Upstream;
 
@@ -127,7 +128,7 @@ pub async fn mirror(
 ) -> anyhow::Result<Vec<MirrorRow>> {
     let mut rows = Vec::new();
     let Some((base, auth)) = serving_members(state, index).into_iter().find_map(|member| {
-        proxy_client(&member.kind).map(|client| (client.base_url().to_owned(), client.auth().clone()))
+        member.proxy_client().map(|client| (client.base_url().to_owned(), client.auth().clone()))
     }) else {
         rows.push(MirrorRow::error(
             "summary",

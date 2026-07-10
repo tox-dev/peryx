@@ -20,7 +20,8 @@ use peryx_ecosystem_pypi::{
     to_json,
 };
 use peryx_http::rate_limit::{RateLimitConfig, RouteLimit};
-use peryx_http::{AppState, Index, IndexKind, router};
+use peryx_http::{AppState, router};
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::{CachedIndex, MetaStore};

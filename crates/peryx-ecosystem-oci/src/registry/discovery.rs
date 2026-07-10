@@ -20,13 +20,13 @@ impl OciRegistry {
         };
         let members = serving_members(state, index);
         if let [member] = members.as_slice()
-            && let Some(client) = proxy_client(&member.kind)
+            && let Some(client) = member.proxy_client()
         {
             return self.proxy_tags(state, &member.name, client, repo, query).await;
         }
         let mut tags = std::collections::BTreeSet::new();
         for member in &members {
-            match proxy_client(&member.kind) {
+            match member.proxy_client() {
                 Some(client) => {
                     if let Some(names) = self.fetch_tag_names(state, &member.name, client, repo).await {
                         tags.extend(names);
@@ -161,7 +161,7 @@ impl OciRegistry {
                     add(value);
                 }
             }
-            if let Some(client) = proxy_client(&member.kind) {
+            if let Some(client) = member.proxy_client() {
                 for descriptor in self.upstream_referrers(client, repo, digest).await {
                     add(descriptor);
                 }

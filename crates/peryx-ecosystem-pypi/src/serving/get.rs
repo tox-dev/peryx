@@ -11,7 +11,8 @@ use axum::response::{IntoResponse, Response};
 use peryx_http::handlers::not_found;
 use peryx_http::metrics::Event;
 use peryx_http::path_safety::{self};
-use peryx_http::state::{AppState, Index};
+use peryx_http::state::AppState;
+use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
 

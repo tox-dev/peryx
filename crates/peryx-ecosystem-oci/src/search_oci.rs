@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 
 use peryx_core::Ecosystem;
 use peryx_http::search::{PackageDocument, PackageIndexer, PackageSource, SearchError};
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 
 use crate::store;
 

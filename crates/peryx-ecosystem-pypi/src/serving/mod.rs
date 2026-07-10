@@ -24,7 +24,8 @@ use peryx_http::path_safety::{self, PathSafetyError};
 use peryx_http::rate_limit::RouteClass;
 use peryx_http::serving::{EcosystemServing, RefreshSweep};
 use peryx_core::Role;
-use peryx_http::state::{AppState, Index, IndexDescription, IndexKind};
+use peryx_http::state::{AppState, IndexDescription};
+use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self};
 use crate::discovery;

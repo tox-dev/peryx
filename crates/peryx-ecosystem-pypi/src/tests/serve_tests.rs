@@ -13,7 +13,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::{detail_json, get, harness};
 use crate::cache::{self, PageOutcome};
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyAction, PolicyConfig};
 
 fn fresh_record(body: &[u8]) -> CachedIndex {

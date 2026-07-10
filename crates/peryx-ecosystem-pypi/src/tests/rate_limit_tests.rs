@@ -19,7 +19,8 @@ use peryx_http::rate_limit::{
     DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimited, UpstreamLimits,
 };
 use peryx_http::router;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
 struct Harness {

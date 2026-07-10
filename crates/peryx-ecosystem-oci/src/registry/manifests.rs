@@ -10,7 +10,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use peryx_http::metrics::Event;
 use peryx_http::webhook::WebhookEventKind;
-use peryx_http::{AppState, Index};
+use peryx_http::AppState;
+use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
 use peryx_upstream::UpstreamClient;
@@ -38,7 +39,7 @@ impl OciRegistry {
                     store::get_manifest(&state.meta, digest)?.map(|manifest| manifest_response(manifest, digest, head));
                 if served.is_none() {
                     for member in serving_members(state, index) {
-                        if let Some(client) = proxy_client(&member.kind) {
+                        if let Some(client) = member.proxy_client() {
                             served = self
                                 .pull_manifest_by_digest(state, client, &member.name, repo, digest, head)
                                 .await?;
@@ -142,7 +143,7 @@ impl OciRegistry {
         tag: &str,
         head: bool,
     ) -> Result<Option<Response>, ServeError> {
-        let Some(client) = proxy_client(&member.kind) else {
+        let Some(client) = member.proxy_client() else {
             return Ok(match store::get_tag(&state.meta, &member.name, repo, tag)? {
                 Some(digest) => store::get_manifest(&state.meta, &digest)?
                     .map(|manifest| manifest_response(manifest, &digest, head)),

@@ -9,8 +9,9 @@ use peryx_core::Ecosystem;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
+use peryx_index::{Index, IndexKind};
+
 use super::describe::{IndexDescription, describe_indexes};
-use super::index::{Index, IndexKind};
 use crate::metrics::Metrics;
 use crate::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, UpstreamLimits};
 use crate::search::{PackageSearch, SearchError};
@@ -436,16 +437,7 @@ impl AppState {
     /// Like [`Self::resolve`], returning the index position instead of a borrow.
     #[must_use]
     pub fn resolve_position<'a>(&self, path: &'a str) -> Option<(usize, &'a str)> {
-        let mut best: Option<(usize, &str)> = None;
-        for (position, index) in self.indexes.iter().enumerate() {
-            let Some(rest) = remainder(path, &index.route) else {
-                continue;
-            };
-            if best.is_none_or(|(current, _)| index.route.len() > self.indexes[current].route.len()) {
-                best = Some((position, rest));
-            }
-        }
-        best
+        peryx_index::resolve_position(&self.indexes, path)
     }
 
     /// The index at position `pos` (a virtual-index layer or upload target).
@@ -502,15 +494,6 @@ impl AppState {
     pub fn describe_indexes(&self) -> Vec<IndexDescription> {
         describe_indexes(&self.indexes)
     }
-}
-
-/// The part of `path` after `route`, requiring a segment boundary so `team/dev` does not match
-/// `team/development`. `""` means the index root itself.
-fn remainder<'a>(path: &'a str, route: &str) -> Option<&'a str> {
-    if path == route {
-        return Some("");
-    }
-    path.strip_prefix(route)?.strip_prefix('/')
 }
 
 fn system_now() -> i64 {

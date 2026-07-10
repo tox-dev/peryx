@@ -2,7 +2,7 @@
 
 use peryx_core::Ecosystem;
 use peryx_http::search::{PackageIndexer as _, PackageSource};
-use peryx_http::{Index, IndexKind};
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
 use super::{app_with_indexes, hosted_writable, oci_index, virtual_stack};

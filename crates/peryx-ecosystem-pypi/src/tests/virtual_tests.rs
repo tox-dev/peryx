@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;

@@ -10,6 +10,7 @@ description = "The OCI/Docker registry driver for peryx: the distribution-spec /
 [dependencies]
 peryx-http.workspace = true
 peryx-core.workspace = true
+peryx-index.workspace = true
 peryx-storage.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true

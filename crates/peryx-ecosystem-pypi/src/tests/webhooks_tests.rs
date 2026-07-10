@@ -15,7 +15,8 @@ use tower::ServiceExt as _;
 
 use super::http_tests::{fixture_wheel, multipart_body, request, upload_auth, upload_peryxpkg};
 use peryx_http::router;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_http::state::AppState;
+use peryx_index::{Index, IndexKind};
 use peryx_http::webhook::{self, WebhookRuntime, WebhookTargetConfig};
 use peryx_policy::Policy;
 

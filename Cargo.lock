@@ -3103,6 +3103,7 @@ dependencies = [
  "peryx-ecosystem-oci",
  "peryx-ecosystem-pypi",
  "peryx-http",
+ "peryx-index",
  "peryx-policy",
  "peryx-storage",
  "peryx-upstream",
@@ -3174,6 +3175,7 @@ dependencies = [
  "peryx-core",
  "peryx-http",
  "peryx-identity",
+ "peryx-index",
  "peryx-policy",
  "peryx-storage",
  "peryx-upstream",
@@ -3212,6 +3214,7 @@ dependencies = [
  "peryx-core",
  "peryx-http",
  "peryx-identity",
+ "peryx-index",
  "peryx-policy",
  "peryx-storage",
  "peryx-upstream",
@@ -3257,6 +3260,7 @@ dependencies = [
  "moka",
  "peryx-core",
  "peryx-identity",
+ "peryx-index",
  "peryx-policy",
  "peryx-storage",
  "peryx-upstream",
@@ -3289,6 +3293,15 @@ name = "peryx-identity"
 version = "0.0.1"
 dependencies = [
  "base64",
+]
+
+[[package]]
+name = "peryx-index"
+version = "0.0.1"
+dependencies = [
+ "peryx-core",
+ "peryx-policy",
+ "peryx-upstream",
 ]
 
 [[package]]
