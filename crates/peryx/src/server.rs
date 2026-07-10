@@ -65,7 +65,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
     if !state.webhooks.is_empty() {
-        peryx_events::webhook::kick(state.clone());
+        peryx_events::webhook::kick(state.serving.clone());
     }
     Ok(state)
 }

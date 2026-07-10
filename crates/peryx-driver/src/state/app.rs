@@ -20,8 +20,14 @@ use peryx_search::PackageSearch;
 /// tests.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
-/// Everything a request handler needs. Shared as `Arc<AppState>`.
-pub struct AppState {
+/// Everything a serving handler needs, and nothing about *which* ecosystems are installed.
+///
+/// An ecosystem driver receives an `Arc<ServingState>`, so it can read the stores, the caches and the
+/// configured indexes and spawn background work over them — but it holds no driver registry, so it
+/// cannot reach another ecosystem's driver or enumerate them. The registry lives one level up on
+/// [`AppState`], which the router and rate limiter hold; a driver reaching for it is a compile error,
+/// not a convention.
+pub struct ServingState {
     pub meta: MetaStore,
     pub blobs: BlobStore,
     /// Fallback freshness for cached simple pages, in seconds: applies only when upstream's
@@ -33,8 +39,7 @@ pub struct AppState {
     pub requests: AtomicU64,
     pub indexes: Vec<Index>,
     /// The role engine's caches for a cached (proxy) index: the single-flight map, the transformed-page
-    /// cache, the negative cache, and the mutation epoch that retires them. One bundle so a driver — and
-    /// the [`Ctx`](crate::serving) narrowing — sees one serving cache, not five raw fields.
+    /// cache, the negative cache, and the mutation epoch that retires them.
     pub cache: peryx_index::ServingCache,
     /// One live download per blob digest: concurrent cold requests for the same file all tail the
     /// one upstream transfer as it lands instead of waiting for it to finish.
@@ -49,6 +54,17 @@ pub struct AppState {
     pub upstream_limits: UpstreamLimits,
     /// Signed webhook delivery runtime.
     pub webhooks: WebhookRuntime,
+}
+
+/// The whole process state: the serving data every handler needs, plus the driver registry only the
+/// router and rate limiter reach.
+///
+/// Shared as `Arc<AppState>`; it [`Deref`](std::ops::Deref)s to [`ServingState`], so `app.meta` and
+/// the rest read through unchanged.
+pub struct AppState {
+    /// The serving data, separately `Arc`-shared so a driver receives it without the registry and
+    /// background tasks can own a clone.
+    pub serving: Arc<ServingState>,
     /// The ecosystem serving drivers, one slot per [`Ecosystem`]. A request is dispatched to the driver
     /// of the index it resolved to (or of the absolute prefix it fell under), so several ecosystems
     /// coexist; a slot stays `None` for an ecosystem nobody installed. Each driver's
@@ -69,7 +85,24 @@ pub struct AppState {
     pub(super) openapi: std::sync::Arc<str>,
 }
 
-impl AppState {
+impl std::ops::Deref for AppState {
+    type Target = ServingState;
+
+    fn deref(&self) -> &ServingState {
+        &self.serving
+    }
+}
+
+impl std::ops::DerefMut for AppState {
+    /// Mutable access to the serving state, sound only while its `Arc` is uniquely owned — during
+    /// build and install, before any handler holds a clone. The router shares the state afterwards,
+    /// so a mutation then is a bug, and this panics rather than silently splitting the state.
+    fn deref_mut(&mut self) -> &mut ServingState {
+        Arc::get_mut(&mut self.serving).expect("serving state is mutated only before it is served")
+    }
+}
+
+impl ServingState {
     /// Find the index whose route is the longest segment-aligned prefix of `path` (which has no
     /// leading slash), and the path remainder after `route/`. Returns `None` if no route matches.
     #[must_use]
@@ -100,7 +133,7 @@ impl AppState {
 
 /// Signed webhook delivery borrows exactly three things from the process — the configured targets,
 /// the queue's store, and the clock — and reaches them through this trait rather than the whole state.
-impl peryx_events::webhook::WebhookHost for AppState {
+impl peryx_events::webhook::WebhookHost for ServingState {
     fn webhooks(&self) -> &WebhookRuntime {
         &self.webhooks
     }

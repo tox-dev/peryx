@@ -12,7 +12,7 @@ use crate::upstream::UpstreamError;
 use axum::body::Body;
 use axum::http::{StatusCode, header};
 use axum::response::Response;
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_events::metrics::Event;
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
@@ -24,7 +24,7 @@ impl OciRegistry {
     /// image shadows the same name upstream; a single hosted or proxy index is the one-member case.
     pub(super) async fn serve_manifest(
         &self,
-        state: &AppState,
+        state: &ServingState,
         name: &str,
         reference: &Reference,
         head: bool,
@@ -83,7 +83,7 @@ impl OciRegistry {
     /// stores it, the rest re-read the store and skip the upstream round trip.
     async fn pull_manifest_by_digest(
         &self,
-        state: &AppState,
+        state: &ServingState,
         client: &UpstreamClient,
         index: &str,
         repo: &str,
@@ -107,7 +107,7 @@ impl OciRegistry {
     /// the requested digest. The single-flight gate around this lives in [`Self::pull_manifest_by_digest`].
     async fn fetch_manifest_by_digest(
         &self,
-        state: &AppState,
+        state: &ServingState,
         client: &UpstreamClient,
         index: &str,
         repo: &str,
@@ -139,7 +139,7 @@ impl OciRegistry {
     /// `None` means a miss, so the caller tries the next member.
     async fn member_tag(
         &self,
-        state: &AppState,
+        state: &ServingState,
         member: &Index,
         repo: &str,
         tag: &str,
@@ -171,7 +171,7 @@ impl OciRegistry {
     /// Fetch a proxy tag from upstream and store it, returning the served manifest.
     async fn revalidate_tag(
         &self,
-        state: &AppState,
+        state: &ServingState,
         client: &UpstreamClient,
         index: &str,
         repo: &str,
@@ -209,7 +209,7 @@ impl OciRegistry {
     /// moved tag, an upstream that will not answer a `HEAD`) returns `None`, and the caller fetches.
     async fn unchanged_tag(
         &self,
-        state: &AppState,
+        state: &ServingState,
         client: &UpstreamClient,
         index: &str,
         repo: &str,
@@ -241,7 +241,13 @@ impl OciRegistry {
 /// `max_stale_secs` exactly as a cached `PyPI` page is. `0` removes the bound.
 ///
 /// Only reached once revalidation has already failed: a tag whose upstream answered is never stale.
-fn stale_tag(state: &AppState, index: &str, repo: &str, tag: &str, head: bool) -> Result<Option<Response>, ServeError> {
+fn stale_tag(
+    state: &ServingState,
+    index: &str,
+    repo: &str,
+    tag: &str,
+    head: bool,
+) -> Result<Option<Response>, ServeError> {
     let Some((fetched_at, digest)) = store::tag_freshness(&state.meta, index, repo, tag)? else {
         return Ok(None);
     };
@@ -254,7 +260,7 @@ fn stale_tag(state: &AppState, index: &str, repo: &str, tag: &str, head: bool) -
 /// Read an upstream manifest response into storage, keyed by the sha256 of its exact bytes, updating
 /// the tag mapping when the pull was by tag. Returns the stored manifest and its canonical digest.
 pub async fn store_manifest(
-    state: &AppState,
+    state: &ServingState,
     index: &str,
     repo: &str,
     tag: Option<&str>,
@@ -315,7 +321,13 @@ fn manifest_response(manifest: Manifest, digest: &str, head: bool) -> Response {
 /// Serve a proxy tag from cache while its recorded fetch is still within the freshness window, or
 /// `None` to force a revalidation. A tag is mutable upstream, so it is trusted only for `ttl_secs`
 /// after the last fetch; a manifest missing under a still-fresh record also forces a revalidation.
-fn fresh_tag(state: &AppState, index: &str, repo: &str, tag: &str, head: bool) -> Result<Option<Response>, ServeError> {
+fn fresh_tag(
+    state: &ServingState,
+    index: &str,
+    repo: &str,
+    tag: &str,
+    head: bool,
+) -> Result<Option<Response>, ServeError> {
     let Some((fetched_at, digest)) = store::tag_freshness(&state.meta, index, repo, tag)? else {
         return Ok(None);
     };

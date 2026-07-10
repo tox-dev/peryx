@@ -74,7 +74,7 @@ pub async fn dispatch_get(
                 Err(reason) => return reason.response(),
             };
             let rest = rest.to_owned();
-            serving.get(state, position, rest, uri, headers).await
+            serving.get(state.serving.clone(), position, rest, uri, headers).await
         }
     }
 }
@@ -90,7 +90,7 @@ pub async fn dispatch_post(
         Ok(serving) => serving.clone(),
         Err(reason) => return reason.response(),
     };
-    serving.post(state, path, headers, multipart).await
+    serving.post(state.serving.clone(), path, headers, multipart).await
 }
 
 /// `PUT /{route}/...`: hand the mutation to the index's ecosystem driver.
@@ -103,7 +103,7 @@ pub async fn dispatch_put(
         Ok(serving) => serving.clone(),
         Err(reason) => return reason.response(),
     };
-    serving.put(state, uri, headers).await
+    serving.put(state.serving.clone(), uri, headers).await
 }
 
 /// `DELETE /{route}/...`: hand the mutation to the index's ecosystem driver.
@@ -116,7 +116,7 @@ pub async fn dispatch_delete(
         Ok(serving) => serving.clone(),
         Err(reason) => return reason.response(),
     };
-    serving.delete(state, uri, headers).await
+    serving.delete(state.serving.clone(), uri, headers).await
 }
 
 /// A `404 Not Found` with a plain body.

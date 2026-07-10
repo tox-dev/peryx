@@ -97,7 +97,7 @@ fn header_u64(headers: &axum::http::HeaderMap, name: &str) -> Option<u64> {
 /// `None` when no namespace driver is configured.
 async fn serve_namespace(app: &Arc<AppState>, request: axum::extract::Request) -> Option<axum::response::Response> {
     let driver = app.absolute_driver_for_path(request.uri().path())?.clone();
-    Some(driver.serve(app.clone(), request).await)
+    Some(driver.serve(app.serving.clone(), request).await)
 }
 
 /// Issue a `/v2/` GET against the in-process registry driver and parse a JSON body.

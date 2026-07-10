@@ -6,7 +6,7 @@ use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
 use peryx_core::path::local_file_url;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::meta::CachedIndex;
@@ -20,7 +20,7 @@ use super::{CacheError, flight_gate, fresh_cached, project_negative_key, support
 /// # Errors
 /// Returns [`CacheError`] on a store, parse, or (with no cached fallback) upstream error.
 pub async fn resolve_detail(
-    state: &AppState,
+    state: &ServingState,
     index: &Index,
     project: &str,
     serve_route: &str,
@@ -63,7 +63,7 @@ pub async fn resolve_detail(
 /// same-named upstream one. That ordering is the dependency-confusion defense, and leaving it to the
 /// configured order would make it an operator's mistake to lose.
 async fn virtual_detail(
-    state: &AppState,
+    state: &ServingState,
     layers: &[usize],
     upload: Option<usize>,
     project: &str,
@@ -140,7 +140,7 @@ async fn virtual_detail(
 }
 
 /// Apply the `hidden`/`yanked` overrides stored on `hosted` to a merged file list.
-fn apply_overrides(state: &AppState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
+fn apply_overrides(state: &ServingState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
     let overrides: std::collections::HashMap<String, String> =
         state.meta.list_overrides(hosted, project)?.into_iter().collect();
     if overrides.is_empty() {
@@ -169,7 +169,7 @@ fn apply_overrides(state: &AppState, hosted: &str, project: &str, files: &mut Ve
 /// project several times in parallel, and each duplicate fetch would download and store a
 /// multi-megabyte page again.
 async fn cached_detail(
-    state: &AppState,
+    state: &ServingState,
     name: &str,
     route: &str,
     client: &UpstreamClient,
@@ -210,7 +210,7 @@ async fn cached_detail(
 
 /// Turn a raw cached page into the detail served on `route`: parse, drop unverifiable metadata
 /// claims, and point content-addressable files at peryx's own file route.
-pub fn raw_to_detail(state: &AppState, route: &str, record: &CachedIndex) -> Result<ProjectDetail, CacheError> {
+pub fn raw_to_detail(state: &ServingState, route: &str, record: &CachedIndex) -> Result<ProjectDetail, CacheError> {
     let parsed = parse_detail(&record.body)?;
     let known_metadata = known_metadata(state, &parsed.files)?;
     let files = parsed
@@ -260,7 +260,7 @@ fn present_file(mut file: File, route: &str, known_metadata: &std::collections::
 }
 
 pub(super) fn known_metadata(
-    state: &AppState,
+    state: &ServingState,
     files: &[File],
 ) -> Result<std::collections::HashMap<String, String>, CacheError> {
     let artifact_sha256s = files
@@ -272,7 +272,11 @@ pub(super) fn known_metadata(
 
 /// Build a hosted (uploaded) project's detail from its stored file records. Yank markers are kept, so
 /// yanked files stay downloadable but are skipped by resolvers.
-pub(super) fn local_detail(state: &AppState, name: &str, project: &str) -> Result<Option<ProjectDetail>, CacheError> {
+pub(super) fn local_detail(
+    state: &ServingState,
+    name: &str,
+    project: &str,
+) -> Result<Option<ProjectDetail>, CacheError> {
     let entries = state.meta.list_upload_entries(name, project)?;
     if entries.is_empty() {
         return Ok(None);
@@ -307,7 +311,7 @@ pub(super) fn rewrite_urls(detail: &mut ProjectDetail, route: &str) {
 ///
 /// # Errors
 /// Returns [`CacheError`] if a store read fails.
-pub fn resolve_list(state: &AppState, index: &Index) -> Result<ProjectList, CacheError> {
+pub fn resolve_list(state: &ServingState, index: &Index) -> Result<ProjectList, CacheError> {
     let mut names = BTreeSet::new();
     collect_projects(state, index, &mut names)?;
     Ok(index.policy.apply_list(ProjectList {
@@ -316,7 +320,7 @@ pub fn resolve_list(state: &AppState, index: &Index) -> Result<ProjectList, Cach
     }))
 }
 
-fn collect_projects(state: &AppState, index: &Index, names: &mut BTreeSet<String>) -> Result<(), CacheError> {
+fn collect_projects(state: &ServingState, index: &Index, names: &mut BTreeSet<String>) -> Result<(), CacheError> {
     match &index.kind {
         IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
             names.extend(state.meta.list_projects(&index.name)?);

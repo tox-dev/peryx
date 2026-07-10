@@ -3,9 +3,9 @@
 
 use bytes::Bytes;
 
-use super::app::AppState;
+use super::app::ServingState;
 
-impl AppState {
+impl ServingState {
     /// A hot-cache entry that is still within its freshness window; expired entries miss.
     #[must_use]
     pub fn hot_fresh(&self, key: &str) -> Option<Bytes> {

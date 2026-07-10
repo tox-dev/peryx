@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::stream::Registration;
 use bytes::Bytes;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 use peryx_storage::blob::Digest;
 use peryx_upstream::{RangeError, UpstreamClient};
 
@@ -19,7 +19,7 @@ use super::download::file_path;
 use super::{CacheError, NEGATIVE_TTL_SECS, is_tar_gz, is_wheel, source_mirror, upstream_permit};
 
 /// Fetch a URL through the named cached's client (reusing its authentication).
-async fn fetch_from_source(state: &AppState, source: &str, url: &str) -> Result<Bytes, CacheError> {
+async fn fetch_from_source(state: &ServingState, source: &str, url: &str) -> Result<Bytes, CacheError> {
     let (client, offline) = source_mirror(state, source)?;
     if offline {
         return Err(CacheError::OfflineMissing("metadata"));
@@ -35,7 +35,7 @@ async fn fetch_from_source(state: &AppState, source: &str, url: &str) -> Result<
 /// Returns [`CacheError::FileNotFound`] if the artifact has no usable metadata source, or another
 /// error on a store, archive, or upstream failure.
 pub async fn metadata_bytes(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     artifact_digest: &Digest,
     route: &str,
     metadata_filename: &str,
@@ -69,7 +69,7 @@ pub async fn metadata_bytes(
 }
 
 async fn write_generated_metadata(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     artifact_digest: &Digest,
     route: &str,
     artifact_filename: &str,
@@ -89,7 +89,7 @@ async fn write_generated_metadata(
 const GENERATED_METADATA_URL: &str = "peryx:generated";
 
 async fn generated_metadata_bytes(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     artifact_digest: &Digest,
     route: &str,
     filename: &str,
@@ -128,7 +128,7 @@ fn metadata_from_artifact_path(filename: &str, path: &std::path::Path) -> Result
 }
 
 async fn generated_wheel_metadata_by_range(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     source_name: &str,
     url: &str,
     filename: &str,
@@ -241,7 +241,7 @@ async fn zip_data_start(client: &UpstreamClient, url: &str, local_header_offset:
 /// read of the archive's `METADATA` member, whereas an sdist needs a full download plus a gunzip, so
 /// sdist metadata is generated only when a client actually requests `<sdist>.metadata`), and
 /// generation runs under [`BACKFILL_CONCURRENCY`]. On-demand `.metadata` requests bypass both.
-pub(super) fn spawn_metadata_backfill(state: Arc<AppState>, route: String, registrations: &[Registration]) {
+pub(super) fn spawn_metadata_backfill(state: Arc<ServingState>, route: String, registrations: &[Registration]) {
     let candidates = metadata_backfill_candidates(registrations);
     if candidates.is_empty() {
         return;
@@ -272,7 +272,7 @@ fn metadata_backfill_candidates(registrations: &[Registration]) -> Vec<MetadataB
 }
 
 async fn run_metadata_backfill_candidates(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     route: String,
     candidates: Vec<MetadataBackfillCandidate>,
 ) {
@@ -306,7 +306,7 @@ struct MetadataBackfillCandidate {
 ///
 /// # Errors
 /// Returns [`CacheError`] when the metadata store cannot be read.
-pub fn registered_file_size(state: &AppState, digest: &Digest) -> Result<Option<u64>, CacheError> {
+pub fn registered_file_size(state: &ServingState, digest: &Digest) -> Result<Option<u64>, CacheError> {
     Ok(state.meta.get_file_url(digest.as_str())?.and_then(|source| source.size))
 }
 
@@ -402,11 +402,11 @@ mod tests {
         assert!(state.meta.get_metadata(digest.as_str()).unwrap().is_some());
     }
 
-    fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
+    fn test_state() -> (tempfile::TempDir, Arc<ServingState>) {
         let dir = tempfile::tempdir().unwrap();
         let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
         let blobs = BlobStore::new(dir.path().join("blobs"));
-        (dir, Arc::new(AppState::new(meta, blobs, 60, Vec::new())))
+        (dir, peryx_driver::AppState::new(meta, blobs, 60, Vec::new()).serving)
     }
 
     fn test_wheel(metadata: &[u8]) -> Vec<u8> {

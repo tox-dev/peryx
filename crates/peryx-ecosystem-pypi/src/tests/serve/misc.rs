@@ -82,9 +82,14 @@ async fn test_broken_upstream_transfer_forwards_the_error() {
         .meta
         .put_file_url(digest.as_str(), &format!("http://{addr}/x.whl"), "pypi")
         .unwrap();
-    let outcome = cache::stream_file(h.state.clone(), digest.clone(), "pypi".to_owned(), "x.whl".to_owned())
-        .await
-        .unwrap();
+    let outcome = cache::stream_file(
+        h.state.serving.clone(),
+        digest.clone(),
+        "pypi".to_owned(),
+        "x.whl".to_owned(),
+    )
+    .await
+    .unwrap();
     let cache::FileOutcome::Live(mut stream) = outcome else {
         panic!("expected a live stream");
     };

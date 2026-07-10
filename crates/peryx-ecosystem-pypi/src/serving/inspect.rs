@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
 use peryx_driver::not_found;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 
 use crate::cache::{self};
 
@@ -25,7 +25,12 @@ const MEMBER_NEXT_OFFSET_HEADER: &str = "x-peryx-next-offset";
 
 /// `GET /{route}/inspect/{sha256}/{filename}` lists a cached archive's members, or reads one text
 /// member inline. Repeated `container` query parameters select nested archives.
-pub(super) async fn inspect_route(state: Arc<AppState>, route: String, target: &str, query: Option<&str>) -> Response {
+pub(super) async fn inspect_route(
+    state: Arc<ServingState>,
+    route: String,
+    target: &str,
+    query: Option<&str>,
+) -> Response {
     let Some((sha256, rest)) = target.split_once('/') else {
         return not_found();
     };

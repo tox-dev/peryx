@@ -18,7 +18,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use futures_util::{Stream, TryStreamExt as _};
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::WebhookEventKind;
 use peryx_index::Index;
@@ -31,7 +31,7 @@ impl OciRegistry {
     /// are content-addressed and shared, so the store hit covers every member at once.
     pub(super) async fn serve_blob(
         &self,
-        state: &AppState,
+        state: &ServingState,
         name: &str,
         digest: &str,
         head: bool,
@@ -73,7 +73,7 @@ impl OciRegistry {
     /// member so a client's pre-flight existence check never downloads the whole layer.
     async fn head_blob(
         &self,
-        state: &AppState,
+        state: &ServingState,
         index: &Index,
         repo: &str,
         digest: &str,
@@ -105,7 +105,7 @@ impl OciRegistry {
     /// it, the rest wake to find it stored.
     async fn ensure_blob(
         &self,
-        state: &AppState,
+        state: &ServingState,
         index: &Index,
         repo: &str,
         digest: &str,
@@ -131,7 +131,7 @@ impl OciRegistry {
     /// neutral archive-inspect contract, so the web UI's file browser renders a layer verbatim.
     pub(super) async fn serve_layer_contents(
         &self,
-        state: &AppState,
+        state: &ServingState,
         name: &str,
         digest: &str,
         query: &str,
@@ -166,7 +166,7 @@ impl OciRegistry {
     /// single-flight gate, so only one request per digest reaches an upstream.
     async fn fetch_blob(
         &self,
-        state: &AppState,
+        state: &ServingState,
         index: &Index,
         repo: &str,
         digest: &str,
@@ -196,7 +196,7 @@ impl OciRegistry {
 /// Delete a blob from the content-addressed store. Blobs are shared across indexes, so this removes
 /// the bytes globally.
 pub(super) fn delete_blob(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     headers: &HeaderMap,
     name: &str,
     digest: &str,

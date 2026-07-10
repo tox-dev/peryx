@@ -40,7 +40,7 @@ fn stalling_upstream(first: Vec<u8>, rest: Vec<u8>) -> (String, std::sync::mpsc:
 
 async fn live_stream_for(state: &Arc<AppState>, digest: &Digest) -> cache::FileOutcome {
     cache::stream_file(
-        state.clone(),
+        state.serving.clone(),
         digest.clone(),
         "pypi".to_owned(),
         "stalled.whl".to_owned(),
@@ -115,7 +115,7 @@ async fn test_blob_committed_while_waiting_on_the_gate_serves_from_disk() {
     let gate = cache::flight_gate(&h.state, digest.as_str());
     let guard = gate.lock_owned().await;
     let waiting = tokio::spawn({
-        let state = h.state.clone();
+        let state = h.state.serving.clone();
         let digest = digest.clone();
         async move { cache::stream_file(state, digest, "pypi".to_owned(), "parked.whl".to_owned()).await }
     });
@@ -196,7 +196,13 @@ fn handle_with(path: std::path::PathBuf, progress: DownloadProgress) -> Download
 }
 
 async fn drain(state: &Arc<AppState>, digest: Digest, handle: DownloadHandle) -> Result<Vec<u8>, std::io::Error> {
-    let mut stream = cache::tail_download(state.clone(), digest, handle, "pypi".to_owned(), "tail.whl".to_owned());
+    let mut stream = cache::tail_download(
+        state.serving.clone(),
+        digest,
+        handle,
+        "pypi".to_owned(),
+        "tail.whl".to_owned(),
+    );
     let mut body = Vec::new();
     while let Some(item) = stream.next().await {
         body.extend_from_slice(&item?);
@@ -217,7 +223,7 @@ async fn test_tail_of_a_truncated_temp_file_errors() {
     let handle = handle_with(temp, progress);
     // Three bytes arrive, then the read inside the flushed window comes back empty.
     let mut stream = cache::tail_download(
-        h.state.clone(),
+        h.state.serving.clone(),
         Digest::of(b"tail-target"),
         handle,
         "pypi".to_owned(),
@@ -241,7 +247,7 @@ async fn test_tail_switches_to_the_committed_blob_when_the_temp_file_is_gone() {
     };
     let handle = handle_with(std::path::PathBuf::from("/nonexistent/temp"), progress);
     let mut stream = cache::tail_download(
-        h.state.clone(),
+        h.state.serving.clone(),
         digest,
         handle,
         "pypi".to_owned(),

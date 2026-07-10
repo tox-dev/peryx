@@ -196,7 +196,7 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
     let digest = Digest::of(b"wheel");
     let guard = cache::flight_gate(&h.state, digest.as_str()).lock_owned().await;
     let task = tokio::spawn(cache::file_path(
-        h.state.clone(),
+        h.state.serving.clone(),
         digest.clone(),
         "pypi".to_owned(),
         "flask.whl".to_owned(),
@@ -218,7 +218,7 @@ async fn test_file_path_abandoned_download_errors() {
         peryx_driver::download::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
     );
     let err = cache::file_path(
-        h.state.clone(),
+        h.state.serving.clone(),
         digest.clone(),
         "pypi".to_owned(),
         "flask.whl".to_owned(),
@@ -249,7 +249,7 @@ async fn test_file_path_offline_mirror_miss_is_unavailable() {
         .unwrap();
 
     let err = cache::file_path(
-        state,
+        state.serving.clone(),
         digest,
         "pypi".to_owned(),
         "flask-1.0-py3-none-any.whl".to_owned(),

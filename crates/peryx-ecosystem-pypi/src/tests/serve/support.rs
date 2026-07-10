@@ -81,7 +81,7 @@ pub(super) fn custom_state(
 }
 
 pub(super) async fn stream_outcome(state: &Arc<AppState>) -> Vec<Result<Bytes, std::io::Error>> {
-    match cache::stream_detail(state.clone(), 0, "flask".to_owned())
+    match cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap()
     {

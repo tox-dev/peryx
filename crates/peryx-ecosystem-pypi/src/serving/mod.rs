@@ -23,7 +23,7 @@ use peryx_driver::discovery::BaseUrl;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{EcosystemDriver, RefreshSweep};
-use peryx_driver::state::{AppState, IndexDescription};
+use peryx_driver::state::{IndexDescription, ServingState};
 use peryx_events::metrics::MetricFamily;
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
@@ -95,19 +95,26 @@ impl EcosystemDriver for PypiServing {
         Ecosystem::Pypi
     }
 
-    async fn get(&self, state: Arc<AppState>, position: usize, rest: String, uri: Uri, headers: HeaderMap) -> Response {
+    async fn get(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        rest: String,
+        uri: Uri,
+        headers: HeaderMap,
+    ) -> Response {
         pypi_dispatch_get(state, position, &rest, uri, headers).await
     }
 
-    async fn post(&self, state: Arc<AppState>, path: String, headers: HeaderMap, multipart: Multipart) -> Response {
+    async fn post(&self, state: Arc<ServingState>, path: String, headers: HeaderMap, multipart: Multipart) -> Response {
         pypi_dispatch_post(state, path, headers, multipart).await
     }
 
-    async fn put(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
+    async fn put(&self, state: Arc<ServingState>, uri: Uri, headers: HeaderMap) -> Response {
         pypi_dispatch_put(state, uri, headers).await
     }
 
-    async fn delete(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
+    async fn delete(&self, state: Arc<ServingState>, uri: Uri, headers: HeaderMap) -> Response {
         pypi_dispatch_delete(state, uri, headers).await
     }
 
@@ -132,13 +139,13 @@ impl EcosystemDriver for PypiServing {
         PYPI_FAMILIES
     }
 
-    fn project_names(&self, state: &AppState, position: usize) -> Result<Vec<String>, String> {
+    fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         web::project_names(state, position)
     }
 
     async fn project_page(
         &self,
-        state: Arc<AppState>,
+        state: Arc<ServingState>,
         position: usize,
         project: String,
     ) -> Result<Option<(peryx_core::UiProject, peryx_core::UiMeta)>, String> {
@@ -147,7 +154,7 @@ impl EcosystemDriver for PypiServing {
 
     async fn artifact_path(
         &self,
-        state: Arc<AppState>,
+        state: Arc<ServingState>,
         position: usize,
         digest_hex: String,
         filename: String,
@@ -155,7 +162,7 @@ impl EcosystemDriver for PypiServing {
         web::artifact_path(state, position, digest_hex, filename).await
     }
 
-    async fn refresh_stale(&self, state: Arc<AppState>) -> Result<RefreshSweep, String> {
+    async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String> {
         cache::refresh_stale_pages(&state)
             .await
             .map(|summary| RefreshSweep {
@@ -186,7 +193,7 @@ pub(crate) fn parse_digest(hex: &str) -> Result<Digest, PathSafetyError> {
 }
 
 /// The writable hosted index behind `index`: itself if hosted, its upload layer if a virtual index.
-fn upload_target<'a>(state: &'a AppState, index: &'a Index) -> Option<&'a Index> {
+fn upload_target<'a>(state: &'a ServingState, index: &'a Index) -> Option<&'a Index> {
     match &index.kind {
         IndexKind::Hosted { .. } => Some(index),
         IndexKind::Virtual { upload: Some(pos), .. } => Some(state.index_at(*pos)),

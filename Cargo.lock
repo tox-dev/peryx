@@ -3339,9 +3339,12 @@ dependencies = [
 name = "peryx-index"
 version = "0.0.1"
 dependencies = [
+ "bytes",
+ "moka",
  "peryx-core",
  "peryx-policy",
  "peryx-upstream",
+ "tokio",
 ]
 
 [[package]]

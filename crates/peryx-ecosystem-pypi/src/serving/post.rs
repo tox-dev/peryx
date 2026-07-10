@@ -11,7 +11,7 @@ use axum::extract::Multipart;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use peryx_driver::not_found;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_index::Index;
@@ -28,7 +28,7 @@ use super::{authorize, request_id, upload_target};
 
 /// `POST /{route}/`, the legacy multipart upload API, used unchanged by twine and `uv publish`.
 pub async fn pypi_dispatch_post(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     path: String,
     headers: HeaderMap,
     multipart: Multipart,
@@ -57,7 +57,7 @@ pub async fn pypi_dispatch_post(
 }
 
 async fn accept_upload(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
     headers: &HeaderMap,
@@ -177,7 +177,11 @@ struct UploadAudit<'a> {
     digest: &'a str,
 }
 
-fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result: Result<bool, CacheError>) -> Response {
+fn upload_store_response(
+    state: &Arc<ServingState>,
+    audit: &UploadAudit<'_>,
+    result: Result<bool, CacheError>,
+) -> Response {
     match result {
         Ok(stored) => {
             if stored {

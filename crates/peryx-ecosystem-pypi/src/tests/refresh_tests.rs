@@ -68,7 +68,7 @@ async fn test_upstream_max_age_cannot_outlive_the_configured_ttl() {
 
     // The upstream granted a year. The configured ttl is 60s, and it is the ceiling: the sweep must
     // still find this page stale and revalidate it.
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 1));
 }
 
@@ -95,7 +95,7 @@ async fn test_refresh_sweep_detects_changed_page() {
     .await;
     h.clock.fetch_add(61, Ordering::Relaxed);
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 1));
     settle(&h.state, "changed", 1);
     assert!(drilled(&h.state, "refreshes") >= 1);
@@ -132,7 +132,7 @@ async fn test_serving_refresh_stale_reports_the_sweep() {
     h.clock.fetch_add(61, Ordering::Relaxed);
 
     let sweep = crate::serving::PypiServing
-        .refresh_stale(h.state.clone())
+        .refresh_stale(h.state.serving.clone())
         .await
         .unwrap();
     assert_eq!((sweep.checked, sweep.changed), (1, 1));
@@ -158,7 +158,7 @@ async fn test_serving_refresh_stale_surfaces_errors_as_strings() {
     h.clock.fetch_add(61, Ordering::Relaxed);
 
     let err = crate::serving::PypiServing
-        .refresh_stale(h.state.clone())
+        .refresh_stale(h.state.serving.clone())
         .await
         .unwrap_err();
     assert!(err.contains("simple API document could not be parsed"));
@@ -189,7 +189,7 @@ async fn test_refresh_sweep_skips_policy_denied_project() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
 
     drop(guard);
     assert_eq!(summary, crate::cache::RefreshSummary::default());
@@ -228,7 +228,7 @@ async fn test_refresh_sweep_logs_mirror_sync_event() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    assert_eq!(refresh_stale_pages(&h.state).await.unwrap().changed, 1);
+    assert_eq!(refresh_stale_pages(&h.state.serving).await.unwrap().changed, 1);
 
     drop(guard);
     let events = logs.security_events();
@@ -261,7 +261,7 @@ async fn test_refresh_sweep_logs_mirror_sync_not_found() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    assert_eq!(refresh_stale_pages(&h.state).await.unwrap().checked, 1);
+    assert_eq!(refresh_stale_pages(&h.state.serving).await.unwrap().checked, 1);
 
     drop(guard);
     let events = logs.security_events();
@@ -294,7 +294,7 @@ async fn test_refresh_sweep_logs_mirror_sync_failure() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    let err = refresh_stale_pages(&h.state).await.unwrap_err();
+    let err = refresh_stale_pages(&h.state.serving).await.unwrap_err();
 
     drop(guard);
     assert!(
@@ -330,7 +330,7 @@ async fn test_refresh_sweep_revalidates_unchanged_via_etag() {
         .await;
     h.clock.fetch_add(61, Ordering::Relaxed);
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 0));
     settle(&h.state, "refreshes", 1);
     assert_eq!(drilled(&h.state, "changed"), 0);
@@ -349,7 +349,7 @@ async fn test_refresh_sweep_skips_fresh_pages() {
     .await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!(summary.checked, 0);
 }
 
@@ -437,7 +437,7 @@ async fn test_refresh_skips_keys_without_a_mirror() {
     };
     h.state.meta.put_index("ghost/thing", &record).unwrap();
     h.clock.fetch_add(3600, Ordering::Relaxed);
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!(summary.checked, 0);
 }
 
@@ -455,6 +455,6 @@ async fn test_refresh_sweep_full_fetch_with_identical_body_is_unchanged() {
     .await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     h.clock.fetch_add(61, Ordering::Relaxed);
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 0));
 }

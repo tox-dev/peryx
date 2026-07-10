@@ -12,7 +12,7 @@ use peryx_driver::AppState;
 pub fn projects(route: &str) -> Result<Vec<String>, String> {
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
-    driver.project_names(&app, position)
+    driver.project_names(&app.serving, position)
 }
 
 /// One project's page: its files and neutral metadata, produced by the index's ecosystem driver so
@@ -23,7 +23,9 @@ pub fn projects(route: &str) -> Result<Vec<String>, String> {
 pub async fn project(route: &str, project: &str) -> Result<Option<(UiProject, UiMeta)>, String> {
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
-    driver.project_page(app.clone(), position, project.to_owned()).await
+    driver
+        .project_page(app.serving.clone(), position, project.to_owned())
+        .await
 }
 
 /// The position of the index at `route` and the driver serving its ecosystem.

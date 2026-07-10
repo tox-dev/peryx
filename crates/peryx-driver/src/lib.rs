@@ -17,7 +17,9 @@ pub mod rate_limit;
 pub mod serving;
 pub mod state;
 
-pub use state::{AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind};
+pub use state::{
+    AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind, ServingState,
+};
 
 /// A `404 Not Found` with a plain body, the answer for a path no index or artifact owns.
 #[must_use]

@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use std::sync::Arc;
 
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_events::webhook::WebhookEventKind;
 
 use crate::error::{ErrorCode, error_response};
@@ -15,7 +15,7 @@ use super::*;
 
 /// Store a manifest a client pushed, mapping the tag or verifying the digest reference.
 pub(in crate::registry) async fn put_manifest(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     headers: &HeaderMap,
     body: Body,
     name: &str,
@@ -88,7 +88,7 @@ pub(in crate::registry) async fn put_manifest(
 /// If a pushed manifest declares a subject, store its descriptor under that subject for the referrers
 /// API and return the subject digest so the response can echo it in `OCI-Subject`.
 fn record_referrer(
-    state: &AppState,
+    state: &ServingState,
     index: &str,
     repo: &str,
     canonical: &str,
@@ -121,7 +121,7 @@ fn record_referrer(
 }
 /// Delete a manifest by tag or digest.
 pub(in crate::registry) fn delete_manifest(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     headers: &HeaderMap,
     name: &str,
     reference: &Reference,
@@ -176,7 +176,7 @@ fn is_supported_manifest_type(media_type: &str) -> bool {
 ///
 /// # Errors
 /// Returns a store error if a child-manifest lookup fails.
-fn missing_manifest_reference(state: &AppState, bytes: &[u8]) -> Result<Option<Response>, ServeError> {
+fn missing_manifest_reference(state: &ServingState, bytes: &[u8]) -> Result<Option<Response>, ServeError> {
     let (children, blobs) = store::manifest_descriptors(bytes);
     for blob in blobs {
         if !store::blob_digest(&blob).is_some_and(|storage| state.blobs.exists(&storage)) {

@@ -49,9 +49,9 @@ pub use simple::{
 pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc};
 
 /// Wire the `PyPI` serving driver and search indexer into a freshly built
-/// [`AppState`](peryx_driver::AppState).
+/// [`AppState`](peryx_driver::ServingState).
 ///
-/// [`AppState`](peryx_driver::AppState) is ecosystem-neutral and starts with no-op serving/indexing
+/// [`AppState`](peryx_driver::ServingState) is ecosystem-neutral and starts with no-op serving/indexing
 /// defaults; the composition root (the binary, and the serving tests) calls this once so requests
 /// dispatch through [`PypiServing`] and search indexes through [`PypiIndexer`].
 #[cfg(feature = "serving")]

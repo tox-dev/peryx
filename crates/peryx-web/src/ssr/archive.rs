@@ -87,6 +87,6 @@ async fn artifact_path(route: &str, sha256: &str, filename: &str) -> Result<std:
         .ok_or_else(|| format!("index {route:?} has no ecosystem driver"))?
         .clone();
     driver
-        .artifact_path(app.clone(), position, sha256.to_owned(), filename.to_owned())
+        .artifact_path(app.serving.clone(), position, sha256.to_owned(), filename.to_owned())
         .await
 }

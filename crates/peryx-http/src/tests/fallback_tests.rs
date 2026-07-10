@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use tower::ServiceExt as _;
 
-use peryx_driver::state::AppState;
+use peryx_driver::state::{AppState, ServingState};
 
 fn unwired_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
     unwired_state_with(Vec::new())
@@ -139,7 +139,7 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
 
     async fn get(
         &self,
-        _state: std::sync::Arc<AppState>,
+        _state: std::sync::Arc<ServingState>,
         _position: usize,
         _rest: String,
         _uri: axum::http::Uri,
@@ -150,7 +150,7 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
 
     async fn post(
         &self,
-        _state: std::sync::Arc<AppState>,
+        _state: std::sync::Arc<ServingState>,
         _path: String,
         _headers: axum::http::HeaderMap,
         _multipart: axum::extract::Multipart,
@@ -160,7 +160,7 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
 
     async fn put(
         &self,
-        _state: std::sync::Arc<AppState>,
+        _state: std::sync::Arc<ServingState>,
         _uri: axum::http::Uri,
         _headers: axum::http::HeaderMap,
     ) -> axum::response::Response {
@@ -169,7 +169,7 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
 
     async fn delete(
         &self,
-        _state: std::sync::Arc<AppState>,
+        _state: std::sync::Arc<ServingState>,
         _uri: axum::http::Uri,
         _headers: axum::http::HeaderMap,
     ) -> axum::response::Response {
@@ -203,7 +203,7 @@ async fn test_a_driver_sweeps_nothing_by_default() {
     let (_dir, state) = unwired_state();
     assert_eq!(
         StubServing(peryx_core::Ecosystem::Pypi)
-            .refresh_stale(state)
+            .refresh_stale(state.serving.clone())
             .await
             .unwrap(),
         RefreshSweep::default()

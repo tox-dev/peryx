@@ -4,14 +4,14 @@
 use std::sync::Arc;
 
 use peryx_core::{UiMeta, UiProject};
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_storage::blob::Digest;
 
 use crate::cache;
 use crate::{normalize_name, to_json, ui_meta, ui_project_from_detail};
 
 /// The project names of the cached/hosted/virtual index at `position`.
-pub(super) fn project_names(state: &AppState, position: usize) -> Result<Vec<String>, String> {
+pub(super) fn project_names(state: &ServingState, position: usize) -> Result<Vec<String>, String> {
     let index = state.index_at(position);
     cache::resolve_list(state, index)
         .map(|list| list.projects.into_iter().map(|entry| entry.name).collect())
@@ -21,7 +21,7 @@ pub(super) fn project_names(state: &AppState, position: usize) -> Result<Vec<Str
 /// A project's page data: its files as a neutral [`UiProject`], and the neutral [`UiMeta`] of its
 /// newest file that carries a PEP 658 metadata sibling.
 pub(super) async fn project_page(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     position: usize,
     project: String,
 ) -> Result<Option<(UiProject, UiMeta)>, String> {
@@ -50,7 +50,7 @@ pub(super) async fn project_page(
 }
 
 /// Fetch and parse the PEP 658 metadata sibling of `file` into the neutral view model.
-async fn metadata_for(state: &Arc<AppState>, route: &str, file: &peryx_core::UiFile) -> Result<UiMeta, String> {
+async fn metadata_for(state: &Arc<ServingState>, route: &str, file: &peryx_core::UiFile) -> Result<UiMeta, String> {
     let Some(digest) = Digest::from_hex(&file.sha256) else {
         return Err(format!(
             "metadata fetch on index {route:?} for file {:?}: invalid sha256 digest {:?}",
@@ -74,7 +74,7 @@ async fn metadata_for(state: &Arc<AppState>, route: &str, file: &peryx_core::UiF
 /// The local blob-store path of the artifact `digest_hex`/`filename` on the index at `position`,
 /// fetching it through the proxy on a miss.
 pub(super) async fn artifact_path(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     position: usize,
     digest_hex: String,
     filename: String,

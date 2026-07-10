@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_index::Index;
 use peryx_storage::blob::Digest;
 use peryx_upstream::Auth;
@@ -106,7 +106,7 @@ fn parse_ref(raw: &str) -> Option<ImageRef> {
 
 /// The read-only context for one mirror run: the stores, the upstream client, and where to pull from.
 struct Mirror<'a> {
-    state: &'a Arc<AppState>,
+    state: &'a Arc<ServingState>,
     upstream: &'a Upstream,
     base: String,
     auth: Auth,
@@ -121,7 +121,7 @@ struct Mirror<'a> {
 /// Returns an error only on a store fault (metadata or blob io); a missing image, unreachable
 /// upstream, or bad blob is a reported row, not an error, so one bad reference never aborts the run.
 pub async fn mirror(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     refs: &[String],
     mode: MirrorMode,
@@ -344,7 +344,7 @@ impl Mirror<'_> {
 
 /// The child manifest digests and blob digests a manifest names. An image index carries `manifests`;
 /// an image manifest carries `config` and `layers`.
-fn blob_size(state: &AppState, storage: &Digest) -> u64 {
+fn blob_size(state: &ServingState, storage: &Digest) -> u64 {
     state
         .blobs
         .path_for(storage)

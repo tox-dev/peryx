@@ -2,13 +2,13 @@
 //! it, so a serial resolver waits on the network once, not twice.
 
 use super::{
-    AppState, Arc, Bytes, CacheError, CachedIndex, Event, JSON_META_PREFLIGHT_BYTES, PageOutcome, PageSummary,
-    PageTransformer, UpstreamPermit, VecDeque, mirror_route, persist_streamed, release_flight, spawn_metadata_backfill,
+    Arc, Bytes, CacheError, CachedIndex, Event, JSON_META_PREFLIGHT_BYTES, PageOutcome, PageSummary, PageTransformer,
+    ServingState, UpstreamPermit, VecDeque, mirror_route, persist_streamed, release_flight, spawn_metadata_backfill,
     transform_error,
 };
 
 pub(super) struct FreshJsonStream {
-    pub(super) state: Arc<AppState>,
+    pub(super) state: Arc<ServingState>,
     pub(super) key: String,
     pub(super) hot_key: String,
     pub(super) route: String,
@@ -188,7 +188,7 @@ struct LiveStream {
     reason = "the flight guard inside LiveStream deliberately lives until the stream ends"
 )]
 fn live_stream(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     live: LiveStream,
     raw: Vec<u8>,
     served: Vec<u8>,

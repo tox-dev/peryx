@@ -51,7 +51,7 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let refs = vec!["library/app:latest".to_owned()];
-    let rows = mirror(&state, &state.indexes[0], &refs, MirrorMode::Sync)
+    let rows = mirror(&state.serving, &state.indexes[0], &refs, MirrorMode::Sync)
         .await
         .unwrap();
 
@@ -65,7 +65,7 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
     assert!(state.blobs.exists(&store_digest(layer)));
 
     // A second pass finds everything cached, touching no upstream error.
-    let verify = mirror(&state, &state.indexes[0], &refs, MirrorMode::Verify)
+    let verify = mirror(&state.serving, &state.indexes[0], &refs, MirrorMode::Verify)
         .await
         .unwrap();
     assert!(
@@ -96,7 +96,7 @@ async fn test_mirror_follows_a_manifest_list() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/multi:latest".to_owned()],
         MirrorMode::Sync,
@@ -127,7 +127,7 @@ async fn test_mirror_reports_an_unreachable_reference() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/missing:latest".to_owned()],
         MirrorMode::Sync,
@@ -144,7 +144,7 @@ async fn test_mirror_reports_an_unreachable_reference() {
 async fn test_mirror_rejects_a_bad_reference() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, "http://127.0.0.1:1/", false);
-    let rows = mirror(&state, &state.indexes[0], &["@".to_owned()], MirrorMode::Sync)
+    let rows = mirror(&state.serving, &state.indexes[0], &["@".to_owned()], MirrorMode::Sync)
         .await
         .unwrap();
     assert_eq!(rows[0].status, "error");
@@ -156,7 +156,7 @@ async fn test_mirror_needs_a_cached_upstream() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = super::hosted(&dir);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,
@@ -173,7 +173,7 @@ async fn test_verify_flags_a_missing_image() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, "http://127.0.0.1:1/", false);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Verify,
@@ -203,7 +203,7 @@ async fn test_mirror_by_digest_then_verify_missing() {
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let by_digest = format!("library/app@{manifest_digest}");
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         std::slice::from_ref(&by_digest),
         MirrorMode::Sync,
@@ -218,7 +218,7 @@ async fn test_mirror_by_digest_then_verify_missing() {
     );
 
     // Verify by the stored digest is cached; a never-seen digest is reported missing.
-    let verify = mirror(&state, &state.indexes[0], &[by_digest], MirrorMode::Verify)
+    let verify = mirror(&state.serving, &state.indexes[0], &[by_digest], MirrorMode::Verify)
         .await
         .unwrap();
     assert!(
@@ -227,7 +227,7 @@ async fn test_mirror_by_digest_then_verify_missing() {
             .any(|row| row.kind == "manifest" && row.status == "cached")
     );
     let absent = format!("library/app@{}", oci_digest(b"never-pushed"));
-    let missing = mirror(&state, &state.indexes[0], &[absent], MirrorMode::Verify)
+    let missing = mirror(&state.serving, &state.indexes[0], &[absent], MirrorMode::Verify)
         .await
         .unwrap();
     assert!(missing.iter().any(|row| row.reason == "manifest missing"));
@@ -245,9 +245,14 @@ async fn test_mirror_bare_name_defaults_to_latest() {
 
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
-    let rows = mirror(&state, &state.indexes[0], &["alpine".to_owned()], MirrorMode::Sync)
-        .await
-        .unwrap();
+    let rows = mirror(
+        &state.serving,
+        &state.indexes[0],
+        &["alpine".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
     assert!(
         rows.iter()
             .any(|row| row.kind == "manifest" && row.reference == "latest" && row.status == "synced")
@@ -267,13 +272,13 @@ async fn test_mirror_reports_a_missing_blob() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let refs = vec!["library/app:latest".to_owned()];
-    let rows = mirror(&state, &state.indexes[0], &refs, MirrorMode::Sync)
+    let rows = mirror(&state.serving, &state.indexes[0], &refs, MirrorMode::Sync)
         .await
         .unwrap();
     assert!(rows.iter().any(|row| row.kind == "blob" && row.status == "error"));
 
     // Verify then reports the manifest cached but the layer blob missing.
-    let verify = mirror(&state, &state.indexes[0], &refs, MirrorMode::Verify)
+    let verify = mirror(&state.serving, &state.indexes[0], &refs, MirrorMode::Verify)
         .await
         .unwrap();
     assert!(
@@ -295,7 +300,7 @@ async fn test_mirror_rejects_an_unsupported_blob_digest() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,
@@ -326,7 +331,7 @@ async fn test_mirror_rejects_a_corrupt_blob() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,
@@ -344,7 +349,7 @@ async fn test_mirror_tolerates_a_non_json_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let rows = mirror(
-        &state,
+        &state.serving,
         &state.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,

@@ -7,7 +7,7 @@ use crate::stream::{PageSummary, PageTransformer};
 use crate::{ProjectDetail, ProjectStatus, parse_detail};
 use bytes::Bytes;
 use peryx_driver::rate_limit::UpstreamPermit;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
@@ -30,7 +30,7 @@ use super::{
 /// Persist a streamed page from what the transformer already extracted: no re-parse of the raw
 /// body sits on the serving path, which a serial client feels on every large cold page.
 fn persist_streamed(
-    state: &AppState,
+    state: &ServingState,
     key: &str,
     name: &str,
     project: &str,
@@ -103,7 +103,11 @@ const JSON_META_PREFLIGHT_BYTES: usize = 64 * 1024;
     clippy::significant_drop_tightening,
     reason = "the flight guard deliberately lives until it moves into the stream or is released"
 )]
-pub async fn stream_detail(state: Arc<AppState>, position: usize, project: String) -> Result<PageOutcome, CacheError> {
+pub async fn stream_detail(
+    state: Arc<ServingState>,
+    position: usize,
+    project: String,
+) -> Result<PageOutcome, CacheError> {
     let index = state.index_at(position);
     index.policy.check_project(PolicyAction::Serve, &project)?;
     if index.policy.active() {
@@ -214,7 +218,7 @@ pub async fn stream_detail(state: Arc<AppState>, position: usize, project: Strin
 /// # Errors
 /// Returns [`CacheError`] on store, parse, upstream, or stream failures.
 pub async fn materialize_detail(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     position: usize,
     project: String,
 ) -> Result<Option<ProjectDetail>, CacheError> {
@@ -241,7 +245,7 @@ const fn missing_upstream_outcome(context: &crate::stream::PageContext) -> PageO
 }
 
 async fn buffer_html_page(
-    state: &AppState,
+    state: &ServingState,
     key: &str,
     cached_name: &str,
     project: &str,
@@ -278,7 +282,7 @@ async fn buffer_html_page(
 /// virtual-index context. `None` when the index has no cached or more than one (the buffered path
 /// handles those).
 fn streaming_parts(
-    state: &AppState,
+    state: &ServingState,
     index: &Index,
     project: &str,
 ) -> Result<Option<(String, UpstreamClient, bool, crate::stream::PageContext)>, CacheError> {
@@ -356,7 +360,7 @@ fn streaming_parts(
 
 /// Transform a warm raw page in one pass and remember the result in the hot cache.
 fn transform_whole(
-    state: &AppState,
+    state: &ServingState,
     hot_key: &str,
     record: &CachedIndex,
     mut context: crate::stream::PageContext,

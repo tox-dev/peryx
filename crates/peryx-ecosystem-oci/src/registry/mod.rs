@@ -26,7 +26,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header}
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
 use peryx_core::Ecosystem;
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_driver::serving::{EcosystemDriver, RouteMount};
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_index::{Index, IndexKind};
@@ -138,7 +138,7 @@ impl EcosystemDriver for OciRegistry {
         RouteMount::Absolute(&["/v2/"])
     }
 
-    async fn serve(&self, state: Arc<AppState>, request: Request) -> Response {
+    async fn serve(&self, state: Arc<ServingState>, request: Request) -> Response {
         let method = request.method().clone();
         let read = matches!(method, Method::GET | Method::HEAD);
         if read {
@@ -213,7 +213,11 @@ impl EcosystemDriver for OciRegistry {
 /// Resolve the writable hosted index behind `name` and authorize the request, or return a ready error
 /// response (unknown name, read-only index, uploads disabled, or bad credentials). A virtual index
 /// routes the write to its upload-target member.
-fn resolve_writable<'a>(state: &'a AppState, name: &str, headers: &HeaderMap) -> Result<(&'a Index, String), Response> {
+fn resolve_writable<'a>(
+    state: &'a ServingState,
+    name: &str,
+    headers: &HeaderMap,
+) -> Result<(&'a Index, String), Response> {
     let Some((index, repo)) = resolve(&state.indexes, name) else {
         return Err(error_response(ErrorCode::NameUnknown, "repository name unknown"));
     };
@@ -254,7 +258,7 @@ fn policy_size_denial(index: &Index, repo: &str, size: u64) -> Option<Response> 
 /// The members a request serves from, in shadowing order; any non-virtual index is its own single
 /// member. The order comes from the neutral role engine, so an OCI image shadows upstream by the same
 /// rule a `PyPI` wheel does.
-pub fn serving_members<'a>(state: &'a AppState, index: &'a Index) -> Vec<&'a Index> {
+pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a Index> {
     let IndexKind::Virtual { layers, .. } = &index.kind else {
         return vec![index];
     };
@@ -267,7 +271,7 @@ pub fn serving_members<'a>(state: &'a AppState, index: &'a Index) -> Vec<&'a Ind
 /// reference was affected; `digest` is the manifest or blob digest. The webhook subsystem is neutral,
 /// so a hosted OCI index delivers push and delete events like any hosted index.
 fn emit_webhook(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     headers: &HeaderMap,
     kind: WebhookEventKind,
     index: &Index,
@@ -323,7 +327,7 @@ fn served_bytes(response: &Response) -> u64 {
 }
 /// The per-blob lock concurrent misses share so a single upstream fetch serves them all, the same
 /// single-flight coalescing every cached fetch shares. Keyed in its own namespace on the blob digest.
-fn flight_gate(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+fn flight_gate(state: &ServingState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
     peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 /// Find the OCI index whose route is the longest segment-aligned prefix of `name`, and the upstream
@@ -378,7 +382,7 @@ fn unauthorized() -> Response {
 ///
 /// The same bound a stale `PyPI` page gets: serve past the freshness window while an upstream is
 /// down, but not without end. `0` removes the bound.
-fn within_stale_bound(state: &AppState, fetched_at: i64) -> bool {
+fn within_stale_bound(state: &ServingState, fetched_at: i64) -> bool {
     peryx_index::serving::within_stale_bound((state.clock)(), state.max_stale_secs, fetched_at, state.ttl_secs)
 }
 

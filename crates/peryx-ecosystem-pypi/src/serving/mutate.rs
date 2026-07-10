@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
 use peryx_driver::not_found;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_index::{Index, IndexKind};
 
@@ -58,7 +58,7 @@ fn promotion_source_route(query: Option<&str>) -> Result<String, Response> {
     Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}").into_response())
 }
 
-fn promotion_source<'a>(state: &'a AppState, route: &str) -> Result<&'a Index, Response> {
+fn promotion_source<'a>(state: &'a ServingState, route: &str) -> Result<&'a Index, Response> {
     let route = route.trim_matches('/');
     state
         .indexes
@@ -69,7 +69,7 @@ fn promotion_source<'a>(state: &'a AppState, route: &str) -> Result<&'a Index, R
 
 /// `PUT /{route}/{project}/[{version}/]yank` marks files yanked (PEP 592, reversible);
 /// `PUT .../restore` clears the hidden marker a DELETE left on read-only upstream files.
-pub async fn pypi_dispatch_put(state: Arc<AppState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+pub async fn pypi_dispatch_put(state: Arc<ServingState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
     let actor = peryx_events::security::actor(&headers);
@@ -90,7 +90,7 @@ pub async fn pypi_dispatch_put(state: Arc<AppState>, uri: axum::http::Uri, heade
 }
 
 async fn promote_request(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
     spec: &str,
@@ -148,7 +148,7 @@ async fn promote_request(
 }
 
 async fn yank_request(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
     spec: &str,
@@ -186,7 +186,7 @@ async fn yank_request(
 }
 
 fn restore_request(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
     spec: &str,
@@ -216,7 +216,7 @@ fn restore_request(
 
 /// `DELETE /{route}/{project}/[{version}/]` removes files: uploads are deleted outright (volatile
 /// indexes only), read-only upstream files are hidden reversibly. A `.../yank` suffix un-yanks.
-pub async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
     let actor = peryx_events::security::actor(&headers);
@@ -270,7 +270,7 @@ pub async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::Uri, he
 /// Resolve the writable hosted index for a mutation request and authorize it, returning the serving
 /// index, its hosted layer, and the path remainder (the `{project}/...` part).
 fn removal_target<'a>(
-    state: &'a AppState,
+    state: &'a ServingState,
     path: &'a str,
     headers: &HeaderMap,
 ) -> Result<(&'a Index, &'a Index, &'a str), Response> {
@@ -339,7 +339,7 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
 }
 
 fn emit_mutation_webhook(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     kind: WebhookEventKind,
     audit: &MutationAudit<'_>,
     result: &Result<usize, CacheError>,

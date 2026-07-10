@@ -33,7 +33,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         let driver = driver.clone();
         let serve = move |State(state): State<Arc<AppState>>, request: Request| {
             let driver = driver.clone();
-            async move { driver.serve(state, request).await }
+            async move { driver.serve(state.serving.clone(), request).await }
         };
         router = router
             .route(prefix, any(serve.clone()))

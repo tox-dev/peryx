@@ -84,7 +84,7 @@ async fn test_refresh_stale_pages_skips_offline_mirrors() {
         )
         .unwrap();
 
-    let summary = cache::refresh_stale_pages(&state).await.unwrap();
+    let summary = cache::refresh_stale_pages(&state.serving).await.unwrap();
 
     assert_eq!(summary.checked, 0);
     assert_eq!(summary.changed, 0);
@@ -113,7 +113,7 @@ async fn test_offline_metadata_fetches_are_unavailable() {
         )
         .unwrap();
 
-    let err = cache::metadata_bytes(&state, &artifact, "pypi", "flask-1.0-py3-none-any.whl.metadata")
+    let err = cache::metadata_bytes(&state.serving, &artifact, "pypi", "flask-1.0-py3-none-any.whl.metadata")
         .await
         .unwrap_err();
 
@@ -141,7 +141,7 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
         )
         .unwrap();
 
-    let err = cache::metadata_bytes(&state, &artifact, "pypi", "flask-1.0-py3-none-any.whl.metadata")
+    let err = cache::metadata_bytes(&state.serving, &artifact, "pypi", "flask-1.0-py3-none-any.whl.metadata")
         .await
         .unwrap_err();
 

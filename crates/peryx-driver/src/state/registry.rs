@@ -7,7 +7,19 @@ use peryx_core::Ecosystem;
 
 use peryx_search::{IndexerCtx, SearchCtx};
 
-use super::app::AppState;
+use super::app::{AppState, ServingState};
+
+impl ServingState {
+    /// The stores and indexes an ecosystem's search indexer walks.
+    #[must_use]
+    pub fn indexer_ctx(&self) -> IndexerCtx<'_> {
+        IndexerCtx {
+            indexes: &self.indexes,
+            meta: &self.meta,
+            blobs: &self.blobs,
+        }
+    }
+}
 
 impl AppState {
     /// Register an ecosystem's user-facing vocabulary; its driver calls this at install time.
@@ -19,16 +31,6 @@ impl AppState {
     #[must_use]
     pub fn lexicon(&self, ecosystem: Ecosystem) -> &'static peryx_core::Lexicon {
         self.lexicons.get(ecosystem)
-    }
-
-    /// The stores and indexes an ecosystem's search indexer walks.
-    #[must_use]
-    pub fn indexer_ctx(&self) -> IndexerCtx<'_> {
-        IndexerCtx {
-            indexes: &self.indexes,
-            meta: &self.meta,
-            blobs: &self.blobs,
-        }
     }
 
     /// What one search request reads from this state: the indexers' stores, the mutation epoch that
@@ -56,7 +58,7 @@ impl AppState {
                 .extend(prefixes.iter().map(|&prefix| (prefix, slot)));
         }
         self.drivers[slot] = Some(driver);
-        self.search.add_indexer(indexer);
+        self.serving_mut().search.add_indexer(indexer);
     }
 
     /// The driver serving `ecosystem`, or `None` when none is installed for it.
@@ -88,7 +90,14 @@ impl AppState {
 
     /// Add another ecosystem's search indexer, composing with any already installed.
     pub fn add_search_indexer(&mut self, indexer: Arc<dyn peryx_search::PackageIndexer>) {
-        self.search.add_indexer(indexer);
+        self.serving_mut().search.add_indexer(indexer);
+    }
+
+    /// Unique access to the serving state during build, before any handler holds a clone. Installing
+    /// an ecosystem's indexer mutates the search index, which lives behind the shared `Arc`; this is
+    /// sound only while that `Arc` is still uniquely owned, which it is until the router wraps it.
+    fn serving_mut(&mut self) -> &mut ServingState {
+        Arc::get_mut(&mut self.serving).expect("serving state is registered before it is served")
     }
 
     /// The absolute-mount driver that owns `path` (`OCI`'s `/v2/`), or `None` when the path falls under

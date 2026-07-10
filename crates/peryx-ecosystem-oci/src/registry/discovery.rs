@@ -7,14 +7,19 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::Ecosystem;
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 use peryx_upstream::UpstreamClient;
 
 impl OciRegistry {
     /// Serve the tag list. A lone online proxy passes upstream through verbatim; every other case
     /// (a hosted index, or a virtual index) unions its members' tags under the requested name, then
     /// applies the `n`/`last` pagination the spec defines.
-    pub(super) async fn serve_tags(&self, state: &AppState, name: &str, query: &str) -> Result<Response, ServeError> {
+    pub(super) async fn serve_tags(
+        &self,
+        state: &ServingState,
+        name: &str,
+        query: &str,
+    ) -> Result<Response, ServeError> {
         let Some((index, repo)) = resolve(&state.indexes, name) else {
             return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
         };
@@ -46,7 +51,7 @@ impl OciRegistry {
     /// list still answers, bounded exactly as a stale tag or a stale `PyPI` page is.
     async fn proxy_tags(
         &self,
-        state: &AppState,
+        state: &ServingState,
         index: &str,
         client: &UpstreamClient,
         repo: &str,
@@ -83,7 +88,7 @@ impl OciRegistry {
     /// unreachable member does not fail the whole list.
     async fn fetch_tag_names(
         &self,
-        state: &AppState,
+        state: &ServingState,
         index: &str,
         client: &UpstreamClient,
         repo: &str,
@@ -137,7 +142,7 @@ impl OciRegistry {
     /// and is echoed in `OCI-Filters-Applied`.
     pub(super) async fn serve_referrers(
         &self,
-        state: &AppState,
+        state: &ServingState,
         name: &str,
         digest: &str,
         query: &str,
@@ -226,7 +231,7 @@ fn tag_list_response(name: &str, tags: std::collections::BTreeSet<String>, query
 
 /// Serve `GET /v2/_catalog`: the union of every OCI index's repositories as clients address them (the
 /// index route prefixes the upstream repository), with `n`/`last` pagination.
-pub(super) fn serve_catalog(state: &AppState, query: &str) -> Result<Response, ServeError> {
+pub(super) fn serve_catalog(state: &ServingState, query: &str) -> Result<Response, ServeError> {
     let mut repositories = std::collections::BTreeSet::new();
     for index in &state.indexes {
         if index.ecosystem != Ecosystem::Oci {

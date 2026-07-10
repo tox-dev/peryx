@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use peryx_core::{Ecosystem, UiMeta, UiProject};
 
-use crate::state::AppState;
+use crate::state::ServingState;
 
 /// Where an ecosystem's wire protocol mounts in the URL space.
 ///
@@ -79,7 +79,7 @@ pub trait EcosystemDriver: Send + Sync {
 
     /// Revalidate stale cached pages once, invoked from the server's background sweep. A driver
     /// without a read-through cache sweeps nothing, so the default is a no-op.
-    async fn refresh_stale(&self, _state: Arc<AppState>) -> Result<RefreshSweep, String> {
+    async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
         Ok(RefreshSweep::default())
     }
 
@@ -88,7 +88,7 @@ pub trait EcosystemDriver: Send + Sync {
     ///
     /// # Errors
     /// Returns a user-visible message when the index cannot be read.
-    fn project_names(&self, _state: &AppState, _position: usize) -> Result<Vec<String>, String> {
+    fn project_names(&self, _state: &ServingState, _position: usize) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
 
@@ -100,7 +100,7 @@ pub trait EcosystemDriver: Send + Sync {
     /// Returns a user-visible message when the project or its metadata cannot be read.
     async fn project_page(
         &self,
-        _state: Arc<AppState>,
+        _state: Arc<ServingState>,
         _position: usize,
         _project: String,
     ) -> Result<Option<(UiProject, UiMeta)>, String> {
@@ -115,7 +115,7 @@ pub trait EcosystemDriver: Send + Sync {
     /// Returns a user-visible message when the artifact cannot be found or fetched.
     async fn artifact_path(
         &self,
-        _state: Arc<AppState>,
+        _state: Arc<ServingState>,
         _position: usize,
         _digest_hex: String,
         _filename: String,
@@ -124,7 +124,7 @@ pub trait EcosystemDriver: Send + Sync {
     }
 
     /// Serve a whole request under one of this driver's [`Absolute`](RouteMount::Absolute) prefixes.
-    async fn serve(&self, _state: Arc<AppState>, _request: Request) -> Response {
+    async fn serve(&self, _state: Arc<ServingState>, _request: Request) -> Response {
         wrong_mount()
     }
 
@@ -132,7 +132,7 @@ pub trait EcosystemDriver: Send + Sync {
     /// the request to index `position`, with `rest` the sub-path after the index route.
     async fn get(
         &self,
-        _state: Arc<AppState>,
+        _state: Arc<ServingState>,
         _position: usize,
         _rest: String,
         _uri: Uri,
@@ -142,17 +142,23 @@ pub trait EcosystemDriver: Send + Sync {
     }
 
     /// Serve a POST (publish/upload) for an [`Indexed`](RouteMount::Indexed) driver.
-    async fn post(&self, _state: Arc<AppState>, _path: String, _headers: HeaderMap, _multipart: Multipart) -> Response {
+    async fn post(
+        &self,
+        _state: Arc<ServingState>,
+        _path: String,
+        _headers: HeaderMap,
+        _multipart: Multipart,
+    ) -> Response {
         wrong_mount()
     }
 
     /// Serve a PUT (yank, restore, promote) for an [`Indexed`](RouteMount::Indexed) driver.
-    async fn put(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
+    async fn put(&self, _state: Arc<ServingState>, _uri: Uri, _headers: HeaderMap) -> Response {
         wrong_mount()
     }
 
     /// Serve a DELETE (remove or un-yank) for an [`Indexed`](RouteMount::Indexed) driver.
-    async fn delete(&self, _state: Arc<AppState>, _uri: Uri, _headers: HeaderMap) -> Response {
+    async fn delete(&self, _state: Arc<ServingState>, _uri: Uri, _headers: HeaderMap) -> Response {
         wrong_mount()
     }
 }

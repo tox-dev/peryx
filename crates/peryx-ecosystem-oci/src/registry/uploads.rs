@@ -7,14 +7,14 @@ use crate::store::{self};
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use peryx_driver::AppState;
+use peryx_driver::ServingState;
 
 impl OciRegistry {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when
     /// the `POST` carries a `digest`, otherwise a session the client fills with `PATCH`/`PUT`.
     pub(super) async fn start_upload(
         &self,
-        state: &AppState,
+        state: &ServingState,
         headers: &HeaderMap,
         query: &str,
         name: &str,
@@ -67,7 +67,7 @@ impl OciRegistry {
     /// Report an open upload session's progress: `204` with the bytes received so far.
     pub(super) async fn upload_status(
         &self,
-        state: &AppState,
+        state: &ServingState,
         headers: &HeaderMap,
         name: &str,
         session: &str,
@@ -92,7 +92,7 @@ impl OciRegistry {
     /// Append a chunk to an open upload session.
     pub(super) async fn patch_upload(
         &self,
-        state: &AppState,
+        state: &ServingState,
         headers: &HeaderMap,
         name: &str,
         session: &str,
@@ -122,7 +122,7 @@ impl OciRegistry {
     /// Finish an upload: append any trailing bytes, then verify and commit under the given `digest`.
     pub(super) async fn finish_upload(
         &self,
-        state: &AppState,
+        state: &ServingState,
         headers: &HeaderMap,
         query: &str,
         name: &str,

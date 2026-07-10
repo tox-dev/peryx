@@ -15,7 +15,9 @@ async fn test_stream_detail_offline_cold_miss_falls_back() {
         }]
     });
 
-    let outcome = cache::stream_detail(state, 0, "flask".to_owned()).await.unwrap();
+    let outcome = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
 
     assert!(matches!(outcome, PageOutcome::Fallback));
 }
@@ -23,7 +25,7 @@ async fn test_stream_detail_offline_cold_miss_falls_back() {
 async fn test_small_json_page_without_meta_completes_during_preflight() {
     let h = harness().await;
     mount_json_page(&h.server, r#"{"name":"flask"}"#).await;
-    let outcome = cache::stream_detail(h.state.clone(), 0, "flask".to_owned())
+    let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap();
     let bytes = match outcome {
@@ -68,7 +70,9 @@ async fn test_json_meta_preflight_streams_without_remainder() {
             policy: peryx_policy::Policy::default(),
         }]
     });
-    let outcome = cache::stream_detail(state, 0, "flask".to_owned()).await.unwrap();
+    let outcome = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
     release.send(()).unwrap();
     let PageOutcome::Streaming(stream) = outcome else {
         panic!("expected a streaming outcome, got {}", matches_name(&outcome));
@@ -99,11 +103,11 @@ async fn test_materialize_detail_fetches_and_reuses_cached_page() {
         .mount(&h.server)
         .await;
 
-    let first = cache::materialize_detail(h.state.clone(), 0, "flask".to_owned())
+    let first = cache::materialize_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap()
         .unwrap();
-    let second = cache::materialize_detail(h.state.clone(), 0, "flask".to_owned())
+    let second = cache::materialize_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap()
         .unwrap();
@@ -117,7 +121,7 @@ async fn test_materialize_detail_returns_stream_errors() {
     let h = harness().await;
     mount_json_page(&h.server, r#"{"name":"flask","files":[{"bad": }]}"#).await;
 
-    let err = cache::materialize_detail(h.state.clone(), 0, "flask".to_owned())
+    let err = cache::materialize_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap_err();
 

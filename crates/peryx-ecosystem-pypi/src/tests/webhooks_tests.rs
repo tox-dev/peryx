@@ -288,7 +288,7 @@ async fn test_webhook_worker_wakes_after_idle() {
             created_at_unix: 1000,
         })
         .unwrap();
-    webhook::kick(h.state.clone());
+    webhook::kick(h.state.serving.clone());
 
     sink.wait_for_requests(2).await;
     let delivered = wait_for_delivery_id(&h.state, &id, WebhookDeliveryStatus::Delivered).await;
@@ -312,7 +312,7 @@ async fn test_webhook_delivery_retries_failed_request() {
     assert_eq!(pending.next_attempt_at_unix, Some(1005));
 
     h.clock.store(1005, Ordering::Relaxed);
-    webhook::kick(h.state.clone());
+    webhook::kick(h.state.serving.clone());
     let requests = sink.wait_for_requests(2).await;
     let delivered = wait_for_delivery(&h.state, WebhookDeliveryStatus::Delivered, 2).await;
 
@@ -338,7 +338,7 @@ async fn test_webhook_delivery_marks_terminal_failure() {
             pending.next_attempt_at_unix.expect("scheduled retry"),
             Ordering::Relaxed,
         );
-        webhook::kick(h.state.clone());
+        webhook::kick(h.state.serving.clone());
         sink.wait_for_requests(count as usize).await;
     }
 
@@ -379,7 +379,7 @@ async fn test_webhook_delivery_records_removed_target() {
         })
         .unwrap();
 
-    webhook::kick(h.state.clone());
+    webhook::kick(h.state.serving.clone());
 
     let pending = wait_for_delivery(&h.state, WebhookDeliveryStatus::Pending, 1).await;
     assert_eq!(pending.id, id);

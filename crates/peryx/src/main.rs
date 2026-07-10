@@ -118,7 +118,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
                 let servings: Vec<_> = refresher.drivers().cloned().collect();
                 for serving in servings {
                     let ecosystem = serving.ecosystem();
-                    match serving.refresh_stale(refresher.clone()).await {
+                    match serving.refresh_stale(refresher.serving.clone()).await {
                         Ok(sweep) if sweep.checked > 0 => {
                             tracing::info!(
                                 ecosystem = %ecosystem,

@@ -58,7 +58,7 @@ pub(super) async fn oci_mirror(
     if images.is_empty() {
         bail!("mirroring an OCI index needs at least one image (--image or [index.prefetch] packages)");
     }
-    let rows = peryx_ecosystem_oci::mirror(state, index, images, mode).await?;
+    let rows = peryx_ecosystem_oci::mirror(&state.serving, index, images, mode).await?;
     out.write_all(HEADER.as_bytes())?;
     let mut errors = 0_u64;
     for row in &rows {

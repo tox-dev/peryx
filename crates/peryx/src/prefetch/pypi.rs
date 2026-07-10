@@ -98,7 +98,9 @@ pub(super) async fn pypi_sync(
     write_count(out, &target.index, "started_at", started_at)?;
     for project in &selection.projects {
         summary.projects += 1;
-        match peryx_ecosystem_pypi::cache::materialize_detail(state.clone(), target.position, project.clone()).await {
+        match peryx_ecosystem_pypi::cache::materialize_detail(state.serving.clone(), target.position, project.clone())
+            .await
+        {
             Ok(Some(_)) => {
                 let detail = cached_detail(state, &target, project)?;
                 write_row(out, Row::page(&target.index, project, "synced", ""))?;
@@ -281,7 +283,7 @@ async fn sync_file(
         return Ok(SyncOutcome::Cached(blob_size(&state, &digest)));
     }
     let path = peryx_ecosystem_pypi::cache::file_path(
-        state.clone(),
+        state.serving.clone(),
         digest.clone(),
         target.route.clone(),
         file.filename.clone(),
@@ -305,7 +307,7 @@ async fn sync_metadata(
         return Ok(SyncOutcome::Cached(blob_size(state, &metadata)));
     }
     Ok(SyncOutcome::Downloaded(
-        peryx_ecosystem_pypi::cache::metadata_bytes(state, &artifact, route, metadata_filename)
+        peryx_ecosystem_pypi::cache::metadata_bytes(&state.serving, &artifact, route, metadata_filename)
             .await?
             .len() as u64,
     ))

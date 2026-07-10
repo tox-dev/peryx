@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::upload;
 use peryx_driver::rate_limit::UpstreamPermit;
-use peryx_driver::state::AppState;
+use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyDenial;
 use peryx_storage::meta::CachedIndex;
@@ -132,18 +132,18 @@ impl CacheError {
 }
 
 /// The per-page lock concurrent cache misses share.
-pub(crate) fn flight_gate(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn flight_gate(state: &ServingState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
     peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 
 /// Release a single-flight hold.
-fn release_flight(state: &AppState, key: &str, guard: tokio::sync::OwnedMutexGuard<()>) {
+fn release_flight(state: &ServingState, key: &str, guard: tokio::sync::OwnedMutexGuard<()>) {
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
 }
 
 /// The cached raw page, when it is still within its freshness window: upstream's `Cache-Control`
 /// lifetime when it granted one, the configured fallback otherwise.
-pub(crate) fn fresh_cached(state: &AppState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
+pub(crate) fn fresh_cached(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
     let now = (state.clock)();
     match state.meta.get_index(key)? {
         Some(record) if now - record.fetched_at_unix < freshness(state, &record) => Ok(Some(record)),
@@ -152,7 +152,7 @@ pub(crate) fn fresh_cached(state: &AppState, key: &str) -> Result<Option<CachedI
 }
 
 /// A record's freshness lifetime in seconds.
-const fn freshness(state: &AppState, record: &CachedIndex) -> i64 {
+const fn freshness(state: &ServingState, record: &CachedIndex) -> i64 {
     freshness_secs(state.ttl_secs, record.fresh_secs)
 }
 
@@ -171,7 +171,7 @@ pub const LEGACY_JSON: &str = "legacy.json";
 ///
 /// # Errors
 /// Returns a store error when the cached page cannot be read.
-pub fn rendered_expiry(state: &AppState, index: &Index, project: &str) -> Result<Option<i64>, CacheError> {
+pub fn rendered_expiry(state: &ServingState, index: &Index, project: &str) -> Result<Option<i64>, CacheError> {
     if index.policy.active() || !matches!(index.kind, IndexKind::Cached { .. }) {
         return Ok(None);
     }
@@ -185,7 +185,7 @@ pub fn rendered_expiry(state: &AppState, index: &Index, project: &str) -> Result
 /// cache that answers with whatever it last saw, forever, has stopped being a cache and started being
 /// a fork. `max_stale_secs` bounds the outage a stale page papers over. `0` removes the bound, which
 /// is what an operator deliberately mirroring an unreliable upstream asks for.
-pub(crate) fn servable_stale(state: &AppState, record: &CachedIndex) -> bool {
+pub(crate) fn servable_stale(state: &ServingState, record: &CachedIndex) -> bool {
     peryx_index::serving::within_stale_bound(
         (state.clock)(),
         state.max_stale_secs,
@@ -208,7 +208,7 @@ pub(crate) const fn freshness_secs(ttl_secs: i64, fresh_secs: Option<i64>) -> i6
 }
 
 /// The route a cached index's pages are attributed to in metrics.
-fn mirror_route(state: &AppState, name: &str) -> String {
+fn mirror_route(state: &ServingState, name: &str) -> String {
     state
         .indexes
         .iter()
@@ -221,7 +221,7 @@ fn project_negative_key(key: &str) -> String {
     format!("project\0{key}")
 }
 
-async fn upstream_permit(state: &AppState, name: &str) -> Result<UpstreamPermit, CacheError> {
+async fn upstream_permit(state: &ServingState, name: &str) -> Result<UpstreamPermit, CacheError> {
     state
         .upstream_limits
         .acquire(name)
@@ -252,7 +252,7 @@ fn is_tar_gz(filename: &str) -> bool {
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
 }
 
-fn source_mirror(state: &AppState, source: &str) -> Result<(UpstreamClient, bool), CacheError> {
+fn source_mirror(state: &ServingState, source: &str) -> Result<(UpstreamClient, bool), CacheError> {
     state
         .indexes
         .iter()
