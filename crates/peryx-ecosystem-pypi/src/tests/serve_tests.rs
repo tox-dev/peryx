@@ -11,7 +11,7 @@ use peryx_upstream::UpstreamClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http_tests::{detail_json, get, harness};
+use super::http::{detail_json, get, harness};
 use crate::cache::{self, PageOutcome};
 use peryx_driver::state::AppState;
 use peryx_index::{Index, IndexKind};
@@ -1148,7 +1148,7 @@ async fn test_oci_index_rejects_pypi_protocol_dispatch() {
     });
     // An OCI index serves the `/v2/` namespace, not the PyPI Simple/legacy/upload/mutation APIs.
     assert_eq!(get(&state, "/oci/simple/x/", None).await.0, StatusCode::NOT_FOUND);
-    let auth = super::http_tests::upload_auth();
+    let auth = super::http::upload_auth();
     for method in [Method::PUT, Method::DELETE] {
         let request = Request::builder()
             .method(method.clone())
@@ -1159,9 +1159,9 @@ async fn test_oci_index_rejects_pypi_protocol_dispatch() {
         let response = router(state.clone()).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
     }
-    let (content_type, body) = super::http_tests::multipart_body(&[("name", "x"), ("version", "1.0")], None);
+    let (content_type, body) = super::http::multipart_body(&[("name", "x"), ("version", "1.0")], None);
     assert_eq!(
-        super::http_tests::post_upload(&state, "/oci/", Some(&auth), &content_type, body).await,
+        super::http::post_upload(&state, "/oci/", Some(&auth), &content_type, body).await,
         StatusCode::NOT_FOUND
     );
 }

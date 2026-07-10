@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 
-use super::http_tests::{fixture_wheel, multipart_body, request, upload_auth, upload_peryxpkg};
+use super::http::{fixture_wheel, multipart_body, request, upload_auth, upload_peryxpkg};
 use peryx_driver::state::AppState;
 use peryx_events::webhook::{self, WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;

@@ -13,7 +13,7 @@ use tower::ServiceExt as _;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http_tests::detail_json;
+use super::http::detail_json;
 use super::{LogCapture, field};
 use peryx_driver::rate_limit::{
     DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimited, UpstreamLimits,

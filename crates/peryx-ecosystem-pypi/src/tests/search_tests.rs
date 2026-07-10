@@ -7,7 +7,7 @@ use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::{CachedIndex, MetaError, MetaScanError, MetaStore};
 use peryx_upstream::UpstreamClient;
 
-use super::http_tests::{get, harness, harness_with_policies};
+use super::http::{get, harness, harness_with_policies};
 use crate::cache;
 use crate::upload::Uploaded;
 use peryx_core::path::local_file_url;

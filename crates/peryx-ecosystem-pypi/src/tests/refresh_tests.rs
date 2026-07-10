@@ -6,7 +6,7 @@ use peryx_storage::meta::CachedIndex;
 use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http_tests::{detail_json, get, harness, harness_with_policies};
+use super::http::{detail_json, get, harness, harness_with_policies};
 use super::{LogCapture, field};
 use crate::cache::refresh_stale_pages;
 use peryx_policy::{Policy, PolicyConfig};

@@ -6,7 +6,7 @@ mod conformance_tests;
 mod fanout_tests;
 mod filename_tests;
 mod html_tests;
-mod http_tests;
+mod http;
 mod metadata_tests;
 mod metrics_tests;
 mod name_tests;
@@ -49,7 +49,7 @@ fn install_global_subscriber() {
 }
 
 #[derive(Clone, Default)]
-struct LogCapture {
+pub struct LogCapture {
     bytes: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -108,7 +108,7 @@ impl std::io::Write for LogWriter {
     }
 }
 
-fn field<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+pub fn field<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
     event["fields"][name].as_str()
 }
 

@@ -17,7 +17,7 @@ use peryx_upstream::UpstreamClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http_tests::{fixture_wheel, get, upload_peryxpkg};
+use super::http::{fixture_wheel, get, upload_peryxpkg};
 
 /// The digest the cached layer advertises for the contested filename. It differs from the uploaded
 /// wheel's, so the served page names exactly one of the two files.
