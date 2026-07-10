@@ -1,7 +1,8 @@
+use peryx_core::UiDescription;
 use peryx_ecosystem_pypi::parse_metadata;
 
 use crate::markdown::render_description;
-use crate::model::{UiProject, UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};
+use crate::model::{UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};
 
 #[test]
 fn test_snapshot_from_status_roundtrip() {
@@ -61,7 +62,7 @@ fn test_project_from_detail_maps_files() {
             "core-metadata": {"sha256": "bb"},
         }],
     });
-    let project = UiProject::from_detail(&value);
+    let project = peryx_ecosystem_pypi::ui_project_from_detail(&value);
     assert_eq!(project.name, "veloxdemo");
     assert_eq!(project.files[0].sha256, "aa");
     assert_eq!(project.files[0].upload_time.as_deref(), Some("2026-01-01T00:00:00Z"));
@@ -110,7 +111,10 @@ fn test_render_description_markdown_escapes_inline_html() {
     let doc = parse_metadata(
         "Name: x\nVersion: 1\nDescription-Content-Type: text/markdown\n\n# Hi\n\n<script>alert(1)</script>\n\n**bold**",
     );
-    let html = render_description(&doc);
+    let html = render_description(&UiDescription {
+        text: doc.description,
+        content_type: doc.description_content_type,
+    });
     assert!(html.contains("<h1>Hi</h1>"));
     assert!(html.contains("<strong>bold</strong>"));
     assert!(!html.contains("<script>"), "inline HTML must be escaped, not executed");
@@ -120,7 +124,10 @@ fn test_render_description_markdown_escapes_inline_html() {
 #[test]
 fn test_render_description_plain_text_preformatted() {
     let doc = parse_metadata("Name: x\nVersion: 1\nDescription-Content-Type: text/x-rst\n\nplain <text>");
-    let html = render_description(&doc);
+    let html = render_description(&UiDescription {
+        text: doc.description,
+        content_type: doc.description_content_type,
+    });
     assert!(html.starts_with("<pre class=\"description-plain\">"));
     assert!(html.contains("plain &lt;text&gt;"));
 }

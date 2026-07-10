@@ -37,7 +37,7 @@ pub use serving::PypiServing;
 pub use filename::{DistributionFilename, DistributionFilenameError, DistributionKind, parse_distribution_filename};
 pub use html::{parse_detail_html, parse_index_html};
 pub use legacy_json::render_legacy_json;
-pub use metadata::{CoreMetadataDoc, parse_metadata};
+pub use metadata::{CoreMetadataDoc, parse_metadata, ui_meta, ui_project_from_detail};
 pub use name::{
     PackageName, file_matches_version, is_valid_name, normalize_name, normalize_name_cow, project_of_filename,
 };

@@ -3,9 +3,9 @@
     reason = "browser fetch futures are single-threaded by nature; callers wrap them in SendWrapper"
 )]
 
-use peryx_ecosystem_pypi::CoreMetadataDoc;
+use peryx_core::UiMeta;
 
-use crate::model::UiProject;
+use peryx_core::UiProject;
 
 /// The project names of the index at `route`.
 ///
@@ -34,15 +34,12 @@ pub async fn load_projects(route: String) -> Result<Vec<String>, String> {
     }
 }
 
-/// One project's page data: its files, and the parsed core metadata of its newest wheel that
-/// advertises a PEP 658 sibling.
+/// One project's page data: its files, and the neutral metadata view of its newest artifact that
+/// carries a metadata sibling.
 ///
 /// # Errors
 /// Returns a user-visible message when the project page or metadata sibling cannot be read.
-pub async fn load_project(
-    route: String,
-    project: String,
-) -> Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String> {
+pub async fn load_project(route: String, project: String) -> Result<Option<(UiProject, UiMeta)>, String> {
     #[cfg(feature = "ssr")]
     {
         crate::ssr::project(&route, &project).await
@@ -54,15 +51,15 @@ pub async fn load_project(
             else {
                 return Ok(None);
             };
-            let ui = UiProject::from_detail(&value);
-            let doc = match ui.files.iter().rev().find(|file| file.has_metadata) {
+            let ui = peryx_ecosystem_pypi::ui_project_from_detail(&value);
+            let meta = match ui.files.iter().rev().find(|file| file.has_metadata) {
                 Some(file) => {
                     let text = super::fetch_text_required(&format!("{}.metadata", file.url)).await?;
-                    Some(peryx_ecosystem_pypi::parse_metadata(&text))
+                    peryx_ecosystem_pypi::ui_meta(&text)
                 }
-                None => None,
+                None => UiMeta::default(),
             };
-            Ok(Some((ui, doc)))
+            Ok(Some((ui, meta)))
         })
         .await
     }

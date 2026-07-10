@@ -66,6 +66,11 @@ pub struct AppState {
     /// [`mount`](crate::serving::EcosystemDriver::mount) tells the router and rate limiter how to reach
     /// it, so neither names an ecosystem.
     pub(super) drivers: [Option<Arc<dyn crate::serving::EcosystemDriver>>; Ecosystem::COUNT],
+    /// The absolute top-level prefixes of the [`Absolute`](crate::serving::RouteMount::Absolute)-mount
+    /// drivers, each paired with its slot, precomputed at registration. The rate limiter classifies a
+    /// request through this on every call, so it must not walk every driver and dispatch `mount()`
+    /// dynamically: this list holds only the few absolute prefixes, whatever the ecosystem count.
+    pub(super) absolute_prefixes: Vec<(&'static str, usize)>,
     /// Each ecosystem's user-facing vocabulary, registered by its driver at install time so surfaces
     /// localize a label by an index's ecosystem without the neutral core naming any ecosystem's words.
     pub(super) lexicons: LexiconRegistry,

@@ -51,6 +51,10 @@ impl AppState {
         indexer: Arc<dyn peryx_search::PackageIndexer>,
     ) {
         let slot = driver.ecosystem().slot();
+        if let crate::serving::RouteMount::Absolute(prefixes) = driver.mount() {
+            self.absolute_prefixes
+                .extend(prefixes.iter().map(|&prefix| (prefix, slot)));
+        }
         self.drivers[slot] = Some(driver);
         self.search.add_indexer(indexer);
     }
@@ -91,10 +95,18 @@ impl AppState {
     /// no such prefix and the per-index router handles it.
     #[must_use]
     pub fn absolute_driver_for_path(&self, path: &str) -> Option<&Arc<dyn crate::serving::EcosystemDriver>> {
-        self.drivers().find(|driver| match driver.mount() {
-            crate::serving::RouteMount::Absolute(prefixes) => prefixes.iter().any(|prefix| path.starts_with(prefix)),
-            crate::serving::RouteMount::Indexed => false,
-        })
+        let slot = self
+            .absolute_prefixes
+            .iter()
+            .find_map(|&(prefix, slot)| path.starts_with(prefix).then_some(slot))?;
+        self.drivers[slot].as_ref()
+    }
+
+    /// The absolute top-level prefixes each with its driver, for the router to mount catch-alls under.
+    pub fn absolute_mounts(&self) -> impl Iterator<Item = (&'static str, &Arc<dyn crate::serving::EcosystemDriver>)> {
+        self.absolute_prefixes
+            .iter()
+            .filter_map(|&(prefix, slot)| Some((prefix, self.drivers[slot].as_ref()?)))
     }
 
     /// The driver serving the ecosystem named `ecosystem`, so `/+api` renders that index's setup.

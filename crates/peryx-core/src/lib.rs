@@ -14,7 +14,9 @@ pub mod lexicon;
 pub mod path;
 pub mod role;
 pub mod url_encoding;
+pub mod view;
 
 pub use ecosystem::{Ecosystem, UnknownEcosystem};
 pub use lexicon::{Lexicon, LexiconRegistry};
 pub use role::Role;
+pub use view::{UiBlock, UiDescription, UiFile, UiMeta, UiProject};

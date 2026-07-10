@@ -295,6 +295,7 @@ impl AppState {
             upstream_limits: UpstreamLimits::new(upstream_limits),
             webhooks,
             drivers: std::array::from_fn(|_| None),
+            absolute_prefixes: Vec::new(),
             lexicons: LexiconRegistry::default(),
             openapi: std::sync::Arc::from(STUB_OPENAPI),
         }

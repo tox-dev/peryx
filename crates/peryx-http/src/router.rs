@@ -29,20 +29,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/metrics", get(handlers::metrics));
     // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.
-    for driver in state.drivers() {
-        let peryx_driver::serving::RouteMount::Absolute(prefixes) = driver.mount() else {
-            continue;
-        };
+    for (prefix, driver) in state.absolute_mounts() {
         let driver = driver.clone();
         let serve = move |State(state): State<Arc<AppState>>, request: Request| {
             let driver = driver.clone();
             async move { driver.serve(state, request).await }
         };
-        for prefix in prefixes {
-            router = router
-                .route(prefix, any(serve.clone()))
-                .route(&format!("{prefix}{{*rest}}"), any(serve.clone()));
-        }
+        router = router
+            .route(prefix, any(serve.clone()))
+            .route(&format!("{prefix}{{*rest}}"), any(serve));
     }
     let router = router
         .route(

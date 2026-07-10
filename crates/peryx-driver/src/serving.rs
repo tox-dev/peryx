@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use axum::extract::{Multipart, Request};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use peryx_core::Ecosystem;
+use peryx_core::{Ecosystem, UiMeta, UiProject};
 
 use crate::state::AppState;
 
@@ -81,6 +81,46 @@ pub trait EcosystemDriver: Send + Sync {
     /// without a read-through cache sweeps nothing, so the default is a no-op.
     async fn refresh_stale(&self, _state: Arc<AppState>) -> Result<RefreshSweep, String> {
         Ok(RefreshSweep::default())
+    }
+
+    /// The project names of the index at `position`, for the web index listing. The web crate renders
+    /// these without knowing the wire protocol they came from. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the index cannot be read.
+    fn project_names(&self, _state: &AppState, _position: usize) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    /// The web project page for `project` on the index at `position`: its files and neutral metadata,
+    /// produced from this ecosystem's format so the web crate carries none of that logic. `None` when
+    /// the project is absent. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the project or its metadata cannot be read.
+    async fn project_page(
+        &self,
+        _state: Arc<AppState>,
+        _position: usize,
+        _project: String,
+    ) -> Result<Option<(UiProject, UiMeta)>, String> {
+        Ok(None)
+    }
+
+    /// Ensure the artifact `digest_hex`/`filename` on the index at `position` is present locally,
+    /// fetching it through the proxy on a miss, and return its path in the blob store. The web archive
+    /// browser reads members from this path with the neutral archive engine. Default: unsupported.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the artifact cannot be found or fetched.
+    async fn artifact_path(
+        &self,
+        _state: Arc<AppState>,
+        _position: usize,
+        _digest_hex: String,
+        _filename: String,
+    ) -> Result<std::path::PathBuf, String> {
+        Err("this ecosystem does not serve artifact files".to_owned())
     }
 
     /// Serve a whole request under one of this driver's [`Absolute`](RouteMount::Absolute) prefixes.

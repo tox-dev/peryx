@@ -3,7 +3,7 @@
 //! Descriptions come from arbitrary packages, so inline HTML is escaped rather than passed through:
 //! markdown formatting works, embedded tags render as text.
 
-use peryx_ecosystem_pypi::CoreMetadataDoc;
+use peryx_core::UiDescription;
 use pulldown_cmark::{Event, Options, Parser, html};
 
 /// Render a long description to safe HTML.
@@ -12,12 +12,12 @@ use pulldown_cmark::{Event, Options, Parser, html};
 /// pypi.org treats as markdown-friendly plain text); other content types are shown as preformatted
 /// text.
 #[must_use]
-pub fn render_description(doc: &CoreMetadataDoc) -> String {
-    let content_type = doc.description_content_type.as_deref().unwrap_or("text/markdown");
+pub fn render_description(description: &UiDescription) -> String {
+    let content_type = description.content_type.as_deref().unwrap_or("text/markdown");
     if content_type.starts_with("text/markdown") {
-        render_markdown(&doc.description)
+        render_markdown(&description.text)
     } else {
-        format!("<pre class=\"description-plain\">{}</pre>", escape(&doc.description))
+        format!("<pre class=\"description-plain\">{}</pre>", escape(&description.text))
     }
 }
 

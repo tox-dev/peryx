@@ -98,3 +98,117 @@ fn unfold(headers: &str) -> Vec<String> {
 fn non_empty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
+
+impl CoreMetadataDoc {
+    /// Turn this `PyPI` core-metadata document into the neutral view model the web UI renders, mapping
+    /// each header to a metadata-panel block the way a pypi.org project page presents it.
+    #[must_use]
+    pub fn to_ui_meta(&self) -> peryx_core::UiMeta {
+        use peryx_core::{UiBlock, UiDescription, UiMeta};
+
+        let mut blocks = Vec::new();
+        for (label, value) in [
+            ("Requires Python", &self.requires_python),
+            ("License", &self.license),
+            ("Author", &self.author),
+            ("Maintainer", &self.maintainer),
+        ] {
+            if let Some(value) = value {
+                blocks.push(UiBlock::KeyValue {
+                    label: label.to_owned(),
+                    value: value.clone(),
+                });
+            }
+        }
+        for (label, values) in [("Keywords", &self.keywords), ("Dependencies", &self.requires_dist)] {
+            if !values.is_empty() {
+                blocks.push(UiBlock::Chips {
+                    label: label.to_owned(),
+                    values: values.clone(),
+                });
+            }
+        }
+        if !self.project_urls.is_empty() {
+            blocks.push(UiBlock::Links {
+                label: "Links".to_owned(),
+                links: self.project_urls.clone(),
+            });
+        }
+        if let Some(groups) = classifier_groups(&self.classifiers) {
+            blocks.push(UiBlock::Groups {
+                label: "Classifiers".to_owned(),
+                groups,
+            });
+        }
+        UiMeta {
+            version: non_empty(&self.version),
+            summary: self.summary.clone(),
+            description: non_empty(&self.description).map(|text| UiDescription {
+                text,
+                content_type: self.description_content_type.clone(),
+            }),
+            blocks,
+        }
+    }
+}
+
+/// Group trove classifiers by their top-level `::`-separated category, the way pypi.org presents them.
+/// `None` when there are none, so the caller emits no block.
+fn classifier_groups(classifiers: &[String]) -> Option<Vec<(String, Vec<String>)>> {
+    if classifiers.is_empty() {
+        return None;
+    }
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for classifier in classifiers {
+        let (group, rest) = classifier
+            .split_once(" :: ")
+            .map_or((classifier.as_str(), classifier.as_str()), |(g, r)| (g, r));
+        match groups.iter_mut().find(|(name, _)| name == group) {
+            Some((_, values)) => values.push(rest.to_owned()),
+            None => groups.push((group.to_owned(), vec![rest.to_owned()])),
+        }
+    }
+    Some(groups)
+}
+
+/// Parse a `PyPI` core-metadata document straight into the neutral [`UiMeta`](peryx_core::UiMeta) the
+/// web UI renders.
+#[must_use]
+pub fn ui_meta(metadata_text: &str) -> peryx_core::UiMeta {
+    parse_metadata(metadata_text).to_ui_meta()
+}
+
+/// Build a neutral [`UiProject`](peryx_core::UiProject) from a PEP 691 project-detail JSON document.
+///
+/// This is the shape the web project page renders. The `PyPI`-specific field names (`core-metadata`,
+/// PEP 592 `yanked`) are read here so the UI never sees them.
+#[must_use]
+pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProject {
+    fn string_at(value: &serde_json::Value, key: &str) -> String {
+        value[key].as_str().unwrap_or_default().to_owned()
+    }
+    let files = value["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|file| peryx_core::UiFile {
+            filename: string_at(file, "filename"),
+            url: string_at(file, "url"),
+            sha256: file["hashes"]["sha256"].as_str().unwrap_or_default().to_owned(),
+            size: file["size"].as_u64(),
+            upload_time: file["upload-time"].as_str().map(str::to_owned),
+            yanked: file["yanked"].as_bool().unwrap_or(false) || file["yanked"].is_string(),
+            has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
+        })
+        .collect();
+    peryx_core::UiProject {
+        name: string_at(value, "name"),
+        versions: value["versions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|version| version.as_str().map(str::to_owned))
+            .collect(),
+        files,
+    }
+}

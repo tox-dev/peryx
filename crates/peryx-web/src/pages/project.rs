@@ -12,7 +12,7 @@ use std::sync::Arc;
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::hooks::{use_navigate, use_query_map};
-use peryx_ecosystem_pypi::CoreMetadataDoc;
+use peryx_core::{UiBlock, UiMeta};
 use regex::Regex;
 
 use super::{ErrorMessage, copy_to_clipboard, human_size};
@@ -24,7 +24,7 @@ use crate::url::{
     simple_index_url,
 };
 
-type ProjectPage = Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String>;
+type ProjectPage = Result<Option<(UiProject, UiMeta)>, String>;
 type ProjectPageResource = Resource<ProjectPage>;
 
 #[component]
@@ -51,8 +51,8 @@ pub(super) fn ProjectView(route: String, project: String) -> impl IntoView {
                 let route = route.clone();
                 Suspend::new(async move {
                     match page.await {
-                        Ok(Some((ui, doc))) => {
-                            view! { <ProjectBody route ui doc refresh=page token set_token set_outcome /> }
+                        Ok(Some((ui, meta))) => {
+                            view! { <ProjectBody route ui meta refresh=page token set_token set_outcome /> }
                                 .into_any()
                         }
                         Ok(None) => view! { <p class="dim">"Project not found on this index."</p> }.into_any(),
@@ -72,20 +72,25 @@ pub(super) fn ProjectView(route: String, project: String) -> impl IntoView {
 fn ProjectBody(
     route: String,
     ui: UiProject,
-    doc: Option<CoreMetadataDoc>,
+    meta: UiMeta,
     refresh: ProjectPageResource,
     token: ReadSignal<String>,
     set_token: WriteSignal<String>,
     set_outcome: WriteSignal<String>,
 ) -> impl IntoView {
-    let doc = doc.unwrap_or_default();
-    let latest = ui.versions.last().cloned().unwrap_or_else(|| doc.version.clone());
+    let latest = ui
+        .versions
+        .last()
+        .cloned()
+        .or_else(|| meta.version.clone())
+        .unwrap_or_default();
     let install = format!("uv pip install --index-url {} {}", simple_index_url(&route), ui.name);
-    let description = render_description(&doc);
+    let description = meta.description.as_ref().map(render_description).unwrap_or_default();
+    let summary = meta.summary.clone();
     view! {
         <header class="project-head">
             <h1>{ui.name.clone()} <span class="version">{latest}</span></h1>
-            {doc.summary.clone().map(|summary| view! { <p class="summary">{summary}</p> })}
+            {summary.map(|summary| view! { <p class="summary">{summary}</p> })}
             <InstallSnippet install />
         </header>
         <div class="project-grid">
@@ -97,7 +102,7 @@ fn ProjectBody(
                 <AdminPanel route=route project=ui.name.clone() versions=ui.versions.clone() refresh token set_token set_outcome />
             </div>
             <aside class="project-side">
-                <MetaPanel doc versions=ui.versions />
+                <MetaPanel meta versions=ui.versions />
             </aside>
         </div>
     }
@@ -337,67 +342,47 @@ fn supports_archive_browser(filename: &str) -> bool {
 }
 
 #[component]
-fn MetaPanel(doc: CoreMetadataDoc, versions: Vec<String>) -> impl IntoView {
+fn MetaPanel(meta: UiMeta, versions: Vec<String>) -> impl IntoView {
+    let blocks = meta.blocks.into_iter().map(block_view).collect_view();
     view! {
         <h3>"Versions"</h3>
         <p class="chips">{versions.into_iter().map(|version| view! { <code>{version}</code> }).collect_view()}</p>
-        {doc.requires_python.map(|value| view! { <h3>"Requires Python"</h3><p><code>{value}</code></p> })}
-        {doc.license.map(|value| view! { <h3>"License"</h3><p>{value}</p> })}
-        {doc.author.map(|value| view! { <h3>"Author"</h3><p>{value}</p> })}
-        {doc.maintainer.map(|value| view! { <h3>"Maintainer"</h3><p>{value}</p> })}
-        {(!doc.keywords.is_empty()).then(|| view! {
-            <h3>"Keywords"</h3>
-            <p class="chips">{doc.keywords.into_iter().map(|word| view! { <code>{word}</code> }).collect_view()}</p>
-        })}
-        {(!doc.requires_dist.is_empty()).then(|| view! {
-            <h3>"Dependencies"</h3>
-            <p class="chips">
-                {doc.requires_dist.into_iter().map(|dep| view! { <code>{dep}</code> }).collect_view()}
-            </p>
-        })}
-        {(!doc.project_urls.is_empty()).then(|| view! {
-            <h3>"Links"</h3>
-            <ul class="links-list">
-                {doc.project_urls
-                    .into_iter()
-                    .map(|(label, url)| view! { <li><a href=url rel="external">{label}</a></li> })
-                    .collect_view()}
-            </ul>
-        })}
-        <ClassifierGroups classifiers=doc.classifiers />
+        {blocks}
     }
 }
 
-/// Classifiers grouped by their top-level category, the way pypi.org presents them.
-#[component]
-fn ClassifierGroups(classifiers: Vec<String>) -> impl IntoView {
-    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-    for classifier in classifiers {
-        let (group, rest) = classifier.split_once(" :: ").map_or_else(
-            || (classifier.clone(), classifier.clone()),
-            |(g, r)| (g.to_owned(), r.to_owned()),
-        );
-        match groups.iter_mut().find(|(name, _)| *name == group) {
-            Some((_, values)) => values.push(rest),
-            None => groups.push((group, vec![rest])),
+/// Render one neutral metadata block. The catch-all keeps an unrecognized block — a variant added to
+/// [`UiBlock`] that this renderer does not yet know — from breaking the page.
+fn block_view(block: UiBlock) -> AnyView {
+    match block {
+        UiBlock::KeyValue { label, value } => view! {
+            <h3>{label}</h3><p><code>{value}</code></p>
         }
+        .into_any(),
+        UiBlock::Chips { label, values } => view! {
+            <h3>{label}</h3>
+            <p class="chips">{values.into_iter().map(|value| view! { <code>{value}</code> }).collect_view()}</p>
+        }
+        .into_any(),
+        UiBlock::Links { label, links } => view! {
+            <h3>{label}</h3>
+            <ul class="links-list">
+                {links.into_iter().map(|(text, url)| view! { <li><a href=url rel="external">{text}</a></li> }).collect_view()}
+            </ul>
+        }
+        .into_any(),
+        UiBlock::Groups { label, groups } => view! {
+            <h3>{label}</h3>
+            {groups.into_iter().map(|(group, values)| view! {
+                <p class="classifier-group">{group}</p>
+                <ul class="classifiers">
+                    {values.into_iter().map(|value| view! { <li>{value}</li> }).collect_view()}
+                </ul>
+            }).collect_view()}
+        }
+        .into_any(),
+        _ => ().into_any(),
     }
-    (!groups.is_empty()).then(|| {
-        view! {
-            <h3>"Classifiers"</h3>
-            {groups
-                .into_iter()
-                .map(|(group, values)| {
-                    view! {
-                        <p class="classifier-group">{group}</p>
-                        <ul class="classifiers">
-                            {values.into_iter().map(|value| view! { <li>{value}</li> }).collect_view()}
-                        </ul>
-                    }
-                })
-                .collect_view()}
-        }
-    })
 }
 
 /// Yank, un-yank, and delete for the index's hosted layer, driven from the browser with the upload

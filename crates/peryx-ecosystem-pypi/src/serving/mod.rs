@@ -37,6 +37,7 @@ mod mutate;
 mod post;
 mod response;
 mod upload_form;
+mod web;
 
 use get::pypi_dispatch_get;
 use mutate::{pypi_dispatch_delete, pypi_dispatch_put};
@@ -129,6 +130,29 @@ impl EcosystemDriver for PypiServing {
 
     fn metric_families(&self) -> &'static [MetricFamily] {
         PYPI_FAMILIES
+    }
+
+    fn project_names(&self, state: &AppState, position: usize) -> Result<Vec<String>, String> {
+        web::project_names(state, position)
+    }
+
+    async fn project_page(
+        &self,
+        state: Arc<AppState>,
+        position: usize,
+        project: String,
+    ) -> Result<Option<(peryx_core::UiProject, peryx_core::UiMeta)>, String> {
+        web::project_page(state, position, project).await
+    }
+
+    async fn artifact_path(
+        &self,
+        state: Arc<AppState>,
+        position: usize,
+        digest_hex: String,
+        filename: String,
+    ) -> Result<std::path::PathBuf, String> {
+        web::artifact_path(state, position, digest_hex, filename).await
     }
 
     async fn refresh_stale(&self, state: Arc<AppState>) -> Result<RefreshSweep, String> {
