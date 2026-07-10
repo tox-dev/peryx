@@ -27,7 +27,7 @@ fn cache_at(config: &Config, command: &CacheCommand, now: i64, out: &mut dyn Wri
         CacheCommand::List(args) => list_cache(config, &stores, args, now, out),
         CacheCommand::Size(_) => size_cache(config, &stores, now, out),
         CacheCommand::Fsck(_) => fsck_cache(&stores, out),
-        CacheCommand::Purge(CachePurgeCommand::Project(args)) => purge_project(&stores, args, out),
+        CacheCommand::Purge(CachePurgeCommand::Project(args)) => purge_project(config, &stores, args, out),
         CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(args)) => purge_orphaned_blobs(&stores, args, out),
     }
 }

@@ -98,7 +98,7 @@ fn test_cache_purge_project_reports_corrupt_shared_record() {
     );
     let mut out = Vec::new();
     let err = app::cache(&config, &purge_project_command(false), &mut out).unwrap_err();
-    assert!(err.to_string().contains("scan cached pages for shared digests"));
+    assert!(err.to_string().contains("corrupt cached page"), "{err}");
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn test_cache_purge_project_reports_corrupt_upload_record() {
     );
     let mut out = Vec::new();
     let err = app::cache(&config, &purge_project_command(false), &mut out).unwrap_err();
-    assert!(err.to_string().contains("scan upload records for shared digests"));
+    assert!(err.to_string().contains("invalid upload record"), "{err}");
 }
 
 #[test]

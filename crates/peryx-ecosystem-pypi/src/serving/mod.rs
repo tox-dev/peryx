@@ -168,6 +168,27 @@ impl EcosystemDriver for PypiServing {
         crate::admin::fsck_metadata(meta, blobs, out)
     }
 
+    fn policy_dry_run(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        indexes: &[Index],
+        index_filter: Option<&str>,
+        project_filter: Option<&str>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), String> {
+        crate::admin::policy_dry_run(meta, indexes, index_filter, project_filter, out)
+    }
+
+    fn purge_project(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index: &str,
+        project: &str,
+        apply: bool,
+    ) -> Result<(String, peryx_storage::meta::ProjectCachePurgeCounts), String> {
+        crate::admin::purge_project(meta, index, project, apply)
+    }
+
     fn import_dir(
         &self,
         meta: &peryx_storage::meta::MetaStore,

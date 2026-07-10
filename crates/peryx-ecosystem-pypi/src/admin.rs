@@ -6,11 +6,14 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 
+use peryx_index::Index;
+use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{BlobStore, Digest};
-use peryx_storage::meta::{CachedIndex, MetaStore};
+use peryx_storage::meta::{CachedIndex, MetaStore, ProjectCachePurgeCounts};
 
+use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
-use crate::{CoreMetadata, parse_detail};
+use crate::{CoreMetadata, ProjectDetail, normalize_name, parse_detail};
 
 /// The blob digests every `PyPI` metadata table references: cached file URLs, PEP 658 metadata
 /// siblings, and hosted upload records. The neutral orphan-blob collector keeps these and reclaims
@@ -52,6 +55,204 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
     })
     .map_err(|err| err.to_string())?;
     Ok(digests)
+}
+
+/// Preview this ecosystem's policy decisions over its cached and uploaded records, writing one
+/// tab-separated line per denial to `out`. `index_filter` restricts to one index by name or route;
+/// `project_filter` restricts to one normalized project. `indexes` is every configured index, of
+/// which this considers only the `PyPI` ones its records belong to.
+///
+/// # Errors
+/// Returns a message when a record cannot be read or `out` cannot be written.
+pub fn policy_dry_run(
+    meta: &MetaStore,
+    indexes: &[Index],
+    index_filter: Option<&str>,
+    project_filter: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let mut names = indexes.iter().map(|index| index.name.as_str()).collect::<Vec<_>>();
+    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    let project_filter = project_filter.map(normalize_name);
+    meta.scan_index_records(|key, bytes| {
+        let (index_name, project) = split_page_key(key, &names);
+        let Some(index) = matching_index(indexes, &index_name, index_filter) else {
+            return Ok(());
+        };
+        if project_filter.as_deref().is_some_and(|filter| filter != project) {
+            return Ok(());
+        }
+        let record = CachedIndex::decode(bytes).map_err(|err| format!("corrupt cached page {key}: {err}"))?;
+        let parsed = parse_detail(&record.body).map_err(|err| err.to_string())?;
+        let detail = ProjectDetail {
+            meta: parsed.meta,
+            name: project,
+            versions: parsed.versions,
+            files: parsed.files,
+        };
+        for denial in index.policy.preview_detail(PolicyAction::Serve, &detail) {
+            write_denial(out, &index.name, &denial).map_err(|err| err.to_string())?;
+        }
+        Ok::<(), String>(())
+    })
+    .map_err(|err| err.to_string())?;
+    meta.scan_upload_records(|key, bytes| {
+        let Some((index_name, project, _filename)) = upload_key_parts(key, &names) else {
+            return Ok(());
+        };
+        let Some(index) = matching_index(indexes, &index_name, index_filter) else {
+            return Ok(());
+        };
+        if project_filter.as_deref().is_some_and(|filter| filter != project) {
+            return Ok(());
+        }
+        let uploaded: Uploaded = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+        if let Err(denial) = index.policy.check_file(PolicyAction::Upload, project, &uploaded.file) {
+            write_denial(out, &index.name, &denial).map_err(|err| err.to_string())?;
+        }
+        Ok::<(), String>(())
+    })
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn matching_index<'a>(indexes: &'a [Index], index_name: &str, filter: Option<&str>) -> Option<&'a Index> {
+    let index = indexes.iter().find(|index| index.name == index_name)?;
+    filter
+        .is_none_or(|filter| filter == index.name || filter == index.route)
+        .then_some(index)
+}
+
+fn write_denial(out: &mut dyn Write, index: &str, denial: &PolicyDenial) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "{}\t{index}\t{}\t{}\t{}\t{}\t{}\t{}",
+        denial.action,
+        denial.project,
+        denial.filename.as_deref().unwrap_or(""),
+        denial.version.as_deref().unwrap_or(""),
+        denial.rule,
+        denial.field,
+        denial.reason
+    )
+}
+
+fn split_page_key(key: &str, index_names: &[&str]) -> (String, String) {
+    for name in index_names {
+        if let Some(project) = key.strip_prefix(name).and_then(|rest| rest.strip_prefix('/')) {
+            return ((*name).to_owned(), project.to_owned());
+        }
+    }
+    key.split_once('/').map_or_else(
+        || (key.to_owned(), String::new()),
+        |(index, project)| (index.to_owned(), project.to_owned()),
+    )
+}
+
+fn upload_key_parts<'a>(key: &'a str, index_names: &[&str]) -> Option<(String, &'a str, &'a str)> {
+    for name in index_names {
+        let Some(rest) = key.strip_prefix(name).and_then(|rest| rest.strip_prefix('/')) else {
+            continue;
+        };
+        let (project, filename) = rest.split_once('/')?;
+        return Some(((*name).to_owned(), project, filename));
+    }
+    let (index, rest) = key.split_once('/')?;
+    let (project, filename) = rest.split_once('/')?;
+    Some((index.to_owned(), project, filename))
+}
+
+/// Purge one project's cached records from `index`, keeping any blob a still-cached project or a
+/// hosted upload also references. With `apply`, deletes the records and returns the removed counts;
+/// otherwise counts what a purge would remove. Returns the normalized project name alongside.
+///
+/// # Errors
+/// Returns a message when a cached page cannot be read or the store cannot be written.
+pub fn purge_project(
+    meta: &MetaStore,
+    index: &str,
+    project: &str,
+    apply: bool,
+) -> Result<(String, ProjectCachePurgeCounts), String> {
+    let normalized = normalize_name(project);
+    let target_key = format!("{index}/{normalized}");
+    let target = project_refs(meta, &target_key)?;
+    let preserved = preserved_refs(meta, &target_key)?;
+    let file_digests = target.files.difference(&preserved.files).cloned().collect::<Vec<_>>();
+    let metadata_digests = target
+        .metadata_wheels
+        .difference(&preserved.files)
+        .cloned()
+        .collect::<Vec<_>>();
+    let counts = if apply {
+        meta.delete_project_cache(index, &normalized, &file_digests, &metadata_digests)
+            .map_err(|err| err.to_string())?
+    } else {
+        meta.count_project_cache_purge(index, &normalized, &file_digests, &metadata_digests)
+            .map_err(|err| err.to_string())?
+    };
+    Ok((normalized, counts))
+}
+
+#[derive(Default)]
+struct CacheRefs {
+    files: BTreeSet<String>,
+    metadata_wheels: BTreeSet<String>,
+}
+
+fn project_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, String> {
+    let Some(record) = meta
+        .get_index(target_key)
+        .map_err(|err| format!("read cached project {target_key}: {err}"))?
+    else {
+        return Ok(CacheRefs::default());
+    };
+    let mut refs = CacheRefs::default();
+    add_index_refs(&mut refs, &record).map_err(|err| format!("read cached project {target_key}: {err}"))?;
+    Ok(refs)
+}
+
+fn preserved_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, String> {
+    let mut refs = CacheRefs::default();
+    meta.scan_index_records(|key, bytes| {
+        if key == target_key {
+            return Ok(());
+        }
+        let record = CachedIndex::decode(bytes).map_err(|err| format!("corrupt cached page {key}: {err}"))?;
+        add_index_refs(&mut refs, &record).map_err(|err| format!("corrupt cached page {key}: {err}"))
+    })
+    .map_err(|err| err.to_string())?;
+    meta.scan_upload_records(|key, bytes| {
+        for digest in upload_digests(bytes).ok_or_else(|| format!("invalid upload record {key}"))? {
+            refs.files.insert(digest.as_str().to_owned());
+        }
+        Ok::<(), String>(())
+    })
+    .map_err(|err| err.to_string())?;
+    Ok(refs)
+}
+
+fn add_index_refs(refs: &mut CacheRefs, record: &CachedIndex) -> Result<(), String> {
+    for file in parse_detail(&record.body).map_err(|err| err.to_string())?.files {
+        let Some(sha256) = file.hashes.get("sha256") else {
+            continue;
+        };
+        if Digest::from_hex(sha256).is_none() {
+            return Err(format!("cached page contains invalid sha256 digest {sha256:?}"));
+        }
+        refs.files.insert(sha256.to_owned());
+        if let CoreMetadata::Hashes(hashes) = file.core_metadata
+            && let Some(metadata_digest) = hashes.get("sha256")
+        {
+            if Digest::from_hex(metadata_digest).is_none() {
+                return Err(format!(
+                    "cached page contains invalid metadata digest {metadata_digest:?}"
+                ));
+            }
+            refs.metadata_wheels.insert(sha256.to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// Validate every `PyPI` metadata record in `meta`, writing one tab-separated line per problem to

@@ -1,9 +1,7 @@
 //! Command actions that do not touch global state.
 
 use anyhow::Context as _;
-use peryx_ecosystem_pypi::CoreMetadata;
-use peryx_ecosystem_pypi::upload::Uploaded;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
 use crate::config::Config;
@@ -32,19 +30,6 @@ impl CacheStores {
             blobs: BlobStore::new(config.data_dir.join("blobs")),
         })
     }
-}
-
-fn upload_digests(bytes: &[u8]) -> Option<Vec<Digest>> {
-    let upload: Uploaded = serde_json::from_slice(bytes).ok()?;
-    let mut digests = Vec::new();
-    let content_digest = upload.file.hashes.get("sha256")?;
-    digests.push(Digest::from_hex(content_digest)?);
-    if let CoreMetadata::Hashes(hashes) = upload.file.core_metadata
-        && let Some(metadata_digest) = hashes.get("sha256")
-    {
-        digests.push(Digest::from_hex(metadata_digest)?);
-    }
-    Some(digests)
 }
 
 fn index_names(config: &Config) -> Vec<&str> {

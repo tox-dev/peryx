@@ -120,6 +120,45 @@ pub trait EcosystemDriver: Send + Sync {
         Ok(0)
     }
 
+    /// Preview this ecosystem's policy decisions over its cached and uploaded records, writing one
+    /// line per denial to `out`. `indexes` is every configured index; `index_filter` and
+    /// `project_filter` narrow the scan. The neutral caller writes the header once and runs this over
+    /// every driver. Default: an ecosystem with no previewable records writes nothing.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when a record cannot be read or `out` cannot be written.
+    fn policy_dry_run(
+        &self,
+        _meta: &peryx_storage::meta::MetaStore,
+        _indexes: &[peryx_index::Index],
+        _index_filter: Option<&str>,
+        _project_filter: Option<&str>,
+        _out: &mut dyn std::io::Write,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Purge one project's cached records from `index`, keeping any blob a still-cached project or a
+    /// hosted upload also references. With `apply`, deletes and reports the removed counts; otherwise
+    /// counts what a purge would remove. Returns the ecosystem-normalized project name alongside.
+    /// Default: an ecosystem without a project cache refuses.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the store cannot be read or written, or the ecosystem has
+    /// no per-project cache to purge.
+    fn purge_project(
+        &self,
+        _meta: &peryx_storage::meta::MetaStore,
+        _index: &str,
+        _project: &str,
+        _apply: bool,
+    ) -> Result<(String, peryx_storage::meta::ProjectCachePurgeCounts), String> {
+        Err(format!(
+            "the {} ecosystem does not support per-project cache purge",
+            self.ecosystem().as_str()
+        ))
+    }
+
     /// Import every artifact under `dir` into the hosted index `target_name` (reached at
     /// `target_route`), writing per-file progress to `out`. The neutral binary resolves the upload
     /// target from the index topology; how a directory of files becomes stored artifacts is the

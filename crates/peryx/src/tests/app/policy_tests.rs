@@ -157,5 +157,5 @@ fn test_policy_dry_run_reports_upload_write_errors() {
     )
     .unwrap_err();
 
-    assert!(err.to_string().contains("scan upload records"));
+    assert!(err.to_string().contains("preview pypi policy"), "{err}");
 }
