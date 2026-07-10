@@ -14,7 +14,7 @@ mod policy_tests;
 mod rate_limit_tests;
 mod refresh_tests;
 mod search_tests;
-mod serve_tests;
+mod serve;
 mod simple;
 mod stream;
 mod upload_tests;
