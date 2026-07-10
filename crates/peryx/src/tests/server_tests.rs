@@ -22,7 +22,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
-        pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+        ecosystem_policy: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
@@ -42,7 +42,7 @@ fn hosted(name: &str) -> IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
-        pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+        ecosystem_policy: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
@@ -57,7 +57,7 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         name: "team".to_owned(),
         route: "team/dev".to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
-        pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+        ecosystem_policy: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
@@ -238,10 +238,20 @@ fn test_build_router_data_dir_error() {
 #[case::invalid_policy(
     || {
         let mut index = cached("pypi", "https://pypi.org/simple/");
-        index.pypi_policy.allow_versions = Some("not a specifier".to_owned());
+        index
+            .ecosystem_policy
+            .insert("allow_versions".to_owned(), "not a specifier".into());
         vec![index]
     },
     &["compile policy for pypi"][..]
+)]
+#[case::unknown_policy_key(
+    || {
+        let mut index = cached("pypi", "https://pypi.org/simple/");
+        index.ecosystem_policy.insert("bogus".to_owned(), 1.into());
+        vec![index]
+    },
+    &["compile policy for pypi", "unknown field `bogus`"][..]
 )]
 #[case::duplicate_name(|| vec![hosted("a"), hosted("a")], &["duplicate index name"][..])]
 #[case::duplicate_route(

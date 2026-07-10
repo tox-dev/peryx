@@ -94,7 +94,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
         ecosystem,
         kind,
         policy: raw.policy.neutral,
-        pypi_policy: raw.policy.pypi,
+        ecosystem_policy: raw.policy.ecosystem,
         webhooks: raw
             .webhooks
             .into_iter()

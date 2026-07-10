@@ -77,6 +77,20 @@ pub trait EcosystemDriver: Send + Sync {
         &[]
     }
 
+    /// Compile this ecosystem's artifact-policy rules from its slice of an index's `[policy]` table —
+    /// the keys the neutral engine did not claim. The neutral binary attaches these to the index's
+    /// [`Policy`](peryx_policy::Policy) without knowing any ecosystem's policy vocabulary. Default: an
+    /// ecosystem with no artifact policy claims no keys, so any key here is unknown configuration.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when a key is unknown to this ecosystem or a value is invalid.
+    fn compile_policy(&self, policy: &toml::Table) -> Result<Vec<Arc<dyn peryx_policy::ArtifactRule>>, String> {
+        policy.keys().next().map_or_else(
+            || Ok(Vec::new()),
+            |key| Err(format!("unknown field `{key}` in `[index.policy]`")),
+        )
+    }
+
     /// Revalidate stale cached pages once, invoked from the server's background sweep. A driver
     /// without a read-through cache sweeps nothing, so the default is a no-op.
     async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {

@@ -175,7 +175,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
@@ -196,7 +196,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             name: "aggregate".to_owned(),
             route: "aggregate".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
@@ -242,7 +242,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             name: "images".to_owned(),
             route: "images".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {

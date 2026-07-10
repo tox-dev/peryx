@@ -139,6 +139,19 @@ impl EcosystemDriver for PypiServing {
         PYPI_FAMILIES
     }
 
+    fn compile_policy(&self, policy: &toml::Table) -> Result<Vec<Arc<dyn peryx_policy::ArtifactRule>>, String> {
+        if let Some(key) = policy
+            .keys()
+            .find(|key| !crate::policy::PypiPolicyConfig::KEYS.contains(&key.as_str()))
+        {
+            return Err(format!("unknown field `{key}` in `[index.policy]`"));
+        }
+        let config = toml::Value::Table(policy.clone())
+            .try_into()
+            .map_err(|err: toml::de::Error| err.to_string())?;
+        crate::policy::compile_rules(&config).map_err(|err| err.to_string())
+    }
+
     fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         web::project_names(state, position)
     }

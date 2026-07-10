@@ -12,11 +12,13 @@
 pub mod body;
 pub mod discovery;
 pub mod download;
+mod driver_set;
 pub mod openapi;
 pub mod rate_limit;
 pub mod serving;
 pub mod state;
 
+pub use driver_set::DriverSet;
 pub use state::{
     AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind, ServingState,
 };

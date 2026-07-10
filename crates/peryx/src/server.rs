@@ -1,13 +1,13 @@
 //! Assembling the HTTP server from configuration.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, bail};
 use axum::Router;
 use peryx_core::path;
 use peryx_driver::state::RuntimeOptions;
-use peryx_driver::{AppState, Index, IndexKind};
+use peryx_driver::{AppState, DriverSet, Index, IndexKind};
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
 use peryx_policy::Policy;
@@ -77,6 +77,18 @@ pub fn router_for(state: Arc<AppState>) -> Router {
     peryx_web::ssr::ui_router(state.clone()).merge(router(state))
 }
 
+/// The ecosystem drivers this build of peryx ships, named once here at the composition root. The
+/// config-build and admin paths dispatch through it by an index's ecosystem, so no neutral code
+/// names an ecosystem.
+pub(crate) fn drivers() -> &'static DriverSet {
+    static DRIVERS: OnceLock<DriverSet> = OnceLock::new();
+    DRIVERS.get_or_init(|| {
+        DriverSet::default()
+            .with(Arc::new(peryx_ecosystem_pypi::PypiServing))
+            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::new()))
+    })
+}
+
 /// Resolve configured indexes into their runtime form, mapping virtual-index member names to positions and
 /// building each cached index's authenticated upstream client.
 pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::Result<Vec<Index>> {
@@ -94,15 +106,18 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::R
     configs
         .iter()
         .map(|index| {
+            let rules = match drivers().get(index.ecosystem) {
+                Some(driver) => driver
+                    .compile_policy(&index.ecosystem_policy)
+                    .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?,
+                None => Vec::new(),
+            };
             Ok(Index {
                 name: index.name.clone(),
                 route: index.route.clone(),
                 ecosystem: index.ecosystem,
                 kind: build_kind(index, configs, &positions, offline)?,
-                policy: Policy::compile(&index.policy).with_rules(
-                    peryx_ecosystem_pypi::policy::compile_rules(&index.pypi_policy)
-                        .with_context(|| format!("compile policy for {}", index.name))?,
-                ),
+                policy: Policy::compile(&index.policy).with_rules(rules),
             })
         })
         .collect()
