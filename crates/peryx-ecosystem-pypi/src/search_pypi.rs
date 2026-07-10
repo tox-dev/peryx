@@ -184,6 +184,9 @@ fn local_detail(
     Ok(detail)
 }
 
+/// Merge a virtual index's layers for the search document, resolving cached layers last so an
+/// indexed project describes the hosted file that shadows upstream rather than the file it shadows.
+/// The served page merges by the same precedence.
 fn virtual_detail(
     state: &AppState,
     layers: &[usize],
@@ -195,7 +198,9 @@ fn virtual_detail(
     let mut seen = HashSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
-    for &position in layers {
+    let mut ordered: Vec<usize> = layers.to_vec();
+    ordered.sort_by_key(|&position| matches!(state.index_at(position).kind, IndexKind::Cached { .. }));
+    for position in ordered {
         let detail = cached_detail(state, state.index_at(position), normalized, serve_route)?;
         if detail.files.is_empty() {
             continue;

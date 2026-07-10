@@ -57,6 +57,10 @@ pub async fn resolve_detail(
 /// recorded on the virtual index's upload layer then apply: `hidden` files drop out of the page and
 /// `yanked` files carry the PEP 592 marker, which is how read-only upstream files are yanked or
 /// removed without touching the cache.
+///
+/// Cached layers merge last however the operator ordered `layers`, so a hosted file always shadows a
+/// same-named upstream one. That ordering is the dependency-confusion defense, and leaving it to the
+/// configured order would make it an operator's mistake to lose.
 async fn virtual_detail(
     state: &AppState,
     layers: &[usize],
@@ -64,12 +68,20 @@ async fn virtual_detail(
     project: &str,
     serve_route: &str,
 ) -> Result<Option<ProjectDetail>, CacheError> {
-    // Layers resolve concurrently; the merge below preserves their configured precedence.
-    let resolved = futures_util::future::join_all(layers.iter().map(|&pos| {
-        let layer = state.index_at(pos);
-        Box::pin(resolve_detail(state, layer, project, serve_route))
-    }))
-    .await;
+    // Layers resolve concurrently; the sort below imposes the merge precedence, and being stable it
+    // keeps the configured order within the cached and the non-cached group alike.
+    let mut resolved: Vec<(usize, Result<Option<ProjectDetail>, CacheError>)> = layers
+        .iter()
+        .copied()
+        .zip(
+            futures_util::future::join_all(layers.iter().map(|&pos| {
+                let layer = state.index_at(pos);
+                Box::pin(resolve_detail(state, layer, project, serve_route))
+            }))
+            .await,
+        )
+        .collect();
+    resolved.sort_by_key(|(pos, _)| matches!(state.index_at(*pos).kind, IndexKind::Cached { .. }));
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     let mut versions = BTreeSet::new();
@@ -77,7 +89,7 @@ async fn virtual_detail(
     let mut found = false;
     let mut offline_missing = None;
     let mut rate_limited = None;
-    for (&pos, outcome) in layers.iter().zip(resolved) {
+    for (pos, outcome) in resolved {
         // A layer being unavailable (a down upstream with a cold cache) must not break the others.
         let detail = match outcome {
             Ok(detail) => detail,

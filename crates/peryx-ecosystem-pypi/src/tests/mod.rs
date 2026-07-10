@@ -19,6 +19,7 @@ mod simple;
 mod stream;
 mod upload_tests;
 mod version_tests;
+mod virtual_tests;
 mod webhooks_tests;
 
 thread_local! {
