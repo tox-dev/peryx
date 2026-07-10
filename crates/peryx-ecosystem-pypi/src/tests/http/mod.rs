@@ -14,6 +14,7 @@ mod policy;
 mod promote;
 mod render_cache;
 mod routing;
+mod security;
 mod status;
 mod upload;
 
