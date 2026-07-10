@@ -1,4 +1,4 @@
-use peryx_format::{Ecosystem, Lexicon};
+use peryx_core::{Ecosystem, Lexicon};
 
 use super::{OCI_WORDS, state};
 

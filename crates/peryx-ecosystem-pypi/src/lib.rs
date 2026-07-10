@@ -57,7 +57,7 @@ pub fn install(state: &mut peryx_http::AppState) {
     state.set_ecosystem(std::sync::Arc::new(PypiServing), std::sync::Arc::new(PypiIndexer));
     // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
     // lexicon is the neutral one; a future divergence would give this crate its own constant.
-    state.register_lexicon(peryx_format::Ecosystem::Pypi, &peryx_format::Lexicon::NEUTRAL);
+    state.register_lexicon(peryx_core::Ecosystem::Pypi, &peryx_core::Lexicon::NEUTRAL);
 }
 
 #[cfg(test)]

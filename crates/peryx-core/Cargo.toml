@@ -1,14 +1,17 @@
 [package]
-name = "peryx-format"
+name = "peryx-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Ecosystem-neutral domain core for peryx: the Ecosystem enum, the neutral lexicon, and shared name and version abstractions."
+description = "Ecosystem-neutral domain core for peryx: the Ecosystem axis, index roles, route resolution, and the neutral lexicon."
 
 [dependencies]
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

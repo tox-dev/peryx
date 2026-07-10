@@ -1,6 +1,6 @@
 //! The OCI indexer turns stored repositories and their tags into neutral search documents.
 
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::search::{PackageIndexer as _, PackageSource};
 use peryx_http::{Index, IndexKind};
 use peryx_policy::Policy;

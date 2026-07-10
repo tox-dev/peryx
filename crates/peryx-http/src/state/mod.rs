@@ -8,4 +8,4 @@ pub use app::{AppState, Clock, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, 
 pub use describe::{
     HostedDescription, IndexDescription, SecretDescription, UpstreamDescription, describe_index, describe_indexes,
 };
-pub use index::{Index, IndexKind, Role};
+pub use index::{Index, IndexKind};

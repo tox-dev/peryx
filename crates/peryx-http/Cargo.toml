@@ -8,7 +8,7 @@ repository.workspace = true
 description = "HTTP layer for peryx: read-through simple-index serving and blob download."
 
 [dependencies]
-peryx-format.workspace = true
+peryx-core.workspace = true
 peryx-policy.workspace = true
 peryx-identity.workspace = true
 peryx-storage.workspace = true

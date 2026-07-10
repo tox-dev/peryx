@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use peryx_ecosystem_pypi::policy::PypiPolicyConfig;
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_policy::PolicyConfig;

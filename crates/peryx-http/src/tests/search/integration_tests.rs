@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 
 use super::{OCI_WORDS, state};
 use crate::search::{PackageDocument, PackageIndexer, PackageSource, SearchError, SearchParams};

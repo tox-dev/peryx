@@ -20,7 +20,7 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
             policy: PolicyConfig::default(),
             pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,

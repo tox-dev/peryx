@@ -3099,9 +3099,9 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "mimalloc",
+ "peryx-core",
  "peryx-ecosystem-oci",
  "peryx-ecosystem-pypi",
- "peryx-format",
  "peryx-http",
  "peryx-policy",
  "peryx-storage",
@@ -3150,6 +3150,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "peryx-core"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "peryx-ecosystem-oci"
 version = "0.0.1"
 dependencies = [
@@ -3163,7 +3171,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body-util",
- "peryx-format",
+ "peryx-core",
  "peryx-http",
  "peryx-identity",
  "peryx-policy",
@@ -3201,7 +3209,7 @@ dependencies = [
  "insta",
  "moka",
  "pep440_rs",
- "peryx-format",
+ "peryx-core",
  "peryx-http",
  "peryx-identity",
  "peryx-policy",
@@ -3233,13 +3241,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peryx-format"
-version = "0.0.1"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "peryx-http"
 version = "0.0.1"
 dependencies = [
@@ -3254,7 +3255,7 @@ dependencies = [
  "http",
  "http-body-util",
  "moka",
- "peryx-format",
+ "peryx-core",
  "peryx-identity",
  "peryx-policy",
  "peryx-storage",
@@ -3345,8 +3346,8 @@ dependencies = [
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "peryx-core",
  "peryx-ecosystem-pypi",
- "peryx-format",
  "peryx-http",
  "peryx-storage",
  "pulldown-cmark",

@@ -189,7 +189,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         policy: PolicyConfig::default(),
         pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             upstream: format!("{}/simple/", server.uri()),
             username: None,
@@ -206,7 +206,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         policy: PolicyConfig::default(),
         pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
             layers: vec!["pypi".to_owned(), "cached-two".to_owned()],
             upload: None,
@@ -218,7 +218,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         policy: PolicyConfig::default(),
         pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
             layers: vec!["hosted".to_owned()],
             upload: Some("hosted".to_owned()),

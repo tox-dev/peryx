@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 
 use super::ConfigError;

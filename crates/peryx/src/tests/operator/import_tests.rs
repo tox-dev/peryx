@@ -177,7 +177,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             policy: peryx_policy::PolicyConfig::default(),
             pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
@@ -198,7 +198,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             policy: peryx_policy::PolicyConfig::default(),
             pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: Vec::new(),
                 upload: None,
@@ -244,7 +244,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             policy: peryx_policy::PolicyConfig::default(),
             pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,

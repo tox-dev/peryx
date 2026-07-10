@@ -21,7 +21,7 @@ fn pypi_index(route: &str) -> crate::state::Index {
     crate::state::Index {
         name: route.to_owned(),
         route: route.to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: crate::state::IndexKind::Hosted {
             upload_token: None,
             volatile: false,
@@ -93,7 +93,7 @@ async fn test_unwired_state_discovery_lists_no_indexes() {
 
 #[tokio::test]
 async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
-    use peryx_format::Ecosystem;
+    use peryx_core::Ecosystem;
 
     use crate::state::{Index, IndexKind};
 

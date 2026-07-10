@@ -6,7 +6,7 @@ use crate::store::{self};
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::AppState;
 use peryx_upstream::UpstreamClient;
 

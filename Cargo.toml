@@ -18,7 +18,7 @@ nursery = { level = "warn", priority = -1 }
 unsafe_code = "forbid"
 
 [workspace.dependencies]
-peryx-format = { path = "crates/peryx-format" }
+peryx-core = { path = "crates/peryx-core" }
 peryx-ecosystem-pypi = { path = "crates/peryx-ecosystem-pypi", default-features = false }
 peryx-ecosystem-oci = { path = "crates/peryx-ecosystem-oci" }
 peryx-policy = { path = "crates/peryx-policy" }

@@ -935,7 +935,7 @@ async fn test_resolution_skips_a_non_oci_index() {
     let pypi = Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
             upload_token: None,
             volatile: false,
@@ -1272,7 +1272,7 @@ async fn test_catalog_lists_oci_repositories_with_pagination() {
     let pypi = peryx_http::Index {
         name: "py".to_owned(),
         route: "py".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: peryx_http::IndexKind::Hosted {
             upload_token: None,
             volatile: false,

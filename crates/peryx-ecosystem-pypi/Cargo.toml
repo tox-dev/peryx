@@ -46,7 +46,7 @@ serving = [
 
 [dependencies]
 # Format core (always compiled).
-peryx-format.workspace = true
+peryx-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pep440_rs.workspace = true

@@ -64,7 +64,7 @@ fn import_target(config: &Config, selector: &str) -> anyhow::Result<ImportTarget
         .or_else(|| indexes.iter().position(|index| index.route == selector))
         .context(format!("unknown index {selector:?}"))?;
     let index = &indexes[position];
-    if index.ecosystem != peryx_format::Ecosystem::Pypi {
+    if index.ecosystem != peryx_core::Ecosystem::Pypi {
         bail!(
             "import-dir imports PyPI wheels and sdists; index {selector:?} serves the {} ecosystem",
             index.ecosystem

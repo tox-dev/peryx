@@ -25,7 +25,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::serving::NamespaceServing;
 use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_http::{AppState, Index, IndexKind};
@@ -131,8 +131,8 @@ impl OciRegistry {
 }
 #[async_trait]
 impl NamespaceServing for OciRegistry {
-    fn ecosystem(&self) -> peryx_format::Ecosystem {
-        peryx_format::Ecosystem::Oci
+    fn ecosystem(&self) -> peryx_core::Ecosystem {
+        peryx_core::Ecosystem::Oci
     }
 
     fn prefixes(&self) -> &'static [&'static str] {

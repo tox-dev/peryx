@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::search::{PackageDocument, PackageIndexer, PackageSource, SearchError};
 use peryx_http::state::{AppState, Index, IndexKind};
 

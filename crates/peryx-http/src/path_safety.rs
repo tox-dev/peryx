@@ -1,4 +1,4 @@
-use peryx_format::url_encoding::{push_component, push_path};
+use peryx_core::url_encoding::{push_component, push_path};
 use peryx_storage::blob::Digest;
 use std::borrow::Cow;
 

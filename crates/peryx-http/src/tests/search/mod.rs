@@ -9,7 +9,7 @@ use std::sync::Arc;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
-use peryx_format::Lexicon;
+use peryx_core::Lexicon;
 
 use crate::state::AppState;
 

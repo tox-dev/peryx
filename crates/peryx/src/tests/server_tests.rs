@@ -24,7 +24,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         policy: peryx_policy::PolicyConfig::default(),
         pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             upstream: upstream.to_owned(),
             username: None,
@@ -44,7 +44,7 @@ fn hosted(name: &str) -> IndexConfig {
         policy: peryx_policy::PolicyConfig::default(),
         pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
             upload_token: None,
             volatile: true,
@@ -59,7 +59,7 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         policy: peryx_policy::PolicyConfig::default(),
         pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
             layers: layers.iter().map(|&name| name.to_owned()).collect(),
             upload: upload.map(str::to_owned),

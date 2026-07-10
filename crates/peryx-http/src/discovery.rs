@@ -10,7 +10,7 @@
 use std::str::FromStr as _;
 
 use axum::http::{HeaderMap, Uri, header};
-use peryx_format::url_encoding::push_component;
+use peryx_core::url_encoding::push_component;
 use serde_json::{Value, json};
 
 /// The public base URL a client reaches this server at, used to render absolute URLs in discovery

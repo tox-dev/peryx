@@ -622,7 +622,7 @@ fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: UpstreamClient::new("https://example.test/simple/").unwrap(),
                 offline: false,
@@ -633,7 +633,7 @@ fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,

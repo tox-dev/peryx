@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
@@ -105,7 +105,7 @@ pub struct AppState {
     pub namespaces: Vec<Arc<dyn crate::serving::NamespaceServing>>,
     /// Each ecosystem's user-facing vocabulary, registered by its driver at install time so surfaces
     /// localize a label by an index's ecosystem without the neutral core naming any ecosystem's words.
-    lexicons: std::collections::HashMap<Ecosystem, &'static peryx_format::Lexicon>,
+    lexicons: std::collections::HashMap<Ecosystem, &'static peryx_core::Lexicon>,
     /// The `OpenAPI` document served at `/api-docs/openapi.json`. The binary assembles it from each
     /// ecosystem driver's paths at startup and installs it here, so this neutral crate carries no
     /// format-specific API description, only a minimal stub until the binary sets the real one.
@@ -358,17 +358,17 @@ impl AppState {
     }
 
     /// Register an ecosystem's user-facing vocabulary; its driver calls this at install time.
-    pub fn register_lexicon(&mut self, ecosystem: Ecosystem, lexicon: &'static peryx_format::Lexicon) {
+    pub fn register_lexicon(&mut self, ecosystem: Ecosystem, lexicon: &'static peryx_core::Lexicon) {
         self.lexicons.insert(ecosystem, lexicon);
     }
 
     /// The user-facing vocabulary for `ecosystem`, or peryx's neutral words if none is registered.
     #[must_use]
-    pub fn lexicon(&self, ecosystem: Ecosystem) -> &'static peryx_format::Lexicon {
+    pub fn lexicon(&self, ecosystem: Ecosystem) -> &'static peryx_core::Lexicon {
         self.lexicons
             .get(&ecosystem)
             .copied()
-            .unwrap_or(&peryx_format::Lexicon::NEUTRAL)
+            .unwrap_or(&peryx_core::Lexicon::NEUTRAL)
     }
 
     /// Wire in the ecosystem serving driver and its search indexer. The binary calls this once at

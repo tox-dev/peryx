@@ -49,7 +49,7 @@ impl Harness {
             vec![Index {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
                     upload_token: Some("s3cret".to_owned()),
                     volatile: true,

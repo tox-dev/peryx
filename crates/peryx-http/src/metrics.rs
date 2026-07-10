@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::Role;
+use peryx_core::Role;
 
 /// One request-path observation.
 #[derive(Debug, Clone)]

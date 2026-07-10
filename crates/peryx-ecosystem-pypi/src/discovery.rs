@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use peryx_format::url_encoding::push_path;
+use peryx_core::url_encoding::push_path;
 use serde::{Serialize, Serializer};
 use serde_json::json;
 

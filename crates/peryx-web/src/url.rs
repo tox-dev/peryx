@@ -1,4 +1,4 @@
-use peryx_format::url_encoding::{push_component, push_path};
+use peryx_core::url_encoding::{push_component, push_path};
 
 /// The client-facing API endpoint an index is served at: the Simple index for a `PyPI` index, the
 /// `/v2/` registry namespace for an `OCI` one. The status card shows this so a client knows where to

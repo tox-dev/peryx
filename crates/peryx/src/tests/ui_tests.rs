@@ -42,7 +42,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 policy: peryx_policy::PolicyConfig::default(),
                 pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
                     upstream: "http://127.0.0.1:9/simple/".to_owned(),
                     username: None,
@@ -59,7 +59,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 policy: peryx_policy::PolicyConfig::default(),
                 pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
                     upload_token: Some("s3cret".to_owned()),
                     volatile: true,
@@ -71,7 +71,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 policy: peryx_policy::PolicyConfig::default(),
                 pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec!["hosted".to_owned(), "pypi".to_owned()],
                     upload: Some("hosted".to_owned()),
@@ -99,7 +99,7 @@ fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
             policy: peryx_policy::PolicyConfig::default(),
             pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,

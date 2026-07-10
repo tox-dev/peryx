@@ -82,7 +82,7 @@ pub(super) async fn harness_with_stale(
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -93,7 +93,7 @@ pub(super) async fn harness_with_stale(
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: local_policy,
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: token.then(|| "s3cret".to_owned()),
                 volatile,
@@ -103,7 +103,7 @@ pub(super) async fn harness_with_stale(
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: overlay_policy,
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![1, 0],
                 upload: Some(1),
@@ -143,7 +143,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -153,7 +153,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "staging".to_owned(),
             route: "staging".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
@@ -163,7 +163,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "prod".to_owned(),
             route: "prod".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
@@ -173,7 +173,7 @@ async fn promotion_harness() -> Harness {
         Index {
             name: "release".to_owned(),
             route: "release".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![2, 0],
                 upload: Some(2),
@@ -600,7 +600,7 @@ async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -1022,7 +1022,7 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,
@@ -1032,7 +1032,7 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
         Index {
             name: "images".to_owned(),
             route: "images".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,
@@ -1071,7 +1071,7 @@ async fn test_per_index_discovery_dispatches_an_oci_index_to_the_oci_driver() {
     let indexes = vec![Index {
         name: "images".to_owned(),
         route: "images".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Oci,
+        ecosystem: peryx_core::Ecosystem::Oci,
         kind: IndexKind::Hosted {
             upload_token: None,
             volatile: true,
@@ -1378,7 +1378,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             client: upstream,
             offline: false,
@@ -1418,7 +1418,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             client: upstream,
             offline: false,
@@ -1446,7 +1446,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             client: upstream,
             offline: true,
@@ -1492,7 +1492,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             client: upstream,
             offline: true,
@@ -1577,7 +1577,7 @@ async fn test_file_download_status_store_error_is_server_error() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             client: upstream,
             offline: false,
@@ -2322,7 +2322,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -2333,7 +2333,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
@@ -2343,7 +2343,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![1, 0],
                 upload: Some(1),
@@ -2941,7 +2941,7 @@ async fn test_upload_storage_failure_is_server_error() {
         name: "hosted".to_owned(),
         route: "hosted".to_owned(),
         policy: Policy::default(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
             upload_token: Some("s3cret".to_owned()),
             volatile: true,
@@ -3171,7 +3171,7 @@ async fn test_longest_prefix_wins() {
             name: "a".to_owned(),
             route: "a".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,
@@ -3181,7 +3181,7 @@ async fn test_longest_prefix_wins() {
             name: "ab".to_owned(),
             route: "a/b".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
@@ -3239,7 +3239,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
         Index {
             name: "private".to_owned(),
             route: "private".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: UpstreamClient::with_auth(
                     "https://user:pass@example.invalid/simple/?token=url-secret#frag",
@@ -3254,7 +3254,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: Some("upload-secret".to_owned()),
                 volatile: false,
@@ -3501,7 +3501,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -3512,7 +3512,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
             name: "ov".to_owned(),
             route: "ov".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: Some(0),
@@ -4747,7 +4747,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -4758,7 +4758,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
             name: "ov".to_owned(),
             route: "ov".to_owned(),
             policy: Policy::default(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use peryx_format::{Ecosystem, Lexicon};
+use peryx_core::{Ecosystem, Lexicon};
 use peryx_http::AppState;
 
 /// The container ecosystem's user-facing words for peryx's neutral concepts.

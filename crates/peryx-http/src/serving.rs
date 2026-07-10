@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use axum::extract::{Multipart, Request};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 
 use crate::state::AppState;
 

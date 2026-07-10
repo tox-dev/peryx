@@ -42,7 +42,7 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -346,7 +346,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
                     client: upstream,
                     offline: false,
@@ -356,7 +356,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
             Index {
                 name: "root".to_owned(),
                 route: "root".to_owned(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -406,7 +406,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,

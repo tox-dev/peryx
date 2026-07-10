@@ -14,7 +14,7 @@ use axum::body::Body;
 use criterion::{Criterion, criterion_group, criterion_main};
 use http::Request;
 use http_body_util::BodyExt as _;
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::{AppState, Index, IndexKind, router};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};

@@ -16,14 +16,15 @@ use async_trait::async_trait;
 use axum::extract::Multipart;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::discovery::BaseUrl;
 use peryx_http::handlers::not_found;
 use peryx_http::metrics::MetricFamily;
 use peryx_http::path_safety::{self, PathSafetyError};
 use peryx_http::rate_limit::RouteClass;
 use peryx_http::serving::{EcosystemServing, RefreshSweep};
-use peryx_http::state::{AppState, Index, IndexDescription, IndexKind, Role};
+use peryx_core::Role;
+use peryx_http::state::{AppState, Index, IndexDescription, IndexKind};
 
 use crate::cache::{self};
 use crate::discovery;

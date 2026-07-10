@@ -53,7 +53,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -63,7 +63,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
@@ -73,7 +73,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
         Index {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0, 1],
                 upload: Some(1),

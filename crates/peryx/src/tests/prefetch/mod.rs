@@ -21,7 +21,7 @@ pub(super) fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             policy: PolicyConfig::default(),
             pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,
@@ -46,7 +46,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 policy: PolicyConfig::default(),
                 pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
                     upload_token: None,
                     volatile: true,
@@ -58,7 +58,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 policy: PolicyConfig::default(),
                 pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
                     upstream: upstream.to_owned(),
                     username: None,
@@ -75,7 +75,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 policy: PolicyConfig::default(),
                 pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec!["hosted".to_owned(), "pypi".to_owned()],
                     upload: Some("hosted".to_owned()),

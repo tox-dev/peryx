@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
-use peryx_format::Ecosystem;
+use peryx_core::Ecosystem;
 use peryx_http::{AppState, Index, IndexKind, router};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::BlobStore;
