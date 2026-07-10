@@ -281,6 +281,6 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
 fn remember_rendered(state: &AppState, index: &Index, project: &str, variant: &str, body: &bytes::Bytes) {
     if let Ok(Some(expires_at)) = cache::rendered_expiry(state, index, project) {
         let key = state.hot_key(&index.route, project, variant);
-        state.hot.insert(key, (expires_at, body.clone()));
+        state.cache.store_hot(key, body.clone(), expires_at);
     }
 }

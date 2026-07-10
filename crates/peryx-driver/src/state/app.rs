@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
 use peryx_core::{Ecosystem, LexiconRegistry};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -33,23 +32,13 @@ pub struct AppState {
     pub clock: Clock,
     pub requests: AtomicU64,
     pub indexes: Vec<Index>,
-    /// One async lock per project being fetched from upstream, so concurrent cache misses for the
-    /// same page share a single upstream fetch instead of each downloading and storing it.
-    pub inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The role engine's caches for a cached (proxy) index: the single-flight map, the transformed-page
+    /// cache, the negative cache, and the mutation epoch that retires them. One bundle so a driver — and
+    /// the [`Ctx`](crate::serving) narrowing — sees one serving cache, not five raw fields.
+    pub cache: peryx_index::ServingCache,
     /// One live download per blob digest: concurrent cold requests for the same file all tail the
     /// one upstream transfer as it lands instead of waiting for it to finish.
     pub downloads: Mutex<HashMap<String, crate::download::DownloadHandle>>,
-    /// Transformed page bytes ready to serve, paired with their unix expiry: warm requests are a
-    /// lookup, an expiry check, and a memcpy. Entries carry the mutation epoch in their key, so
-    /// uploads and overrides invalidate by key miss; the expiry honors each page's upstream
-    /// `Cache-Control` lifetime, and moka's own time-to-live is a coarse eviction backstop.
-    pub hot: moka::sync::Cache<String, (i64, Bytes)>,
-    /// Short-lived misses from upstream, keyed separately from stored pages and artifacts so 404s
-    /// do not add fake rows to the persistent cache.
-    pub negative: moka::sync::Cache<String, i64>,
-    /// Bumped by every mutation that changes what a page serves (persisted fetches, uploads,
-    /// yank/hide/restore), retiring hot-cache keys.
-    pub epoch: AtomicU64,
     /// Off-thread usage aggregation: index → project → file counters for the dashboard.
     pub metrics: Metrics,
     /// Derived package search index, refreshed from storage when the mutation epoch advances.

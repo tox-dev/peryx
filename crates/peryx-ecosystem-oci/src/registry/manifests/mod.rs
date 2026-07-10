@@ -99,7 +99,7 @@ impl OciRegistry {
         let fetched = self
             .fetch_manifest_by_digest(state, client, index, repo, digest, head)
             .await;
-        state.inflight.lock().expect("inflight lock").remove(&gate_key);
+        state.cache.forget_flight(&gate_key);
         fetched
     }
 
@@ -164,7 +164,7 @@ impl OciRegistry {
             return Ok(Some(response));
         }
         let fetched = self.revalidate_tag(state, client, &member.name, repo, tag, head).await;
-        state.inflight.lock().expect("inflight lock").remove(&gate_key);
+        state.cache.forget_flight(&gate_key);
         fetched
     }
 

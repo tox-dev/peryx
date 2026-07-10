@@ -11,6 +11,8 @@ description = "The index model and role engine for peryx: what a cached, hosted,
 peryx-core.workspace = true
 peryx-policy.workspace = true
 peryx-upstream.workspace = true
+bytes.workspace = true
+moka = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [lints]

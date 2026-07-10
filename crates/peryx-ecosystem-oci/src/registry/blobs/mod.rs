@@ -121,7 +121,7 @@ impl OciRegistry {
             return Ok(BlobFetch::Stored);
         }
         let fetched = self.fetch_blob(state, index, repo, digest, storage).await;
-        state.inflight.lock().expect("inflight lock").remove(&gate_key);
+        state.cache.forget_flight(&gate_key);
         fetched
     }
 

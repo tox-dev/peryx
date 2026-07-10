@@ -201,7 +201,7 @@ async fn cached_detail(
     }
 
     let result = fetch_and_store(state, &key, name, project, client).await;
-    state.inflight.lock().expect("inflight lock").remove(&key);
+    state.cache.forget_flight(&key);
     match result? {
         Some(record) => Ok(Some(raw_to_detail(state, route, &record)?)),
         None => Ok(None),

@@ -92,7 +92,7 @@ impl FreshJsonStream {
                 persist_streamed(&self.state, &self.key, &self.cached_name, &self.project, &record, &summary)?;
                 spawn_metadata_backfill(self.state.clone(), self.route.clone(), &summary.registrations);
                 let bytes = Bytes::from(served);
-                self.state.hot.insert(self.hot_key, (expires_at, bytes.clone()));
+                self.state.cache.store_hot(self.hot_key, bytes.clone(), expires_at);
                 release_flight(&self.state, &self.key, self.guard);
                 Ok(PageOutcome::Ready(bytes))
             }
@@ -253,11 +253,12 @@ fn live_stream(
                     // The hot page goes live only after the persist lands: a concurrent client that
                     // serves this page from the hot cache and immediately requests a file must find
                     // that file's registration.
-                    state.hot.insert(
+                    state.cache.store_hot(
                         live.hot_key.clone(),
-                        (expires_at, Bytes::from(std::mem::take(&mut served))),
+                        Bytes::from(std::mem::take(&mut served)),
+                        expires_at,
                     );
-                    state.inflight.lock().expect("inflight lock").remove(&live.key);
+                    state.cache.forget_flight(&live.key);
                     drop(live.guard);
                     let elapsed_ms = started.elapsed().as_millis();
                     tracing::debug!(key = %live.key, bytes = raw_len, elapsed_ms, "page streamed from upstream");

@@ -133,12 +133,12 @@ impl CacheError {
 
 /// The per-page lock concurrent cache misses share.
 pub(crate) fn flight_gate(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    peryx_index::serving::flight_gate(&state.inflight, key)
+    peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 
 /// Release a single-flight hold.
 fn release_flight(state: &AppState, key: &str, guard: tokio::sync::OwnedMutexGuard<()>) {
-    peryx_index::serving::release_flight(&state.inflight, key, guard);
+    peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
 }
 
 /// The cached raw page, when it is still within its freshness window: upstream's `Cache-Control`

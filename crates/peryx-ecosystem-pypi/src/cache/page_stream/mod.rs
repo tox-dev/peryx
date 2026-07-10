@@ -368,7 +368,7 @@ fn transform_whole(
     out.shrink_to_fit();
     let bytes = Bytes::from(out);
     let expires_at = record.fetched_at_unix + freshness(state, record);
-    state.hot.insert(hot_key.to_owned(), (expires_at, bytes.clone()));
+    state.cache.store_hot(hot_key.to_owned(), bytes.clone(), expires_at);
     Ok(bytes)
 }
 

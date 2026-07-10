@@ -14,7 +14,7 @@ async fn test_html_page_is_rendered_once_and_then_served_from_cache() {
     let (status, _, first) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
     assert_eq!(status, StatusCode::OK);
     // moka applies a write lazily, so a read straight after an insert may not see it yet.
-    h.state.hot.run_pending_tasks();
+    h.state.cache.hot.run_pending_tasks();
     assert!(
         h.state
             .hot_fresh(&h.state.hot_key("pypi", "flask", crate::cache::SIMPLE_HTML))
@@ -79,7 +79,7 @@ async fn test_a_policy_filtered_page_is_never_cached_as_a_render() {
 
     let (status, _, _) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
     assert_eq!(status, StatusCode::OK);
-    h.state.hot.run_pending_tasks();
+    h.state.cache.hot.run_pending_tasks();
     // The bytes a policy filtered are not the bytes the page renders to, and the key does not say
     // which policy produced them.
     assert!(

@@ -324,7 +324,7 @@ fn served_bytes(response: &Response) -> u64 {
 /// The per-blob lock concurrent misses share so a single upstream fetch serves them all, the same
 /// single-flight coalescing every cached fetch shares. Keyed in its own namespace on the blob digest.
 fn flight_gate(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    peryx_index::serving::flight_gate(&state.inflight, key)
+    peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 /// Find the OCI index whose route is the longest segment-aligned prefix of `name`, and the upstream
 /// repository (the remainder). An empty route matches at the root, losing every tie to a real prefix.

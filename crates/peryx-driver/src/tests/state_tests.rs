@@ -31,7 +31,7 @@ fn state_with_budget(hot_cache_bytes: u64) -> (tempfile::TempDir, AppState) {
 #[test]
 fn test_hot_cache_takes_the_configured_budget() {
     let (_dir, state) = state_with_budget(4096);
-    assert_eq!(state.hot.policy().max_capacity(), Some(4096));
+    assert_eq!(state.cache.hot.policy().max_capacity(), Some(4096));
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn test_hot_cache_defaults_to_the_documented_budget() {
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let state = AppState::new(meta, blobs, 60, Vec::new());
-    assert_eq!(state.hot.policy().max_capacity(), Some(DEFAULT_HOT_CACHE_BYTES));
+    assert_eq!(state.cache.hot.policy().max_capacity(), Some(DEFAULT_HOT_CACHE_BYTES));
 }
 
 /// A zero budget turns the cache off: a warm page pays its transform again rather than being served
@@ -48,10 +48,10 @@ fn test_hot_cache_defaults_to_the_documented_budget() {
 #[test]
 fn test_hot_cache_budget_of_zero_retains_nothing() {
     let (_dir, state) = state_with_budget(0);
-    state.hot.insert(
+    state.cache.hot.insert(
         "root/pypi\u{0}numpy".to_owned(),
-        (i64::MAX, Bytes::from_static(b"page")),
+        (Bytes::from_static(b"page"), i64::MAX),
     );
-    state.hot.run_pending_tasks();
-    assert_eq!(state.hot.get("root/pypi\u{0}numpy"), None);
+    state.cache.hot.run_pending_tasks();
+    assert_eq!(state.cache.hot.get("root/pypi\u{0}numpy"), None);
 }

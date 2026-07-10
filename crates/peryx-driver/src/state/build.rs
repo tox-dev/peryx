@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
 use peryx_core::LexiconRegistry;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -276,19 +275,8 @@ impl AppState {
             clock,
             requests: AtomicU64::new(0),
             indexes,
-            inflight: Mutex::new(HashMap::new()),
+            cache: peryx_index::ServingCache::new(hot_cache_bytes, ttl_secs),
             downloads: Mutex::new(HashMap::new()),
-            hot: moka::sync::Cache::builder()
-                .max_capacity(hot_cache_bytes)
-                .weigher(|key: &String, (_, value): &(i64, Bytes)| {
-                    u32::try_from(key.len() + value.len()).unwrap_or(u32::MAX)
-                })
-                .time_to_live(std::time::Duration::from_secs(
-                    u64::try_from(ttl_secs.max(1)).unwrap_or(1800),
-                ))
-                .build(),
-            negative: moka::sync::Cache::builder().max_capacity(65_536).build(),
-            epoch: AtomicU64::new(0),
             metrics: Metrics::start(),
             search,
             rate_limits: RateLimiter::new(rate_limit),

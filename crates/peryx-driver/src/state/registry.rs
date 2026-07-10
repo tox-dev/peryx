@@ -37,7 +37,7 @@ impl AppState {
     pub fn search_ctx(&self) -> SearchCtx<'_> {
         SearchCtx {
             indexer: self.indexer_ctx(),
-            epoch: self.epoch.load(std::sync::atomic::Ordering::Relaxed),
+            epoch: self.cache.epoch.load(std::sync::atomic::Ordering::Relaxed),
             lexicons: &self.lexicons,
         }
     }
