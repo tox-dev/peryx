@@ -835,7 +835,17 @@ $header-offset: 4.3rem;
   top: $header-offset;
   max-height: calc(100vh - #{$header-offset} - 1rem);
   overflow-y: auto;
+  // Setting `overflow-y` alone makes the browser compute `overflow-x: auto` too, so one long heading
+  // gave the rail a horizontal scrollbar. A title too wide for the rail wraps instead.
+  overflow-x: hidden;
   overscroll-behavior: contain;
+
+  a,
+  summary,
+  .docs-nav-title,
+  .docs-nav-subtitle {
+    overflow-wrap: anywhere;
+  }
 
   > summary {
     list-style: none;
