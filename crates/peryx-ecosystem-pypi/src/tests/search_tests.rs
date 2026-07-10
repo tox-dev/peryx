@@ -11,7 +11,7 @@ use super::http_tests::{get, harness, harness_with_policies};
 use crate::cache;
 use crate::upload::Uploaded;
 use peryx_core::path::local_file_url;
-use peryx_http::state::AppState;
+use peryx_driver::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_search::{PackageSearch, PackageSource, SearchError, SourceFilter};
@@ -552,7 +552,7 @@ fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
     Policy::compile(&config)
 }
 
-fn put_uploaded_package(state: &peryx_http::state::AppState, display: &str, normalized: &str, summary: &str) {
+fn put_uploaded_package(state: &peryx_driver::state::AppState, display: &str, normalized: &str, summary: &str) {
     put_uploaded_package_with_metadata(
         state,
         normalized,
@@ -563,7 +563,7 @@ fn put_uploaded_package(state: &peryx_http::state::AppState, display: &str, norm
 }
 
 fn put_uploaded_package_with_metadata(
-    state: &peryx_http::state::AppState,
+    state: &peryx_driver::state::AppState,
     normalized: &str,
     metadata: &str,
     requires_python: Option<&str>,
@@ -606,7 +606,7 @@ fn put_uploaded_package_with_metadata(
 }
 
 fn put_cached_package(
-    state: &peryx_http::state::AppState,
+    state: &peryx_driver::state::AppState,
     key: &str,
     index: &str,
     normalized: &str,

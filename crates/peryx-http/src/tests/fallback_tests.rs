@@ -5,25 +5,25 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use tower::ServiceExt as _;
 
-use crate::state::AppState;
+use peryx_driver::state::AppState;
 
 fn unwired_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
     unwired_state_with(Vec::new())
 }
 
-fn unwired_state_with(indexes: Vec<crate::state::Index>) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+fn unwired_state_with(indexes: Vec<peryx_driver::state::Index>) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     (dir, std::sync::Arc::new(AppState::new(meta, blobs, 60, indexes)))
 }
 
-fn pypi_index(route: &str) -> crate::state::Index {
-    crate::state::Index {
+fn pypi_index(route: &str) -> peryx_driver::state::Index {
+    peryx_driver::state::Index {
         name: route.to_owned(),
         route: route.to_owned(),
         ecosystem: peryx_core::Ecosystem::Pypi,
-        kind: crate::state::IndexKind::Hosted {
+        kind: peryx_driver::state::IndexKind::Hosted {
             upload_token: None,
             volatile: false,
         },
@@ -96,7 +96,7 @@ async fn test_unwired_state_discovery_lists_no_indexes() {
 async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
     use peryx_core::Ecosystem;
 
-    use crate::state::{Index, IndexKind};
+    use peryx_driver::state::{Index, IndexKind};
 
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
@@ -132,7 +132,7 @@ async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
 struct StubServing(peryx_core::Ecosystem);
 
 #[async_trait::async_trait]
-impl crate::serving::EcosystemServing for StubServing {
+impl peryx_driver::serving::EcosystemServing for StubServing {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
         self.0
     }
@@ -178,27 +178,27 @@ impl crate::serving::EcosystemServing for StubServing {
 
     fn discover_index(
         &self,
-        index: crate::state::IndexDescription,
-        _base: Option<&crate::discovery::BaseUrl>,
+        index: peryx_driver::state::IndexDescription,
+        _base: Option<&peryx_driver::discovery::BaseUrl>,
     ) -> serde_json::Value {
-        crate::discovery::minimal_entry(&index)
+        peryx_driver::discovery::minimal_entry(&index)
     }
 
-    fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
-        crate::rate_limit::RouteClass::Listing
+    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
+        peryx_driver::rate_limit::RouteClass::Listing
     }
 }
 
 #[test]
 fn test_a_driver_publishes_no_metric_families_by_default() {
-    use crate::serving::EcosystemServing as _;
+    use peryx_driver::serving::EcosystemServing as _;
 
     assert!(StubServing(peryx_core::Ecosystem::Pypi).metric_families().is_empty());
 }
 
 #[tokio::test]
 async fn test_a_driver_sweeps_nothing_by_default() {
-    use crate::serving::{EcosystemServing as _, RefreshSweep};
+    use peryx_driver::serving::{EcosystemServing as _, RefreshSweep};
 
     let (_dir, state) = unwired_state();
     assert_eq!(

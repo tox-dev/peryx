@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentUpload, UiSnapshot, UiUpstream};
 

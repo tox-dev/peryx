@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use peryx_core::{Ecosystem, Lexicon};
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 /// The container ecosystem's user-facing words for peryx's neutral concepts.
 pub const OCI_LEXICON: Lexicon = Lexicon {

@@ -100,7 +100,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     runtime.block_on(async {
         let state = peryx::server::build_state(config)?;
         for index in &state.indexes {
-            if let peryx_http::IndexKind::Cached { client, offline: false } = &index.kind {
+            if let peryx_driver::IndexKind::Cached { client, offline: false } = &index.kind {
                 let client = client.clone();
                 tokio::spawn(async move { client.warm().await });
             }

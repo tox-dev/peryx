@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::stream::Registration;
 use bytes::Bytes;
-use peryx_http::state::AppState;
+use peryx_driver::state::AppState;
 use peryx_storage::blob::Digest;
 use peryx_upstream::{RangeError, UpstreamClient};
 

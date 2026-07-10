@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use peryx_driver::AppState;
 use peryx_ecosystem_pypi::cache;
 use peryx_ecosystem_pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
-use peryx_http::AppState;
 use peryx_storage::blob::Digest;
 
 use crate::model::UiProject;
@@ -73,6 +73,6 @@ pub async fn project(route: &str, project: &str) -> Result<Option<(UiProject, Op
     Ok(Some((ui, doc)))
 }
 
-fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a peryx_http::Index> {
+fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a peryx_driver::Index> {
     app.indexes.iter().find(|index| index.route == route)
 }

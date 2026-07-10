@@ -49,13 +49,13 @@ pub use simple::{
 pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc};
 
 /// Wire the `PyPI` serving driver and search indexer into a freshly built
-/// [`AppState`](peryx_http::AppState).
+/// [`AppState`](peryx_driver::AppState).
 ///
-/// [`AppState`](peryx_http::AppState) is ecosystem-neutral and starts with no-op serving/indexing
+/// [`AppState`](peryx_driver::AppState) is ecosystem-neutral and starts with no-op serving/indexing
 /// defaults; the composition root (the binary, and the serving tests) calls this once so requests
 /// dispatch through [`PypiServing`] and search indexes through [`PypiIndexer`].
 #[cfg(feature = "serving")]
-pub fn install(state: &mut peryx_http::AppState) {
+pub fn install(state: &mut peryx_driver::AppState) {
     state.register_ecosystem(std::sync::Arc::new(PypiServing), std::sync::Arc::new(PypiIndexer));
     // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
     // lexicon is the neutral one; a future divergence would give this crate its own constant.

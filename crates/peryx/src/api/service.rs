@@ -5,7 +5,7 @@ use utoipa::openapi::content::ContentBuilder;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::{PathsBuilder, ResponseBuilder};
 
-use peryx_http::openapi::{api_json_response, package_search, text_response};
+use peryx_driver::openapi::{api_json_response, package_search, text_response};
 
 pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
     paths

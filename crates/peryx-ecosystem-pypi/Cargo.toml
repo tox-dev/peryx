@@ -14,7 +14,7 @@ description = "The PyPI ecosystem driver for peryx: names, versions, the simple 
 # wasm or other light consumer can use the format types without pulling the server stack.
 default = ["serving"]
 serving = [
-  "dep:peryx-http",
+  "dep:peryx-driver",
   "dep:peryx-events",
   "dep:peryx-index",
   "dep:peryx-search",
@@ -57,7 +57,7 @@ url.workspace = true
 sha2.workspace = true
 
 # Serving layer (enabled by the `serving` feature).
-peryx-http = { workspace = true, optional = true }
+peryx-driver = { workspace = true, optional = true }
 peryx-events = { workspace = true, optional = true }
 peryx-index = { workspace = true, optional = true }
 peryx-search = { workspace = true, optional = true }
@@ -89,6 +89,7 @@ tempfile = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 
 [dev-dependencies]
+peryx-http.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }

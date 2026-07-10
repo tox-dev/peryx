@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use peryx_http::AppState;
+use peryx_driver::AppState;
 use peryx_search::{SearchParams, SourceFilter};
 
 use crate::model::UiSearchPage;

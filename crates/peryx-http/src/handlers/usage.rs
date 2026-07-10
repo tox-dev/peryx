@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
-use crate::state::{AppState, IndexDescription};
+use peryx_driver::state::{AppState, IndexDescription};
 
 /// Per-index totals joined to each index's ecosystem and role.
 ///

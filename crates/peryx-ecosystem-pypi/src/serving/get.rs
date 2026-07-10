@@ -9,9 +9,9 @@ use std::sync::Arc;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
+use peryx_driver::not_found;
+use peryx_driver::state::AppState;
 use peryx_events::metrics::Event;
-use peryx_http::handlers::not_found;
-use peryx_http::state::AppState;
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
@@ -258,7 +258,7 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
             });
             // Pipeline the disk read ahead of the socket write: a pull-driven ReaderStream awaits each
             // read before writing it, serializing two independent I/O waits per chunk.
-            let body = peryx_http::body::pipelined_file(file.into_std().await, 0, bytes);
+            let body = peryx_driver::body::pipelined_file(file.into_std().await, 0, bytes);
             (blob_headers, body).into_response()
         }
         // A live stream records its download event at EOF, when the byte count exists.

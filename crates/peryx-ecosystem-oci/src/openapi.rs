@@ -4,7 +4,7 @@ use serde_json::json;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
 
-use peryx_http::openapi::{api_json_response, query_param};
+use peryx_driver::openapi::{api_json_response, query_param};
 
 /// The OCI distribution-spec `/v2/` routes an OCI index serves, plus peryx's own layer browser. The
 /// composition root folds each ecosystem's paths into one document.

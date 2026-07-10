@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::Ecosystem;
-use peryx_http::AppState;
+use peryx_driver::AppState;
 use peryx_upstream::UpstreamClient;
 
 impl OciRegistry {

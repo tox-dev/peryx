@@ -19,7 +19,7 @@ async fn mount_page(server: &MockServer, body: String, template: ResponseTemplat
         .await;
 }
 
-fn drilled(state: &Arc<peryx_http::state::AppState>, field: &str) -> u64 {
+fn drilled(state: &Arc<peryx_driver::state::AppState>, field: &str) -> u64 {
     let totals = state.metrics.drill(Some("pypi"), None);
     ["base", "cached", "hosted", "ecosystem"]
         .into_iter()
@@ -27,7 +27,7 @@ fn drilled(state: &Arc<peryx_http::state::AppState>, field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn settle(state: &Arc<peryx_http::state::AppState>, field: &str, want: u64) {
+fn settle(state: &Arc<peryx_driver::state::AppState>, field: &str, want: u64) {
     for _ in 0..500 {
         if drilled(state, field) >= want {
             return;
@@ -108,7 +108,7 @@ async fn test_refresh_sweep_detects_changed_page() {
 
 #[tokio::test]
 async fn test_serving_refresh_stale_reports_the_sweep() {
-    use peryx_http::serving::EcosystemServing as _;
+    use peryx_driver::serving::EcosystemServing as _;
 
     let h = harness().await;
     let digest = Digest::of(b"wheel-v1");
@@ -140,7 +140,7 @@ async fn test_serving_refresh_stale_reports_the_sweep() {
 
 #[tokio::test]
 async fn test_serving_refresh_stale_surfaces_errors_as_strings() {
-    use peryx_http::serving::EcosystemServing as _;
+    use peryx_driver::serving::EcosystemServing as _;
 
     let h = harness().await;
     let digest = Digest::of(b"wheel");

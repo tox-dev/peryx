@@ -1,0 +1,30 @@
+//! The seam an ecosystem plugs into.
+//!
+//! An ecosystem crate implements [`EcosystemServing`](serving::EcosystemServing) — or
+//! [`NamespaceServing`](serving::NamespaceServing), when its wire protocol owns a top-level path
+//! prefix — and nothing else. Everything a driver needs to do that lives here: the process
+//! [`AppState`], the per-index route resolution it serves through, blob-download coordination, request
+//! classification for rate limiting, and the discovery envelope.
+//!
+//! The router that dispatches to a driver sits *above* this crate, in `peryx-http`. An ecosystem
+//! therefore never depends on the serving layer that hosts it, only on the seam it fills.
+
+pub mod body;
+pub mod discovery;
+pub mod download;
+pub mod openapi;
+pub mod rate_limit;
+pub mod serving;
+pub mod state;
+
+pub use state::{AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind};
+
+/// A `404 Not Found` with a plain body, the answer for a path no index or artifact owns.
+#[must_use]
+pub fn not_found() -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (axum::http::StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+#[cfg(test)]
+mod tests;

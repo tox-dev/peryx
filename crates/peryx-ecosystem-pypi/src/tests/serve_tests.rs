@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::{detail_json, get, harness};
 use crate::cache::{self, PageOutcome};
-use peryx_http::state::AppState;
+use peryx_driver::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyAction, PolicyConfig};
 
@@ -375,11 +375,11 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
 async fn test_file_path_abandoned_download_errors() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
-    let (sender, receiver) = tokio::sync::watch::channel(peryx_http::download::DownloadProgress::default());
+    let (sender, receiver) = tokio::sync::watch::channel(peryx_driver::download::DownloadProgress::default());
     drop(sender);
     h.state.downloads.lock().expect("downloads lock").insert(
         digest.as_str().to_owned(),
-        peryx_http::download::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
+        peryx_driver::download::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
     );
     let err = cache::file_path(
         h.state.clone(),

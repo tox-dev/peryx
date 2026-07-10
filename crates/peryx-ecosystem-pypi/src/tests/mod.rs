@@ -112,11 +112,11 @@ fn field<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
     event["fields"][name].as_str()
 }
 
-/// Wrap a freshly built [`AppState`](peryx_http::AppState) in an `Arc` with the `PyPI` serving
+/// Wrap a freshly built [`AppState`](peryx_driver::AppState) in an `Arc` with the `PyPI` serving
 /// driver and search indexer installed, exactly as the binary wires it at startup. Serving tests
 /// build their state through this so requests dispatch through the real driver instead of the neutral
-/// no-op defaults an unwired [`AppState`](peryx_http::AppState) carries.
-fn wired(mut state: peryx_http::AppState) -> Arc<peryx_http::AppState> {
+/// no-op defaults an unwired [`AppState`](peryx_driver::AppState) carries.
+fn wired(mut state: peryx_driver::AppState) -> Arc<peryx_driver::AppState> {
     crate::install(&mut state);
     Arc::new(state)
 }

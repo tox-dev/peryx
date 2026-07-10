@@ -7,7 +7,7 @@ use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, Para
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
 
-use peryx_http::openapi::{api_json_response, index_discovery, package_search, route_param, text_response};
+use peryx_driver::openapi::{api_json_response, index_discovery, package_search, route_param, text_response};
 
 /// The media type a `PyPI` Simple index serves its JSON documents as (PEP 691).
 const MIME_SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";

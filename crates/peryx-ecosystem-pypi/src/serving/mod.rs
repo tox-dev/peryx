@@ -19,12 +19,12 @@ use axum::response::{IntoResponse, Response};
 use peryx_core::Ecosystem;
 use peryx_core::Role;
 use peryx_core::path::{self, PathSafetyError};
+use peryx_driver::discovery::BaseUrl;
+use peryx_driver::not_found;
+use peryx_driver::rate_limit::RouteClass;
+use peryx_driver::serving::{EcosystemServing, RefreshSweep};
+use peryx_driver::state::{AppState, IndexDescription};
 use peryx_events::metrics::MetricFamily;
-use peryx_http::discovery::BaseUrl;
-use peryx_http::handlers::not_found;
-use peryx_http::rate_limit::RouteClass;
-use peryx_http::serving::{EcosystemServing, RefreshSweep};
-use peryx_http::state::{AppState, IndexDescription};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 

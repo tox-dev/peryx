@@ -369,11 +369,7 @@ pub struct UpstreamLimited {
     pub retry_after: u64,
 }
 
-pub(crate) async fn enforce(
-    State(state): State<Arc<AppState>>,
-    request: axum::extract::Request,
-    next: Next,
-) -> Response {
+pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract::Request, next: Next) -> Response {
     let path = request.uri().path();
     let class = service_route_class(request.method(), path).unwrap_or_else(|| {
         // A GET inside an index namespace is classed by the driver that serves it, selected at the same

@@ -2,7 +2,7 @@
 //! download, and a pushed manifest an upload, so an OCI index reports the same metrics a pypi one does.
 
 use axum::http::{Method, StatusCode};
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use super::{auth, hosted_writable, oci_digest, send, send_body};
 

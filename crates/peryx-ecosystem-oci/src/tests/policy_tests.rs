@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
 use peryx_core::Ecosystem;
-use peryx_http::{AppState, router};
+use peryx_driver::AppState;
+use peryx_http::router;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::BlobStore;

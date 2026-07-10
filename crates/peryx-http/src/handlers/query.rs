@@ -6,7 +6,7 @@ use axum::extract::{OriginalUri, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use crate::state::AppState;
+use peryx_driver::state::AppState;
 use peryx_search::{SearchError, SearchParams};
 
 /// `GET /{route}/+search`: search cached packages scoped to one index.

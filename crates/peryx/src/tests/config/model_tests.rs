@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use peryx_http::rate_limit::RateLimitConfig;
+use peryx_driver::rate_limit::RateLimitConfig;
 
 use crate::config::{Config, IndexKind, LogConfig};
 

@@ -7,7 +7,7 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 
 use super::usage::{ecosystem_summaries, family_descriptors};
-use crate::state::AppState;
+use peryx_driver::state::AppState;
 
 /// The `/+status` detail selector.
 #[derive(Debug, serde::Deserialize)]

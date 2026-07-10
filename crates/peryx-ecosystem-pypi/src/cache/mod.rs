@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use crate::upload;
-use peryx_http::rate_limit::UpstreamPermit;
-use peryx_http::state::AppState;
+use peryx_driver::rate_limit::UpstreamPermit;
+use peryx_driver::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyDenial;
 use peryx_storage::meta::CachedIndex;

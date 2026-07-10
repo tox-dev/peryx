@@ -26,9 +26,9 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header}
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
 use peryx_core::Ecosystem;
+use peryx_driver::AppState;
+use peryx_driver::serving::NamespaceServing;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
-use peryx_http::AppState;
-use peryx_http::serving::NamespaceServing;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::PendingBlob;
@@ -192,8 +192,8 @@ impl NamespaceServing for OciRegistry {
         result.unwrap_or_else(ServeError::into_response)
     }
 
-    fn classify_route(&self, path: &str) -> peryx_http::rate_limit::RouteClass {
-        use peryx_http::rate_limit::RouteClass;
+    fn classify_route(&self, path: &str) -> peryx_driver::rate_limit::RouteClass {
+        use peryx_driver::rate_limit::RouteClass;
         // A blob GET streams layer bytes, an artifact download; manifests, tags, referrers, and the
         // layer browser are listings. The version check and writes never reach here.
         match classify(path) {
@@ -204,8 +204,8 @@ impl NamespaceServing for OciRegistry {
 
     fn discover_index(
         &self,
-        index: peryx_http::state::IndexDescription,
-        base: Option<&peryx_http::discovery::BaseUrl>,
+        index: peryx_driver::state::IndexDescription,
+        base: Option<&peryx_driver::discovery::BaseUrl>,
     ) -> serde_json::Value {
         crate::discovery::index_entry(index, base)
     }
@@ -463,8 +463,8 @@ mod tests {
 
     #[test]
     fn test_classify_route_buckets_blob_pulls_as_artifacts() {
-        use peryx_http::rate_limit::RouteClass;
-        use peryx_http::serving::NamespaceServing as _;
+        use peryx_driver::rate_limit::RouteClass;
+        use peryx_driver::serving::NamespaceServing as _;
         let registry = OciRegistry::default();
         let digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
         assert_eq!(

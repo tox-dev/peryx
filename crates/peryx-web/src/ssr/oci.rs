@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use crate::model::{UiMember, UiMemberChunk, UiOciManifest, members_from_listing};
 

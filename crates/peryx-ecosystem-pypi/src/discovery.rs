@@ -6,8 +6,8 @@ use peryx_core::url_encoding::push_path;
 use serde::{Serialize, Serializer};
 use serde_json::json;
 
-use peryx_http::discovery::{BaseUrl, browse_path, link, stats_path};
-use peryx_http::state::IndexDescription;
+use peryx_driver::discovery::{BaseUrl, browse_path, link, stats_path};
+use peryx_driver::state::IndexDescription;
 
 const TOKEN_PLACEHOLDER: &str = "<upload-token>";
 

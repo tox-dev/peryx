@@ -9,8 +9,8 @@ use axum::routing::{any, get};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
-use crate::rate_limit;
-use crate::state::AppState;
+use peryx_driver::rate_limit;
+use peryx_driver::state::AppState;
 
 /// Build the peryx HTTP router.
 ///

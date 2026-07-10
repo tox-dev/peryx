@@ -2,7 +2,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use peryx_http::AppState;
+use peryx_driver::AppState;
 use peryx_storage::blob::Digest;
 
 use super::{Output, PrefetchFile, Row};

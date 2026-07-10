@@ -6,7 +6,7 @@ use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
 use peryx_core::path::local_file_url;
-use peryx_http::state::AppState;
+use peryx_driver::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::meta::CachedIndex;

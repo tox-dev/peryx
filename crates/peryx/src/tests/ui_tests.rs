@@ -48,7 +48,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                     username: None,
                     password: None,
                     token: None,
-                    upstream_concurrency: peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
+                    upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                     offline: false,
                     prefetch: Box::default(),
                 },
@@ -358,7 +358,7 @@ async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-fn put_legacy_file(state: &peryx_http::AppState, filename: &str, content: &[u8]) -> Digest {
+fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8]) -> Digest {
     let digest = Digest::of(content);
     state.blobs.write_verified(content, &digest).unwrap();
     let uploaded = Uploaded {
@@ -385,7 +385,7 @@ fn put_legacy_file(state: &peryx_http::AppState, filename: &str, content: &[u8])
     digest
 }
 
-fn put_filter_files(state: &peryx_http::AppState) {
+fn put_filter_files(state: &peryx_driver::AppState) {
     put_legacy_file(state, "veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", b"wheel 1");
     put_legacy_file(state, "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl", b"wheel 2");
     put_legacy_file(state, "veloxdemo-1.0.0.tar.gz", b"sdist");

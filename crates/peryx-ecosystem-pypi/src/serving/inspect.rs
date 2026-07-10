@@ -9,8 +9,8 @@ use std::sync::Arc;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
-use peryx_http::handlers::not_found;
-use peryx_http::state::AppState;
+use peryx_driver::not_found;
+use peryx_driver::state::AppState;
 
 use crate::cache::{self};
 

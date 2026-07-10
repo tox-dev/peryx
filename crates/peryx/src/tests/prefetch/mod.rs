@@ -1,7 +1,7 @@
 use std::path::Path;
 
+use peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY;
 use peryx_ecosystem_pypi::to_json;
-use peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY;
 use peryx_policy::PolicyConfig;
 use wiremock::MockServer;
 

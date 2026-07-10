@@ -30,7 +30,7 @@ pub fn policy(config: &Config, command: &PolicyCommand, out: &mut dyn Write) -> 
 fn policy_dry_run(
     config: &Config,
     stores: &CacheStores,
-    indexes: &[peryx_http::Index],
+    indexes: &[peryx_driver::Index],
     args: &PolicyDryRunArgs,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
@@ -87,10 +87,10 @@ fn policy_dry_run(
 }
 
 fn matching_policy_index<'a>(
-    indexes: &'a [peryx_http::Index],
+    indexes: &'a [peryx_driver::Index],
     index_name: &str,
     filter: Option<&str>,
-) -> Option<&'a peryx_http::Index> {
+) -> Option<&'a peryx_driver::Index> {
     let index = indexes.iter().find(|index| index.name == index_name)?;
     filter
         .is_none_or(|filter| filter == index.name || filter == index.route)

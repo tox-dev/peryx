@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use peryx_http::AppState;
+use peryx_driver::AppState;
 use peryx_index::Index;
 use peryx_storage::blob::Digest;
 use peryx_upstream::Auth;

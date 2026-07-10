@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;
-use peryx_http::IndexKind as RuntimeKind;
+use peryx_driver::IndexKind as RuntimeKind;
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
@@ -30,7 +30,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
             username: None,
             password: None,
             token: None,
-            upstream_concurrency: peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
+            upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
             offline: false,
             prefetch: Box::default(),
         },

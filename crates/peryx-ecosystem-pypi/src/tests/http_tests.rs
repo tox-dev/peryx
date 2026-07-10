@@ -24,9 +24,9 @@ use super::{LogCapture, field};
 use crate::cache;
 use crate::upload::Uploaded;
 use peryx_core::path::local_file_url;
-use peryx_http::DEFAULT_MAX_STALE_SECS;
+use peryx_driver::DEFAULT_MAX_STALE_SECS;
+use peryx_driver::state::AppState;
 use peryx_http::router;
-use peryx_http::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 

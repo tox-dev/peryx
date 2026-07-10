@@ -15,11 +15,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::http_tests::detail_json;
 use super::{LogCapture, field};
-use peryx_http::rate_limit::{
+use peryx_driver::rate_limit::{
     DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimited, UpstreamLimits,
 };
+use peryx_driver::state::AppState;
 use peryx_http::router;
-use peryx_http::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
@@ -453,8 +453,8 @@ async fn test_upstream_limits_allow_unknown_and_uncapped_mirrors() {
 
 #[test]
 fn test_pypi_classify_route_distinguishes_metadata_artifact_listing() {
-    use peryx_http::rate_limit::RouteClass;
-    use peryx_http::serving::EcosystemServing as _;
+    use peryx_driver::rate_limit::RouteClass;
+    use peryx_driver::serving::EcosystemServing as _;
 
     let driver = crate::PypiServing;
     assert_eq!(driver.classify_route("/pypi/simple/flask/"), RouteClass::Listing);

@@ -71,11 +71,11 @@ fn import_target(config: &Config, selector: &str) -> anyhow::Result<ImportTarget
         );
     }
     match &index.kind {
-        peryx_http::IndexKind::Hosted { .. } => Ok(ImportTarget {
+        peryx_driver::IndexKind::Hosted { .. } => Ok(ImportTarget {
             name: index.name.clone(),
             route: index.route.clone(),
         }),
-        peryx_http::IndexKind::Virtual {
+        peryx_driver::IndexKind::Virtual {
             upload: Some(upload), ..
         } => {
             let target = &indexes[*upload];
@@ -84,10 +84,10 @@ fn import_target(config: &Config, selector: &str) -> anyhow::Result<ImportTarget
                 route: index.route.clone(),
             })
         }
-        peryx_http::IndexKind::Virtual { upload: None, .. } => {
+        peryx_driver::IndexKind::Virtual { upload: None, .. } => {
             bail!("index {selector:?} has no hosted upload target")
         }
-        peryx_http::IndexKind::Cached { .. } => bail!("index {selector:?} is read-only"),
+        peryx_driver::IndexKind::Cached { .. } => bail!("index {selector:?} is read-only"),
     }
 }
 

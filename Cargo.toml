@@ -19,6 +19,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 peryx-core = { path = "crates/peryx-core" }
+peryx-driver = { path = "crates/peryx-driver" }
 peryx-events = { path = "crates/peryx-events" }
 peryx-index = { path = "crates/peryx-index" }
 peryx-search = { path = "crates/peryx-search" }

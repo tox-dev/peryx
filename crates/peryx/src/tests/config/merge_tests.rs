@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 use rstest::rstest;
 
 use super::toml_config;

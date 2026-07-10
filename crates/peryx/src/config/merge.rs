@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use peryx_core::Ecosystem;
-use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 
 use super::ConfigError;
 use super::model::{AcmeConfig, Config, IndexConfig, IndexKind, LogConfig, TlsConfig, WebhookConfig, WebhookSecret};

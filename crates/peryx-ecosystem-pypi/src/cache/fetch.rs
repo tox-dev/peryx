@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::policy::PypiPolicy as _;
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
+use peryx_driver::state::AppState;
 use peryx_events::metrics::Event;
-use peryx_http::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::meta::CachedIndex;

@@ -33,6 +33,7 @@ self-update = ["dep:axoupdater"]
 [dependencies]
 axoupdater = { version = "0.10", default-features = false, features = ["github_releases", "blocking"], optional = true }
 peryx-core.workspace = true
+peryx-driver.workspace = true
 peryx-events.workspace = true
 peryx-index.workspace = true
 peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }

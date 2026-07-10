@@ -10,8 +10,8 @@ use wiremock::{Mock, ResponseTemplate};
 
 use super::http_tests::{detail_json, get, harness};
 use crate::cache;
-use peryx_http::download::{DownloadHandle, DownloadProgress};
-use peryx_http::state::AppState;
+use peryx_driver::download::{DownloadHandle, DownloadProgress};
+use peryx_driver::state::AppState;
 
 /// A stalling upstream: sends the header and the first half of the body, waits for the release
 /// signal, then sends the rest. Accepts exactly one connection, so a second upstream fetch for

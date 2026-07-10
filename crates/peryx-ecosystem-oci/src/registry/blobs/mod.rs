@@ -18,9 +18,9 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use futures_util::{Stream, TryStreamExt as _};
+use peryx_driver::AppState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::WebhookEventKind;
-use peryx_http::AppState;
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::{BlobError, BlobStore, Digest, PendingBlob};
@@ -365,7 +365,7 @@ async fn serve_stored_blob(
             let body = if head {
                 Body::empty()
             } else {
-                peryx_http::body::pipelined_file(file.into_std().await, 0, size)
+                peryx_driver::body::pipelined_file(file.into_std().await, 0, size)
             };
             return Ok(builder
                 .body(body)
@@ -386,7 +386,7 @@ async fn serve_stored_blob(
         return Ok(builder.body(Body::empty()).expect("range head response builds"));
     }
     Ok(builder
-        .body(peryx_http::body::pipelined_file(file.into_std().await, start, length))
+        .body(peryx_driver::body::pipelined_file(file.into_std().await, start, length))
         .expect("range response builds from validated header parts"))
 }
 

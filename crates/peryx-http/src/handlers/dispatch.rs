@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 
 use super::discover::index_api;
 use super::query::index_search;
-use crate::serving::EcosystemServing;
-use crate::state::AppState;
+use peryx_driver::serving::EcosystemServing;
+use peryx_driver::state::AppState;
 
 /// Why a request reached no driver.
 enum NoDriver {

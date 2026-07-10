@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use super::Output;
 use super::oci::{oci_images, oci_lookup, oci_mirror, oci_plan};

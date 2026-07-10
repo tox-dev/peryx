@@ -7,7 +7,7 @@ use crate::store::{self};
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 impl OciRegistry {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when

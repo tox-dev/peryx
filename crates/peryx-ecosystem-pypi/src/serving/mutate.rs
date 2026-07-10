@@ -10,9 +10,9 @@ use std::sync::atomic::Ordering;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
+use peryx_driver::not_found;
+use peryx_driver::state::AppState;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
-use peryx_http::handlers::not_found;
-use peryx_http::state::AppState;
 use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self, CacheError};

@@ -3100,6 +3100,7 @@ dependencies = [
  "http-body-util",
  "mimalloc",
  "peryx-core",
+ "peryx-driver",
  "peryx-ecosystem-oci",
  "peryx-ecosystem-pypi",
  "peryx-events",
@@ -3161,6 +3162,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "peryx-driver"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "bytes",
+ "futures-util",
+ "moka",
+ "peryx-core",
+ "peryx-events",
+ "peryx-index",
+ "peryx-policy",
+ "peryx-search",
+ "peryx-storage",
+ "peryx-upstream",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "utoipa",
+]
+
+[[package]]
 name = "peryx-ecosystem-oci"
 version = "0.0.1"
 dependencies = [
@@ -3175,6 +3204,7 @@ dependencies = [
  "http",
  "http-body-util",
  "peryx-core",
+ "peryx-driver",
  "peryx-events",
  "peryx-http",
  "peryx-identity",
@@ -3217,6 +3247,7 @@ dependencies = [
  "moka",
  "pep440_rs",
  "peryx-core",
+ "peryx-driver",
  "peryx-events",
  "peryx-http",
  "peryx-identity",
@@ -3276,44 +3307,25 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "axum",
- "base64",
- "blake2",
- "bytes",
- "csv",
- "flate2",
- "futures-util",
- "http",
  "http-body-util",
- "moka",
  "peryx-core",
+ "peryx-driver",
  "peryx-events",
- "peryx-identity",
  "peryx-index",
  "peryx-policy",
  "peryx-search",
  "peryx-storage",
- "peryx-upstream",
  "redb",
- "reqwest",
  "rstest",
- "rustls",
  "serde",
  "serde_json",
- "sha2 0.11.0",
- "tar",
  "tempfile",
- "thiserror 2.0.18",
- "time",
  "tokio",
- "tokio-util",
  "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
- "url",
- "utoipa",
  "wiremock",
- "zip",
 ]
 
 [[package]]
@@ -3404,6 +3416,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "peryx-core",
+ "peryx-driver",
  "peryx-ecosystem-pypi",
  "peryx-http",
  "peryx-search",

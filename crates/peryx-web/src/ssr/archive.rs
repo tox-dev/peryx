@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use peryx_driver::AppState;
 use peryx_ecosystem_pypi::cache;
-use peryx_http::AppState;
 use peryx_storage::blob::Digest;
 
 use crate::model::{UiMember, UiMemberChunk};
