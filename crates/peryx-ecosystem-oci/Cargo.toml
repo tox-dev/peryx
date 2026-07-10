@@ -28,6 +28,7 @@ rustls.workspace = true
 serde = { workspace = true, features = ["derive"] }
 url.workspace = true
 serde_json.workspace = true
+utoipa.workspace = true
 tokio = { workspace = true, features = ["sync", "fs", "io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
 

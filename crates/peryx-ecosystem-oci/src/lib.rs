@@ -29,6 +29,7 @@ mod discovery;
 mod error;
 mod mirror;
 mod name;
+pub mod openapi;
 pub(crate) mod registry;
 mod search_oci;
 mod store;

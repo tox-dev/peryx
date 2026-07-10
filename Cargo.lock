@@ -3194,6 +3194,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "url",
+ "utoipa",
  "wiremock",
 ]
 

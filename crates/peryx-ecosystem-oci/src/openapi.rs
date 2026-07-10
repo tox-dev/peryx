@@ -1,13 +1,15 @@
-//! The OCI distribution-spec `/v2/` routes and peryx's layer browser.
+//! The `OpenAPI` description of the OCI distribution-spec `/v2/` routes and peryx's layer browser.
 
 use serde_json::json;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
 
-use super::shared::{api_json_response, query_param};
+use peryx_http::openapi::{api_json_response, query_param};
 
-/// The OCI distribution-spec `/v2/` routes an OCI index serves, plus peryx's own layer browser.
-pub(super) fn oci_paths(paths: PathsBuilder) -> PathsBuilder {
+/// The OCI distribution-spec `/v2/` routes an OCI index serves, plus peryx's own layer browser. The
+/// composition root folds each ecosystem's paths into one document.
+#[must_use]
+pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
     paths
         .path(
             "/v2/",

@@ -15,6 +15,8 @@ mod legacy_json;
 mod metadata;
 mod name;
 #[cfg(feature = "serving")]
+pub mod openapi;
+#[cfg(feature = "serving")]
 pub mod policy;
 #[cfg(feature = "serving")]
 pub mod search_pypi;

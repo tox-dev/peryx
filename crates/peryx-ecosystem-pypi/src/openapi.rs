@@ -1,4 +1,5 @@
-//! The `PyPI` Simple API, legacy JSON, file, inspect, and publish operations.
+//! The `OpenAPI` description of the `PyPI` Simple API, legacy JSON, file, inspect, and publish
+//! operations this driver serves.
 
 use serde_json::json;
 use utoipa::openapi::content::ContentBuilder;
@@ -6,10 +7,15 @@ use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, Para
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
 
-use super::service::{index_discovery, package_search};
-use super::shared::{MIME_SIMPLE_JSON, api_json_response, route_param, text_response};
+use peryx_http::openapi::{api_json_response, index_discovery, package_search, route_param, text_response};
 
-pub(super) fn route_paths(paths: PathsBuilder) -> PathsBuilder {
+/// The media type a `PyPI` Simple index serves its JSON documents as (PEP 691).
+const MIME_SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
+
+/// Every path a `PyPI` index serves, mounted under its route. The composition root folds each
+/// ecosystem's paths into one document.
+#[must_use]
+pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
     let paths = paths
         .path(
             "/{route}/simple/",

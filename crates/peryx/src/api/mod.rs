@@ -4,10 +4,7 @@
 //! `/api-docs/openapi.json` and rendered by the documentation site; regenerate the site copy with
 //! `peryx openapi > site/static/openapi.json`.
 
-mod oci;
-mod pypi;
 mod service;
-mod shared;
 
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
@@ -74,6 +71,12 @@ pub fn openapi() -> OpenApi {
         .build()
 }
 
+/// Fold every ecosystem's wire-protocol paths into peryx's own service paths.
+///
+/// Each ecosystem crate describes the protocol it serves; naming them here is the composition root's
+/// job, the same place their drivers are installed.
 fn paths() -> PathsBuilder {
-    service::service_paths(oci::oci_paths(pypi::route_paths(PathsBuilder::new())))
+    let ecosystems =
+        peryx_ecosystem_oci::openapi::openapi_paths(peryx_ecosystem_pypi::openapi::openapi_paths(PathsBuilder::new()));
+    service::service_paths(ecosystems)
 }
