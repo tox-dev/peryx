@@ -91,6 +91,35 @@ pub trait EcosystemDriver: Send + Sync {
         )
     }
 
+    /// The stored-blob digests this ecosystem's metadata references, so the neutral orphan-blob
+    /// collector keeps them and reclaims the rest. Blobs are content-addressed and shared across
+    /// ecosystems, so the collector unions this over every installed driver. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when a metadata record cannot be read, so a purge never runs
+    /// against a store it cannot fully account for.
+    fn referenced_blob_digests(
+        &self,
+        _meta: &peryx_storage::meta::MetaStore,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        Ok(std::collections::BTreeSet::new())
+    }
+
+    /// Validate this ecosystem's metadata records, writing one line per problem to `out` and returning
+    /// the count. Blob contents are content-addressed, so the neutral caller verifies them once for
+    /// all ecosystems; this checks only that the metadata is internally consistent. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the store cannot be read or `out` cannot be written.
+    fn fsck_metadata(
+        &self,
+        _meta: &peryx_storage::meta::MetaStore,
+        _blobs: &peryx_storage::blob::BlobStore,
+        _out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        Ok(0)
+    }
+
     /// Revalidate stale cached pages once, invoked from the server's background sweep. A driver
     /// without a read-through cache sweeps nothing, so the default is a no-op.
     async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {

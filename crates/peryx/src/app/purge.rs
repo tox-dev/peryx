@@ -8,7 +8,7 @@ use peryx_ecosystem_pypi::{CoreMetadata, normalize_name, parse_detail};
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::{CachedIndex, MetaStore, ProjectCachePurgeCounts};
 
-use super::{CacheStores, split_pair, split_triple, upload_digests};
+use super::{CacheStores, upload_digests};
 use crate::cli::{CachePurgeOrphanedBlobsArgs, CachePurgeProjectArgs};
 
 pub(super) fn purge_project(
@@ -141,44 +141,18 @@ fn preserved_refs(stores: &CacheStores, target_key: &str) -> anyhow::Result<Cach
     Ok(refs)
 }
 
+/// Every blob digest any installed ecosystem's metadata references, unioned across drivers. Blobs are
+/// content-addressed and shared, so a blob is orphaned only when no ecosystem names it; the collector
+/// walks this whole set before reclaiming anything.
 pub fn referenced_blob_digests(meta: &MetaStore) -> anyhow::Result<BTreeSet<String>> {
     let mut digests = BTreeSet::new();
-    meta.scan_file_urls(|digest, value| {
-        if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
-            bail!("invalid file URL record for digest {digest:?}");
-        }
-        digests.insert(digest.to_owned());
-        Ok::<(), anyhow::Error>(())
-    })
-    .map_err(|err| anyhow::anyhow!("{err}"))
-    .context("scan file URL references")?;
-    meta.scan_metadata_records(|digest, value| {
-        let Some((_url, metadata_digest, _source)) = split_triple(value) else {
-            bail!("invalid PEP 658 metadata record for digest {digest:?}");
-        };
-        if Digest::from_hex(digest).is_none() {
-            bail!("invalid PEP 658 wheel digest {digest:?}");
-        }
-        if Digest::from_hex(metadata_digest).is_none() {
-            bail!("invalid PEP 658 metadata digest {metadata_digest:?}");
-        }
-        digests.insert(digest.to_owned());
-        digests.insert(metadata_digest.to_owned());
-        Ok::<(), anyhow::Error>(())
-    })
-    .map_err(|err| anyhow::anyhow!("{err}"))
-    .context("scan PEP 658 references")?;
-    meta.scan_upload_records(|key, bytes| {
-        for digest in upload_digests(bytes).with_context(|| format!("read upload record {key}"))? {
-            digests.insert(digest.as_str().to_owned());
-        }
-        Ok::<(), anyhow::Error>(())
-    })
-    .map_err(|err| anyhow::anyhow!("{err}"))
-    .context("scan upload references")?;
-    // OCI blobs (a manifest's config and layers) live in the same store but are named by stored
-    // manifests, not the PyPI tables above; without this a purge would treat every one as orphaned.
-    digests.extend(peryx_ecosystem_oci::referenced_blob_digests(meta).context("scan OCI manifest references")?);
+    for driver in crate::server::drivers().present() {
+        digests.extend(
+            driver
+                .referenced_blob_digests(meta)
+                .map_err(|reason| anyhow::anyhow!("scan {} blob references: {reason}", driver.ecosystem().as_str()))?,
+        );
+    }
     Ok(digests)
 }
 

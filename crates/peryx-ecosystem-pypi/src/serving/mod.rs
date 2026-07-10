@@ -152,6 +152,22 @@ impl EcosystemDriver for PypiServing {
         crate::policy::compile_rules(&config).map_err(|err| err.to_string())
     }
 
+    fn referenced_blob_digests(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        crate::admin::referenced_blob_digests(meta)
+    }
+
+    fn fsck_metadata(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        blobs: &peryx_storage::blob::BlobStore,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        crate::admin::fsck_metadata(meta, blobs, out)
+    }
+
     fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         web::project_names(state, position)
     }

@@ -4,6 +4,8 @@
 //! code.
 
 #[cfg(feature = "serving")]
+mod admin;
+#[cfg(feature = "serving")]
 pub mod archive;
 #[cfg(feature = "serving")]
 pub mod cache;

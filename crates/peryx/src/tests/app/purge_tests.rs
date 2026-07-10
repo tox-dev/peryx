@@ -217,7 +217,7 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_references() {
     drop(meta);
     let mut out = Vec::new();
     let err = app::cache(&config, &purge_orphaned_blobs_command(false), &mut out).unwrap_err();
-    assert!(err.to_string().contains("scan file URL references"));
+    assert!(err.to_string().contains("invalid file URL record"), "{err}");
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_metadata_references() {
         let config = config_at(&dir);
         let mut out = Vec::new();
         let err = app::cache(&config, &purge_orphaned_blobs_command(false), &mut out).unwrap_err();
-        assert!(err.to_string().contains("scan PEP 658 references"));
+        assert!(err.to_string().contains("PEP 658"), "{err}");
     }
 }
 
@@ -257,7 +257,7 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_upload_references() {
     drop(meta);
     let mut out = Vec::new();
     let err = app::cache(&config, &purge_orphaned_blobs_command(false), &mut out).unwrap_err();
-    assert!(err.to_string().contains("scan upload references"));
+    assert!(err.to_string().contains("invalid upload record"), "{err}");
 }
 
 #[test]

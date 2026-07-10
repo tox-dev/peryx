@@ -47,15 +47,6 @@ fn upload_digests(bytes: &[u8]) -> Option<Vec<Digest>> {
     Some(digests)
 }
 
-fn split_pair(value: &str) -> Option<(&str, &str)> {
-    value.split_once('\n')
-}
-
-fn split_triple(value: &str) -> Option<(&str, &str, &str)> {
-    let mut parts = value.splitn(3, '\n');
-    Some((parts.next()?, parts.next()?, parts.next()?))
-}
-
 fn index_names(config: &Config) -> Vec<&str> {
     let mut names = config
         .indexes

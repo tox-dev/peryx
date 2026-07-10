@@ -209,6 +209,13 @@ impl EcosystemDriver for OciRegistry {
     ) -> serde_json::Value {
         crate::discovery::index_entry(index, base)
     }
+
+    fn referenced_blob_digests(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        crate::referenced_blob_digests(meta).map_err(|err| err.to_string())
+    }
 }
 /// Resolve the writable hosted index behind `name` and authorize the request, or return a ready error
 /// response (unknown name, read-only index, uploads disabled, or bad credentials). A virtual index
