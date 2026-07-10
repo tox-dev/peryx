@@ -17,17 +17,18 @@ use super::simple::{
 /// Returns an error when the HTML page advertises an unsupported Simple API major version.
 pub fn parse_detail_html(project: &str, html: &str, base: &Url) -> Result<ParsedDetail, SimpleError> {
     let dom = tl::parse(html, ParserOptions::default())?;
-    let meta = parse_meta(&dom)?;
     let base = link_base(&dom, base);
-    let files = dom
-        .nodes()
-        .iter()
-        .filter_map(|node| node.as_tag())
-        .filter(|tag| is_tag(tag, b"a"))
-        .filter_map(|tag| anchor_to_file(tag, &base))
-        .collect();
+    let mut meta = UpstreamMeta::default();
+    let mut files = Vec::new();
+    for tag in dom.nodes().iter().filter_map(|node| node.as_tag()) {
+        if is_tag(tag, b"a") {
+            files.extend(anchor_to_file(tag, &base));
+        } else if is_tag(tag, b"meta") {
+            meta.read(tag);
+        }
+    }
     Ok(ParsedDetail {
-        meta,
+        meta: meta.build()?,
         name: project.to_owned(),
         versions: Vec::new(),
         files,
@@ -40,39 +41,57 @@ pub fn parse_detail_html(project: &str, html: &str, base: &Url) -> Result<Parsed
 /// Returns an error when the HTML page advertises an unsupported Simple API major version.
 pub fn parse_index_html(html: &str, base: &Url) -> Result<ProjectList, SimpleError> {
     let dom = tl::parse(html, ParserOptions::default())?;
-    let meta = parse_meta(&dom)?;
     let base = link_base(&dom, base);
-    let projects = dom
-        .nodes()
-        .iter()
-        .filter_map(|node| node.as_tag())
-        .filter(|tag| is_tag(tag, b"a"))
-        .filter_map(|tag| anchor_to_project(tag, &base, dom.parser()))
-        .collect();
-    Ok(ProjectList { meta, projects })
+    let parser = dom.parser();
+    let mut meta = UpstreamMeta::default();
+    let mut projects = Vec::new();
+    for tag in dom.nodes().iter().filter_map(|node| node.as_tag()) {
+        if is_tag(tag, b"a") {
+            projects.extend(anchor_to_project(tag, &base, parser));
+        } else if is_tag(tag, b"meta") {
+            meta.read(tag);
+        }
+    }
+    Ok(ProjectList {
+        meta: meta.build()?,
+        projects,
+    })
 }
 
-fn parse_meta(dom: &tl::VDom<'_>) -> Result<Meta, SimpleError> {
-    let mut api_version = None;
-    let mut project_status = None;
-    let mut project_status_reason = None;
-    for tag in dom
-        .nodes()
-        .iter()
-        .filter_map(|node| node.as_tag())
-        .filter(|tag| is_tag(tag, b"meta"))
-    {
+/// The PEP 700/708 `<meta>` values a Simple page carries, gathered as the document is walked.
+///
+/// A page is thousands of anchors and a handful of meta tags. Collecting the meta tags in their own
+/// pass walked every anchor a second time to look at its tag name and discard it.
+#[derive(Default)]
+struct UpstreamMeta {
+    api_version: Option<String>,
+    project_status: Option<String>,
+    project_status_reason: Option<String>,
+}
+
+impl UpstreamMeta {
+    /// Read one `<meta>` tag, keeping the values PEP 700 and PEP 708 define.
+    fn read(&mut self, tag: &HTMLTag) {
         let Some(name) = attr_string(tag, "name") else {
-            continue;
+            return;
         };
         match name.as_str() {
-            "pypi:repository-version" => api_version = attr_string(tag, "content"),
-            "pypi:project-status" => project_status = attr_string(tag, "content"),
-            "pypi:project-status-reason" => project_status_reason = attr_string(tag, "content"),
+            "pypi:repository-version" => self.api_version = attr_string(tag, "content"),
+            "pypi:project-status" => self.project_status = attr_string(tag, "content"),
+            "pypi:project-status-reason" => self.project_status_reason = attr_string(tag, "content"),
             _ => {}
         }
     }
-    Meta::from_upstream(api_version.as_deref(), project_status, project_status_reason)
+
+    /// # Errors
+    /// Returns an error when the page advertises an unsupported Simple API major version.
+    fn build(self) -> Result<Meta, SimpleError> {
+        Meta::from_upstream(
+            self.api_version.as_deref(),
+            self.project_status,
+            self.project_status_reason,
+        )
+    }
 }
 
 fn link_base(dom: &tl::VDom<'_>, base: &Url) -> Url {
@@ -87,16 +106,18 @@ fn link_base(dom: &tl::VDom<'_>, base: &Url) -> Url {
 }
 
 fn anchor_to_project(tag: &HTMLTag, base: &Url, parser: &tl::Parser<'_>) -> Option<ProjectListEntry> {
-    let href = attr_string(tag, "href").filter(|href| !href.is_empty())?;
-    let resolved = base.join(&href).ok()?;
-    let name = tag.inner_text(parser);
-    let name = decode_entities(name.trim());
-    let name = if name.is_empty() {
-        project_from_url(&resolved)?
-    } else {
-        name
-    };
-    Some(ProjectListEntry { name })
+    let href = attr_value(tag, "href").filter(|href| !href.is_empty())?;
+    let name = decode_entities(tag.inner_text(parser).trim());
+    if !name.is_empty() {
+        return Some(ProjectListEntry { name });
+    }
+    // Only an anchor with no text needs its target resolved to name the project, and PEP 503 says
+    // the text is the name. Resolving every anchor's href parses a URL per project on a page that
+    // lists every project there is.
+    let resolved = base.join(&decode_entities(&href)).ok()?;
+    Some(ProjectListEntry {
+        name: project_from_url(&resolved)?,
+    })
 }
 
 fn project_from_url(url: &Url) -> Option<String> {
