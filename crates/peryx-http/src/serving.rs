@@ -98,7 +98,7 @@ pub trait EcosystemServing: Send + Sync {
     /// The ecosystem-specific counter families this driver publishes, so the neutral render layer
     /// exposes and scopes them without knowing any ecosystem's vocabulary. Empty by default; a
     /// driver declares its own (`PyPI`'s PEP 658 sibling today).
-    fn metric_families(&self) -> &'static [crate::metrics::MetricFamily] {
+    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
         &[]
     }
 

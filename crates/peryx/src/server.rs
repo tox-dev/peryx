@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use axum::Router;
-use peryx_http::webhook::{WebhookRuntime, WebhookTargetConfig};
-use peryx_http::{AppState, Index, IndexKind, RuntimeOptions, path_safety, router, webhook};
+use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
+use peryx_http::{AppState, Index, IndexKind, RuntimeOptions, path_safety, router};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -62,7 +62,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
     if !state.webhooks.is_empty() {
-        webhook::kick(state.clone());
+        peryx_events::webhook::kick(state.clone());
     }
     Ok(state)
 }

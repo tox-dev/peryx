@@ -9,10 +9,10 @@ use std::sync::atomic::Ordering;
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_http::handlers::not_found;
 use peryx_http::path_safety::{self};
 use peryx_http::state::AppState;
-use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self, CacheError};
@@ -34,7 +34,7 @@ struct PromotionAudit<'a> {
 }
 
 fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusBlock) {
-    peryx_http::security::Event::new("promote", block.result)
+    peryx_events::security::Event::new("promote", block.result)
         .actor(audit.actor)
         .index(audit.route)
         .source_index(audit.source_index)
@@ -72,7 +72,7 @@ fn promotion_source<'a>(state: &'a AppState, route: &str) -> Result<&'a Index, R
 pub async fn pypi_dispatch_put(state: Arc<AppState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
-    let actor = peryx_http::security::actor(&headers);
+    let actor = peryx_events::security::actor(&headers);
     let (index, hosted, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
@@ -219,7 +219,7 @@ fn restore_request(
 pub async fn pypi_dispatch_delete(state: Arc<AppState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
-    let actor = peryx_http::security::actor(&headers);
+    let actor = peryx_events::security::actor(&headers);
     let (index, hosted, spec) = match removal_target(&state, path, &headers) {
         Ok(target) => target,
         Err(response) => return response,
@@ -304,7 +304,7 @@ fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, Cac
         Err(CacheError::NotVolatile) => ("denied", 0, Some(CacheError::NotVolatile.user_message())),
         Err(err) => ("failure", 0, Some(err.user_message())),
     };
-    peryx_http::security::Event::new(audit.action, security_result)
+    peryx_events::security::Event::new(audit.action, security_result)
         .actor(audit.actor)
         .index(audit.route)
         .hosted_index(audit.hosted_index)
@@ -325,7 +325,7 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
         }
         Err(err) => ("failure", 0, Some(err.user_message())),
     };
-    peryx_http::security::Event::new("promote", security_result)
+    peryx_events::security::Event::new("promote", security_result)
         .actor(audit.actor)
         .index(audit.route)
         .source_index(audit.source_index)
@@ -351,7 +351,7 @@ fn emit_mutation_webhook(
         return;
     }
     let created_at_unix = (state.clock)();
-    peryx_http::webhook::emit(
+    peryx_events::webhook::emit(
         state,
         &WebhookEvent {
             kind,

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use peryx_core::Ecosystem;
-use peryx_http::webhook::{WebhookRuntime, WebhookTargetConfig};
+use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::{AppState, router};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;

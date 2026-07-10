@@ -3102,6 +3102,7 @@ dependencies = [
  "peryx-core",
  "peryx-ecosystem-oci",
  "peryx-ecosystem-pypi",
+ "peryx-events",
  "peryx-http",
  "peryx-index",
  "peryx-policy",
@@ -3173,6 +3174,7 @@ dependencies = [
  "http",
  "http-body-util",
  "peryx-core",
+ "peryx-events",
  "peryx-http",
  "peryx-identity",
  "peryx-index",
@@ -3213,6 +3215,7 @@ dependencies = [
  "moka",
  "pep440_rs",
  "peryx-core",
+ "peryx-events",
  "peryx-http",
  "peryx-identity",
  "peryx-index",
@@ -3245,6 +3248,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "peryx-events"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "http",
+ "peryx-core",
+ "peryx-identity",
+ "peryx-storage",
+ "reqwest",
+ "rstest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "peryx-http"
 version = "0.0.1"
 dependencies = [
@@ -3260,6 +3284,7 @@ dependencies = [
  "http-body-util",
  "moka",
  "peryx-core",
+ "peryx-events",
  "peryx-identity",
  "peryx-index",
  "peryx-policy",

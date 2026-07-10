@@ -14,7 +14,7 @@ use crate::state::{AppState, IndexDescription};
 ///
 /// The join lets the render layer scope role-only and ecosystem-only counters. Indexes with no
 /// activity yet report zeros.
-fn per_index_metrics(state: &AppState) -> Vec<(IndexDescription, crate::metrics::Counters)> {
+fn per_index_metrics(state: &AppState) -> Vec<(IndexDescription, peryx_events::metrics::Counters)> {
     let totals = state.metrics.index_totals();
     state
         .describe_indexes()
@@ -31,13 +31,13 @@ fn per_index_metrics(state: &AppState) -> Vec<(IndexDescription, crate::metrics:
 /// Activity is summed across every index of an ecosystem, with that ecosystem's own counter
 /// families folded in under `families`. Ordered by ecosystem name so the output is stable.
 #[must_use]
-pub fn ecosystem_summaries(state: &AppState) -> Vec<crate::metrics::EcosystemSummary> {
-    let mut summaries: std::collections::BTreeMap<&'static str, crate::metrics::EcosystemSummary> =
+pub fn ecosystem_summaries(state: &AppState) -> Vec<peryx_events::metrics::EcosystemSummary> {
+    let mut summaries: std::collections::BTreeMap<&'static str, peryx_events::metrics::EcosystemSummary> =
         std::collections::BTreeMap::new();
     for (index, counters) in per_index_metrics(state) {
         let summary = summaries
             .entry(index.ecosystem)
-            .or_insert_with(|| crate::metrics::EcosystemSummary {
+            .or_insert_with(|| peryx_events::metrics::EcosystemSummary {
                 ecosystem: index.ecosystem.to_owned(),
                 ..Default::default()
             });
@@ -56,12 +56,12 @@ pub fn ecosystem_summaries(state: &AppState) -> Vec<crate::metrics::EcosystemSum
 /// The driver's counter families, so the dashboard labels ecosystem counters without hardcoding any
 /// ecosystem's vocabulary.
 #[must_use]
-pub fn family_descriptors(state: &AppState) -> Vec<crate::metrics::FamilyDescriptor> {
+pub fn family_descriptors(state: &AppState) -> Vec<peryx_events::metrics::FamilyDescriptor> {
     state
         .serving
         .metric_families()
         .iter()
-        .map(|family| crate::metrics::FamilyDescriptor {
+        .map(|family| peryx_events::metrics::FamilyDescriptor {
             key: family.key.to_owned(),
             label: family.ui_label.to_owned(),
             roles: family.roles.iter().map(|role| role.as_str().to_owned()).collect(),
@@ -92,7 +92,7 @@ struct NeutralFamily {
     name: &'static str,
     help: &'static str,
     role: Option<&'static str>,
-    read: fn(&crate::metrics::Counters) -> u64,
+    read: fn(&peryx_events::metrics::Counters) -> u64,
 }
 
 /// The neutral per-index families: a base group every role reports, a caching group only a cached

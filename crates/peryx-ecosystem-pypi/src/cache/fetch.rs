@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::policy::PypiPolicy as _;
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
-use peryx_http::metrics::Event;
+use peryx_events::metrics::Event;
 use peryx_http::state::AppState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
@@ -190,7 +190,7 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
 }
 
 fn log_cache_sync(index: &str, project: &str, result: &'static str, changed: bool, reason: Option<&str>) {
-    peryx_http::security::Event::new("mirror_sync", result)
+    peryx_events::security::Event::new("mirror_sync", result)
         .index(index)
         .project(Some(project))
         .changed(changed)

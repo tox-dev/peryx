@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use peryx_events::metrics::Event;
 use peryx_http::handlers::not_found;
-use peryx_http::metrics::Event;
 use peryx_http::path_safety::{self};
 use peryx_http::state::AppState;
 use peryx_index::Index;

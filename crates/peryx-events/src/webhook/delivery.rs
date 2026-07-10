@@ -9,8 +9,8 @@ use peryx_storage::meta::{
 };
 
 use super::event::WebhookEvent;
+use super::host::WebhookHost;
 use super::signature::signature;
-use crate::state::AppState;
 
 const DELIVERY_BATCH: usize = 32;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -25,11 +25,11 @@ const MAX_ATTEMPTS: u16 = 5;
 /// # Panics
 /// Panics only if the aggregation lock is poisoned; the payload is all JSON primitives and cannot
 /// fail to serialize.
-pub fn emit(state: Arc<AppState>, event: &WebhookEvent) {
-    if state.webhooks.is_empty() {
+pub fn emit<H: WebhookHost>(host: Arc<H>, event: &WebhookEvent) {
+    if host.webhooks().is_empty() {
         return;
     }
-    let targets = state.webhooks.target_names(&event.index, event.kind);
+    let targets = host.webhooks().target_names(&event.index, event.kind);
     if targets.is_empty() {
         return;
     }
@@ -37,7 +37,7 @@ pub fn emit(state: Arc<AppState>, event: &WebhookEvent) {
     let event_name = event.kind.as_str();
     let mut enqueued = 0;
     for target in targets {
-        let result = state.meta.enqueue_webhook_delivery(NewWebhookDelivery {
+        let result = host.meta().enqueue_webhook_delivery(NewWebhookDelivery {
             index: &event.index,
             target: &target,
             event: event_name,
@@ -50,60 +50,60 @@ pub fn emit(state: Arc<AppState>, event: &WebhookEvent) {
         }
     }
     if enqueued > 0 {
-        kick(state);
+        kick(host);
     }
 }
 
-pub fn kick(state: Arc<AppState>) {
-    if state.webhooks.running.swap(true, Ordering::AcqRel) {
-        state.webhooks.notify.notify_one();
+pub fn kick<H: WebhookHost>(host: Arc<H>) {
+    if host.webhooks().running.swap(true, Ordering::AcqRel) {
+        host.webhooks().notify.notify_one();
         return;
     }
-    tokio::spawn(delivery_loop(state));
+    tokio::spawn(delivery_loop(host));
 }
 
-async fn delivery_loop(state: Arc<AppState>) {
+async fn delivery_loop<H: WebhookHost>(host: Arc<H>) {
     loop {
-        deliver_due(&state).await;
-        let result = state.meta.next_webhook_delivery_at();
+        deliver_due(&host).await;
+        let result = host.meta().next_webhook_delivery_at();
         log_next_delivery_error(result.as_ref().err());
         let Some(next) = result.ok().flatten() else {
-            state.webhooks.notify.notified().await;
+            host.webhooks().notify.notified().await;
             continue;
         };
-        let now = (state.clock)();
+        let now = host.now();
         let sleep_secs = u64::try_from(next - now).unwrap_or(0);
         tokio::select! {
             () = tokio::time::sleep(Duration::from_secs(sleep_secs)) => {}
-            () = state.webhooks.notify.notified() => {}
+            () = host.webhooks().notify.notified() => {}
         }
     }
 }
 
-async fn deliver_due(state: &Arc<AppState>) {
+async fn deliver_due<H: WebhookHost>(host: &Arc<H>) {
     loop {
-        let now = (state.clock)();
-        let result = state.meta.list_due_webhook_deliveries(now, DELIVERY_BATCH);
+        let now = host.now();
+        let result = host.meta().list_due_webhook_deliveries(now, DELIVERY_BATCH);
         log_queue_scan_error(result.as_ref().err());
         let deliveries = result.unwrap_or_default();
         if deliveries.is_empty() {
             return;
         }
         for delivery in deliveries {
-            deliver_one(state, delivery).await;
+            deliver_one(host, delivery).await;
         }
     }
 }
 
-async fn deliver_one(state: &Arc<AppState>, delivery: WebhookDeliveryRecord) {
-    let now = (state.clock)();
-    let Some(target) = state.webhooks.target(&delivery.index, &delivery.target) else {
-        record_failure(state, &delivery, now, None, "webhook target is not configured");
+async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRecord) {
+    let now = host.now();
+    let Some(target) = host.webhooks().target(&delivery.index, &delivery.target) else {
+        record_failure(host.as_ref(), &delivery, now, None, "webhook target is not configured");
         return;
     };
     let signature = signature(&target.secret, now, &delivery.id, delivery.payload.as_bytes());
-    let result = state
-        .webhooks
+    let result = host
+        .webhooks()
         .client
         .post(target.url)
         .timeout(DELIVERY_TIMEOUT)
@@ -121,20 +121,26 @@ async fn deliver_one(state: &Arc<AppState>, delivery: WebhookDeliveryRecord) {
         .await;
     match result {
         Ok(response) if response.status().is_success() => {
-            record_success(state, &delivery, now, response.status().as_u16());
+            record_success(host.as_ref(), &delivery, now, response.status().as_u16());
         }
         Ok(response) => {
             let status = response.status().as_u16();
-            record_failure(state, &delivery, now, Some(status), &format!("http status {status}"));
+            record_failure(
+                host.as_ref(),
+                &delivery,
+                now,
+                Some(status),
+                &format!("http status {status}"),
+            );
         }
         Err(err) => {
-            record_failure(state, &delivery, now, None, &err.without_url().to_string());
+            record_failure(host.as_ref(), &delivery, now, None, &err.without_url().to_string());
         }
     }
 }
 
-fn record_success(state: &AppState, delivery: &WebhookDeliveryRecord, now: i64, status: u16) {
-    let result = state.meta.update_webhook_delivery(
+fn record_success<H: WebhookHost>(host: &H, delivery: &WebhookDeliveryRecord, now: i64, status: u16) {
+    let result = host.meta().update_webhook_delivery(
         &delivery.id,
         WebhookDeliveryAttempt {
             status: WebhookDeliveryStatus::Delivered,
@@ -163,8 +169,8 @@ fn log_delivery_success(record: Option<&WebhookDeliveryRecord>, status: u16) {
     }
 }
 
-fn record_failure(
-    state: &AppState,
+fn record_failure<H: WebhookHost>(
+    host: &H,
     delivery: &WebhookDeliveryRecord,
     now: i64,
     response_status: Option<u16>,
@@ -176,7 +182,7 @@ fn record_failure(
     } else {
         (WebhookDeliveryStatus::Pending, Some(now + backoff_secs(attempts)))
     };
-    let result = state.meta.update_webhook_delivery(
+    let result = host.meta().update_webhook_delivery(
         &delivery.id,
         WebhookDeliveryAttempt {
             status,

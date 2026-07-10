@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::project_of_filename;
 use bytes::Bytes;
+use peryx_events::metrics::Event;
 use peryx_http::download::{DownloadHandle, DownloadProgress};
-use peryx_http::metrics::Event;
 use peryx_http::rate_limit::UpstreamPermit;
 use peryx_http::state::AppState;
 use peryx_storage::blob::Digest;

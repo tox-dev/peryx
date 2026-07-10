@@ -1,6 +1,6 @@
 //! Structured security-relevant index events.
 
-use axum::http::{HeaderMap, header};
+use http::{HeaderMap, header};
 
 const UNKNOWN: &str = "unknown";
 
@@ -184,10 +184,10 @@ fn text(value: Option<&str>) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::HeaderMap;
-    use axum::http::header::{AUTHORIZATION, HeaderValue};
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
+    use http::HeaderMap;
+    use http::header::{AUTHORIZATION, HeaderValue};
 
     fn basic(credentials: &str) -> HeaderValue {
         HeaderValue::from_str(&format!("Basic {}", STANDARD.encode(credentials))).unwrap()

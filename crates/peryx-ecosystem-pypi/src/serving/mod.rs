@@ -18,9 +18,9 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::Ecosystem;
 use peryx_core::Role;
+use peryx_events::metrics::MetricFamily;
 use peryx_http::discovery::BaseUrl;
 use peryx_http::handlers::not_found;
-use peryx_http::metrics::MetricFamily;
 use peryx_http::path_safety::{self, PathSafetyError};
 use peryx_http::rate_limit::RouteClass;
 use peryx_http::serving::{EcosystemServing, RefreshSweep};
@@ -165,7 +165,7 @@ fn authorize(hosted: &Index, headers: &HeaderMap) -> Result<(), Response> {
     let IndexKind::Hosted { upload_token, .. } = &hosted.kind else {
         return Err(not_found());
     };
-    let actor = peryx_http::security::actor(headers);
+    let actor = peryx_events::security::actor(headers);
     let Some(token) = upload_token.as_deref() else {
         security_token_event(
             headers,
@@ -205,7 +205,7 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn security_token_event(headers: &HeaderMap, actor: Option<&str>, route: &str, result: &'static str, reason: &str) {
-    let event = peryx_http::security::Event::new("token_use", result)
+    let event = peryx_events::security::Event::new("token_use", result)
         .actor(actor)
         .index(route)
         .request(headers);

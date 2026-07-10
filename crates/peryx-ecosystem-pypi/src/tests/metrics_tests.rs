@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use peryx_http::metrics::{Event, Metrics};
+use peryx_events::metrics::{Event, Metrics};
 use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};

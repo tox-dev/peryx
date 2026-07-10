@@ -15,6 +15,7 @@ description = "The PyPI ecosystem driver for peryx: names, versions, the simple 
 default = ["serving"]
 serving = [
   "dep:peryx-http",
+  "dep:peryx-events",
   "dep:peryx-index",
   "dep:peryx-search",
   "dep:peryx-policy",
@@ -57,6 +58,7 @@ sha2.workspace = true
 
 # Serving layer (enabled by the `serving` feature).
 peryx-http = { workspace = true, optional = true }
+peryx-events = { workspace = true, optional = true }
 peryx-index = { workspace = true, optional = true }
 peryx-search = { workspace = true, optional = true }
 peryx-policy = { workspace = true, optional = true }

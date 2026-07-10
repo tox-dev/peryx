@@ -12,9 +12,9 @@ use peryx_storage::meta::MetaStore;
 use peryx_index::{Index, IndexKind};
 
 use super::describe::{IndexDescription, describe_indexes};
-use crate::metrics::Metrics;
 use crate::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, UpstreamLimits};
-use crate::webhook::WebhookRuntime;
+use peryx_events::metrics::Metrics;
+use peryx_events::webhook::WebhookRuntime;
 use peryx_search::{IndexerCtx, PackageSearch, SearchCtx, SearchError};
 
 /// A source of the current unix time, injectable so cache-freshness logic is deterministic in
@@ -511,6 +511,22 @@ impl AppState {
     #[must_use]
     pub fn describe_indexes(&self) -> Vec<IndexDescription> {
         describe_indexes(&self.indexes)
+    }
+}
+
+/// Signed webhook delivery borrows exactly three things from the process — the configured targets,
+/// the queue's store, and the clock — and reaches them through this trait rather than the whole state.
+impl peryx_events::webhook::WebhookHost for AppState {
+    fn webhooks(&self) -> &WebhookRuntime {
+        &self.webhooks
+    }
+
+    fn meta(&self) -> &MetaStore {
+        &self.meta
+    }
+
+    fn now(&self) -> i64 {
+        (self.clock)()
     }
 }
 

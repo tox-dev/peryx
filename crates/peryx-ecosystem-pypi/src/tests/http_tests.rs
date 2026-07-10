@@ -3297,7 +3297,7 @@ async fn test_metrics_exposes_per_index_counters() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     // A second route makes the exposition ordering observable.
-    h.state.metrics.record(peryx_http::metrics::Event::Page {
+    h.state.metrics.record(peryx_events::metrics::Event::Page {
         route: "hosted".to_owned(),
         project: "veloxpkg".to_owned(),
     });

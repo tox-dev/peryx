@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 use crate::rate_limit::RateLimitConfig;
 use crate::state::{AppState, DEFAULT_HOT_CACHE_BYTES, RuntimeOptions};
-use crate::webhook::WebhookRuntime;
+use peryx_events::webhook::WebhookRuntime;
 
 fn state_with_budget(hot_cache_bytes: u64) -> (tempfile::TempDir, AppState) {
     let dir = tempfile::tempdir().unwrap();

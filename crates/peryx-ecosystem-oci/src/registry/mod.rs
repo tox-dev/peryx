@@ -26,9 +26,9 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header}
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
 use peryx_core::Ecosystem;
+use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_http::AppState;
 use peryx_http::serving::NamespaceServing;
-use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::PendingBlob;
@@ -276,7 +276,7 @@ fn emit_webhook(
     version: Option<String>,
     digest: Option<String>,
 ) {
-    peryx_http::webhook::emit(
+    peryx_events::webhook::emit(
         Arc::clone(state),
         &WebhookEvent {
             kind,
@@ -289,7 +289,7 @@ fn emit_webhook(
             filename: digest.clone(),
             digest,
             count: 1,
-            actor: peryx_http::security::actor(headers),
+            actor: peryx_events::security::actor(headers),
             request_id: request_id(headers),
         },
     );

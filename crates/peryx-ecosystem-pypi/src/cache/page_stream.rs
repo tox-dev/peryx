@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::stream::{PageSummary, PageTransformer};
 use crate::{ProjectDetail, ProjectStatus, parse_detail};
 use bytes::Bytes;
-use peryx_http::metrics::Event;
+use peryx_events::metrics::Event;
 use peryx_http::rate_limit::UpstreamPermit;
 use peryx_http::state::AppState;
 use peryx_index::{Index, IndexKind};
