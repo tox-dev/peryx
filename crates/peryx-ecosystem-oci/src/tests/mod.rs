@@ -75,6 +75,16 @@ fn proxy_with_clock(
     upstream: &str,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 ) -> (Arc<AppState>, axum::Router) {
+    proxy_with_stale(dir, upstream, clock, peryx_http::DEFAULT_MAX_STALE_SECS)
+}
+
+/// A caching proxy whose stale-on-error bound the caller chooses; `0` serves stale without limit.
+fn proxy_with_stale(
+    dir: &TempDir,
+    upstream: &str,
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    max_stale_secs: i64,
+) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let index = oci_index(
@@ -86,6 +96,7 @@ fn proxy_with_clock(
         },
     );
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], clock);
+    state.max_stale_secs = max_stale_secs;
     crate::install(&mut state);
     let state = Arc::new(state);
     (state.clone(), router(state))

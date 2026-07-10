@@ -124,9 +124,12 @@ body, and only fetches the manifest when that digest has moved. So the freshness
 is buying the absence of one — and a burst of pulls of the same stale tag collapses into a single upstream check through
 the single-flight gate. The window is [`cache_ttl_secs`](@/core/configuration.md), five minutes by default.
 
-The `tag list` rows are marked `net` for a reason: on a single-member proxy peryx passes the request straight to its
-upstream, every time, so the row is a round trip rather than a measure of peryx serving something it holds. zot answers
-in microseconds because its sync extension has already mirrored the repository and it lists from its own store.
+`tag list` used to be the one row peryx lost, and it lost it for a structural reason: a single-member proxy passed the
+request straight to its upstream on every request, so the row measured a round trip to Docker Hub rather than a registry
+serving something it holds. A tag list is mutable, which is why it asked — but that is what a freshness window is for. It
+is now cached like a tag: trusted for [`cache_ttl_secs`](@/core/configuration.md), revalidated after, and answered from
+the last list when the upstream cannot be reached, bounded by `max_stale_secs`. A burst of listings costs the upstream
+one request, not one per client.
 
 ## Reproducing
 

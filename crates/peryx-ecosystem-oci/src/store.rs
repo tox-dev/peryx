@@ -145,6 +145,61 @@ pub fn delete_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Resul
     Ok(removed)
 }
 
+/// The driver-KV key one upstream tag-list page lives under. The query is part of the key: `?n=` and
+/// `?last=` select different pages, and one must never answer for another.
+fn tag_page_key(index: &str, repo: &str, query: &str) -> String {
+    format!("oci\u{0}tp\u{0}{index}\u{0}{repo}\u{0}{query}")
+}
+
+/// Record an upstream tag-list page: when it was fetched, the `Link` header that names the next one,
+/// and the body verbatim.
+///
+/// # Errors
+/// Returns a store error if the write fails.
+pub fn set_tag_page(
+    meta: &MetaStore,
+    index: &str,
+    repo: &str,
+    query: &str,
+    at: i64,
+    link: Option<&str>,
+    body: &[u8],
+) -> Result<(), MetaError> {
+    let link = link.unwrap_or_default().as_bytes();
+    let length = u32::try_from(link.len()).unwrap_or(u32::MAX);
+    let mut value = at.to_be_bytes().to_vec();
+    value.extend_from_slice(&length.to_be_bytes());
+    value.extend_from_slice(link);
+    value.extend_from_slice(body);
+    meta.put_driver_value(&tag_page_key(index, repo, query), &value)
+}
+
+/// A stored tag-list page: when it was fetched, the `Link` to the next page, and the body.
+pub type TagPage = (i64, Option<String>, Vec<u8>);
+
+/// The stored tag-list page for `query`, or `None` if none was ever fetched.
+///
+/// # Errors
+/// Returns a store error if the read fails.
+pub fn tag_page(meta: &MetaStore, index: &str, repo: &str, query: &str) -> Result<Option<TagPage>, MetaError> {
+    let Some(raw) = meta.get_driver_value(&tag_page_key(index, repo, query))? else {
+        return Ok(None);
+    };
+    let Some((at, rest)) = raw.split_first_chunk::<8>() else {
+        return Ok(None);
+    };
+    let Some((length, rest)) = rest.split_first_chunk::<4>() else {
+        return Ok(None);
+    };
+    let length = u32::from_be_bytes(*length) as usize;
+    if rest.len() < length {
+        return Ok(None);
+    }
+    let (link, body) = rest.split_at(length);
+    let link = (!link.is_empty()).then(|| String::from_utf8_lossy(link).into_owned());
+    Ok(Some((i64::from_be_bytes(*at), link, body.to_vec())))
+}
+
 /// The driver-KV key a proxy tag's last-fetch record lives under.
 fn tag_freshness_key(index: &str, repo: &str, tag: &str) -> String {
     format!("oci\u{0}tf\u{0}{index}\u{0}{repo}\u{0}{tag}")
@@ -292,6 +347,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
         (dir, meta)
+    }
+
+    #[test]
+    fn test_tag_page_round_trips_with_and_without_a_link() {
+        let (_dir, meta) = store();
+        set_tag_page(&meta, "hub", "library/nginx", "", 42, Some("</v2/x?n=1>"), b"{}").unwrap();
+        assert_eq!(
+            tag_page(&meta, "hub", "library/nginx", "").unwrap(),
+            Some((42, Some("</v2/x?n=1>".to_owned()), b"{}".to_vec()))
+        );
+
+        set_tag_page(&meta, "hub", "library/nginx", "n=1", 7, None, b"[]").unwrap();
+        assert_eq!(
+            tag_page(&meta, "hub", "library/nginx", "n=1").unwrap(),
+            Some((7, None, b"[]".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_a_truncated_tag_page_record_reads_as_absent() {
+        let (_dir, meta) = store();
+        // Anything shorter than the header, or claiming a link longer than the bytes that follow, is
+        // not a page. Answering with a fragment of one would be worse than fetching it again.
+        for raw in [
+            vec![0u8; 4],  // no timestamp
+            vec![0u8; 10], // timestamp, no link length
+            [&0i64.to_be_bytes()[..], &99u32.to_be_bytes()[..], b"x"].concat(),
+        ] {
+            meta.put_driver_value(&tag_page_key("hub", "repo", ""), &raw).unwrap();
+            assert_eq!(tag_page(&meta, "hub", "repo", "").unwrap(), None, "{raw:?}");
+        }
     }
 
     #[test]

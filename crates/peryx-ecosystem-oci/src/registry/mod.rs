@@ -391,6 +391,17 @@ fn unauthorized() -> Response {
 /// Read an upstream response body into memory, refusing one larger than `max`. A caching proxy holds
 /// the whole body to hash or re-serve it, so an unbounded read would let a hostile or broken upstream
 /// drive peryx out of memory.
+/// Whether something fetched at `fetched_at` may still answer while the upstream cannot confirm it.
+///
+/// The same bound a stale `PyPI` page gets: serve past the freshness window while an upstream is
+/// down, but not without end. `0` removes the bound.
+fn within_stale_bound(state: &AppState, fetched_at: i64) -> bool {
+    if state.max_stale_secs == 0 {
+        return true;
+    }
+    (state.clock)().saturating_sub(fetched_at) < state.ttl_secs + state.max_stale_secs
+}
+
 async fn bounded_body(response: reqwest::Response, max: usize) -> Result<bytes::Bytes, ServeError> {
     let mut stream = response.bytes_stream();
     let mut body: Vec<u8> = Vec::new();

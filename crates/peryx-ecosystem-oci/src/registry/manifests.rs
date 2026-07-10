@@ -240,8 +240,7 @@ fn stale_tag(state: &AppState, index: &str, repo: &str, tag: &str, head: bool) -
     let Some((fetched_at, digest)) = store::tag_freshness(&state.meta, index, repo, tag)? else {
         return Ok(None);
     };
-    let age = (state.clock)().saturating_sub(fetched_at);
-    if state.max_stale_secs != 0 && age >= state.ttl_secs + state.max_stale_secs {
+    if !within_stale_bound(state, fetched_at) {
         return Ok(None);
     }
     Ok(store::get_manifest(&state.meta, &digest)?.map(|manifest| manifest_response(&manifest, &digest, head)))

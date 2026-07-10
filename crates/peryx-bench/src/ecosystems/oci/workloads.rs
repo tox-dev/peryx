@@ -539,11 +539,13 @@ pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client
         .iter()
         .enumerate()
         .map(|(endpoint, name)| {
-            let values = summarize(&samples[endpoint]);
-            // A single-member proxy answers a tag list by asking its upstream, every time; that row
-            // is an upstream round trip, not the registry serving something it holds.
-            let build = if name.starts_with("tag list") { network_row } else { row };
-            build(name, &values, base, Metric::Seconds, Absent::Failed)
+            row(
+                name,
+                &summarize(&samples[endpoint]),
+                base,
+                Metric::Seconds,
+                Absent::Failed,
+            )
         })
         .collect();
     publish(

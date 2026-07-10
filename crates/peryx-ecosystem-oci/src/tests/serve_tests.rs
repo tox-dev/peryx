@@ -293,6 +293,119 @@ async fn test_unchanged_tag_refetches_when_the_cached_manifest_is_missing() {
 }
 
 #[tokio::test]
+async fn test_proxy_tag_list_is_cached_within_the_window_then_revalidated() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let server = MockServer::start().await;
+    // Exactly two upstream lists: the cold one and the one after the window lapses. The request in
+    // between must be answered from the store, or wiremock's expect(2) fails on drop.
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(br#"{"name":"library/nginx","tags":["1"]}"#.to_vec(), "application/json"),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::proxy_with_clock(
+        &tempfile::tempdir().unwrap(),
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+    );
+    let uri = "/v2/hub/library/nginx/tags/list";
+    let (status, _, body) = send(&app, Method::GET, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("\"1\""));
+
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+    now.store(1000 + 61, Ordering::Relaxed);
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_proxy_tag_list_survives_an_outage_within_the_stale_bound() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(br#"{"name":"library/nginx","tags":["1"]}"#.to_vec(), "application/json"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::proxy_with_clock(
+        &tempfile::tempdir().unwrap(),
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+    );
+    let uri = "/v2/hub/library/nginx/tags/list";
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/tags/list"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    // Stale but inside the 60s window plus the 300s bound: the last list still answers.
+    now.store(1000 + 100, Ordering::Relaxed);
+    let (status, _, body) = send(&app, Method::GET, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("\"1\""));
+
+    // Past the bound, the outage surfaces rather than a list of unbounded age.
+    now.store(1000 + 400, Ordering::Relaxed);
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn test_a_zero_stale_bound_serves_a_tag_list_of_any_age() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(br#"{"name":"library/nginx","tags":["1"]}"#.to_vec(), "application/json"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (_state, app) = super::proxy_with_stale(
+        &tempfile::tempdir().unwrap(),
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+        0,
+    );
+    let uri = "/v2/hub/library/nginx/tags/list";
+    assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
+
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/tags/list"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    // An operator mirroring a knowingly unreliable upstream asked for exactly this: no bound at all.
+    now.store(1_000_000, Ordering::Relaxed);
+    let (status, _, body) = send(&app, Method::GET, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("\"1\""));
+}
+
+#[tokio::test]
 async fn test_expired_upstream_credentials_do_not_delete_a_cached_tag() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};

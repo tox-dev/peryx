@@ -22,16 +22,13 @@ impl OciRegistry {
         if let [member] = members.as_slice()
             && let Some(client) = proxy_client(&member.kind)
         {
-            return match self.upstream.tags(client.base_url(), client.auth(), repo, query).await {
-                Ok(response) => passthrough_json(response).await,
-                Err(err) => Ok(upstream_error_response(&err, "tags")),
-            };
+            return self.proxy_tags(state, &member.name, client, repo, query).await;
         }
         let mut tags = std::collections::BTreeSet::new();
         for member in &members {
             match proxy_client(&member.kind) {
                 Some(client) => {
-                    if let Some(names) = self.fetch_tag_names(client, repo).await {
+                    if let Some(names) = self.fetch_tag_names(state, &member.name, client, repo).await {
                         tags.extend(names);
                     }
                 }
@@ -41,20 +38,69 @@ impl OciRegistry {
         Ok(tag_list_response(name, tags, query))
     }
 
+    /// Serve a lone proxy's tag list, from the store while it is fresh.
+    ///
+    /// A tag list is mutable upstream, so it is trusted for `ttl_secs` and revalidated after. Passing
+    /// every request through made a `tags/list` cost an upstream round trip rather than the registry,
+    /// and made a burst of them cost the upstream once per client. When revalidation fails the last
+    /// list still answers, bounded exactly as a stale tag or a stale `PyPI` page is.
+    async fn proxy_tags(
+        &self,
+        state: &AppState,
+        index: &str,
+        client: &UpstreamClient,
+        repo: &str,
+        query: &str,
+    ) -> Result<Response, ServeError> {
+        let now = (state.clock)();
+        let cached = store::tag_page(&state.meta, index, repo, query)?;
+        if let Some((fetched_at, link, body)) = &cached
+            && now.saturating_sub(*fetched_at) < state.ttl_secs
+        {
+            return Ok(tag_page_response(link.as_deref(), body.clone()));
+        }
+        match self.upstream.tags(client.base_url(), client.auth(), repo, query).await {
+            Ok(response) => {
+                let link = response
+                    .headers()
+                    .get(reqwest::header::LINK)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let body = bounded_body(response, MAX_TAGS_BYTES).await?;
+                store::set_tag_page(&state.meta, index, repo, query, now, link.as_deref(), &body)?;
+                Ok(tag_page_response(link.as_deref(), body.to_vec()))
+            }
+            Err(err) => match cached {
+                Some((fetched_at, link, body)) if within_stale_bound(state, fetched_at) => {
+                    Ok(tag_page_response(link.as_deref(), body))
+                }
+                _ => Ok(upstream_error_response(&err, "tags")),
+            },
+        }
+    }
+
     /// Fetch a proxy member's tag names for aggregation, or `None` on any upstream failure so one
     /// unreachable member does not fail the whole list.
-    async fn fetch_tag_names(&self, client: &UpstreamClient, repo: &str) -> Option<Vec<String>> {
+    async fn fetch_tag_names(
+        &self,
+        state: &AppState,
+        index: &str,
+        client: &UpstreamClient,
+        repo: &str,
+    ) -> Option<Vec<String>> {
         let mut names = Vec::new();
         let mut query = String::new();
         let mut page = 0;
         loop {
-            let response = self
-                .upstream
-                .tags(client.base_url(), client.auth(), repo, &query)
-                .await
-                .ok()?;
-            let next = next_page_query(response.headers());
-            let bytes = bounded_body(response, MAX_TAGS_BYTES).await.ok()?;
+            // Each page is cached under its own query, so a virtual index that unions several proxies
+            // no longer re-walks every upstream's pagination on every request.
+            let response = self.proxy_tags(state, index, client, repo, &query).await.ok()?;
+            let (parts, body) = response.into_parts();
+            if !parts.status.is_success() {
+                return None;
+            }
+            let next = parts.headers.get(header::LINK).and_then(next_page_query_of);
+            let bytes = axum::body::to_bytes(body, MAX_TAGS_BYTES).await.ok()?;
             let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
             let tags = parsed["tags"].as_array().into_iter().flatten();
             names.extend(tags.filter_map(|tag| tag.as_str().map(str::to_owned)));
@@ -210,23 +256,21 @@ pub(super) fn serve_catalog(state: &AppState, query: &str) -> Result<Response, S
 }
 
 /// Pass an upstream JSON response through, preserving its status and content type.
-async fn passthrough_json(response: reqwest::Response) -> Result<Response, ServeError> {
-    let status = response.status();
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/json")
-        .to_owned();
-    let bytes = bounded_body(response, MAX_TAGS_BYTES).await?;
-    Ok((status, [(header::CONTENT_TYPE, content_type)], bytes).into_response())
+/// A tag-list page as this registry answers it: the upstream body, its `Link` header when the page is
+/// not the last, and nothing else.
+fn tag_page_response(link: Option<&str>, body: Vec<u8>) -> Response {
+    let mut response = ([(header::CONTENT_TYPE, "application/json")], body).into_response();
+    if let Some(link) = link
+        && let Ok(value) = HeaderValue::from_str(link)
+    {
+        response.headers_mut().insert(header::LINK, value);
+    }
+    response
 }
 
-/// The query string of an upstream tag-list `Link: <…?…>; rel="next"` header, or `None` when the page
-/// is the last. Aggregation follows it so a paginating upstream's tags are not silently truncated to
-/// the first page.
-fn next_page_query(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    let link = headers.get(reqwest::header::LINK)?.to_str().ok()?;
+/// `next_page_query`, reading an already-parsed header value.
+fn next_page_query_of(value: &HeaderValue) -> Option<String> {
+    let link = value.to_str().ok()?;
     if !link.contains("rel=\"next\"") {
         return None;
     }
