@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use super::model::ArchiveError;
 use super::{
-    MAX_CONTAINER_DEPTH, MAX_NESTED_ARCHIVE_SIZE, is_supported_archive, is_tar, is_tar_gz, is_zip, read_error,
-    safe_member_name,
+    MAX_CONTAINER_DEPTH, MAX_DECOMPRESSED_INSPECT_BYTES, MAX_NESTED_ARCHIVE_SIZE, is_supported_archive, is_tar,
+    is_tar_gz, is_zip, read_error, safe_member_name,
 };
 
 pub(super) struct ResolvedArchive {
@@ -88,7 +88,9 @@ fn nested_tar_source(
     member: &str,
     temps: &mut Vec<tempfile::TempPath>,
 ) -> Result<ArchiveSource, ArchiveError> {
-    let mut archive = tar::Archive::new(reader);
+    // Cap the decompressed bytes walked to find the member, exactly as the top-level tar readers do; a
+    // raw `GzDecoder` here would otherwise let a small crafted `.tar.gz` inflate without bound.
+    let mut archive = tar::Archive::new(reader.take(MAX_DECOMPRESSED_INSPECT_BYTES));
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
         if !entry.header().entry_type().is_file() {

@@ -417,7 +417,13 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
 /// for one that owns a top-level namespace.
 #[must_use]
 pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
-    if method != Method::GET {
+    // HEAD and OPTIONS are reads (an OCI client HEADs every manifest and blob before a pull); only a
+    // body-bearing write method is an upload. Classifying them here as reads lets the owning driver's
+    // `classify_route` bucket them with GET instead of spending the strict upload budget.
+    if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) {
+        return Some(RouteClass::Upload);
+    }
+    if method != Method::GET && method != Method::HEAD && method != Method::OPTIONS {
         return Some(RouteClass::Upload);
     }
     let path = path.trim_start_matches('/');
@@ -496,6 +502,29 @@ mod tests {
         assert_eq!(
             service_route_class(&Method::GET, "/pypi/files/abc/x.whl.metadata"),
             None
+        );
+    }
+
+    #[test]
+    fn test_service_route_class_treats_head_and_options_as_reads() {
+        // An OCI client HEADs every manifest and blob before a pull; classing HEAD/OPTIONS as reads
+        // defers to the driver's own route class instead of spending the strict upload budget.
+        assert_eq!(
+            service_route_class(&Method::HEAD, "/v2/hub/library/nginx/manifests/latest"),
+            None
+        );
+        assert_eq!(service_route_class(&Method::OPTIONS, "/pypi/simple/flask/"), None);
+        assert_eq!(service_route_class(&Method::HEAD, "/+status"), Some(RouteClass::Admin));
+        for method in [Method::PUT, Method::PATCH, Method::DELETE] {
+            assert_eq!(
+                service_route_class(&method, "/v2/hub/app/blobs/uploads/1"),
+                Some(RouteClass::Upload)
+            );
+        }
+        // Any other method keeps the original strict-budget default rather than deferring to the driver.
+        assert_eq!(
+            service_route_class(&Method::TRACE, "/pypi/simple/"),
+            Some(RouteClass::Upload)
         );
     }
 }
