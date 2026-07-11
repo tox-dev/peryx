@@ -99,6 +99,10 @@ fn parse_wheel_filename(stem: &str) -> Result<DistributionFilename, Distribution
     parsed(name, version, [*python, *abi, *platform], DistributionKind::Wheel)
 }
 
+// A legacy (pre-PEP 625) sdist name was not escaped, so the last `-` is only a heuristic for the
+// name/version boundary: `pkg-1.0-1.tar.gz` splits to name `pkg-1.0`, version `1` here, yet its
+// PKG-INFO may well declare `pkg` version `1.0-1`. The filename alone cannot resolve that ambiguity,
+// so `import-dir` reconciles the split against the archive's authoritative PKG-INFO identity.
 fn parse_sdist_filename(stem: &str, kind: DistributionKind) -> Result<DistributionFilename, DistributionFilenameError> {
     let Some((name, version)) = stem.rsplit_once('-') else {
         return Err(DistributionFilenameError::InvalidSdistShape);

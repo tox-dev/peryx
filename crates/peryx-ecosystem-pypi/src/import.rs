@@ -13,7 +13,10 @@ use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
-use crate::{DistributionFilename, DistributionFilenameError, parse_distribution_filename};
+use crate::{
+    DistributionFilename, DistributionFilenameError, DistributionKind, Version, normalize_name,
+    parse_distribution_filename, parse_metadata, parse_version,
+};
 
 const BUFFER_BYTES: usize = 1024 * 1024;
 
@@ -106,6 +109,16 @@ fn import_file(
         }
     };
     let staged = stage_file(path, blobs)?;
+    if let Some((normalized, version)) = sdist_pkg_info_identity(&filename, &parsed, staged.blob.path())
+        && (normalized != parsed.normalized_name || version != parsed.version)
+    {
+        counts.rejected += 1;
+        let version = version.to_string();
+        return writeln!(
+            out,
+            "rejected\t{display}\t{normalized}\t{version}\tsdist filename splits to a different project or version than its PKG-INFO"
+        );
+    }
     let version = parsed.version.to_string();
     let normalized = &parsed.normalized_name;
     match upload::prepare(
@@ -137,6 +150,18 @@ fn import_file(
             )
         }
     }
+}
+
+// Reconcile a legacy sdist's last-dash name/version split against its authoritative PKG-INFO. A
+// non-sdist, an invalid archive, or unreadable metadata yields `None` so `prepare` reports the fault.
+fn sdist_pkg_info_identity(filename: &str, parsed: &DistributionFilename, path: &Path) -> Option<(String, Version)> {
+    let metadata = match parsed.kind {
+        DistributionKind::SdistTarGz => crate::archive::validate_sdist_path(filename, path).ok()?,
+        DistributionKind::SdistZip => crate::archive::validate_zip_sdist_path(filename, path).ok()?,
+        DistributionKind::Wheel => return None,
+    };
+    let doc = parse_metadata(std::str::from_utf8(&metadata).ok()?);
+    Some((normalize_name(&doc.name), parse_version(&doc.version)?))
 }
 
 fn stage_file(path: &Path, blobs: &BlobStore) -> std::io::Result<StagedUpload> {

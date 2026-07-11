@@ -270,6 +270,85 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
     );
 }
 
+#[test]
+fn test_import_dir_rejects_legacy_dashed_sdist_against_pkg_info() {
+    let root = tempfile::tempdir().unwrap();
+    let import = root.path().join("import");
+    std::fs::create_dir(&import).unwrap();
+    // The last-dash split reads this as project `pkg-1.0` version `1`, but its PKG-INFO declares
+    // `pkg` version `1.0-1`; the import must not store it under the filename's wrong identity.
+    std::fs::write(import.join("pkg-1.0-1.tar.gz"), sdist("pkg", "1.0-1")).unwrap();
+    let config = Config {
+        data_dir: root.path().join("data"),
+        ..Config::default()
+    };
+
+    let mut out = Vec::new();
+    operator::import_dir(&config, "root/pypi", &import, &mut out).unwrap();
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains(
+            "rejected\tpkg-1.0-1.tar.gz\tpkg\t1.0.post1\tsdist filename splits to a different project or version than its PKG-INFO"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("pkg-1-0"), "{text}");
+    assert!(text.contains("imported=0 skipped=0 rejected=1"), "{text}");
+
+    let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
+    assert!(meta.list_upload_entries("hosted", "pkg").unwrap().is_empty());
+    assert!(meta.list_upload_entries("hosted", "pkg-1-0").unwrap().is_empty());
+}
+
+#[test]
+fn test_import_dir_imports_dashed_name_sdist() {
+    let root = tempfile::tempdir().unwrap();
+    let import = root.path().join("import");
+    std::fs::create_dir(&import).unwrap();
+    // A dashed project name agrees with its PKG-INFO under the last-dash split, so it still imports.
+    std::fs::write(
+        import.join("python-dateutil-2.8.2.tar.gz"),
+        sdist("python-dateutil", "2.8.2"),
+    )
+    .unwrap();
+    let config = Config {
+        data_dir: root.path().join("data"),
+        ..Config::default()
+    };
+
+    let mut out = Vec::new();
+    operator::import_dir(&config, "root/pypi", &import, &mut out).unwrap();
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains("imported\tpython-dateutil-2.8.2.tar.gz\tpython-dateutil\t2.8.2\tstored"),
+        "{text}"
+    );
+    let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
+    assert_eq!(meta.list_upload_entries("hosted", "python-dateutil").unwrap().len(), 1);
+}
+
+#[test]
+fn test_import_dir_imports_zip_sdist() {
+    let root = tempfile::tempdir().unwrap();
+    let import = root.path().join("import");
+    std::fs::create_dir(&import).unwrap();
+    std::fs::write(import.join("demo-3.0.zip"), zip_sdist("demo", "3.0")).unwrap();
+    let config = Config {
+        data_dir: root.path().join("data"),
+        ..Config::default()
+    };
+
+    let mut out = Vec::new();
+    operator::import_dir(&config, "root/pypi", &import, &mut out).unwrap();
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("imported\tdemo-3.0.zip\tdemo\t3.0\tstored"), "{text}");
+    let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
+    assert_eq!(meta.list_upload_entries("hosted", "demo").unwrap().len(), 1);
+}
+
 fn wheel(name: &str, version: &str, requires_python: &str) -> Vec<u8> {
     wheel_with_identity(name, version, name, version, requires_python)
 }
@@ -343,6 +422,31 @@ fn sdist(name: &str, version: &str) -> Vec<u8> {
         b"[build-system]\nrequires = []\nbuild-backend = \"demo\"\n",
     );
     archive.into_inner().unwrap().finish().unwrap()
+}
+
+fn zip_sdist(name: &str, version: &str) -> Vec<u8> {
+    let root = format!("{name}-{version}");
+    let entries = [
+        (
+            format!("{root}/PKG-INFO"),
+            format!("Metadata-Version: 2.2\nName: {name}\nVersion: {version}\n"),
+        ),
+        (
+            format!("{root}/pyproject.toml"),
+            "[build-system]\nrequires = []\nbuild-backend = \"demo\"\n".to_owned(),
+        ),
+    ];
+    let mut bytes = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        let options = zip::write::SimpleFileOptions::default();
+        for (path, content) in &entries {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    bytes
 }
 
 fn append_tar_file(archive: &mut tar::Builder<GzEncoder<Vec<u8>>>, path: &str, bytes: &[u8]) {
