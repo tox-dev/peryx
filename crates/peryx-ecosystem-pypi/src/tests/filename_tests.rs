@@ -30,8 +30,16 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
             "7.2",
         ),
         ("Flask-1.0.tar.gz", DistributionKind::SdistTarGz, "Flask", "1.0"),
+        ("Flask-1.0.zip", DistributionKind::SdistZip, "Flask", "1.0"),
+        (
+            "python-dateutil-2.8.2.zip",
+            DistributionKind::SdistZip,
+            "python-dateutil",
+            "2.8.2",
+        ),
         ("Flask-1.0-PY3-NONE-ANY.WHL", DistributionKind::Wheel, "Flask", "1.0"),
         ("Flask-1.0.TAR.GZ", DistributionKind::SdistTarGz, "Flask", "1.0"),
+        ("Flask-1.0.ZIP", DistributionKind::SdistZip, "Flask", "1.0"),
     ] {
         let parsed = parse_distribution_filename(filename).unwrap();
         assert_eq!(parsed.kind, kind);
@@ -39,7 +47,7 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
             parsed.kind.upload_filetype(),
             match kind {
                 DistributionKind::Wheel => "bdist_wheel",
-                DistributionKind::SdistTarGz => "sdist",
+                DistributionKind::SdistTarGz | DistributionKind::SdistZip => "sdist",
             }
         );
         assert_eq!(parsed.name, name);
@@ -52,7 +60,8 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
 fn test_parse_distribution_filename_rejects_bad_shapes() {
     for (filename, expected) in [
         ("pkg-1.0.egg", DistributionFilenameError::LegacyEgg),
-        ("pkg-1.0.zip", DistributionFilenameError::UnsupportedExtension),
+        ("pkg-1.0.tar.bz2", DistributionFilenameError::UnsupportedExtension),
+        ("pkg.zip", DistributionFilenameError::InvalidSdistShape),
         ("pkg-1.0-py3-none.whl", DistributionFilenameError::InvalidWheelShape),
         (
             "pkg-1.0-py3-*-any.whl",

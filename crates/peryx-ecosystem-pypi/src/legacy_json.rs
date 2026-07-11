@@ -214,15 +214,8 @@ fn yanked_reason(yanked: &Yanked) -> Option<&str> {
 }
 
 fn filename_version(filename: &str) -> Option<String> {
-    if let Ok(parsed) = parse_distribution_filename(filename) {
-        return Some(parsed.version.to_string());
-    }
-    if !extension_eq(filename, "zip") {
-        return None;
-    }
-    let stem = &filename[..filename.len() - 4];
-    let (_, version) = stem.rsplit_once('-')?;
-    Some(version.to_owned())
+    let parsed = parse_distribution_filename(filename).ok()?;
+    Some(parsed.version.to_string())
 }
 
 fn versions_match(left: &str, right: &str) -> bool {

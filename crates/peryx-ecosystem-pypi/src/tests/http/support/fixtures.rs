@@ -51,6 +51,23 @@ pub fn fixture_sdist_without_pkg_info() -> Vec<u8> {
     }
     buf
 }
+pub fn fixture_zip_sdist() -> Vec<u8> {
+    fixture_zip_sdist_with_metadata(b"Metadata-Version: 2.2\nName: peryxpkg\nVersion: 1.0\n")
+}
+pub fn fixture_zip_sdist_with_metadata(metadata: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.add_directory("peryxpkg-1.0", options).unwrap();
+        zip.start_file("peryxpkg-1.0/PKG-INFO", options).unwrap();
+        zip.write_all(metadata).unwrap();
+        zip.start_file("peryxpkg-1.0/pyproject.toml", options).unwrap();
+        zip.write_all(b"[build-system]\nrequires = []\n").unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
 pub fn fixture_wheel_for(version: &str) -> Vec<u8> {
     fixture_wheel_with_body(version, b"VALUE = 1\n")
 }

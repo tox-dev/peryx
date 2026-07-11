@@ -6,6 +6,7 @@ use crate::{Version, is_valid_name, normalize_name, parse_version};
 pub enum DistributionKind {
     Wheel,
     SdistTarGz,
+    SdistZip,
 }
 
 impl DistributionKind {
@@ -13,7 +14,7 @@ impl DistributionKind {
     pub const fn upload_filetype(self) -> &'static str {
         match self {
             Self::Wheel => "bdist_wheel",
-            Self::SdistTarGz => "sdist",
+            Self::SdistTarGz | Self::SdistZip => "sdist",
         }
     }
 }
@@ -39,7 +40,7 @@ pub enum DistributionFilenameError {
     InvalidTag(String),
 }
 
-/// Parse a wheel or modern `.tar.gz` sdist filename into its upload identity.
+/// Parse a wheel or a PEP 527 sdist (`.tar.gz` or `.zip`) filename into its upload identity.
 ///
 /// # Errors
 /// Returns [`DistributionFilenameError`] when the filename extension, component shape, project
@@ -52,7 +53,10 @@ pub fn parse_distribution_filename(filename: &str) -> Result<DistributionFilenam
         return parse_wheel_filename(stem);
     }
     if let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".tar.gz") {
-        return parse_sdist_filename(stem);
+        return parse_sdist_filename(stem, DistributionKind::SdistTarGz);
+    }
+    if let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".zip") {
+        return parse_sdist_filename(stem, DistributionKind::SdistZip);
     }
     Err(DistributionFilenameError::UnsupportedExtension)
 }
@@ -95,11 +99,11 @@ fn parse_wheel_filename(stem: &str) -> Result<DistributionFilename, Distribution
     parsed(name, version, [*python, *abi, *platform], DistributionKind::Wheel)
 }
 
-fn parse_sdist_filename(stem: &str) -> Result<DistributionFilename, DistributionFilenameError> {
+fn parse_sdist_filename(stem: &str, kind: DistributionKind) -> Result<DistributionFilename, DistributionFilenameError> {
     let Some((name, version)) = stem.rsplit_once('-') else {
         return Err(DistributionFilenameError::InvalidSdistShape);
     };
-    parsed(name, version, [], DistributionKind::SdistTarGz)
+    parsed(name, version, [], kind)
 }
 
 fn parsed<const N: usize>(

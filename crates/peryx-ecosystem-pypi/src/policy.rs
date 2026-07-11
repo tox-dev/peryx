@@ -371,7 +371,7 @@ impl PypiPolicy for Policy {
 const fn package_type_of(kind: DistributionKind) -> PackageType {
     match kind {
         DistributionKind::Wheel => PackageType::Wheel,
-        DistributionKind::SdistTarGz => PackageType::Sdist,
+        DistributionKind::SdistTarGz | DistributionKind::SdistZip => PackageType::Sdist,
     }
 }
 

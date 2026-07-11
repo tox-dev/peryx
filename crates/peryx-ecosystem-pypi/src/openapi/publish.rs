@@ -9,7 +9,7 @@ pub(super) fn upload() -> OperationBuilder {
         .summary(Some("Upload a distribution"))
         .description(Some(
             "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart \
-             form's `content` part carries a wheel or modern `.tar.gz` sdist. peryx streams the \
+             form's `content` part carries a wheel or a `.tar.gz` or `.zip` sdist. peryx streams the \
              bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` \
              values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and \
              sdist top-level structure before the file lands in the index's local layer. Uploaded \

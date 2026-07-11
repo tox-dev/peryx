@@ -1,7 +1,7 @@
 use std::io::Write as _;
 
-use super::{temp_archive, valid_sdist};
-use crate::archive::{ArchiveError, validate_sdist_path};
+use super::{temp_archive, valid_sdist, valid_zip_sdist};
+use crate::archive::{ArchiveError, validate_sdist_path, validate_zip_sdist_path};
 
 fn valid_sdist_with_link(path: &str, target: &str, entry_type: tar::EntryType) -> Vec<u8> {
     let mut tarball = Vec::new();
@@ -322,6 +322,92 @@ fn test_validate_sdist_path_rejects_too_many_entries() {
         validate_sdist_path("pkg-1.0.tar.gz", file.path()),
         Err(ArchiveError::Invalid(message)) if message == "invalid sdist: archive has more than 100000 entries"
     ));
+}
+
+#[test]
+fn test_validate_zip_sdist_path_extracts_pkg_info_from_modern_layout() {
+    let metadata = b"Metadata-Version: 2.4\nName: pkg\nVersion: 1.0\nLicense-File: LICENSE\n";
+    let file = temp_archive(&valid_zip_sdist(&[
+        ("pkg-1.0/", b"".as_slice()),
+        ("pkg-1.0/PKG-INFO", metadata.as_slice()),
+        ("pkg-1.0/pyproject.toml", b"[build-system]\n".as_slice()),
+        ("pkg-1.0/LICENSE", b"MIT\n".as_slice()),
+        ("pkg-1.0/module.py", b"x = 1\n".as_slice()),
+    ]));
+
+    assert_eq!(validate_zip_sdist_path("pkg-1.0.zip", file.path()).unwrap(), metadata);
+}
+
+#[test]
+fn test_validate_zip_sdist_path_accepts_hyphenated_project_name() {
+    // The last-dash rule keeps the version off a hyphenated project name, so the root must match.
+    let metadata = b"Metadata-Version: 2.2\nName: my-pkg\nVersion: 1.0\n";
+    let file = temp_archive(&valid_zip_sdist(&[
+        ("my-pkg-1.0/PKG-INFO", metadata.as_slice()),
+        ("my-pkg-1.0/pyproject.toml", b"[build-system]\n".as_slice()),
+    ]));
+
+    assert_eq!(
+        validate_zip_sdist_path("my-pkg-1.0.zip", file.path()).unwrap(),
+        metadata
+    );
+}
+
+#[test]
+fn test_validate_zip_sdist_path_rejects_bad_filenames_and_content() {
+    let bytes = valid_zip_sdist(&[
+        (
+            "pkg-1.0/PKG-INFO",
+            b"Metadata-Version: 2.2\nName: pkg\nVersion: 1.0\n".as_slice(),
+        ),
+        ("pkg-1.0/pyproject.toml", b"[build-system]\n".as_slice()),
+    ]);
+    for (filename, archive, expected) in [
+        ("pkg.zip", bytes.as_slice(), "invalid sdist filename"),
+        (
+            "pkg-1.0.tar.gz",
+            bytes.as_slice(),
+            "\"pkg-1.0.tar.gz\" is not an sdist filename",
+        ),
+        ("pkg-1.0.zip", b"not a zip".as_slice(), "archive read failed"),
+    ] {
+        let file = temp_archive(archive);
+        let err = validate_zip_sdist_path(filename, file.path()).expect_err("zip sdist was accepted");
+
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn test_validate_zip_sdist_path_rejects_unsafe_and_out_of_root_members() {
+    for (entries, expected) in [
+        (
+            vec![
+                ("pkg-1.0/../evil.py", b"x = 1\n".as_slice()),
+                (
+                    "pkg-1.0/PKG-INFO",
+                    b"Metadata-Version: 2.2\nName: pkg\nVersion: 1.0\n".as_slice(),
+                ),
+                ("pkg-1.0/pyproject.toml", b"[build-system]\n".as_slice()),
+            ],
+            "archive member",
+        ),
+        (
+            vec![
+                (
+                    "other-1.0/PKG-INFO",
+                    b"Metadata-Version: 2.2\nName: pkg\nVersion: 1.0\n".as_slice(),
+                ),
+                ("pkg-1.0/pyproject.toml", b"[build-system]\n".as_slice()),
+            ],
+            "outside required top-level directory",
+        ),
+    ] {
+        let file = temp_archive(&valid_zip_sdist(&entries));
+        let err = validate_zip_sdist_path("pkg-1.0.zip", file.path()).expect_err("unsafe zip sdist was accepted");
+
+        assert!(err.to_string().contains(expected), "{err}");
+    }
 }
 
 #[test]

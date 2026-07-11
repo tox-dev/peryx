@@ -99,6 +99,53 @@ async fn test_upload_sdist_missing_pkg_info_is_bad_request() {
     assert!(body.contains("uploaded content does not match the filename format: invalid sdist: missing required"));
 }
 #[tokio::test]
+async fn test_upload_zip_sdist_is_served_and_listed() {
+    let h = harness().await;
+    let sdist = fixture_zip_sdist();
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "peryxpkg"),
+        ("version", "1.0"),
+        ("filetype", "sdist"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("peryxpkg-1.0.zip", &sdist)));
+    assert_eq!(
+        post_upload(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    let digest = Digest::of(&sdist);
+    let (status, _, detail) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(detail.contains("peryxpkg-1.0.zip"));
+    assert!(detail.contains("\"core-metadata\":{\"sha256\""));
+
+    let uri = format!("/hosted/files/{}/peryxpkg-1.0.zip", digest.as_str());
+    let (fs, _, fbody) = get_bytes(&h.state, &uri, None).await;
+    assert_eq!(fs, StatusCode::OK);
+    assert_eq!(fbody, sdist);
+
+    let (ls, _, list) = get(&h.state, "/hosted/simple/", Some("application/json")).await;
+    assert_eq!(ls, StatusCode::OK);
+    assert!(list.contains("peryxpkg"));
+}
+#[tokio::test]
+async fn test_upload_zip_sdist_pkg_info_name_mismatch_is_bad_request() {
+    let h = harness().await;
+    let sdist = fixture_zip_sdist_with_metadata(b"Metadata-Version: 2.2\nName: other\nVersion: 1.0\n");
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "peryxpkg"),
+        ("version", "1.0"),
+        ("filetype", "sdist"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("peryxpkg-1.0.zip", &sdist)));
+    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("metadata Name \"other\" does not match upload name \"peryxpkg\""));
+}
+#[tokio::test]
 async fn test_upload_same_file_is_idempotent() {
     let h = harness().await;
     let wheel = fixture_wheel();
@@ -203,8 +250,8 @@ async fn test_upload_invalid_filename_is_bad_request() {
 async fn test_upload_invalid_distribution_filename_is_bad_request() {
     for (filename, expected) in [
         (
-            "peryxpkg-1.0.zip",
-            "invalid distribution filename \"peryxpkg-1.0.zip\": accepted upload formats are .whl and .tar.gz",
+            "peryxpkg-1.0.tar.bz2",
+            "invalid distribution filename \"peryxpkg-1.0.tar.bz2\": accepted upload formats are .whl, .tar.gz, and .zip",
         ),
         (
             "peryxpkg-1.0.egg",

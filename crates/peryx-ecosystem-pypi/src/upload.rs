@@ -339,12 +339,12 @@ fn metadata_bytes(
     filename: &str,
     path: &std::path::Path,
 ) -> Result<Vec<u8>, UploadError> {
-    match parsed.kind {
-        DistributionKind::Wheel => crate::archive::validate_wheel_path(filename, path)
-            .map_err(|err| UploadError::InvalidContent(err.to_string())),
-        DistributionKind::SdistTarGz => crate::archive::validate_sdist_path(filename, path)
-            .map_err(|err| UploadError::InvalidContent(err.to_string())),
-    }
+    let validate = match parsed.kind {
+        DistributionKind::Wheel => crate::archive::validate_wheel_path,
+        DistributionKind::SdistTarGz => crate::archive::validate_sdist_path,
+        DistributionKind::SdistZip => crate::archive::validate_zip_sdist_path,
+    };
+    validate(filename, path).map_err(|err| UploadError::InvalidContent(err.to_string()))
 }
 
 fn validate_metadata_identity(

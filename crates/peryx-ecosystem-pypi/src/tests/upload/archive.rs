@@ -54,11 +54,19 @@ fn test_prepare_rejects_archive_content_problems() {
 }
 #[test]
 fn test_prepare_rejects_sdist_archive_read_errors() {
-    let (_dir, staged) = staged_upload(b"not a gzip");
-    let mut form = full_form("Flask-1.0.tar.gz");
-    form.filetype = Some("sdist".to_owned());
+    for (filename, bytes) in [
+        ("Flask-1.0.tar.gz", b"not a gzip".as_slice()),
+        ("Flask-1.0.zip", b"not a zip".as_slice()),
+    ] {
+        let (_dir, staged) = staged_upload(bytes);
+        let mut form = full_form(filename);
+        form.filetype = Some("sdist".to_owned());
 
-    let err = prepare(form, staged, "root/hosted", 1000).unwrap_err();
+        let err = prepare(form, staged, "root/hosted", 1000).unwrap_err();
 
-    assert!(matches!(err, UploadError::InvalidContent(message) if message.starts_with("archive read failed: ")));
+        assert!(
+            matches!(err, UploadError::InvalidContent(ref message) if message.starts_with("archive read failed: ")),
+            "{filename}: {err:?}"
+        );
+    }
 }

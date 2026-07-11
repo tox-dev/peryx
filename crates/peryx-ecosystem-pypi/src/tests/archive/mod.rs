@@ -21,6 +21,24 @@ pub(super) fn valid_sdist(entries: &[(&str, &[u8])]) -> Vec<u8> {
     tarball
 }
 
+pub(super) fn valid_zip_sdist(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (path, bytes) in entries {
+            if let Some(dir) = path.strip_suffix('/') {
+                zip.add_directory(dir, options).unwrap();
+            } else {
+                zip.start_file(*path, options).unwrap();
+                zip.write_all(bytes).unwrap();
+            }
+        }
+        zip.finish().unwrap();
+    }
+    buf
+}
+
 pub(super) fn temp_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
     let mut file = tempfile::NamedTempFile::new().unwrap();
     file.write_all(bytes).unwrap();

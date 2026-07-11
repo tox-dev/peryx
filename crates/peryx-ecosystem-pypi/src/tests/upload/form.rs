@@ -86,9 +86,9 @@ fn test_prepare_rejects_filename_problems() {
             },
         ),
         (
-            "pkg-1.0.zip",
+            "pkg-1.0.tar.bz2",
             UploadError::InvalidDistributionFilename {
-                filename: "pkg-1.0.zip".to_owned(),
+                filename: "pkg-1.0.tar.bz2".to_owned(),
                 error: DistributionFilenameError::UnsupportedExtension,
             },
         ),

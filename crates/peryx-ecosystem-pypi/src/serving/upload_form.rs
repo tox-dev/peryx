@@ -257,7 +257,9 @@ fn upload_metadata_field_mismatch_message(field: &str, metadata: &str, form: &st
 
 fn distribution_filename_error_message(err: &DistributionFilenameError) -> String {
     match err {
-        DistributionFilenameError::UnsupportedExtension => "accepted upload formats are .whl and .tar.gz".to_owned(),
+        DistributionFilenameError::UnsupportedExtension => {
+            "accepted upload formats are .whl, .tar.gz, and .zip".to_owned()
+        }
         DistributionFilenameError::LegacyEgg => {
             "legacy .egg uploads are not accepted; upload a wheel or .tar.gz sdist".to_owned()
         }

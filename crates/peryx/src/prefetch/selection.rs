@@ -244,7 +244,7 @@ fn decision(file: &PrefetchFile, rule: Option<&ProjectRule>, filters: &ArtifactF
                 return Err("wheel tag filtered");
             }
         }
-        DistributionKind::SdistTarGz => {
+        DistributionKind::SdistTarGz | DistributionKind::SdistZip => {
             if !filters.include_sdists {
                 return Err("sdists disabled");
             }

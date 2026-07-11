@@ -1,7 +1,7 @@
 //! Sdist validation and `PKG-INFO` sidecar extraction.
 
 use std::collections::BTreeSet;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use super::{ArchiveError, is_tar_gz, read_error, safe_member_name, strip_ascii_suffix_ignore_case};
@@ -25,6 +25,16 @@ pub fn validate_sdist_path(filename: &str, path: &Path) -> Result<Vec<u8>, Archi
     validate_sdist_reader(filename, file)
 }
 
+/// Validate a PEP 527 `.zip` sdist and return its exact `PKG-INFO` bytes.
+///
+/// # Errors
+/// Returns [`ArchiveError::InvalidSdist`] when required sdist structure or metadata is missing or
+/// inconsistent, and [`ArchiveError::Read`] when the staged file or ZIP cannot be read.
+pub fn validate_zip_sdist_path(filename: &str, path: &Path) -> Result<Vec<u8>, ArchiveError> {
+    let file = std::fs::File::open(path).map_err(read_error)?;
+    validate_zip_sdist_reader(filename, file)
+}
+
 /// Extract an sdist's `PKG-INFO` document from a staged file without buffering the sdist.
 ///
 /// # Errors
@@ -38,7 +48,7 @@ pub fn sdist_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>
 }
 
 fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<Vec<u8>, ArchiveError> {
-    let root = expected_sdist_root(filename)?;
+    let root = expected_sdist_root(filename, DistributionKind::SdistTarGz, ".tar.gz")?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
     let mut members = SdistMembers::new(root);
     for entry in archive.entries().map_err(read_error)? {
@@ -50,7 +60,7 @@ fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<Vec<u8>, A
         } else {
             path
         };
-        let path = safe_tar_member_name(&path)?;
+        let path = safe_sdist_member_name(&path)?;
         validate_sdist_member_path(&members.root, &path, entry_type)?;
         validate_sdist_member_type(&path, entry_type)?;
         if entry_type.is_symlink() || entry_type.is_hard_link() {
@@ -68,6 +78,39 @@ fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<Vec<u8>, A
                 let metadata = read_sdist_member_limited(&mut entry, &path, size, MAX_SDIST_METADATA_BYTES)?;
                 members.set_metadata(metadata)?;
             }
+        }
+        members.record(path, entry_type)?;
+    }
+    members.finish()
+}
+
+fn validate_zip_sdist_reader(filename: &str, reader: impl Read + Seek) -> Result<Vec<u8>, ArchiveError> {
+    let root = expected_sdist_root(filename, DistributionKind::SdistZip, ".zip")?;
+    let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
+    let mut members = SdistMembers::new(root);
+    let pkg_info_path = members.pkg_info_path();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(read_error)?;
+        let is_dir = entry.is_dir();
+        let raw_name = entry.name();
+        let name = if is_dir {
+            raw_name.strip_suffix('/').unwrap_or(raw_name)
+        } else {
+            raw_name
+        };
+        let path = safe_sdist_member_name(name)?;
+        // A zip sdist has only files and directories, so it reuses the tar member vocabulary the
+        // layout checks below are written against; a zip can carry no link to point out of the root.
+        let entry_type = if is_dir {
+            tar::EntryType::Directory
+        } else {
+            tar::EntryType::Regular
+        };
+        validate_sdist_member_path(&members.root, &path, entry_type)?;
+        if entry.is_file() && path == pkg_info_path {
+            let size = entry.size();
+            let metadata = read_sdist_member_limited(&mut entry, &path, size, MAX_SDIST_METADATA_BYTES)?;
+            members.set_metadata(metadata)?;
         }
         members.record(path, entry_type)?;
     }
@@ -149,7 +192,7 @@ impl SdistMembers {
         }
         if metadata_version_at_least(metadata_version, (2, 4)) {
             for license_file in doc.license_files {
-                let license_file = safe_tar_member_name(&license_file)?;
+                let license_file = safe_sdist_member_name(&license_file)?;
                 let path = format!("{}/{}", self.root, license_file);
                 if !self.paths.contains(&path) {
                     return Err(invalid_sdist(format!(
@@ -162,14 +205,14 @@ impl SdistMembers {
     }
 }
 
-fn expected_sdist_root(filename: &str) -> Result<String, ArchiveError> {
+fn expected_sdist_root(filename: &str, kind: DistributionKind, suffix: &str) -> Result<String, ArchiveError> {
     let parsed = parse_distribution_filename(filename)
         .map_err(|err| invalid_sdist(format!("invalid sdist filename {filename:?}: {err:?}")))?;
-    if parsed.kind != DistributionKind::SdistTarGz {
+    if parsed.kind != kind {
         return Err(invalid_sdist(format!("{filename:?} is not an sdist filename")));
     }
-    let root = strip_ascii_suffix_ignore_case(filename, ".tar.gz")
-        .expect("parse_distribution_filename accepted only .tar.gz sdists");
+    let root = strip_ascii_suffix_ignore_case(filename, suffix)
+        .expect("parse_distribution_filename accepted the sdist suffix");
     safe_member_name(root)?;
     Ok(root.to_owned())
 }
@@ -202,7 +245,7 @@ fn validate_sdist_member_type(path: &str, entry_type: tar::EntryType) -> Result<
 }
 
 fn validate_sdist_link(root: &str, path: &str, target: &str, entry_type: tar::EntryType) -> Result<(), ArchiveError> {
-    let target = safe_tar_member_name(target)?;
+    let target = safe_sdist_member_name(target)?;
     let resolved = if entry_type.is_symlink() {
         let (parent, _) = path
             .rsplit_once('/')
@@ -236,7 +279,7 @@ fn read_sdist_member_limited(
     Ok(bytes)
 }
 
-fn safe_tar_member_name(path: &str) -> Result<String, ArchiveError> {
+fn safe_sdist_member_name(path: &str) -> Result<String, ArchiveError> {
     let path = safe_member_name(path)?;
     if is_windows_absolute(&path) {
         Err(ArchiveError::UnsafeMember(path))
