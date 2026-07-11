@@ -6,7 +6,8 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    File, ProjectDetail, Version, Yanked, file_matches_version, parse_distribution_filename, parse_version, sorted_desc,
+    File, ProjectDetail, Version, Yanked, distribution_version_segment, file_matches_version,
+    parse_distribution_filename, parse_version, sorted_desc,
 };
 
 /// A version identity that matches [`file_matches_version`]: two versions are the same release when
@@ -22,23 +23,12 @@ fn version_key(version: &str) -> VersionKey {
     parse_version(version).map_or_else(|| VersionKey::Raw(version.to_owned()), VersionKey::Parsed)
 }
 
-/// The version segment [`file_matches_version`] compares against, without parsing the whole filename.
-fn file_version_candidate(filename: &str) -> Option<&str> {
-    let stem = filename
-        .strip_suffix(".tar.gz")
-        .or_else(|| filename.strip_suffix(".zip"))
-        .or_else(|| filename.strip_suffix(".whl"))
-        .unwrap_or(filename);
-    let (_name, rest) = stem.split_once('-')?;
-    Some(rest.split('-').next().unwrap_or(rest))
-}
-
 /// Bucket a project's files by release version in a single pass, so rendering every release is linear
 /// in the number of files rather than files times versions.
 fn group_by_version(detail: &ProjectDetail) -> OrderedMap<VersionKey, Vec<&File>> {
     let mut groups: OrderedMap<VersionKey, Vec<&File>> = OrderedMap::new();
     for file in &detail.files {
-        if let Some(candidate) = file_version_candidate(&file.filename) {
+        if let Some(candidate) = distribution_version_segment(&file.filename) {
             groups.entry(version_key(candidate)).or_default().push(file);
         }
     }

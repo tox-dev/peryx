@@ -310,6 +310,19 @@ async fn test_versioned_delete_fallback_skips_other_versions() {
     assert!(!detail.contains("peryxpkg-one.whl"));
 }
 #[tokio::test]
+async fn test_versioned_delete_fallback_on_non_volatile_is_forbidden() {
+    let h = harness_with(true, false).await;
+    // The filename carries no page-matched version, so the delete reaches the record fallback; a
+    // non-volatile store must refuse it there just as the served-page path does, not destroy the
+    // upload silently.
+    put_local_file(&h.state, "python-dateutil.tar.gz", b"payload", "2.8.2");
+    let (status, body) = request_response(&h.state, "DELETE", "/hosted/peryxpkg/2.8.2/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, "file removal: index is not volatile; delete is disabled");
+    let (_, _, detail) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert!(detail.contains("python-dateutil.tar.gz"));
+}
+#[tokio::test]
 async fn test_restore_skips_yanked_overrides_and_other_versions() {
     let h = harness().await;
     h.state

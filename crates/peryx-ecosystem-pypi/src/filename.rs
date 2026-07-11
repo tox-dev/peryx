@@ -64,6 +64,25 @@ fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'
         .then_some(&value[..split])
 }
 
+/// The raw version segment of a distribution filename, matching where [`parse_distribution_filename`]
+/// finds it, or `None` when no version segment is present.
+///
+/// An sdist name may itself contain `-`, so its version is the segment after the *last* `-`: splitting
+/// `python-dateutil-2.8.2.tar.gz` on the first `-` misreads the version as `dateutil`. A wheel escapes
+/// its project name (no `-` inside it), so its version is the component after the first `-`; legacy
+/// shapes (`.egg`, and anything else) escape their names too, so they follow the same first-`-` rule.
+#[must_use]
+pub fn distribution_version_segment(filename: &str) -> Option<&str> {
+    if let Some(stem) =
+        strip_ascii_suffix_ignore_case(filename, ".tar.gz").or_else(|| strip_ascii_suffix_ignore_case(filename, ".zip"))
+    {
+        return stem.rsplit_once('-').map(|(_name, version)| version);
+    }
+    let stem = strip_ascii_suffix_ignore_case(filename, ".whl").unwrap_or(filename);
+    let (_name, rest) = stem.split_once('-')?;
+    Some(rest.split('-').next().unwrap_or(rest))
+}
+
 fn parse_wheel_filename(stem: &str) -> Result<DistributionFilename, DistributionFilenameError> {
     let parts: Vec<&str> = stem.split('-').collect();
     let [name, version, python, abi, platform] = parts.as_slice() else {

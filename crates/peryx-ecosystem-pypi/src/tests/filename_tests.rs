@@ -1,4 +1,22 @@
-use crate::{DistributionFilenameError, DistributionKind, parse_distribution_filename};
+use crate::{DistributionFilenameError, DistributionKind, distribution_version_segment, parse_distribution_filename};
+
+#[test]
+fn test_distribution_version_segment_reads_sdist_version_after_the_last_dash() {
+    // An sdist name may keep a `-`, so the version is the last segment; a wheel escapes its name, so
+    // the version follows the first dash even with a build tag; legacy shapes escape their names too.
+    for (filename, expected) in [
+        ("python-dateutil-2.8.2.tar.gz", Some("2.8.2")),
+        ("proj-1.0.tar.gz", Some("1.0")),
+        ("proj-1.1.zip", Some("1.1")),
+        ("Flask-1.0-py3-none-any.whl", Some("1.0")),
+        ("proj-2.1-1-py3-none-any.whl", Some("2.1")),
+        ("proj-0.9-py3-none-any.egg", Some("0.9")),
+        ("noversion.whl", None),
+        ("README", None),
+    ] {
+        assert_eq!(distribution_version_segment(filename), expected, "{filename}");
+    }
+}
 
 #[test]
 fn test_parse_distribution_filename_accepts_upload_formats() {

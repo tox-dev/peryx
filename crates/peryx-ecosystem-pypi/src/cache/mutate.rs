@@ -170,7 +170,7 @@ pub async fn remove_files(
     // fall back to matching the version stored in the upload records. A project-level delete never
     // needs this: every upload is on the served page.
     if !matched_upload && let Some(version) = version {
-        affected += delete_uploads_of_version(state, hosted, normalized, version)?;
+        affected += delete_uploads_of_version(state, hosted, volatile, normalized, version)?;
     }
     if affected > 0 {
         state.bump_epoch();
@@ -293,16 +293,26 @@ fn upload_filenames(state: &ServingState, hosted: &str, normalized: &str) -> Res
 }
 
 /// Delete the uploaded file records whose stored version matches. Returns how many were removed.
+///
+/// Deleting an upload requires a volatile store, exactly as the served-page path enforces; a match on
+/// a non-volatile index is a [`CacheError::NotVolatile`], not a silent deletion.
 fn delete_uploads_of_version(
     state: &ServingState,
     name: &str,
+    volatile: bool,
     normalized: &str,
     version: &str,
 ) -> Result<usize, CacheError> {
     let mut removed = 0;
     for (filename, bytes) in state.meta.list_upload_entries(name, normalized)? {
         let uploaded: Uploaded = serde_json::from_slice(&bytes)?;
-        if uploaded.version == version && state.meta.delete_upload(name, normalized, &filename)? {
+        if uploaded.version != version {
+            continue;
+        }
+        if !volatile {
+            return Err(CacheError::NotVolatile);
+        }
+        if state.meta.delete_upload(name, normalized, &filename)? {
             removed += 1;
         }
     }

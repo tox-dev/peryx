@@ -44,7 +44,10 @@ pub use serving::PypiServing;
 #[cfg(feature = "serving")]
 pub use simple_client::{ACCEPT_SIMPLE, SimpleClientExt, SimpleHead, SimpleResponse, UpstreamProtocol};
 
-pub use filename::{DistributionFilename, DistributionFilenameError, DistributionKind, parse_distribution_filename};
+pub use filename::{
+    DistributionFilename, DistributionFilenameError, DistributionKind, distribution_version_segment,
+    parse_distribution_filename,
+};
 pub use html::{parse_detail_html, parse_index_html};
 pub use legacy_json::render_legacy_json;
 pub use metadata::{CoreMetadataDoc, parse_metadata, ui_meta, ui_project_from_detail};
