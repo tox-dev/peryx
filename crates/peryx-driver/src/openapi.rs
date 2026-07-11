@@ -103,4 +103,3 @@ pub fn package_search(scoped: bool) -> OperationBuilder {
     }
     operation
 }
-

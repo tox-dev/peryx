@@ -41,10 +41,13 @@ async fn mount_peryxpkg(server: &MockServer) {
 /// A policy that is active but denies nothing this test serves. An active policy on a layer takes the
 /// virtual index off the streaming path and onto the buffered merge.
 fn active_policy() -> Policy {
-    Policy::compile(&PolicyConfig {
-        block_projects: vec!["some-other-project".to_owned()],
-        ..PolicyConfig::default()
-    }, crate::normalize_name)
+    Policy::compile(
+        &PolicyConfig {
+            block_projects: vec!["some-other-project".to_owned()],
+            ..PolicyConfig::default()
+        },
+        crate::normalize_name,
+    )
 }
 
 /// A virtual index whose `layers` name the cached layer *before* the hosted one. Shadowing must not

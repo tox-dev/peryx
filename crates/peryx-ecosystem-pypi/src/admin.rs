@@ -169,12 +169,7 @@ fn upload_key_parts<'a>(key: &'a str, index_names: &[&str]) -> Option<(String, &
 ///
 /// # Errors
 /// Returns a message when a cached page cannot be read or the store cannot be written.
-pub fn purge_project(
-    meta: &MetaStore,
-    index: &str,
-    project: &str,
-    apply: bool,
-) -> Result<PurgeReport, String> {
+pub fn purge_project(meta: &MetaStore, index: &str, project: &str, apply: bool) -> Result<PurgeReport, String> {
     let normalized = normalize_name(project);
     let target_key = format!("{index}/{normalized}");
     let target = project_refs(meta, &target_key)?;
