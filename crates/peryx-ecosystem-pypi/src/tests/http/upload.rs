@@ -677,3 +677,96 @@ async fn test_upload_wheel_gains_metadata_sibling() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.starts_with("Metadata-Version: 2.1"));
 }
+
+#[tokio::test]
+async fn test_pypi_maintenance_scans_walk_real_records() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let meta = &h.state.serving.meta;
+    let blobs = &h.state.serving.blobs;
+
+    // Import a wheel into the hosted index: exercises the directory walk and seeds an upload record.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("peryxpkg-1.0-py3-none-any.whl"), fixture_wheel()).unwrap();
+    let mut imported = Vec::new();
+    crate::serving::PypiServing
+        .import_dir(meta, blobs, "hosted", "hosted", dir.path(), &mut imported)
+        .unwrap();
+    assert!(String::from_utf8(imported).unwrap().contains("imported=1"));
+
+    // Cache a project from the mock upstream so the scans also walk a cached page.
+    let digest = Digest::of(b"a wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, None).await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    // Seed one valid record in every remaining metadata table plus a blob, so every maintenance
+    // scan walks a non-empty table and its per-record work runs.
+    let sibling = Digest::of(b"the metadata sibling");
+    blobs.write_verified(b"a wheel", &digest).unwrap();
+    meta.put_file_url(digest.as_str(), &file_url, "pypi").unwrap();
+    meta.put_metadata(digest.as_str(), &file_url, sibling.as_str(), "pypi")
+        .unwrap();
+    meta.put_project("pypi", "flask", "Flask").unwrap();
+    meta.put_override("hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl", "yanked")
+        .unwrap();
+
+    assert!(
+        !crate::serving::PypiServing
+            .referenced_blob_digests(meta)
+            .unwrap()
+            .is_empty()
+    );
+    let mut report = Vec::new();
+    crate::serving::PypiServing
+        .fsck_metadata(meta, blobs, &mut report)
+        .unwrap();
+    // Purge the cached `pypi/flask` page so the project-reference walk runs over a real record.
+    let (normalized, _counts) = crate::serving::PypiServing
+        .purge_project(meta, "pypi", "flask", true)
+        .unwrap();
+    assert_eq!(normalized, "flask");
+}
+
+#[tokio::test]
+async fn test_pypi_policy_dry_run_writes_a_denial() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness_with_policies(
+        true,
+        true,
+        policy(|neutral, _pypi| neutral.block_projects = vec!["flask".to_owned()]),
+        Policy::default(),
+        Policy::default(),
+    )
+    .await;
+    let digest = Digest::of(b"a wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    // Seed the cached page directly, so it holds flask unfiltered; the dry-run then previews the
+    // block that a policy-filtered serve would have hidden.
+    h.state
+        .serving
+        .meta
+        .put_index(
+            "pypi/flask",
+            &peryx_storage::meta::CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 1000,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: detail_json(digest.as_str(), &file_url).into_bytes(),
+            },
+        )
+        .unwrap();
+
+    let mut out = Vec::new();
+    crate::serving::PypiServing
+        .policy_dry_run(&h.state.serving.meta, &h.state.indexes, None, None, &mut out)
+        .unwrap();
+    assert!(
+        String::from_utf8(out).unwrap().contains("flask"),
+        "a blocked project should appear"
+    );
+}

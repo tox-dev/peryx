@@ -26,6 +26,7 @@ async-trait.workspace = true
 peryx-policy.workspace = true
 rstest.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 wiremock.workspace = true

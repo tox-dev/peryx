@@ -91,3 +91,42 @@ fn test_parse_metadata_ignores_unknown_headers() {
     assert_eq!(doc.name, "x");
     assert_eq!(doc.version, "1");
 }
+
+#[test]
+fn test_ui_meta_groups_classifiers_and_omits_the_block_when_none() {
+    use peryx_core::UiBlock;
+
+    // Two classifiers share the "Programming Language" category, so the second appends to the first
+    // group; a third opens its own. Classifier-less metadata emits no Classifiers block at all.
+    let text = "Metadata-Version: 2.1\nName: p\nVersion: 1.0\n\
+                Classifier: Programming Language :: Python :: 3.8\n\
+                Classifier: Programming Language :: Python :: 3.9\n\
+                Classifier: License :: OSI Approved\n\n";
+    let meta = crate::ui_meta(text);
+    let groups = meta
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            UiBlock::Groups { label, groups } if label == "Classifiers" => Some(groups),
+            _ => None,
+        })
+        .expect("a Classifiers block");
+    assert_eq!(
+        groups,
+        &vec![
+            (
+                "Programming Language".to_owned(),
+                vec!["Python :: 3.8".to_owned(), "Python :: 3.9".to_owned()],
+            ),
+            ("License".to_owned(), vec!["OSI Approved".to_owned()]),
+        ]
+    );
+
+    let bare = crate::ui_meta("Metadata-Version: 2.1\nName: p\nVersion: 1.0\n\n");
+    assert!(
+        !bare
+            .blocks
+            .iter()
+            .any(|block| matches!(block, UiBlock::Groups { label, .. } if label == "Classifiers"))
+    );
+}

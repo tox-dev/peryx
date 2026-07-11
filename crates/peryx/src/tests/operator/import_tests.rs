@@ -342,3 +342,29 @@ fn append_tar_file(archive: &mut tar::Builder<GzEncoder<Vec<u8>>>, path: &str, b
     header.set_cksum();
     archive.append_data(&mut header, path, bytes).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn test_import_dir_skips_a_symlink_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let import = root.path().join("import");
+    std::fs::create_dir_all(&import).unwrap();
+    std::fs::write(
+        import.join("Flask-1.0-py3-none-any.whl"),
+        wheel("Flask", "1.0", ">=3.8"),
+    )
+    .unwrap();
+    // A symlink is neither a regular file nor a directory, so the directory walk skips it.
+    std::os::unix::fs::symlink("/nonexistent", import.join("dangling.whl")).unwrap();
+    let config = Config {
+        data_dir: root.path().join("data"),
+        ..Config::default()
+    };
+
+    let mut out = Vec::new();
+    operator::import_dir(&config, "root/pypi", &import, &mut out).unwrap();
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("imported=1"), "{text}");
+    assert!(!text.contains("dangling"), "{text}");
+}

@@ -126,3 +126,133 @@ async fn test_buffered_fetch_registers_metadata_siblings() {
     assert_eq!(url, format!("{file_url}.metadata"));
     assert_eq!(meta_sha, meta_digest.as_str());
 }
+
+/// A Simple-API detail whose one file carries a PEP 658 metadata sibling, so the web page builder
+/// walks into `metadata_for`. `wheel` is the wheel's advertised sha256 (pass an invalid string to
+/// exercise the digest-rejection path), `meta` the sibling's sha256.
+fn detail_with_metadata(wheel: &str, url: &str, meta: &str) -> String {
+    format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{url}\",\
+         \"hashes\":{{\"sha256\":\"{wheel}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}"
+    )
+}
+
+#[tokio::test]
+async fn test_artifact_path_rejects_an_invalid_digest() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let err = crate::serving::PypiServing
+        .artifact_path(h.state.serving.clone(), 0, "not-hex".to_owned(), "flask.whl".to_owned())
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid sha256 digest"), "{err}");
+}
+
+#[tokio::test]
+async fn test_artifact_path_reports_an_unfetchable_file() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let digest = Digest::of(b"never stored");
+    let err = crate::serving::PypiServing
+        .artifact_path(
+            h.state.serving.clone(),
+            0,
+            digest.as_str().to_owned(),
+            "flask.whl".to_owned(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("artifact on index"), "{err}");
+}
+
+#[tokio::test]
+async fn test_project_page_surfaces_a_resolve_error() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&h.server)
+        .await;
+    let err = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap_err();
+    assert!(err.contains("project detail on index"), "{err}");
+}
+
+#[tokio::test]
+async fn test_project_page_rejects_a_bad_metadata_wheel_digest() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_json_page(&h.server, &detail_with_metadata("not-a-digest", &file_url, "also-bad")).await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    let err = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid sha256 digest"), "{err}");
+}
+
+#[tokio::test]
+async fn test_project_page_reports_an_unfetchable_metadata_sibling() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let wheel = Digest::of(b"the wheel");
+    let meta = Digest::of(b"the metadata");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_json_page(
+        &h.server,
+        &detail_with_metadata(wheel.as_str(), &file_url, meta.as_str()),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    // The sibling is never made fetchable, so metadata_for fails on the fetch.
+    let err = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap_err();
+    assert!(err.contains("metadata fetch on index"), "{err}");
+}
+
+#[tokio::test]
+async fn test_upload_to_an_unresolvable_or_non_root_path_is_rejected() {
+    use axum::extract::FromRequest as _;
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    async fn empty_multipart() -> axum::extract::Multipart {
+        let request = axum::http::Request::builder()
+            .header("content-type", "multipart/form-data; boundary=x")
+            .body(axum::body::Body::from("--x--\r\n"))
+            .unwrap();
+        axum::extract::Multipart::from_request(request, &()).await.unwrap()
+    }
+
+    let h = harness().await;
+    // A path under no configured index resolves to nothing.
+    let unresolved = crate::serving::PypiServing
+        .post(
+            h.state.serving.clone(),
+            "nowhere".to_owned(),
+            axum::http::HeaderMap::new(),
+            empty_multipart().await,
+        )
+        .await;
+    assert_eq!(unresolved.status(), StatusCode::NOT_FOUND);
+    // A path that resolves but carries a remainder must target the index root.
+    let non_root = crate::serving::PypiServing
+        .post(
+            h.state.serving.clone(),
+            "pypi/extra".to_owned(),
+            axum::http::HeaderMap::new(),
+            empty_multipart().await,
+        )
+        .await;
+    assert_eq!(non_root.status(), StatusCode::NOT_FOUND);
+}
