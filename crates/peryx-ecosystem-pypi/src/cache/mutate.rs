@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::file_matches_version;
 use crate::store::PypiStore as _;
+use crate::store::{Guard, UploadMutation};
 use crate::upload::{self, PreparedUpload, Uploaded};
 use crate::{ProjectStatus, Yanked, parse_distribution_filename, to_json};
 use peryx_core::path::local_file_url;
@@ -54,15 +55,8 @@ pub fn promote_release(
             .get("sha256")
             .cloned()
             .ok_or_else(|| CacheError::MissingSha256(filename.clone()))?;
-        if let Some(existing) = state.meta.get_upload(target, normalized, &filename)? {
-            let existing: Uploaded = serde_json::from_slice(&existing)?;
-            if existing.file.hashes.get("sha256").is_some_and(|hash| hash == &digest) {
-                continue;
-            }
-            return Err(CacheError::FileExists(filename));
-        }
         uploaded.file.url = local_file_url(target_route, &digest, &filename);
-        records.push((filename, to_json(&uploaded).into_bytes()));
+        records.push((filename, digest, to_json(&uploaded).into_bytes()));
     }
     if !matched {
         return Err(CacheError::NoPromotableFiles {
@@ -71,16 +65,32 @@ pub fn promote_release(
             version: version.to_owned(),
         });
     }
-    if records.is_empty() {
-        return Ok(0);
-    }
     let display = state
         .meta
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
-    state.meta.promote_files(target, normalized, &display, &records)?;
-    state.bump_epoch();
-    Ok(records.len())
+    let promoted = state
+        .meta
+        .promote_files_checked(target, normalized, &display, &records, promote_conflict)?;
+    if promoted > 0 {
+        state.bump_epoch();
+    }
+    Ok(promoted)
+}
+
+/// The promotion precondition for one target filename, evaluated inside the write transaction: a
+/// free target is copied, an identical one left as it is, and a target holding different bytes is a
+/// conflict — so a concurrent upload to the target cannot be silently overwritten.
+fn promote_conflict(filename: &str, digest: &str, existing: Option<&[u8]>) -> Result<Guard, CacheError> {
+    let Some(existing) = existing else {
+        return Ok(Guard::Commit);
+    };
+    let existing: Uploaded = serde_json::from_slice(existing)?;
+    if existing.file.hashes.get("sha256").is_some_and(|hash| hash == digest) {
+        Ok(Guard::Skip)
+    } else {
+        Err(CacheError::FileExists(filename.to_owned()))
+    }
 }
 
 /// The two reversible override kinds for files served from read-only layers.
@@ -303,20 +313,16 @@ fn delete_uploads_of_version(
     normalized: &str,
     version: &str,
 ) -> Result<usize, CacheError> {
-    let mut removed = 0;
-    for (filename, bytes) in state.meta.list_upload_entries(name, normalized)? {
-        let uploaded: Uploaded = serde_json::from_slice(&bytes)?;
+    state.meta.mutate_uploads(name, normalized, |_filename, bytes| {
+        let uploaded: Uploaded = serde_json::from_slice(bytes)?;
         if uploaded.version != version {
-            continue;
+            return Ok(UploadMutation::Keep);
         }
         if !volatile {
             return Err(CacheError::NotVolatile);
         }
-        if state.meta.delete_upload(name, normalized, &filename)? {
-            removed += 1;
-        }
-    }
-    Ok(removed)
+        Ok(UploadMutation::Delete)
+    })
 }
 
 /// Set the yank state of uploaded files, optionally limited to one version. Returns how many
@@ -328,20 +334,12 @@ fn yank_uploads(
     version: Option<&str>,
     yanked: &Yanked,
 ) -> Result<usize, CacheError> {
-    let mut changed = 0;
-    for (filename, bytes) in state.meta.list_upload_entries(name, normalized)? {
-        let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
-        if version.is_some_and(|version| uploaded.version != version) {
-            continue;
-        }
-        if uploaded.file.yanked == *yanked {
-            continue;
+    state.meta.mutate_uploads(name, normalized, |_filename, bytes| {
+        let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
+        if version.is_some_and(|version| uploaded.version != version) || uploaded.file.yanked == *yanked {
+            return Ok(UploadMutation::Keep);
         }
         uploaded.file.yanked = yanked.clone();
-        state
-            .meta
-            .put_upload(name, normalized, &filename, &to_json(&uploaded).into_bytes())?;
-        changed += 1;
-    }
-    Ok(changed)
+        Ok(UploadMutation::Replace(to_json(&uploaded).into_bytes()))
+    })
 }

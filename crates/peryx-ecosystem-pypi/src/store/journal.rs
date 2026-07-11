@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 /// an origin others can replicate from. `serial` orders entries; the rest names what changed.
 ///
 /// The neutral serial counter lives in the store, so a `PyPI` publish builds this entry with a
-/// placeholder `serial` and lets [`commit_driver_batch_journaled`] allocate the authoritative one —
-/// see [`publish_file`](super::publish_file).
+/// placeholder `serial` and lets [`commit_driver_txn`] allocate the authoritative one — see
+/// [`publish_file_if`](super::publish_file_if).
 ///
 /// [`MetaStore`]: peryx_storage::meta::MetaStore
-/// [`commit_driver_batch_journaled`]: peryx_storage::meta::MetaStore::commit_driver_batch_journaled
+/// [`commit_driver_txn`]: peryx_storage::meta::MetaStore::commit_driver_txn
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalEntry {
     pub serial: u64,

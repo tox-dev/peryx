@@ -32,8 +32,9 @@ pub use projects::{
 pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, ProjectStatusRecord};
 pub use summary::summarize_indexes;
 pub use uploads::{
-    MetadataSibling, PublishedFile, delete_override, delete_upload, get_upload, list_overrides, list_upload_entries,
-    promote_files, publish_file, put_override, put_upload, scan_override_records, scan_upload_records,
+    Guard, MetadataSibling, PublishedFile, UploadMutation, delete_override, delete_upload, list_overrides,
+    list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if, put_override, put_upload,
+    scan_override_records, scan_upload_records,
 };
 
 /// The former `index_document` table: cached simple-index pages, keyed by the caller's route key.
@@ -278,11 +279,16 @@ pub trait PypiStore {
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
-    /// Publish a file: its sibling, record, project, and journal entry, together.
+    /// Publish a file — its sibling, record, project, and journal entry — only if `guard` accepts the
+    /// filename's current record, checked inside the same write transaction. Returns whether it wrote.
     ///
     /// # Errors
-    /// Returns a store error if the write, encode, or commit fails.
-    fn publish_file(&self, file: &PublishedFile) -> Result<u64, peryx_storage::meta::MetaError>;
+    /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
+    fn publish_file_if<E: From<peryx_storage::meta::MetaError>>(
+        &self,
+        file: &PublishedFile,
+        guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+    ) -> Result<bool, E>;
 
     /// Store an uploaded file's serialized record on a private index.
     ///
@@ -296,28 +302,32 @@ pub trait PypiStore {
         record: &[u8],
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Promote a release onto `index`: its records, project, and journal entry, together.
+    /// Promote a release onto `index` — its records, project, and journal entry — admitting each
+    /// `(filename, token, bytes)` only when `guard` accepts the target's current record inside the
+    /// write transaction. Returns how many files were written.
     ///
     /// # Errors
-    /// Returns a store error if the write, encode, or commit fails.
-    fn promote_files(
+    /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
+    fn promote_files_checked<E: From<peryx_storage::meta::MetaError>>(
         &self,
         index: &str,
         normalized: &str,
         display: &str,
-        records: &[(String, Vec<u8>)],
-    ) -> Result<u64, peryx_storage::meta::MetaError>;
+        records: &[(String, String, Vec<u8>)],
+        guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
+    ) -> Result<usize, E>;
 
-    /// Fetch one uploaded file record.
+    /// Apply a per-file mutation to every uploaded record of `normalized` on `index`, listing and
+    /// writing in one transaction. Returns how many records changed.
     ///
     /// # Errors
-    /// Returns a store error if the read fails.
-    fn get_upload(
+    /// Returns the closure's error, or a store error mapped into it, if the transaction fails.
+    fn mutate_uploads<E: From<peryx_storage::meta::MetaError>>(
         &self,
         index: &str,
         normalized: &str,
-        filename: &str,
-    ) -> Result<Option<Vec<u8>>, peryx_storage::meta::MetaError>;
+        mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
+    ) -> Result<usize, E>;
 
     /// List the `(filename, record)` pairs uploaded for `normalized` on `index`, sorted by filename.
     ///
@@ -555,8 +565,12 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         projects::delete_project_cache(self, index, normalized, file_digests, metadata_digests)
     }
 
-    fn publish_file(&self, file: &PublishedFile) -> Result<u64, peryx_storage::meta::MetaError> {
-        uploads::publish_file(self, file)
+    fn publish_file_if<E: From<peryx_storage::meta::MetaError>>(
+        &self,
+        file: &PublishedFile,
+        guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+    ) -> Result<bool, E> {
+        uploads::publish_file_if(self, file, guard)
     }
 
     fn put_upload(
@@ -569,23 +583,24 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         uploads::put_upload(self, index, normalized, filename, record)
     }
 
-    fn promote_files(
+    fn promote_files_checked<E: From<peryx_storage::meta::MetaError>>(
         &self,
         index: &str,
         normalized: &str,
         display: &str,
-        records: &[(String, Vec<u8>)],
-    ) -> Result<u64, peryx_storage::meta::MetaError> {
-        uploads::promote_files(self, index, normalized, display, records)
+        records: &[(String, String, Vec<u8>)],
+        guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
+    ) -> Result<usize, E> {
+        uploads::promote_files_checked(self, index, normalized, display, records, guard)
     }
 
-    fn get_upload(
+    fn mutate_uploads<E: From<peryx_storage::meta::MetaError>>(
         &self,
         index: &str,
         normalized: &str,
-        filename: &str,
-    ) -> Result<Option<Vec<u8>>, peryx_storage::meta::MetaError> {
-        uploads::get_upload(self, index, normalized, filename)
+        mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
+    ) -> Result<usize, E> {
+        uploads::mutate_uploads(self, index, normalized, mutate)
     }
 
     fn list_upload_entries(

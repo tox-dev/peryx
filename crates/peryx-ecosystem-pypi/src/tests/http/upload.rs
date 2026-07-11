@@ -161,6 +161,61 @@ async fn test_upload_same_file_is_idempotent() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail["files"].as_array().unwrap().len(), 1);
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_concurrent_different_bytes_uploads_leave_one_deterministic_winner() {
+    let h = harness().await;
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    let first = fixture_wheel();
+    let second = fixture_wheel_with_body("1.0", b"VALUE = 2\n");
+    let (ct_first, body_first) = multipart_body(&upload_fields(), Some((filename, &first)));
+    let (ct_second, body_second) = multipart_body(&upload_fields(), Some((filename, &second)));
+
+    let state_first = h.state.clone();
+    let state_second = h.state.clone();
+    let upload_first = tokio::spawn(async move {
+        post_upload_response(&state_first, "/hosted/", Some(&upload_auth()), &ct_first, body_first).await
+    });
+    let upload_second = tokio::spawn(async move {
+        post_upload_response(&state_second, "/hosted/", Some(&upload_auth()), &ct_second, body_second).await
+    });
+    let (status_first, _) = upload_first.await.unwrap();
+    let (status_second, _) = upload_second.await.unwrap();
+
+    let statuses = [status_first, status_second];
+    assert!(
+        statuses.contains(&StatusCode::OK),
+        "exactly one upload wins: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&StatusCode::BAD_REQUEST),
+        "the loser is rejected, not silently overwritten: {statuses:?}"
+    );
+
+    let (page_status, _, detail) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(page_status, StatusCode::OK);
+    let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    let files = detail["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "one filename resolves to one served file");
+    let served_sha = files[0]["hashes"]["sha256"].as_str().unwrap().to_owned();
+    let winner = if status_first == StatusCode::OK {
+        &first
+    } else {
+        &second
+    };
+    assert_eq!(
+        served_sha,
+        Digest::of(winner).as_str(),
+        "the served digest is the winner's"
+    );
+
+    let (file_status, _, bytes) = get_bytes(&h.state, &format!("/hosted/files/{served_sha}/{filename}"), None).await;
+    assert_eq!(file_status, StatusCode::OK);
+    assert_eq!(
+        Digest::of(&bytes).as_str(),
+        served_sha,
+        "the served bytes hash to the advertised digest, so no client sees a hash mismatch"
+    );
+}
 #[tokio::test]
 async fn test_upload_same_filename_with_different_bytes_is_bad_request() {
     let h = harness().await;

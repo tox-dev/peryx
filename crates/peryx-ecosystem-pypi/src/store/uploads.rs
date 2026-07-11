@@ -1,4 +1,4 @@
-use peryx_storage::meta::{DriverBatch, MetaError, MetaScanError, MetaStore};
+use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 
 use super::journal::JournalEntry;
 use super::{OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, metadata_value, override_key, project_key, upload_key};
@@ -33,37 +33,58 @@ pub struct PublishedFile<'a> {
     pub metadata: Option<MetadataSibling<'a>>,
 }
 
-/// Publish a file: its metadata sibling, its record, its project, and its journal entry, together.
+/// A precondition's verdict on a key's current value, decided inside the write transaction.
 ///
-/// One transaction, because these four rows are one fact. Committed separately, a crash between
+/// `Commit` writes the staged rows; `Skip` leaves the key untouched as an idempotent no-op. A rejection
+/// is the guard returning an error.
+pub enum Guard {
+    Commit,
+    Skip,
+}
+
+/// What a per-file upload mutation does to one record inside the transaction.
+pub enum UploadMutation {
+    Keep,
+    Replace(Vec<u8>),
+    Delete,
+}
+
+/// Publish a file, but only if `guard` accepts the filename's current stored record.
+///
+/// Its metadata sibling, its record, its project, and its journal entry go in together, and the guard
+/// runs in the same write transaction as those writes. One transaction, because these four rows are
+/// one fact. Committed separately, a crash between
 /// the upload row and the journal entry leaves peryx serving a file forever that no replica will
 /// ever receive: nothing reconciles the journal against the file tables at startup, and `fsck`
-/// does not audit it. Being one transaction it is also one fsync rather than four.
+/// does not audit it. Being one transaction it is also one fsync rather than four. The guard runs in
+/// that transaction too, so a concurrent upload of the same name cannot slip between the duplicate
+/// check and the publish and overwrite a record whose bytes a client already resolved.
 ///
-/// Returns the journal serial the publication was recorded under.
+/// `guard` sees the file's current record (`None` when unpublished) and returns [`Guard::Commit`] to
+/// publish, [`Guard::Skip`] to treat it as an idempotent no-op, or an error to reject it. Returns
+/// whether the file was written.
 ///
 /// # Errors
-/// Returns a store error if the write, encode, or commit fails.
-pub fn publish_file(meta: &MetaStore, file: &PublishedFile) -> Result<u64, MetaError> {
-    let mut batch = DriverBatch::new();
-    if let Some(sibling) = &file.metadata {
-        batch.put(
-            metadata_key(sibling.artifact_sha256),
-            metadata_value(sibling.url, sibling.metadata_sha256, sibling.source).into_bytes(),
-        );
-    }
-    batch.put(
-        upload_key(file.index, file.normalized, file.filename),
-        file.record.to_vec(),
-    );
-    batch.put(
-        project_key(file.index, file.normalized),
-        file.display.as_bytes().to_vec(),
-    );
-    meta.commit_driver_batch_journaled(
-        &batch,
-        &journal_bytes("add-file", file.normalized, Some(file.version), Some(file.filename)),
-    )
+/// Returns the guard's error, or a store error mapped into it, if the transaction fails.
+pub fn publish_file_if<E: From<MetaError>>(
+    meta: &MetaStore,
+    file: &PublishedFile,
+    guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+) -> Result<bool, E> {
+    let upload = upload_key(file.index, file.normalized, file.filename);
+    meta.commit_driver_txn(|txn| match guard(txn.get(&upload)?.as_deref())? {
+        Guard::Skip => Ok((false, None)),
+        Guard::Commit => {
+            if let Some(sibling) = &file.metadata {
+                let value = metadata_value(sibling.url, sibling.metadata_sha256, sibling.source);
+                txn.put(&metadata_key(sibling.artifact_sha256), value.as_bytes())?;
+            }
+            txn.put(&upload, file.record)?;
+            txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
+            let journal = journal_bytes("add-file", file.normalized, Some(file.version), Some(file.filename));
+            Ok((true, Some(journal)))
+        }
+    })
 }
 
 /// Store an uploaded file's serialized record on a private index, keyed by
@@ -82,41 +103,91 @@ pub fn put_upload(
     meta.put_driver_value(&upload_key(index, normalized, filename), record)
 }
 
-/// Promote a release onto `index`: its file records, its project, and its journal entry, together.
+/// Promote a release onto `index`, each target filename admitted only if `guard` accepts it.
 ///
-/// One transaction, for the same reason [`publish_file`] is: a promotion the journal never records
-/// is invisible to every replica, and nothing reconciles that later.
+/// Its file records, its project, and its journal entry go in together, and `guard` runs against each
+/// target's current stored record inside that write transaction. One transaction, for the same reason
+/// [`publish_file_if`] is: a promotion the journal never records
+/// is invisible to every replica, and nothing reconciles that later; and the target existence check
+/// runs in it, so a concurrent upload to the target cannot land between the check and the copy.
 ///
-/// Returns the journal serial the promotion was recorded under.
+/// Each record is `(filename, token, bytes)`; `token` is opaque here and passed to `guard` to
+/// compare against the existing target row. `guard` returns [`Guard::Commit`] to copy the file,
+/// [`Guard::Skip`] to leave an identical target as it is, or an error to reject a conflict. Returns
+/// how many files were written; the project row and journal entry are recorded only when at least one
+/// was.
 ///
 /// # Errors
-/// Returns a store error if the write, encode, or commit fails.
-pub fn promote_files(
+/// Returns the guard's error, or a store error mapped into it, if the transaction fails.
+pub fn promote_files_checked<E: From<MetaError>>(
     meta: &MetaStore,
     index: &str,
     normalized: &str,
     display: &str,
-    records: &[(String, Vec<u8>)],
-) -> Result<u64, MetaError> {
-    let mut batch = DriverBatch::new();
-    for (filename, record) in records {
-        batch.put(upload_key(index, normalized, filename), record.clone());
-    }
-    batch.put(project_key(index, normalized), display.as_bytes().to_vec());
-    meta.commit_driver_batch_journaled(&batch, &journal_bytes("promote", normalized, None, None))
+    records: &[(String, String, Vec<u8>)],
+    guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
+) -> Result<usize, E> {
+    meta.commit_driver_txn(|txn| {
+        let mut written = 0;
+        for (filename, token, record) in records {
+            let key = upload_key(index, normalized, filename);
+            match guard(filename, token, txn.get(&key)?.as_deref())? {
+                Guard::Skip => {}
+                Guard::Commit => {
+                    txn.put(&key, record)?;
+                    written += 1;
+                }
+            }
+        }
+        if written == 0 {
+            return Ok((0, None));
+        }
+        txn.put(&project_key(index, normalized), display.as_bytes())?;
+        Ok((written, Some(journal_bytes("promote", normalized, None, None))))
+    })
 }
 
-/// Fetch one uploaded file record.
+/// Apply a per-file mutation to every uploaded record of `normalized` on `index`.
+///
+/// The listing and the writes share one transaction, so a concurrent upload cannot land between them
+/// and be missed or resurrected. `mutate` sees each `(filename, record)` and returns
+/// [`UploadMutation::Keep`] to leave it,
+/// [`UploadMutation::Replace`] to rewrite it, or [`UploadMutation::Delete`] to remove it; an error
+/// aborts the whole transaction unchanged. Returns how many records were rewritten or removed. The
+/// mutation carries no journal entry: a yank or delete is local override state no replica reconciles.
 ///
 /// # Errors
-/// Returns a store error if the read fails.
-pub fn get_upload(
+/// Returns the closure's error, or a store error mapped into it, if the transaction fails.
+///
+/// # Panics
+/// Never in practice: every key comes from a prefix scan of `prefix`, so each carries it.
+pub fn mutate_uploads<E: From<MetaError>>(
     meta: &MetaStore,
     index: &str,
     normalized: &str,
-    filename: &str,
-) -> Result<Option<Vec<u8>>, MetaError> {
-    meta.get_driver_value(&upload_key(index, normalized, filename))
+    mut mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
+) -> Result<usize, E> {
+    let prefix = format!("{UPLOAD_PREFIX}{index}/{normalized}/");
+    meta.commit_driver_txn(|txn| {
+        let mut changed = 0;
+        for (key, record) in txn.prefix(&prefix)? {
+            let filename = key
+                .strip_prefix(&prefix)
+                .expect("a key from the prefix scan carries the prefix");
+            match mutate(filename, &record)? {
+                UploadMutation::Keep => {}
+                UploadMutation::Replace(bytes) => {
+                    txn.put(&key, &bytes)?;
+                    changed += 1;
+                }
+                UploadMutation::Delete => {
+                    txn.remove(&key)?;
+                    changed += 1;
+                }
+            }
+        }
+        Ok((changed, None))
+    })
 }
 
 /// List the `(filename, record)` pairs uploaded for `normalized` on `index`, sorted by filename.
@@ -238,13 +309,118 @@ fn journal_bytes(action: &str, project: &str, version: Option<&str>, filename: O
 
 #[cfg(test)]
 mod tests {
-    use super::{MetaStore, override_key};
+    use super::{Guard, MetaError, MetaStore, MetadataSibling, PublishedFile, override_key, upload_key};
     use crate::store::PypiStore as _;
 
     fn store() -> (tempfile::TempDir, MetaStore) {
         let dir = tempfile::tempdir().unwrap();
         let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
         (dir, meta)
+    }
+
+    fn published() -> PublishedFile<'static> {
+        PublishedFile {
+            index: "hosted",
+            normalized: "flask",
+            display: "Flask",
+            filename: "flask-1.0.whl",
+            record: b"record",
+            version: "1.0",
+            metadata: Some(MetadataSibling {
+                artifact_sha256: "artifact-sha",
+                url: "uploaded",
+                metadata_sha256: "metadata-sha",
+                source: "hosted",
+            }),
+        }
+    }
+
+    #[test]
+    fn test_publish_file_if_commit_writes_record_sibling_project_and_serial() {
+        let (_dir, meta) = store();
+
+        let wrote = meta
+            .publish_file_if(&published(), |existing| {
+                assert!(existing.is_none(), "a first publish sees no prior record");
+                Ok::<_, MetaError>(Guard::Commit)
+            })
+            .unwrap();
+
+        assert!(wrote);
+        assert_eq!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .as_deref(),
+            Some(b"record".as_slice())
+        );
+        assert!(
+            meta.get_metadata("artifact-sha").unwrap().is_some(),
+            "the sibling row is written"
+        );
+        assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
+        assert_eq!(meta.current_serial().unwrap(), 1, "the publish is journaled");
+    }
+
+    #[test]
+    fn test_publish_file_if_commit_without_a_metadata_sibling_writes_no_sibling() {
+        let (_dir, meta) = store();
+
+        let wrote = meta
+            .publish_file_if(
+                &PublishedFile {
+                    metadata: None,
+                    ..published()
+                },
+                |_existing| Ok::<_, MetaError>(Guard::Commit),
+            )
+            .unwrap();
+
+        assert!(wrote);
+        assert!(
+            meta.get_metadata("artifact-sha").unwrap().is_none(),
+            "a file without metadata records no sibling row"
+        );
+        assert_eq!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .as_deref(),
+            Some(b"record".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_publish_file_if_skip_leaves_the_store_unchanged() {
+        let (_dir, meta) = store();
+
+        let wrote = meta
+            .publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Skip))
+            .unwrap();
+
+        assert!(!wrote);
+        assert!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(meta.current_serial().unwrap(), 0, "a skipped publish records no serial");
+    }
+
+    #[test]
+    fn test_publish_file_if_propagates_a_guard_rejection_without_writing() {
+        let (_dir, meta) = store();
+
+        let result = meta.publish_file_if(&published(), |_existing| {
+            Err::<Guard, _>(MetaError::from(
+                serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+            ))
+        });
+
+        assert!(result.is_err());
+        assert!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

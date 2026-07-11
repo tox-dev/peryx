@@ -15,7 +15,7 @@ use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use crate::store::PypiStore as _;
-use crate::store::{MetadataSibling, PublishedFile};
+use crate::store::{Guard, MetadataSibling, PublishedFile};
 use serde::{Deserialize, Serialize};
 
 use peryx_core::path::{local_file_url, validate_filename};
@@ -246,39 +246,43 @@ pub fn store_prepared(
         metadata,
         mut record,
     } = prepared;
-    if let Some(existing) = meta.get_upload(name, &normalized, &filename)? {
-        let uploaded: Uploaded = serde_json::from_slice(&existing)?;
-        if uploaded
-            .file
-            .hashes
-            .get("sha256")
-            .is_some_and(|hash| hash == content_digest.as_str())
-        {
-            blobs.commit_staged(content)?;
-            return Ok(false);
-        }
-        return Err(UploadStoreError::FileExists(filename));
-    }
     blobs.commit_staged(content)?;
     let metadata_digest = blobs.write(&metadata)?;
     let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
     record.file.set_metadata(CoreMetadata::Hashes(hashes));
     let body = to_json(&record).into_bytes();
-    meta.publish_file(&PublishedFile {
-        index: name,
-        normalized: &normalized,
-        display: &display_name,
-        filename: &filename,
-        record: &body,
-        version: record.version.as_str(),
-        metadata: Some(MetadataSibling {
-            artifact_sha256: content_digest.as_str(),
-            url: "uploaded",
-            metadata_sha256: metadata_digest.as_str(),
-            source: name,
-        }),
-    })?;
-    Ok(true)
+    meta.publish_file_if(
+        &PublishedFile {
+            index: name,
+            normalized: &normalized,
+            display: &display_name,
+            filename: &filename,
+            record: &body,
+            version: record.version.as_str(),
+            metadata: Some(MetadataSibling {
+                artifact_sha256: content_digest.as_str(),
+                url: "uploaded",
+                metadata_sha256: metadata_digest.as_str(),
+                source: name,
+            }),
+        },
+        |existing| upload_conflict(existing, content_digest.as_str(), &filename),
+    )
+}
+
+/// The upload publish precondition, evaluated inside the write transaction: a first upload commits,
+/// an identical re-upload is an idempotent no-op, and the same filename with different bytes is a
+/// conflict — so two concurrent different-content uploads cannot both publish.
+fn upload_conflict(existing: Option<&[u8]>, digest: &str, filename: &str) -> Result<Guard, UploadStoreError> {
+    let Some(existing) = existing else {
+        return Ok(Guard::Commit);
+    };
+    let uploaded: Uploaded = serde_json::from_slice(existing)?;
+    if uploaded.file.hashes.get("sha256").is_some_and(|hash| hash == digest) {
+        Ok(Guard::Skip)
+    } else {
+        Err(UploadStoreError::FileExists(filename.to_owned()))
+    }
 }
 
 fn parse_filename(filename: &str) -> Result<DistributionFilename, UploadError> {

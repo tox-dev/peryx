@@ -14,6 +14,7 @@ mod journal;
 mod webhook;
 
 pub use error::{MetaError, MetaScanError};
+pub use index::DriverTxn;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");

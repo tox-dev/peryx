@@ -90,31 +90,94 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Apply a driver-owned batch and, in the same transaction, allocate the next global serial and
-    /// record `journal` (opaque bytes the driver owns) under it, returning the serial. A hosted
-    /// publish keeps its rows, its journal entry, and its serial atomic: a row durable without its
-    /// journal entry would serve forever yet never reach a replica.
+    /// Run a driver-owned read-modify-write over the neutral table in one write transaction.
+    ///
+    /// A check and the writes it gates commit together, so neither can interleave with another
+    /// writer. `body` reads current rows through the [`DriverTxn`], stages its puts and deletes, and returns
+    /// the value to hand back paired with an optional journal entry: `Some` allocates the next serial
+    /// and records the entry in the same transaction — a publish or promotion a replica must observe —
+    /// while `None` commits the rows alone, for a yank or delete no replica reconciles. Returning an
+    /// error from `body` drops the transaction, so a rejected precondition leaves the store untouched.
     ///
     /// # Errors
-    /// Returns a store error if the write or commit fails.
-    pub fn commit_driver_batch_journaled(&self, batch: &DriverBatch, journal: &[u8]) -> Result<u64, MetaError> {
-        let txn = self.db.begin_write()?;
-        let serial = {
-            let mut serials = txn.open_table(SERIAL)?;
-            let next = serials.get(SERIAL_KEY)?.map_or(0, |value| value.value()) + 1;
-            serials.insert(SERIAL_KEY, next)?;
-            let mut journal_table = txn.open_table(JOURNAL)?;
-            journal_table.insert(next, journal)?;
-            let mut table = txn.open_table(DRIVER_KV)?;
-            for (key, value) in &batch.puts {
-                table.insert(key.as_str(), value.as_slice())?;
-            }
-            for key in &batch.deletes {
-                table.remove(key.as_str())?;
-            }
-            next
+    /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
+    /// read, write, or commit.
+    pub fn commit_driver_txn<T, E: From<MetaError>>(
+        &self,
+        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Option<Vec<u8>>), E>,
+    ) -> Result<T, E> {
+        let txn = self.db.begin_write().map_err(MetaError::from)?;
+        let (value, journal) = {
+            let mut driver = DriverTxn {
+                table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
+            };
+            body(&mut driver)?
         };
-        txn.commit()?;
-        Ok(serial)
+        if let Some(journal) = journal {
+            let mut serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
+            let next = serials
+                .get(SERIAL_KEY)
+                .map_err(MetaError::from)?
+                .map_or(0, |value| value.value())
+                + 1;
+            serials.insert(SERIAL_KEY, next).map_err(MetaError::from)?;
+            let mut journal_table = txn.open_table(JOURNAL).map_err(MetaError::from)?;
+            journal_table
+                .insert(next, journal.as_slice())
+                .map_err(MetaError::from)?;
+        }
+        txn.commit().map_err(MetaError::from)?;
+        Ok(value)
+    }
+}
+
+/// A handle to the neutral key-value table inside an open write transaction.
+///
+/// Handed to a [`commit_driver_txn`](MetaStore::commit_driver_txn) body so it can read current rows
+/// and stage writes atomically. Keys and values stay opaque bytes the store never interprets.
+pub struct DriverTxn<'txn> {
+    table: redb::Table<'txn, &'static str, &'static [u8]>,
+}
+
+impl DriverTxn<'_> {
+    /// The current value of `key`, reflecting writes already staged in this transaction.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, MetaError> {
+        Ok(self.table.get(key)?.map(|value| value.value().to_vec()))
+    }
+
+    /// Every `(key, value)` whose key starts with `prefix`, in key order.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, MetaError> {
+        let mut entries = Vec::new();
+        for entry in self.table.range(prefix..)? {
+            let (key, value) = entry?;
+            if !key.value().starts_with(prefix) {
+                break;
+            }
+            entries.push((key.value().to_owned(), value.value().to_vec()));
+        }
+        Ok(entries)
+    }
+
+    /// Stage an upsert of `key` to `value`.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn put(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
+        self.table.insert(key, value)?;
+        Ok(())
+    }
+
+    /// Stage a removal of `key`, reporting whether it was present.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn remove(&mut self, key: &str) -> Result<bool, MetaError> {
+        Ok(self.table.remove(key)?.is_some())
     }
 }
