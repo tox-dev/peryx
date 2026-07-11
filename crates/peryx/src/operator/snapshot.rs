@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::config::{Config, IndexKind, LogFormat, LogSink};
+use crate::config::{Config, IndexKind, LogFormat, LogSink, SecretSource};
 
 #[derive(Serialize)]
 struct SnapshotConfig {
@@ -32,6 +32,8 @@ struct SnapshotIndex {
     hosted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upload_token_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volatile: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +87,7 @@ fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
             upstream_concurrency: Some(*upstream_concurrency),
             hosted: None,
             upload_token: None,
+            upload_token_file: None,
             volatile: None,
             layers: None,
             upload: None,
@@ -98,7 +101,8 @@ fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
             token: None,
             upstream_concurrency: None,
             hosted: Some(true),
-            upload_token: upload_token.clone(),
+            upload_token: literal_secret(upload_token.as_ref()),
+            upload_token_file: secret_file(upload_token.as_ref()),
             volatile: Some(*volatile),
             layers: None,
             upload: None,
@@ -113,10 +117,26 @@ fn snapshot_index(index: &crate::config::IndexConfig) -> SnapshotIndex {
             upstream_concurrency: None,
             hosted: None,
             upload_token: None,
+            upload_token_file: None,
             volatile: None,
             layers: Some(layers.clone()),
             upload: upload.clone(),
         },
+    }
+}
+
+/// A snapshot records where a secret lives, not what it is: a secret kept in a file stays in its file.
+fn literal_secret(source: Option<&SecretSource>) -> Option<String> {
+    match source? {
+        SecretSource::Literal(secret) => Some(secret.clone()),
+        SecretSource::File(_) => None,
+    }
+}
+
+fn secret_file(source: Option<&SecretSource>) -> Option<String> {
+    match source? {
+        SecretSource::Literal(_) => None,
+        SecretSource::File(path) => Some(path.display().to_string()),
     }
 }
 

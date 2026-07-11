@@ -20,8 +20,8 @@ impl OciRegistry {
         name: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, repo) = match resolve_writable(state, name, headers) {
-            Ok(pair) => pair,
+        let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
+            Ok(target) => target,
             Err(response) => return Ok(response),
         };
         let params = query_params(query);
@@ -75,8 +75,8 @@ impl OciRegistry {
         name: &str,
         session: &str,
     ) -> Result<Response, ServeError> {
-        let (index, _) = match resolve_writable(state, name, headers) {
-            Ok(pair) => pair,
+        let (index, _, _) = match resolve_writable(state, name, headers, Action::Write) {
+            Ok(target) => target,
             Err(response) => return Ok(response),
         };
         let offset = self
@@ -104,8 +104,8 @@ impl OciRegistry {
         session: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, _) = match resolve_writable(state, name, headers) {
-            Ok(pair) => pair,
+        let (index, _, _) = match resolve_writable(state, name, headers, Action::Write) {
+            Ok(target) => target,
             Err(response) => return Ok(response),
         };
         let Some(mut entry) = self.take_session(&index.name, session).await else {
@@ -137,8 +137,8 @@ impl OciRegistry {
         session: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, repo) = match resolve_writable(state, name, headers) {
-            Ok(pair) => pair,
+        let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
+            Ok(target) => target,
             Err(response) => return Ok(response),
         };
         let Some(mut entry) = self.take_session(&index.name, session).await else {

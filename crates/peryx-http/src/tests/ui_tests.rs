@@ -10,6 +10,7 @@ use tower::ServiceExt as _;
 
 use peryx_core::{Ecosystem, UiManifest, UiMember, UiMemberChunk, UiProjectView};
 use peryx_driver::state::{AppState, Index, IndexKind, ServingState};
+use peryx_identity::IndexAcl;
 
 /// A driver whose browse methods answer by their inputs, so one instance exercises every outcome the
 /// handlers branch on: a value, an absent item, and a read error.
@@ -115,11 +116,9 @@ fn index(route: &str, ecosystem: Ecosystem) -> Index {
         name: route.to_owned(),
         route: route.to_owned(),
         ecosystem,
-        kind: IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
+        kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
+        acl: IndexAcl::default(),
     }
 }
 

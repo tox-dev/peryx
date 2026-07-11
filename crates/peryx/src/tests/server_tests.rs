@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;
@@ -8,7 +10,7 @@ use tower::ServiceExt as _;
 
 use peryx_ecosystem_oci::LibraryPrefix;
 
-use crate::config::{Config, IndexConfig, IndexKind, WebhookConfig, WebhookSecret};
+use crate::config::{AuthConfig, Config, IndexConfig, IndexKind, SecretSource, WebhookConfig, WebhookSecret};
 use crate::server::{build_index_settings, build_indexes, build_router, build_state, upstream_auth};
 
 fn config_with(dir: &tempfile::TempDir, indexes: Vec<IndexConfig>) -> Config {
@@ -28,6 +30,8 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
+        anonymous_read: None,
+        tokens: Vec::new(),
         kind: IndexKind::Cached {
             upstream: upstream.to_owned(),
             username: None,
@@ -49,6 +53,8 @@ fn hosted(name: &str) -> IndexConfig {
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
+        anonymous_read: None,
+        tokens: Vec::new(),
         kind: IndexKind::Hosted {
             upload_token: None,
             volatile: true,
@@ -65,6 +71,8 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
+        anonymous_read: None,
+        tokens: Vec::new(),
         kind: IndexKind::Virtual {
             layers: layers.iter().map(|&name| name.to_owned()).collect(),
             upload: upload.map(str::to_owned),
@@ -292,7 +300,7 @@ fn test_build_router_data_dir_error() {
     &["not a hosted index"][..]
 )]
 fn test_build_indexes_rejects(#[case] indexes: fn() -> Vec<IndexConfig>, #[case] expected: &[&str]) {
-    let err = build_indexes(&indexes(), false).unwrap_err();
+    let err = build_indexes(&indexes(), &AuthConfig::default(), false).unwrap_err();
     let message = err.to_string();
     for substr in expected {
         assert!(message.contains(substr), "{message}");
@@ -356,13 +364,29 @@ fn test_build_index_settings_rejects(
 }
 
 #[test]
+fn test_build_indexes_reports_an_unreadable_secret_file() {
+    let mut index = hosted("store");
+    index.kind = IndexKind::Hosted {
+        upload_token: Some(SecretSource::File(PathBuf::from("/nonexistent/peryx/token"))),
+        volatile: true,
+    };
+
+    let err = build_indexes(&[index], &AuthConfig::default(), false).unwrap_err();
+
+    assert!(
+        err.to_string().contains("read the access rules of index store"),
+        "{err}"
+    );
+}
+
+#[test]
 fn test_build_indexes_defaults_upload_to_first_local_layer() {
     let configs = [
         cached("pypi", "https://pypi.org/simple/"),
         hosted("store"),
         virtual_index(&["pypi", "store"], None),
     ];
-    let indexes = build_indexes(&configs, false).unwrap();
+    let indexes = build_indexes(&configs, &AuthConfig::default(), false).unwrap();
     let RuntimeKind::Virtual { upload, layers } = &indexes[2].kind else {
         panic!("expected virtual index");
     };
@@ -376,7 +400,7 @@ fn test_build_indexes_overlay_without_local_layer_has_no_upload() {
         cached("pypi", "https://pypi.org/simple/"),
         virtual_index(&["pypi"], None),
     ];
-    let indexes = build_indexes(&configs, false).unwrap();
+    let indexes = build_indexes(&configs, &AuthConfig::default(), false).unwrap();
     let RuntimeKind::Virtual { upload, .. } = &indexes[1].kind else {
         panic!("expected virtual index");
     };

@@ -24,6 +24,7 @@ use peryx_ecosystem_pypi::{
     to_json,
 };
 use peryx_http::router;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
@@ -141,6 +142,7 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }],
         Arc::new(|| 1000),
         rate_limit,

@@ -14,7 +14,7 @@ use crate::server;
 /// output fails.
 pub fn policy(config: &Config, command: &PolicyCommand, out: &mut dyn Write) -> anyhow::Result<()> {
     let stores = CacheStores::open(config)?;
-    let indexes = server::build_indexes(&config.indexes, config.offline)?;
+    let indexes = server::build_indexes(&config.indexes, &config.auth, config.offline)?;
     match command {
         PolicyCommand::DryRun(args) => policy_dry_run(&stores, &indexes, args, out),
     }

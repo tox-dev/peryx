@@ -3,6 +3,7 @@
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
+use peryx_identity::IndexAcl;
 use tower::ServiceExt as _;
 
 use peryx_driver::state::{AppState, ServingState};
@@ -23,11 +24,9 @@ fn pypi_index(route: &str) -> peryx_driver::state::Index {
         name: route.to_owned(),
         route: route.to_owned(),
         ecosystem: peryx_core::Ecosystem::Pypi,
-        kind: peryx_driver::state::IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
+        kind: peryx_driver::state::IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
+        acl: IndexAcl::default(),
     }
 }
 
@@ -105,11 +104,9 @@ async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: Ecosystem::Pypi,
-        kind: IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
+        kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
+        acl: IndexAcl::default(),
     };
     // Without an ecosystem driver, an index still appears in discovery through the neutral fallback:
     // its identity, but none of the wire-protocol URLs a real driver would render.

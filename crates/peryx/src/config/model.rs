@@ -1,13 +1,17 @@
 //! The fully resolved configuration types and their defaults.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
+use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
+
+use super::ConfigError;
 
 /// A fully resolved configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +37,76 @@ pub struct Config {
     pub tls: Option<TlsConfig>,
     pub log: LogConfig,
     pub rate_limit: RateLimitConfig,
+    pub auth: AuthConfig,
+}
+
+/// The `[auth]` table: the settings every index's access rules share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthConfig {
+    /// The key peryx signs its own tokens with. Unset leaves the token realm without a key.
+    pub signing_key: Option<SecretSource>,
+    /// How long a minted token stays valid, in seconds.
+    pub token_ttl_secs: i64,
+    /// What an index's `anonymous_read` defaults to. Set it to `false` to close a whole server's reads
+    /// with one key instead of one per index.
+    pub default_anonymous_read: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            signing_key: None,
+            token_ttl_secs: 300,
+            default_anonymous_read: true,
+        }
+    }
+}
+
+/// Where a secret's value comes from. A `*_file` sibling keeps the value out of the config file, so a
+/// mounted Docker or Kubernetes secret, a systemd credential, or a Vault-rendered file can hold it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretSource {
+    Literal(String),
+    File(PathBuf),
+}
+
+impl SecretSource {
+    /// The secret's value, reading the file when that is where it lives. Surrounding whitespace goes:
+    /// a secret file written by `echo` or a Kubernetes mount ends in a newline that is not part of it.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Read`] when the file cannot be read and [`ConfigError::EmptySecret`] when
+    /// it holds nothing but whitespace.
+    pub fn read(&self) -> Result<String, ConfigError> {
+        match self {
+            Self::Literal(secret) => Ok(secret.clone()),
+            Self::File(path) => {
+                let secret = std::fs::read_to_string(path)
+                    .map_err(|source| ConfigError::Read {
+                        path: path.clone(),
+                        source,
+                    })?
+                    .trim()
+                    .to_owned();
+                if secret.is_empty() {
+                    return Err(ConfigError::EmptySecret { path: path.clone() });
+                }
+                Ok(secret)
+            }
+        }
+    }
+}
+
+/// One named credential an index accepts, and what it may do there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenConfig {
+    pub name: String,
+    pub secret: SecretSource,
+    /// The project globs the token may act on; `*` covers the index.
+    pub projects: Vec<String>,
+    pub actions: BTreeSet<Action>,
+    /// Unix seconds after which the token stops authenticating.
+    pub expires_at: Option<i64>,
 }
 
 /// One configured index, addressed at `route`.
@@ -45,6 +119,11 @@ pub struct IndexConfig {
     /// The package ecosystem this index serves. Immutable once created.
     pub ecosystem: Ecosystem,
     pub kind: IndexKind,
+    /// Whether a request with no credential may read here. `None` takes the value of
+    /// [`AuthConfig::default_anonymous_read`].
+    pub anonymous_read: Option<bool>,
+    /// The credentials this index accepts beyond the `upload_token` shorthand.
+    pub tokens: Vec<TokenConfig>,
     pub policy: PolicyConfig,
     /// The `[policy]` keys the neutral engine did not claim, left raw for this index's ecosystem
     /// driver to compile into artifact rules. Empty when an operator set no ecosystem-specific policy.
@@ -54,6 +133,41 @@ pub struct IndexConfig {
     /// when an operator set none.
     pub ecosystem_settings: Table,
     pub webhooks: Vec<WebhookConfig>,
+}
+
+impl IndexConfig {
+    /// The index's access rules, with every secret read from wherever it lives: the `upload_token`
+    /// shorthand becomes one write-and-delete-everywhere credential, and each `[[index.token]]` its
+    /// own named one.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Read`] when a secret file cannot be read and [`ConfigError::EmptySecret`]
+    /// when one holds nothing: an empty secret would authenticate an empty password.
+    pub fn acl(&self, auth: &AuthConfig) -> Result<IndexAcl, ConfigError> {
+        let mut tokens = Vec::with_capacity(self.tokens.len() + 1);
+        if let IndexKind::Hosted {
+            upload_token: Some(source),
+            ..
+        } = &self.kind
+        {
+            tokens.push(NamedToken::upload(source.read()?));
+        }
+        for token in &self.tokens {
+            tokens.push(NamedToken {
+                name: token.name.clone(),
+                secret: token.secret.read()?,
+                grants: vec![Grant {
+                    projects: token.projects.iter().cloned().map(Glob::new).collect(),
+                    actions: token.actions.clone(),
+                }],
+                expires_at: token.expires_at,
+            });
+        }
+        Ok(IndexAcl {
+            anonymous_read: self.anonymous_read.unwrap_or(auth.default_anonymous_read),
+            tokens,
+        })
+    }
 }
 
 /// The three composable index roles: a read-through cache, a writable hosted store, or a virtual
@@ -74,10 +188,11 @@ pub enum IndexKind {
         /// Optional package set and artifact filters for `peryx prefetch`.
         prefetch: Box<PrefetchConfig>,
     },
-    /// A hosted store that accepts uploads. `upload_token` is the Basic-auth password an upload must
-    /// present (`None` disables uploads); `volatile` allows delete and overwrite.
+    /// A hosted store that accepts uploads. `upload_token` is the shorthand for a single credential
+    /// that writes and deletes everywhere here (`None` disables uploads unless `[[index.token]]`
+    /// grants them); `volatile` allows delete and overwrite.
     Hosted {
-        upload_token: Option<String>,
+        upload_token: Option<SecretSource>,
         volatile: bool,
     },
     /// An ordered aggregation of other indexes (its members, by name, in `layers`). Resolution merges
@@ -157,6 +272,7 @@ impl Default for Config {
             tls: None,
             log: LogConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -189,96 +305,48 @@ pub struct AcmeConfig {
 /// combined by a virtual index at `root/oci`. Uploads to a virtual index land in its hosted layer
 /// once a token is set.
 fn default_indexes() -> Vec<IndexConfig> {
+    let cache = |upstream: &str| IndexKind::Cached {
+        upstream: upstream.to_owned(),
+        username: None,
+        password: None,
+        token: None,
+        upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
+        offline: false,
+        prefetch: Box::default(),
+    };
+    let store = || IndexKind::Hosted {
+        upload_token: None,
+        volatile: true,
+    };
+    let overlay = |hosted: &str, cached: &str| IndexKind::Virtual {
+        layers: vec![hosted.to_owned(), cached.to_owned()],
+        upload: Some(hosted.to_owned()),
+    };
     vec![
-        IndexConfig {
-            name: "pypi".to_owned(),
-            route: "pypi".to_owned(),
-            ecosystem: Ecosystem::Pypi,
-            policy: PolicyConfig::default(),
-            ecosystem_policy: Table::new(),
-            ecosystem_settings: Table::new(),
-            webhooks: Vec::new(),
-            kind: IndexKind::Cached {
-                upstream: "https://pypi.org/simple/".to_owned(),
-                username: None,
-                password: None,
-                token: None,
-                upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
-                offline: false,
-                prefetch: Box::default(),
-            },
-        },
-        IndexConfig {
-            name: "hosted".to_owned(),
-            route: "hosted".to_owned(),
-            ecosystem: Ecosystem::Pypi,
-            policy: PolicyConfig::default(),
-            ecosystem_policy: Table::new(),
-            ecosystem_settings: Table::new(),
-            webhooks: Vec::new(),
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: true,
-            },
-        },
-        IndexConfig {
-            name: "root/pypi".to_owned(),
-            route: "root/pypi".to_owned(),
-            ecosystem: Ecosystem::Pypi,
-            policy: PolicyConfig::default(),
-            ecosystem_policy: Table::new(),
-            ecosystem_settings: Table::new(),
-            webhooks: Vec::new(),
-            kind: IndexKind::Virtual {
-                layers: vec!["hosted".to_owned(), "pypi".to_owned()],
-                upload: Some("hosted".to_owned()),
-            },
-        },
-        IndexConfig {
-            name: "dockerhub".to_owned(),
-            route: "dockerhub".to_owned(),
-            ecosystem: Ecosystem::Oci,
-            policy: PolicyConfig::default(),
-            ecosystem_policy: Table::new(),
-            ecosystem_settings: Table::new(),
-            webhooks: Vec::new(),
-            kind: IndexKind::Cached {
-                upstream: "https://registry-1.docker.io".to_owned(),
-                username: None,
-                password: None,
-                token: None,
-                upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
-                offline: false,
-                prefetch: Box::default(),
-            },
-        },
-        IndexConfig {
-            name: "images".to_owned(),
-            route: "images".to_owned(),
-            ecosystem: Ecosystem::Oci,
-            policy: PolicyConfig::default(),
-            ecosystem_policy: Table::new(),
-            ecosystem_settings: Table::new(),
-            webhooks: Vec::new(),
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: true,
-            },
-        },
-        IndexConfig {
-            name: "root/oci".to_owned(),
-            route: "root/oci".to_owned(),
-            ecosystem: Ecosystem::Oci,
-            policy: PolicyConfig::default(),
-            ecosystem_policy: Table::new(),
-            ecosystem_settings: Table::new(),
-            webhooks: Vec::new(),
-            kind: IndexKind::Virtual {
-                layers: vec!["images".to_owned(), "dockerhub".to_owned()],
-                upload: Some("images".to_owned()),
-            },
-        },
+        default_index("pypi", Ecosystem::Pypi, cache("https://pypi.org/simple/")),
+        default_index("hosted", Ecosystem::Pypi, store()),
+        default_index("root/pypi", Ecosystem::Pypi, overlay("hosted", "pypi")),
+        default_index("dockerhub", Ecosystem::Oci, cache("https://registry-1.docker.io")),
+        default_index("images", Ecosystem::Oci, store()),
+        default_index("root/oci", Ecosystem::Oci, overlay("images", "dockerhub")),
     ]
+}
+
+/// One default index: served at its own name, with no policy, no webhooks, and no access rules beyond
+/// the open reads every index starts with.
+fn default_index(name: &str, ecosystem: Ecosystem, kind: IndexKind) -> IndexConfig {
+    IndexConfig {
+        name: name.to_owned(),
+        route: name.to_owned(),
+        ecosystem,
+        anonymous_read: None,
+        tokens: Vec::new(),
+        policy: PolicyConfig::default(),
+        ecosystem_policy: Table::new(),
+        ecosystem_settings: Table::new(),
+        webhooks: Vec::new(),
+        kind,
+    }
 }
 
 /// Logging configuration: level filter, output format, and sink.

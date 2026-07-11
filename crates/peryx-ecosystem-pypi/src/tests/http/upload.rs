@@ -1,5 +1,9 @@
 //! Publishing to a hosted index through the multipart upload API.
 
+use std::collections::BTreeSet;
+
+use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
+
 use super::support::*;
 
 #[tokio::test]
@@ -649,11 +653,9 @@ async fn test_upload_storage_failure_is_server_error() {
         name: "hosted".to_owned(),
         route: "hosted".to_owned(),
         policy: Policy::default(),
+        acl: IndexAcl::upload_token("s3cret".to_owned()),
         ecosystem: peryx_core::Ecosystem::Pypi,
-        kind: IndexKind::Hosted {
-            upload_token: Some("s3cret".to_owned()),
-            volatile: true,
-        },
+        kind: IndexKind::Hosted { volatile: true },
     }];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
     assert_eq!(
@@ -694,11 +696,13 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "ov".to_owned(),
             route: "ov".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::default(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0],
@@ -816,4 +820,71 @@ async fn test_pypi_policy_dry_run_writes_a_denial() {
         String::from_utf8(out).unwrap().contains("flask"),
         "a blocked project should appear"
     );
+}
+
+/// A hosted index whose one credential is a `ci` token that may write the projects `glob` covers.
+fn scoped(glob: &str) -> (tempfile::TempDir, Arc<AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let indexes = vec![Index {
+        name: "hosted".to_owned(),
+        route: "hosted".to_owned(),
+        policy: Policy::default(),
+        acl: IndexAcl {
+            anonymous_read: true,
+            tokens: vec![NamedToken {
+                name: "ci".to_owned(),
+                secret: "ci-s3cret".to_owned(),
+                grants: vec![Grant {
+                    projects: vec![Glob::new(glob)],
+                    actions: BTreeSet::from([Action::Write]),
+                }],
+                expires_at: None,
+            }],
+        },
+        ecosystem: peryx_core::Ecosystem::Pypi,
+        kind: IndexKind::Hosted { volatile: true },
+    }];
+    (dir, crate::tests::wired(AppState::new(meta, blobs, 60, indexes)))
+}
+
+fn scoped_auth() -> String {
+    format!("Basic {}", STANDARD.encode("__token__:ci-s3cret"))
+}
+
+#[tokio::test]
+async fn test_a_scoped_token_uploads_a_project_its_glob_covers() {
+    let (_dir, state) = scoped("peryx*");
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+
+    let (status, _) = post_upload_response(&state, "/hosted/", Some(&scoped_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_a_scoped_token_may_not_upload_outside_its_glob() {
+    let (_dir, state) = scoped("team/*");
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+
+    let (status, body) = post_upload_response(&state, "/hosted/", Some(&scoped_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, "token does not grant this action");
+}
+
+#[tokio::test]
+async fn test_a_write_only_index_refuses_a_delete() {
+    let (_dir, state) = scoped("peryx*");
+
+    let status = request(&state, "DELETE", "/hosted/peryxpkg/", Some(&scoped_auth())).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

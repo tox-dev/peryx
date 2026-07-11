@@ -1,5 +1,7 @@
 //! The harness the search tests build on.
 
+use peryx_identity::IndexAcl;
+
 pub(super) use std::collections::BTreeMap;
 pub(super) use std::sync::Arc;
 
@@ -108,11 +110,13 @@ pub(super) fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::default(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0],

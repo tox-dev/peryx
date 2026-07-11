@@ -1,7 +1,11 @@
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
-use crate::config::{Config, LogConfig, LogFormat, LogSink};
+use std::path::PathBuf;
+
+use rstest::rstest;
+
+use crate::config::{Config, IndexKind, LogConfig, LogFormat, LogSink, SecretSource};
 use crate::operator;
 
 use super::backup_fixture;
@@ -93,4 +97,31 @@ fn test_backup_create_snapshots_log_variants() {
                 .contains(expected)
         );
     }
+}
+
+#[rstest]
+#[case::literal(SecretSource::Literal("s3cret".to_owned()), "upload_token = \"s3cret\"")]
+#[case::file(
+    SecretSource::File(PathBuf::from("/run/secrets/token")),
+    "upload_token_file = \"/run/secrets/token\""
+)]
+fn test_backup_snapshots_where_the_upload_token_lives(#[case] source: SecretSource, #[case] expected: &str) {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    drop(MetaStore::open(data_dir.join("peryx.redb")).unwrap());
+    let backup = root.path().join("backup");
+    let mut config = Config {
+        data_dir,
+        ..Config::default()
+    };
+    config.indexes[1].kind = IndexKind::Hosted {
+        upload_token: Some(source),
+        volatile: true,
+    };
+
+    operator::backup_create(&config, &backup, &mut Vec::new()).unwrap();
+
+    let snapshot = std::fs::read_to_string(backup.join("config.toml")).unwrap();
+    assert!(snapshot.contains(expected), "{snapshot}");
 }

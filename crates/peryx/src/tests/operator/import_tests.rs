@@ -180,6 +180,8 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Pypi,
+            anonymous_read: None,
+            tokens: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
@@ -202,6 +204,8 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Pypi,
+            anonymous_read: None,
+            tokens: Vec::new(),
             kind: IndexKind::Virtual {
                 layers: Vec::new(),
                 upload: None,
@@ -249,6 +253,8 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Oci,
+            anonymous_read: None,
+            tokens: Vec::new(),
             kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,

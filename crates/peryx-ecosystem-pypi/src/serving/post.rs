@@ -14,6 +14,7 @@ use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_identity::{Action, Identity};
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
 
@@ -24,7 +25,7 @@ use crate::{ProjectStatus, normalize_name};
 
 use super::response::{CacheContext, cache_error_response, policy_denial_response};
 use super::upload_form::{collect_form, upload_error_message, upload_error_response};
-use super::{authorize, request_id, upload_target};
+use super::{authorize, identify, request_id, upload_target};
 
 /// `POST /{route}/`, the legacy multipart upload API, used unchanged by twine and `uv publish`.
 pub async fn pypi_dispatch_post(
@@ -34,10 +35,11 @@ pub async fn pypi_dispatch_post(
     multipart: Multipart,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let actor = peryx_events::security::actor(&headers);
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
     };
+    let identity = identify(&state, index, &headers);
+    let actor = peryx_events::security::actor(&identity);
     if !rest.is_empty() {
         security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
             .reason(Some("upload path must target an index root"))
@@ -50,16 +52,17 @@ pub async fn pypi_dispatch_post(
             .emit();
         return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
     };
-    if let Err(response) = authorize(hosted, &headers) {
+    if let Err(response) = authorize(hosted, &identity, None, Action::Write, &headers) {
         return response;
     }
-    accept_upload(&state, index, hosted, &headers, actor.as_deref(), multipart).await
+    accept_upload(&state, index, hosted, &identity, &headers, actor.as_deref(), multipart).await
 }
 
 async fn accept_upload(
     state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
+    identity: &Identity,
     headers: &HeaderMap,
     actor: Option<&str>,
     multipart: Multipart,
@@ -101,6 +104,9 @@ async fn accept_upload(
         }
     };
     let project = prepared.normalized.clone();
+    if let Err(response) = authorize(hosted, identity, Some(&project), Action::Write, headers) {
+        return response;
+    }
     let version = prepared.record.version.clone();
     let filename = prepared.filename.clone();
     let digest = prepared.digest.as_str().to_owned();

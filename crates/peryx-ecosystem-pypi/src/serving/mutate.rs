@@ -13,6 +13,7 @@ use peryx_core::path::{self};
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_identity::{Action, Identity};
 use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self, CacheError};
@@ -20,7 +21,7 @@ use crate::{Yanked, normalize_name};
 
 use super::post::{UploadStatusBlock, upload_status_response};
 use super::response::{CacheContext, cache_error_response};
-use super::{authorize, path_error_response, request_id, upload_target};
+use super::{authorize, identify, path_error_response, request_id, upload_target};
 
 #[derive(Clone, Copy)]
 struct PromotionAudit<'a> {
@@ -72,11 +73,11 @@ fn promotion_source<'a>(state: &'a ServingState, route: &str) -> Result<&'a Inde
 pub async fn pypi_dispatch_put(state: Arc<ServingState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
-    let actor = peryx_events::security::actor(&headers);
-    let (index, hosted, spec) = match removal_target(&state, path, &headers) {
+    let (index, hosted, spec, identity) = match removal_target(&state, path, &headers, Action::Write) {
         Ok(target) => target,
         Err(response) => return response,
     };
+    let actor = peryx_events::security::actor(&identity);
     if let Some(spec) = strip_action_segment(spec, "promote") {
         return promote_request(&state, index, hosted, spec, uri.query(), &headers, actor.as_deref()).await;
     }
@@ -219,11 +220,11 @@ fn restore_request(
 pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
-    let actor = peryx_events::security::actor(&headers);
-    let (index, hosted, spec) = match removal_target(&state, path, &headers) {
+    let (index, hosted, spec, identity) = match removal_target(&state, path, &headers, Action::Delete) {
         Ok(target) => target,
         Err(response) => return response,
     };
+    let actor = peryx_events::security::actor(&identity);
     if let Some(spec) = strip_action_segment(spec, "yank") {
         let (project, version) = match parse_project_version(spec) {
             Ok(parsed) => parsed,
@@ -268,17 +269,26 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
 }
 
 /// Resolve the writable hosted index for a mutation request and authorize it, returning the serving
-/// index, its hosted layer, and the path remainder (the `{project}/...` part).
+/// index, its hosted layer, the path remainder (the `{project}/...` part), and the caller's identity.
 fn removal_target<'a>(
     state: &'a ServingState,
     path: &'a str,
     headers: &HeaderMap,
-) -> Result<(&'a Index, &'a Index, &'a str), Response> {
+    action: Action,
+) -> Result<(&'a Index, &'a Index, &'a str, Identity), Response> {
     let (index, rest) = state.resolve(path).ok_or_else(not_found)?;
     let hosted = upload_target(state, index)
         .ok_or_else(|| (StatusCode::METHOD_NOT_ALLOWED, "index is read-only").into_response())?;
-    authorize(hosted, headers)?;
-    Ok((index, hosted, rest))
+    let identity = identify(state, index, headers);
+    authorize(hosted, &identity, mutation_project(rest).as_deref(), action, headers)?;
+    Ok((index, hosted, rest, identity))
+}
+
+/// The project a mutation names: the first segment of the path remainder, normalized the way a stored
+/// project is. `None` when the path names no project, which authorizes against the index alone.
+fn mutation_project(spec: &str) -> Option<String> {
+    let project = spec.split('/').find(|segment| !segment.is_empty())?;
+    Some(normalize_name(project))
 }
 
 const fn is_volatile(hosted: &Index) -> bool {

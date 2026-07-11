@@ -4,7 +4,7 @@ use rstest::rstest;
 use super::*;
 use crate::app::{self, init_data_dir};
 use crate::cli::{EcosystemArg, IndexCommand, IndexListArgs, IndexShowArgs};
-use crate::config::IndexKind;
+use crate::config::{IndexKind, SecretSource};
 
 #[test]
 fn test_init_data_dir_creates_then_idempotent() {
@@ -188,7 +188,7 @@ fn test_config_snippet_redacts_upload_token() {
     let IndexKind::Hosted { upload_token, .. } = &mut config.indexes[1].kind else {
         panic!("expected hosted index");
     };
-    *upload_token = Some("s3cret".to_owned());
+    *upload_token = Some(SecretSource::Literal("s3cret".to_owned()));
 
     let text = app::config_snippet(
         &config,
@@ -210,7 +210,7 @@ fn test_config_snippet_renders_uv_toml_with_upload_url() {
     let IndexKind::Hosted { upload_token, .. } = &mut config.indexes[1].kind else {
         panic!("expected hosted index");
     };
-    *upload_token = Some("s3cret".to_owned());
+    *upload_token = Some(SecretSource::Literal("s3cret".to_owned()));
 
     let text = app::config_snippet(
         &config,

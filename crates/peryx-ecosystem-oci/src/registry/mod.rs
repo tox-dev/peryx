@@ -30,6 +30,7 @@ use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::serving::{EcosystemDriver, RouteMount};
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_identity::{Action, Denial, Identity};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::PendingBlob;
@@ -440,14 +441,15 @@ fn decode_member_text(bytes: &[u8], member: &str, name: &str, digest: &str) -> R
     String::from_utf8(bytes.to_vec())
         .map_err(|err| format!("layer member {member:?} on {name:?} for {digest} is not valid UTF-8: {err}"))
 }
-/// Resolve the writable hosted index behind `name` and authorize the request, or return a ready error
-/// response (unknown name, read-only index, uploads disabled, or bad credentials). A virtual index
-/// routes the write to its upload-target member.
+/// Resolve the writable hosted index behind `name` and authorize `action` on the repository it names,
+/// or return a ready error response (unknown name, read-only index, uploads disabled, or a credential
+/// the ACL refuses). A virtual index routes the write to its upload-target member.
 fn resolve_writable<'a>(
     state: &'a ServingState,
     name: &str,
     headers: &HeaderMap,
-) -> Result<(&'a Index, String), Response> {
+    action: Action,
+) -> Result<(&'a Index, String, Identity), Response> {
     let Some((index, repo)) = resolve(&state.indexes, name) else {
         return Err(error_response(ErrorCode::NameUnknown, "repository name unknown"));
     };
@@ -456,17 +458,16 @@ fn resolve_writable<'a>(
         IndexKind::Virtual { upload: Some(pos), .. } => state.index_at(*pos),
         _ => return Err(error_response(ErrorCode::Denied, "index is read-only")),
     };
-    let IndexKind::Hosted { upload_token, .. } = &target.kind else {
+    if !matches!(target.kind, IndexKind::Hosted { .. }) {
         return Err(error_response(ErrorCode::Denied, "index is read-only"));
-    };
-    let Some(token) = upload_token.as_deref() else {
-        return Err(error_response(ErrorCode::Denied, "uploads are disabled"));
-    };
+    }
     let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    if peryx_identity::authorized(auth, token) {
-        Ok((target, repo.to_owned()))
-    } else {
-        Err(unauthorized())
+    let identity = target.acl.identify(auth, (state.clock)());
+    match peryx_identity::authorize(&identity.principal, &target.acl, Some(repo), action) {
+        Ok(()) => Ok((target, repo.to_owned(), identity)),
+        Err(Denial::Unavailable) => Err(error_response(ErrorCode::Denied, "uploads are disabled")),
+        Err(Denial::Unauthenticated) => Err(unauthorized()),
+        Err(Denial::Forbidden) => Err(error_response(ErrorCode::Denied, "token does not grant this action")),
     }
 }
 /// Whether the index's policy blocks this repository name. A blocked image is hidden on reads (served
@@ -502,7 +503,7 @@ pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a
 /// so a hosted OCI index delivers push and delete events like any hosted index.
 fn emit_webhook(
     state: &Arc<ServingState>,
-    headers: &HeaderMap,
+    request: &Requester<'_>,
     kind: WebhookEventKind,
     index: &Index,
     repo: &str,
@@ -522,10 +523,16 @@ fn emit_webhook(
             filename: digest.clone(),
             digest,
             count: 1,
-            actor: peryx_events::security::actor(headers),
-            request_id: request_id(headers),
+            actor: peryx_events::security::actor(request.identity),
+            request_id: request_id(request.headers),
         },
     );
+}
+
+/// Who made a mutating request and which request it was: the two audit facts a webhook carries.
+struct Requester<'a> {
+    headers: &'a HeaderMap,
+    identity: &'a Identity,
 }
 /// The client-supplied request id, echoed into webhook deliveries for correlation.
 fn request_id(headers: &HeaderMap) -> Option<String> {

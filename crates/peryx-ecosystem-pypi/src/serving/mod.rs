@@ -25,6 +25,7 @@ use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{EcosystemDriver, RefreshSweep};
 use peryx_driver::state::{IndexDescription, ServingState};
 use peryx_events::metrics::MetricFamily;
+use peryx_identity::{Action, Denial, Identity};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 
@@ -307,40 +308,57 @@ fn upload_target<'a>(state: &'a ServingState, index: &'a Index) -> Option<&'a In
     }
 }
 
-/// Check the Basic-auth token of a hosted index, returning a ready response on any failure.
-fn authorize(hosted: &Index, headers: &HeaderMap) -> Result<(), Response> {
-    let IndexKind::Hosted { upload_token, .. } = &hosted.kind else {
+/// Resolve the request's credential against the ACL that decides its writes: the hosted target's when
+/// the index has one, else the index's own, which grants nothing but still names the actor for audit.
+fn identify(state: &ServingState, index: &Index, headers: &HeaderMap) -> Identity {
+    let header = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
+    upload_target(state, index)
+        .unwrap_or(index)
+        .acl
+        .identify(header, (state.clock)())
+}
+
+/// Check `identity` against the hosted index's ACL, returning a ready response on any refusal.
+///
+/// `project` is `None` for the pass a `PyPI` upload makes before it has read the multipart body and
+/// learned the project name; that pass asks only whether the principal may write anything here, and
+/// leaves the success to the named pass, so one upload logs one `token_use`.
+fn authorize(
+    hosted: &Index,
+    identity: &Identity,
+    project: Option<&str>,
+    action: Action,
+    headers: &HeaderMap,
+) -> Result<(), Response> {
+    if !matches!(hosted.kind, IndexKind::Hosted { .. }) {
         return Err(not_found());
+    }
+    let actor = peryx_events::security::actor(identity);
+    let Err(denial) = peryx_identity::authorize(&identity.principal, &hosted.acl, project, action) else {
+        if project.is_some() {
+            security_token_event(headers, actor.as_deref(), &hosted.name, "success", "");
+        }
+        return Ok(());
     };
-    let actor = peryx_events::security::actor(headers);
-    let Some(token) = upload_token.as_deref() else {
-        security_token_event(
-            headers,
-            actor.as_deref(),
-            &hosted.name,
-            "denied",
-            "uploads are disabled",
-        );
-        return Err((StatusCode::FORBIDDEN, "uploads are disabled").into_response());
-    };
-    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    if peryx_identity::authorized(auth, token) {
-        security_token_event(headers, actor.as_deref(), &hosted.name, "success", "");
-        Ok(())
-    } else {
-        security_token_event(
-            headers,
-            actor.as_deref(),
-            &hosted.name,
-            "denied",
-            "invalid upload token",
-        );
-        Err((
+    security_token_event(headers, actor.as_deref(), &hosted.name, "denied", denial_reason(denial));
+    Err(match denial {
+        Denial::Unauthenticated => (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
             "unauthorized",
         )
-            .into_response())
+            .into_response(),
+        denial => (StatusCode::FORBIDDEN, denial_reason(denial)).into_response(),
+    })
+}
+
+/// What an audit record says about a refusal, and what a client that may retry with better credentials
+/// is told. A `401` says only "unauthorized", so the presented token is never echoed back.
+const fn denial_reason(denial: Denial) -> &'static str {
+    match denial {
+        Denial::Unavailable => "uploads are disabled",
+        Denial::Unauthenticated => "invalid upload token",
+        Denial::Forbidden => "token does not grant this action",
     }
 }
 

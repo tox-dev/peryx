@@ -4,7 +4,7 @@ use axum::http::{Method, StatusCode};
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{app_with_indexes, auth, oci_digest, oci_index, send, send_body, virtual_stack};
+use super::{app_with_indexes, auth, oci_digest, oci_index, send, send_body, virtual_stack, writable_index};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -206,14 +206,7 @@ async fn test_push_to_virtual_with_no_upload_target_is_read_only() {
     let (_state, app) = app_with_indexes(
         &dir,
         vec![
-            oci_index(
-                "images",
-                "images",
-                IndexKind::Hosted {
-                    upload_token: Some(TOKEN.to_owned()),
-                    volatile: true,
-                },
-            ),
+            writable_index("images", "images", true, TOKEN),
             oci_index(
                 "reg",
                 "reg",

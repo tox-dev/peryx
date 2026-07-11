@@ -1,6 +1,7 @@
 //! Resolving a request path to an index, and what happens when it resolves to nothing.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_unsupported_simple_api_major_version_is_bad_gateway() {
@@ -68,21 +69,17 @@ async fn test_longest_prefix_wins() {
             name: "a".to_owned(),
             route: "a".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::default(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
         },
         Index {
             name: "ab".to_owned(),
             route: "a/b".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("s3cret".to_owned()),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
         },
     ];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));

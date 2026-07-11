@@ -1,6 +1,7 @@
 //! Serving a cached index: fetch, revalidate, and the stale and offline fallbacks.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_mirror_detail_json_rewrites_file_url_and_caches() {
@@ -248,6 +249,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
             offline: false,
         },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     }];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
     let (status, ..) = get(&state, "/pypi/simple/flask/", None).await;
@@ -287,6 +289,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
             offline: false,
         },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     }];
     let state = crate::tests::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 100_000)));
     let (status, _, served) = get(&state, "/pypi/simple/flask/", Some("application/json")).await;
@@ -314,6 +317,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
             offline: true,
         },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     }];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
     let (status, _, body) = get(&state, "/pypi/simple/flask/", None).await;
@@ -359,6 +363,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
             offline: true,
         },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     }];
     let state = crate::tests::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 100_000)));
     let (status, _, body) = get(&state, "/pypi/simple/flask/", Some("application/json")).await;

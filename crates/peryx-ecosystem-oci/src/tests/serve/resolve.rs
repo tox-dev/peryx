@@ -1,6 +1,7 @@
 //! Resolving a `/v2/` request to an index, and the proxy read-through and offline paths.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_proxy_tag_is_cached_within_ttl_then_revalidated() {
@@ -220,20 +221,11 @@ async fn test_resolution_skips_a_non_oci_index() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: peryx_core::Ecosystem::Pypi,
-        kind: IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
+        kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
+        acl: IndexAcl::default(),
     };
-    let store = oci_index(
-        "store",
-        "store",
-        IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
-    );
+    let store = oci_index("store", "store", IndexKind::Hosted { volatile: false });
     let (state, app) = app_with_indexes(&dir, vec![pypi, store]);
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
@@ -254,14 +246,7 @@ async fn test_resolution_skips_a_non_oci_index() {
 async fn test_root_route_resolves_the_whole_name_as_the_repository() {
     use peryx_index::IndexKind;
     let dir = tempfile::tempdir().unwrap();
-    let root = oci_index(
-        "root",
-        "",
-        IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
-    );
+    let root = oci_index("root", "", IndexKind::Hosted { volatile: false });
     let (state, app) = app_with_indexes(&dir, vec![root]);
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
@@ -284,16 +269,7 @@ async fn test_longest_route_wins_among_overlapping_oci_indexes() {
     let dir = tempfile::tempdir().unwrap();
     // Three routes all prefix `a/b/c/app`; ordered so the middle candidate replaces the first (a
     // longer match) and the last does not (a shorter one), exercising both tie-break outcomes.
-    let hosted = |name: &str, route: &str| {
-        oci_index(
-            name,
-            route,
-            IndexKind::Hosted {
-                upload_token: None,
-                volatile: false,
-            },
-        )
-    };
+    let hosted = |name: &str, route: &str| oci_index(name, route, IndexKind::Hosted { volatile: false });
     let (state, app) = app_with_indexes(
         &dir,
         vec![hosted("a", "a"), hosted("abc", "a/b/c"), hosted("ab", "a/b")],

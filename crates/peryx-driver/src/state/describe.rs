@@ -1,5 +1,6 @@
 //! Human-facing descriptions of configured indexes, shared by `/+status` and the web UI.
 
+use peryx_identity::Action;
 use peryx_index::{Index, IndexKind};
 
 /// Describe every runtime index without touching storage or upstream state.
@@ -15,34 +16,20 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
     let index = &indexes[position];
     let (kind, layers, uploads, volatile_deletes, upload_to) = match &index.kind {
         IndexKind::Cached { .. } => ("cached", Vec::new(), false, false, None),
-        IndexKind::Hosted { upload_token, volatile } => (
+        IndexKind::Hosted { volatile } => (
             "hosted",
             Vec::new(),
-            upload_token.is_some(),
-            upload_token.is_some() && *volatile,
+            writable(index),
+            writable(index) && *volatile,
             None,
         ),
         IndexKind::Virtual { layers, upload } => {
             let names = layers.iter().map(|&pos| indexes[pos].name.clone()).collect();
-            let uploads = upload.is_some_and(|pos| {
-                matches!(
-                    &indexes[pos].kind,
-                    IndexKind::Hosted {
-                        upload_token: Some(_),
-                        ..
-                    }
-                )
-            });
-            let volatile_deletes = upload.is_some_and(|pos| {
-                matches!(
-                    &indexes[pos].kind,
-                    IndexKind::Hosted {
-                        upload_token: Some(_),
-                        volatile: true,
-                    }
-                )
-            });
-            let upload_to = upload.map(|pos| indexes[pos].name.clone());
+            let target = upload.map(|pos| &indexes[pos]);
+            let uploads = target.is_some_and(writable);
+            let volatile_deletes = target
+                .is_some_and(|index| writable(index) && matches!(index.kind, IndexKind::Hosted { volatile: true }));
+            let upload_to = target.map(|index| index.name.clone());
             ("virtual", names, uploads, volatile_deletes, upload_to)
         }
     };
@@ -55,11 +42,11 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
             }),
             None,
         ),
-        IndexKind::Hosted { upload_token, volatile } => (
+        IndexKind::Hosted { volatile } => (
             None,
             Some(HostedDescription {
                 volatile: *volatile,
-                upload_token: SecretDescription::new(upload_token.is_some()),
+                upload_token: SecretDescription::new(writable(index)),
             }),
         ),
         IndexKind::Virtual { .. } => (None, None),
@@ -76,6 +63,12 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
         upstream,
         hosted,
     }
+}
+
+/// Whether the index has a credential that may upload: what a status surface means by "uploads are
+/// enabled", the `upload_token`-is-set question widened to an ACL that may hold several tokens.
+fn writable(index: &Index) -> bool {
+    index.acl.grants_to_anyone(Action::Write)
 }
 
 /// A configured index as presented to humans: on the dashboard, in `/+status`, and in discovery.

@@ -1,6 +1,7 @@
 //! The neutral `/+status`, `/+stats` and `/metrics` endpoints.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_status_lists_routes() {
@@ -56,16 +57,15 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("upload-secret".to_owned()),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: Some("upload-secret".to_owned()),
-                volatile: false,
-            },
+            kind: IndexKind::Hosted { volatile: false },
         },
     ];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));

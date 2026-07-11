@@ -22,7 +22,7 @@ pub(in crate::registry) async fn put_manifest(
     name: &str,
     reference: &Reference,
 ) -> Result<Response, ServeError> {
-    let (index, repo) = match resolve_writable(state, name, headers) {
+    let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Write) {
         Ok(target) => target,
         Err(response) => return Ok(response),
     };
@@ -91,7 +91,10 @@ pub(in crate::registry) async fn put_manifest(
     };
     emit_webhook(
         state,
-        headers,
+        &Requester {
+            headers,
+            identity: &identity,
+        },
         WebhookEventKind::Upload,
         index,
         &repo,
@@ -141,7 +144,7 @@ pub(in crate::registry) fn delete_manifest(
     name: &str,
     reference: &Reference,
 ) -> Result<Response, ServeError> {
-    let (index, repo) = match resolve_writable(state, name, headers) {
+    let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Delete) {
         Ok(target) => target,
         Err(response) => return Ok(response),
     };
@@ -158,7 +161,18 @@ pub(in crate::registry) fn delete_manifest(
         ),
     };
     Ok(if removed {
-        emit_webhook(state, headers, WebhookEventKind::Delete, index, &repo, version, digest);
+        emit_webhook(
+            state,
+            &Requester {
+                headers,
+                identity: &identity,
+            },
+            WebhookEventKind::Delete,
+            index,
+            &repo,
+            version,
+            digest,
+        );
         accepted()
     } else {
         error_response(ErrorCode::ManifestUnknown, "manifest unknown")

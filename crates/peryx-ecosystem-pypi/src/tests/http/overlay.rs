@@ -1,6 +1,7 @@
 //! A virtual index serving across its layers.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_overlay_serves_buffered_when_mirror_layer_policy_is_active() {
@@ -48,21 +49,21 @@ async fn test_overlay_tolerates_unavailable_layer() {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("s3cret".to_owned()),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
         },
         Index {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::default(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![1, 0],
@@ -110,11 +111,13 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "ov".to_owned(),
             route: "ov".to_owned(),
             policy: Policy::default(),
+            acl: IndexAcl::default(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![0],

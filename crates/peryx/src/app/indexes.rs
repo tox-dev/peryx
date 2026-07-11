@@ -44,7 +44,7 @@ pub fn init(config: &Config) -> anyhow::Result<()> {
 /// snippet needs uploads on a read-only index.
 pub fn config_snippet(config: &Config, route: &str, base_url: &str, kind: SnippetKind) -> anyhow::Result<String> {
     let base = BaseUrl::parse(base_url)?;
-    let index = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, config.offline)?)
+    let index = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, &config.auth, config.offline)?)
         .into_iter()
         .find(|index| index.route == route)
         .with_context(|| format!("unknown index route {route:?}"))?;
@@ -60,7 +60,7 @@ pub fn config_snippet(config: &Config, route: &str, base_url: &str, kind: Snippe
 /// Returns an error if the configured indexes cannot be built, the index is unknown, or output
 /// fails.
 pub fn index(config: &Config, command: &IndexCommand, out: &mut dyn Write) -> anyhow::Result<()> {
-    let indexes = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, config.offline)?);
+    let indexes = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, &config.auth, config.offline)?);
     match command {
         IndexCommand::List(args) => index_list(&indexes, args.ecosystem, out),
         IndexCommand::Show(args) => index_show(&indexes, &args.index, out),

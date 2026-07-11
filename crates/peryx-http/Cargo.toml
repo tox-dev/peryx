@@ -22,6 +22,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "fs"] }
 
 [dev-dependencies]
+peryx-identity.workspace = true
 async-trait.workspace = true
 peryx-policy.workspace = true
 rstest.workspace = true

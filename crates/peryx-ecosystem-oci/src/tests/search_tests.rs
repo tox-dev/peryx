@@ -1,11 +1,12 @@
 //! The OCI indexer turns stored repositories and their tags into neutral search documents.
 
 use peryx_core::Ecosystem;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_search::{PackageIndexer as _, PackageSource};
 
-use super::{app_with_indexes, hosted_writable, oci_index, virtual_stack};
+use super::{app_with_indexes, hosted_writable, virtual_stack, writable_index};
 use crate::OciIndexer;
 use crate::store;
 
@@ -75,11 +76,9 @@ async fn test_oci_indexer_omits_a_policy_blocked_repository() {
         name: "store".to_owned(),
         route: "store".to_owned(),
         ecosystem: Ecosystem::Oci,
-        kind: IndexKind::Hosted {
-            upload_token: Some(TOKEN.to_owned()),
-            volatile: true,
-        },
+        kind: IndexKind::Hosted { volatile: true },
         policy,
+        acl: IndexAcl::upload_token(TOKEN.to_owned()),
     };
     let (state, _app) = app_with_indexes(&dir, vec![index]);
     store::put_tag(&state.meta, "store", "blocked/app", "1.0", DIGEST).unwrap();
@@ -98,20 +97,11 @@ async fn test_oci_indexer_skips_non_oci_indexes() {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
         ecosystem: Ecosystem::Pypi,
-        kind: IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
+        kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     };
-    let oci = oci_index(
-        "store",
-        "store",
-        IndexKind::Hosted {
-            upload_token: Some(TOKEN.to_owned()),
-            volatile: true,
-        },
-    );
+    let oci = writable_index("store", "store", true, TOKEN);
     let (state, _app) = app_with_indexes(&dir, vec![pypi, oci]);
     store::put_tag(&state.meta, "store", "library/app", "1.0", DIGEST).unwrap();
 

@@ -1,6 +1,7 @@
 //! Serving an artifact and coalescing concurrent cold fetches.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_concurrent_buffered_misses_share_one_fetch() {
@@ -240,6 +241,7 @@ async fn test_file_path_offline_mirror_miss_is_unavailable() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     let digest = Digest::of(b"wheel");

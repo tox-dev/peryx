@@ -447,6 +447,7 @@ fn valid_upload_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use peryx_identity::IndexAcl;
     use std::convert::Infallible;
 
     use peryx_index::{Index, IndexKind};
@@ -643,11 +644,9 @@ mod tests {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: false,
-            },
+            kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }
     }
 
@@ -656,11 +655,9 @@ mod tests {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: false,
-            },
+            kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }
     }
 

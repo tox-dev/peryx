@@ -23,6 +23,8 @@ pub(super) fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Pypi,
+            anonymous_read: None,
+            tokens: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,
@@ -49,6 +51,8 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
+                anonymous_read: None,
+                tokens: Vec::new(),
                 kind: IndexKind::Hosted {
                     upload_token: None,
                     volatile: true,
@@ -62,6 +66,8 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
+                anonymous_read: None,
+                tokens: Vec::new(),
                 kind: IndexKind::Cached {
                     upstream: upstream.to_owned(),
                     username: None,
@@ -80,6 +86,8 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
+                anonymous_read: None,
+                tokens: Vec::new(),
                 kind: IndexKind::Virtual {
                     layers: vec!["hosted".to_owned(), "pypi".to_owned()],
                     upload: Some("hosted".to_owned()),

@@ -1,6 +1,7 @@
 //! Resolving across an index's layers: overlay, offline, upstream refresh.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_overlay_project_missing_everywhere_is_not_found() {
@@ -66,6 +67,7 @@ async fn test_refresh_stale_pages_skips_offline_mirrors() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     state
@@ -99,6 +101,7 @@ async fn test_offline_metadata_fetches_are_unavailable() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     let artifact = Digest::of(b"wheel");
@@ -129,6 +132,7 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     let artifact = Digest::of(b"wheel");
@@ -158,6 +162,7 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached { client, offline: true },
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
             },
             Index {
                 name: "root/pypi".to_owned(),
@@ -168,6 +173,7 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
                     upload: None,
                 },
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
             },
         ]
     });
@@ -187,6 +193,7 @@ async fn test_offline_mirror_resolves_cached_page() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     state
@@ -231,6 +238,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
                     offline: false,
                 },
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
             },
             Index {
                 name: "b".to_owned(),
@@ -238,11 +246,13 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
             },
             Index {
                 name: "both".to_owned(),
                 route: "both".to_owned(),
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec![0, 1],
@@ -272,11 +282,13 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
             },
             Index {
                 name: "inner".to_owned(),
                 route: "inner".to_owned(),
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
@@ -287,6 +299,7 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
                 name: "outer".to_owned(),
                 route: "outer".to_owned(),
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec![1],
@@ -308,16 +321,15 @@ async fn test_overlay_without_a_mirror_serves_buffered() {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
-                kind: IndexKind::Hosted {
-                    upload_token: None,
-                    volatile: true,
-                },
+                kind: IndexKind::Hosted { volatile: true },
             },
             Index {
                 name: "only".to_owned(),
                 route: "only".to_owned(),
                 policy: peryx_policy::Policy::default(),
+                acl: IndexAcl::default(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
@@ -428,11 +440,9 @@ async fn test_oci_index_rejects_pypi_protocol_dispatch() {
             name: "oci".to_owned(),
             route: "oci".to_owned(),
             ecosystem: peryx_core::Ecosystem::Oci,
-            kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("s3cret".to_owned()),
         }]
     });
     // An OCI index serves the `/v2/` namespace, not the PyPI Simple/legacy/upload/mutation APIs.
@@ -467,6 +477,7 @@ async fn test_project_page_reports_an_unreachable_upstream() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     // A cached index whose upstream cannot be reached surfaces the fetch failure as a browse error.

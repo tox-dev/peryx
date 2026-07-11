@@ -4,11 +4,20 @@ use std::path::PathBuf;
 
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use peryx_identity::UPLOAD_TOKEN_NAME;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
+use std::collections::HashSet;
 
 use super::ConfigError;
-use super::model::{AcmeConfig, Config, IndexConfig, IndexKind, LogConfig, TlsConfig, WebhookConfig, WebhookSecret};
+use super::model::{
+    AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, LogConfig, SecretSource, TlsConfig, TokenConfig,
+    WebhookConfig, WebhookSecret,
+};
 use super::raw::{
-    PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex, RawTls, RawWebhook,
+    PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
+    RawTls, RawToken, RawWebhook,
 };
 
 impl Config {
@@ -47,6 +56,7 @@ impl Config {
         }
         self.log = self.log.apply(partial.log);
         self.rate_limit = apply_rate_limit(self.rate_limit, partial.rate_limit);
+        self.auth = self.auth.apply(partial.auth)?;
         Ok(self)
     }
 }
@@ -85,9 +95,14 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             offline: raw.offline.unwrap_or(false),
             prefetch: Box::new(raw.prefetch.unwrap_or_default().resolve()),
         }
-    } else if raw.hosted == Some(true) || raw.upload_token.is_some() {
+    } else if raw.hosted == Some(true) || raw.upload_token.is_some() || raw.upload_token_file.is_some() {
         IndexKind::Hosted {
-            upload_token: raw.upload_token,
+            upload_token: secret_source(raw.upload_token, raw.upload_token_file).map_err(|reason| {
+                ConfigError::Index {
+                    name: raw.name.clone(),
+                    reason,
+                }
+            })?,
             volatile: raw.volatile.unwrap_or(true),
         }
     } else {
@@ -96,11 +111,14 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             reason: "index needs one of `cached`, `hosted`, or `layers`",
         });
     };
+    let tokens = classify_tokens(&raw.name, raw.tokens)?;
     Ok(IndexConfig {
         name: raw.name,
         route,
         ecosystem,
         kind,
+        anonymous_read: raw.anonymous_read,
+        tokens,
         policy: raw.policy.neutral,
         ecosystem_policy: raw.policy.ecosystem,
         ecosystem_settings: raw.settings,
@@ -110,6 +128,104 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             .map(classify_webhook)
             .collect::<Result<_, _>>()?,
     })
+}
+
+impl AuthConfig {
+    fn apply(self, partial: PartialAuthConfig) -> Result<Self, ConfigError> {
+        let signing_key = secret_source(partial.signing_key, partial.signing_key_file)
+            .map_err(|reason| ConfigError::Auth { reason })?;
+        let token_ttl_secs = partial.token_ttl_secs.unwrap_or(self.token_ttl_secs);
+        if token_ttl_secs <= 0 {
+            return Err(ConfigError::Auth {
+                reason: "`token_ttl_secs` must be positive",
+            });
+        }
+        Ok(Self {
+            signing_key: signing_key.or(self.signing_key),
+            token_ttl_secs,
+            default_anonymous_read: partial.default_anonymous_read.unwrap_or(self.default_anonymous_read),
+        })
+    }
+}
+
+/// A secret from either its literal key or its `*_file` sibling, never both.
+fn secret_source(literal: Option<String>, file: Option<PathBuf>) -> Result<Option<SecretSource>, &'static str> {
+    match (literal, file) {
+        (Some(_), Some(_)) => Err("set at most one of a secret and its `_file` sibling"),
+        (Some(secret), None) => Ok(Some(SecretSource::Literal(secret))),
+        (None, Some(path)) => Ok(Some(SecretSource::File(path))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Classify an index's `[[index.access_token]]` tables, rejecting names that collide with each other
+/// or with the `upload_token` shorthand, which occupies the name it would authenticate as.
+fn classify_tokens(index: &str, raw: Vec<RawToken>) -> Result<Vec<TokenConfig>, ConfigError> {
+    let mut names = HashSet::with_capacity(raw.len());
+    raw.into_iter()
+        .map(|token| {
+            let classified = classify_token(index, token)?;
+            if !names.insert(classified.name.clone()) {
+                return Err(ConfigError::Token {
+                    index: index.to_owned(),
+                    name: classified.name,
+                    reason: "duplicate token name",
+                });
+            }
+            Ok(classified)
+        })
+        .collect()
+}
+
+fn classify_token(index: &str, raw: RawToken) -> Result<TokenConfig, ConfigError> {
+    let fail = |name: &str, reason| ConfigError::Token {
+        index: index.to_owned(),
+        name: name.to_owned(),
+        reason,
+    };
+    if raw.name.is_empty() {
+        return Err(fail(&raw.name, "token name is required"));
+    }
+    if raw.name == UPLOAD_TOKEN_NAME {
+        return Err(fail(
+            &raw.name,
+            "token name is reserved for the `upload_token` shorthand",
+        ));
+    }
+    let secret = match secret_source(raw.secret, raw.secret_file) {
+        Ok(Some(SecretSource::Literal(secret))) if secret.is_empty() => {
+            return Err(fail(&raw.name, "`secret` must not be empty"));
+        }
+        Ok(Some(secret)) => secret,
+        Ok(None) => return Err(fail(&raw.name, "token needs a `secret` or a `secret_file`")),
+        Err(reason) => return Err(fail(&raw.name, reason)),
+    };
+    if raw.actions.is_empty() {
+        return Err(fail(&raw.name, "token needs at least one action"));
+    }
+    let expires_at = raw
+        .expires_at
+        .map(|value| parse_timestamp(&value))
+        .transpose()
+        .map_err(|reason| fail(&raw.name, reason))?;
+    Ok(TokenConfig {
+        name: raw.name,
+        secret,
+        projects: if raw.projects.is_empty() {
+            vec!["*".to_owned()]
+        } else {
+            raw.projects
+        },
+        actions: raw.actions.into_iter().collect(),
+        expires_at,
+    })
+}
+
+/// An RFC 3339 timestamp as unix seconds, the form an expiry is compared in.
+fn parse_timestamp(value: &str) -> Result<i64, &'static str> {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .map(OffsetDateTime::unix_timestamp)
+        .map_err(|_| "`expires_at` must be an RFC 3339 timestamp, for example 2027-01-01T00:00:00Z")
 }
 
 /// Resolve the mutually exclusive `[tls]` and `[acme]` tables into one TLS mode. Manual TLS needs both

@@ -191,6 +191,8 @@ async fn test_mirror_rejects_non_mirror_targets() {
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
+        anonymous_read: None,
+        tokens: Vec::new(),
         kind: IndexKind::Cached {
             upstream: format!("{}/simple/", server.uri()),
             username: None,
@@ -209,6 +211,8 @@ async fn test_mirror_rejects_non_mirror_targets() {
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
+        anonymous_read: None,
+        tokens: Vec::new(),
         kind: IndexKind::Virtual {
             layers: vec!["pypi".to_owned(), "cached-two".to_owned()],
             upload: None,
@@ -222,6 +226,8 @@ async fn test_mirror_rejects_non_mirror_targets() {
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
+        anonymous_read: None,
+        tokens: Vec::new(),
         kind: IndexKind::Virtual {
             layers: vec!["hosted".to_owned()],
             upload: Some("hosted".to_owned()),

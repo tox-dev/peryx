@@ -1,6 +1,7 @@
 //! Serving an artifact by digest: fetch, verify, cache, and reject.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_file_download_fetches_verifies_and_caches() {
@@ -78,6 +79,7 @@ async fn test_file_download_status_store_error_is_server_error() {
             offline: false,
         },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     }];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
 

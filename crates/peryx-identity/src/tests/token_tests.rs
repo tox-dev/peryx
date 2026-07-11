@@ -1,0 +1,77 @@
+use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::{Action, Glob, Grant, Principal, Signer};
+
+const HOUR: i64 = 3600;
+
+fn signer() -> Signer {
+    Signer::new(b"signing-key")
+}
+
+fn grants() -> Vec<Grant> {
+    vec![Grant {
+        projects: vec![Glob::new("team/*")],
+        actions: BTreeSet::from([Action::Write]),
+    }]
+}
+
+fn named(subject: &str) -> Principal {
+    Principal::Named {
+        subject: subject.to_owned(),
+    }
+}
+
+/// `verify` checks expiry against the real clock, so a token minted for a test has to sit on it.
+fn now() -> i64 {
+    i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap()
+}
+
+#[test]
+fn test_mint_and_verify_round_trip_a_named_principal() {
+    let signer = signer();
+    let token = signer.mint(&named("ci"), &grants(), now(), HOUR);
+
+    assert_eq!(signer.verify(&token).unwrap(), (named("ci"), grants()));
+}
+
+#[test]
+fn test_mint_and_verify_round_trip_an_anonymous_principal() {
+    let signer = signer();
+    let token = signer.mint(&Principal::Anonymous, &[], now(), HOUR);
+
+    assert_eq!(signer.verify(&token).unwrap(), (Principal::Anonymous, Vec::new()));
+}
+
+#[test]
+fn test_verify_rejects_an_expired_token() {
+    let signer = signer();
+    let token = signer.mint(&named("ci"), &grants(), now() - 2 * HOUR, HOUR);
+
+    assert_eq!(
+        signer.verify(&token).unwrap_err().to_string(),
+        "invalid token: ExpiredSignature"
+    );
+}
+
+#[test]
+fn test_verify_rejects_a_payload_swapped_under_a_valid_signature() {
+    let signer = signer();
+    let mine = signer.mint(&named("ci"), &grants(), now(), HOUR);
+    let theirs = signer.mint(&named("admin"), &grants(), now(), HOUR);
+    let parts: Vec<&str> = mine.split('.').collect();
+    let stolen = theirs.split('.').nth(1).unwrap();
+    let tampered = format!("{}.{stolen}.{}", parts[0], parts[2]);
+
+    assert_eq!(
+        signer.verify(&tampered).unwrap_err().to_string(),
+        "invalid token: InvalidSignature"
+    );
+}
+
+#[test]
+fn test_verify_rejects_a_token_another_key_signed() {
+    let token = Signer::new(b"other-key").mint(&Principal::Anonymous, &[], now(), HOUR);
+
+    assert!(signer().verify(&token).is_err());
+}

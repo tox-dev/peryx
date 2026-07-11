@@ -47,6 +47,7 @@ mod tests {
     use super::{remainder, resolve_position, shadow_order};
     use crate::index::{Index, IndexKind};
     use peryx_core::Ecosystem;
+    use peryx_identity::IndexAcl;
     use peryx_policy::Policy;
     use peryx_upstream::UpstreamClient;
 
@@ -57,6 +58,7 @@ mod tests {
             ecosystem: Ecosystem::Pypi,
             kind,
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }
     }
 
@@ -67,11 +69,8 @@ mod tests {
         }
     }
 
-    fn hosted() -> IndexKind {
-        IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        }
+    const fn hosted() -> IndexKind {
+        IndexKind::Hosted { volatile: false }
     }
 
     #[test]

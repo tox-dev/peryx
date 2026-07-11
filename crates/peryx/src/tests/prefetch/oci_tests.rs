@@ -22,6 +22,8 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Oci,
+            anonymous_read: None,
+            tokens: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,

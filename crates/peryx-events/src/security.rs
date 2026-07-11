@@ -1,6 +1,7 @@
 //! Structured security-relevant index events.
 
 use http::{HeaderMap, header};
+use peryx_identity::{Identity, Principal};
 
 const UNKNOWN: &str = "unknown";
 
@@ -153,17 +154,24 @@ impl<'a> Event<'a> {
     }
 }
 
+/// Who to record an action against, from the identity the index's ACL already resolved.
+///
+/// The username a Basic credential carried names the actor whether or not it authenticated, so a
+/// refused push still records who tried. A bearer credential carries no username; there the actor is
+/// the principal the token names.
 #[must_use]
-pub fn actor(headers: &HeaderMap) -> Option<String> {
-    let value = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())?;
-    let credentials = peryx_identity::parse_basic(value)?;
-    Some(if credentials.user.is_empty() {
-        UNKNOWN.to_owned()
-    } else {
-        credentials.user
-    })
+pub fn actor(identity: &Identity) -> Option<String> {
+    if let Some(user) = &identity.user {
+        return Some(if user.is_empty() {
+            UNKNOWN.to_owned()
+        } else {
+            user.clone()
+        });
+    }
+    match &identity.principal {
+        Principal::Named { subject } => Some(subject.clone()),
+        Principal::Anonymous => None,
+    }
 }
 
 fn request_id(headers: &HeaderMap) -> Option<&str> {
@@ -184,21 +192,42 @@ fn text(value: Option<&str>) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
-    use base64::engine::general_purpose::STANDARD;
-    use http::HeaderMap;
-    use http::header::{AUTHORIZATION, HeaderValue};
+    use peryx_identity::{Identity, Principal};
 
-    fn basic(credentials: &str) -> HeaderValue {
-        HeaderValue::from_str(&format!("Basic {}", STANDARD.encode(credentials))).unwrap()
+    fn presenting(user: &str) -> Identity {
+        Identity {
+            principal: Principal::Anonymous,
+            user: Some(user.to_owned()),
+        }
     }
 
     #[test]
-    fn test_actor_uses_username_or_unknown_when_empty() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, basic("alice:secret"));
-        assert_eq!(super::actor(&headers).as_deref(), Some("alice"));
-        headers.insert(AUTHORIZATION, basic(":secret"));
-        assert_eq!(super::actor(&headers).as_deref(), Some("unknown"));
+    fn test_actor_uses_the_presented_username() {
+        assert_eq!(super::actor(&presenting("alice")).as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn test_actor_calls_an_empty_username_unknown() {
+        assert_eq!(super::actor(&presenting("")).as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn test_actor_falls_back_to_the_principal_when_no_username_was_presented() {
+        let bearer = Identity {
+            principal: Principal::Named {
+                subject: "ci".to_owned(),
+            },
+            user: None,
+        };
+        assert_eq!(super::actor(&bearer).as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn test_actor_is_none_for_an_anonymous_request() {
+        let anonymous = Identity {
+            principal: Principal::Anonymous,
+            user: None,
+        };
+        assert_eq!(super::actor(&anonymous), None);
     }
 }

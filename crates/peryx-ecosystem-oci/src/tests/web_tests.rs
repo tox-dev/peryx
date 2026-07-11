@@ -129,14 +129,7 @@ async fn test_browse_project_lists_a_repository_tags() {
 #[tokio::test]
 async fn test_browse_project_on_a_root_route_index_uses_the_bare_repository_name() {
     let dir = tempfile::tempdir().unwrap();
-    let index = oci_index(
-        "root",
-        "",
-        peryx_index::IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
-    );
+    let index = oci_index("root", "", peryx_index::IndexKind::Hosted { volatile: false });
     let (state, _app) = super::app_with(&dir, index);
     let digest = format!("sha256:{}", "a".repeat(64));
     crate::store::put_tag(&state.meta, "root", "library/nginx", "1.0", &digest).unwrap();
@@ -364,14 +357,7 @@ async fn test_project_names_of_a_virtual_index_walks_its_members() {
 #[tokio::test]
 async fn test_manifest_view_on_a_root_route_index_uses_the_bare_repository_name() {
     let dir = tempfile::tempdir().unwrap();
-    let index = oci_index(
-        "root",
-        "",
-        peryx_index::IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
-    );
+    let index = oci_index("root", "", peryx_index::IndexKind::Hosted { volatile: false });
     let (state, _app) = super::app_with(&dir, index);
     let (driver, serving) = oci_driver(&state);
     // With an empty index route the full name is the bare repository; an unknown reference is absent.

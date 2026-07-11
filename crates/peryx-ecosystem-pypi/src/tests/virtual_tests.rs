@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use peryx_driver::state::AppState;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::{BlobStore, Digest};
@@ -63,16 +64,15 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
                 offline: false,
             },
             policy: cached_policy,
+            acl: IndexAcl::default(),
         },
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("s3cret".to_owned()),
         },
         Index {
             name: "root/pypi".to_owned(),
@@ -83,6 +83,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
                 upload: Some(1),
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
     ]
 }

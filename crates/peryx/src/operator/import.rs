@@ -42,7 +42,7 @@ struct ImportTarget {
 }
 
 fn import_target(config: &Config, selector: &str) -> anyhow::Result<ImportTarget> {
-    let indexes = crate::server::build_indexes(&config.indexes, config.offline)?;
+    let indexes = crate::server::build_indexes(&config.indexes, &config.auth, config.offline)?;
     let position = indexes
         .iter()
         .position(|index| index.name == selector)

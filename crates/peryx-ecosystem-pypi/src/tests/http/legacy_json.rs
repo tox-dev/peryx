@@ -1,6 +1,7 @@
 //! The pypi.org-shaped legacy JSON API.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_legacy_project_json_serves_releases_from_simple_detail() {
@@ -217,6 +218,7 @@ async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }],
     ));
 

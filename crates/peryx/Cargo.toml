@@ -39,6 +39,7 @@ peryx-index.workspace = true
 peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }
 peryx-ecosystem-oci.workspace = true
 async-trait.workspace = true
+peryx-identity.workspace = true
 peryx-policy.workspace = true
 peryx-storage.workspace = true
 peryx-upstream.workspace = true
@@ -58,6 +59,7 @@ toml.workspace = true
 utoipa.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+time.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

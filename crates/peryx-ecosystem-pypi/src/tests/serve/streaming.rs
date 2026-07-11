@@ -1,6 +1,7 @@
 //! The live page-stream tee and its materialize path.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_stream_detail_offline_cold_miss_falls_back() {
@@ -12,6 +13,7 @@ async fn test_stream_detail_offline_cold_miss_falls_back() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
 
@@ -68,6 +70,7 @@ async fn test_json_meta_preflight_streams_without_remainder() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     let outcome = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
@@ -177,6 +180,7 @@ async fn test_client_disconnect_releases_the_inflight_entry() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     let PageOutcome::Streaming(stream) = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
@@ -212,6 +216,7 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
         }]
     });
     let items = stream_outcome(&state).await;

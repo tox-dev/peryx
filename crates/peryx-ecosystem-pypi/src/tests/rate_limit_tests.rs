@@ -20,6 +20,7 @@ use peryx_driver::rate_limit::{
 };
 use peryx_driver::state::AppState;
 use peryx_http::router;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
@@ -49,6 +50,7 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }],
         Arc::new(move || ticks.load(Ordering::Relaxed)),
         rate_limit,
@@ -353,6 +355,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
                     offline: false,
                 },
                 policy: Policy::default(),
+                acl: IndexAcl::default(),
             },
             Index {
                 name: "root".to_owned(),
@@ -363,6 +366,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
                     upload: None,
                 },
                 policy: Policy::default(),
+                acl: IndexAcl::default(),
             },
         ],
         Arc::new(move || ticks.load(Ordering::Relaxed)),
@@ -413,6 +417,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         }],
         RateLimitConfig::enabled_defaults(),
         [("pypi".to_owned(), 1)],

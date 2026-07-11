@@ -1,5 +1,6 @@
 //! Cross-cutting serving behavior.
 
+use super::super::writable_index;
 use super::support::*;
 
 #[tokio::test]
@@ -125,22 +126,11 @@ async fn test_catalog_lists_oci_repositories_with_pagination() {
         name: "py".to_owned(),
         route: "py".to_owned(),
         ecosystem: peryx_core::Ecosystem::Pypi,
-        kind: peryx_index::IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
+        kind: peryx_index::IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
+        acl: peryx_identity::IndexAcl::default(),
     };
-    let hosted = |name: &str, route: &str| {
-        oci_index(
-            name,
-            route,
-            peryx_index::IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
-        )
-    };
+    let hosted = |name: &str, route: &str| writable_index(name, route, true, "s3cret");
     // A root-route index lists its repos under bare names; a prefixed one under the route.
     let (_state, app) = app_with_indexes(&dir, vec![pypi, hosted("store", "store"), hosted("root", "")]);
     let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;

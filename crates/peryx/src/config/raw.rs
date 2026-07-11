@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use peryx_identity::Action;
 use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
@@ -63,6 +64,18 @@ pub struct PartialConfig {
     pub acme: Option<RawAcme>,
     pub log: PartialLogConfig,
     pub rate_limit: PartialRateLimitConfig,
+    pub auth: PartialAuthConfig,
+}
+
+/// The raw `[auth]` table: the signing key of peryx's token realm, and the defaults every index's
+/// access rules take.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialAuthConfig {
+    pub signing_key: Option<String>,
+    pub signing_key_file: Option<PathBuf>,
+    pub token_ttl_secs: Option<i64>,
+    pub default_anonymous_read: Option<bool>,
 }
 
 /// The raw `[tls]` table before validation.
@@ -140,11 +153,33 @@ pub struct RawIndex {
     pub prefetch: Option<RawPrefetchConfig>,
     pub hosted: Option<bool>,
     pub upload_token: Option<String>,
+    pub upload_token_file: Option<PathBuf>,
     pub volatile: Option<bool>,
     pub layers: Option<Vec<String>>,
     pub upload: Option<String>,
+    pub anonymous_read: Option<bool>,
+    /// The `[[index.access_token]]` tables: credentials clients present to peryx, as opposed to
+    /// `token`, the credential peryx presents to this index's upstream.
+    #[serde(default, rename = "access_token")]
+    pub tokens: Vec<RawToken>,
     #[serde(default, rename = "webhook")]
     pub webhooks: Vec<RawWebhook>,
+}
+
+/// A raw `[[index.access_token]]` table: one named credential, its grant, and when it stops working.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawToken {
+    pub name: String,
+    pub secret: Option<String>,
+    pub secret_file: Option<PathBuf>,
+    /// Project globs the token may act on; empty means the whole index.
+    #[serde(default)]
+    pub projects: Vec<String>,
+    #[serde(default)]
+    pub actions: Vec<Action>,
+    /// An RFC 3339 timestamp, for example `2027-01-01T00:00:00Z`.
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]

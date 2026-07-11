@@ -17,6 +17,7 @@ use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_http::router;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
@@ -52,11 +53,9 @@ fn seeded(runtime: &Runtime) -> (Router, String, String) {
         name: "store".to_owned(),
         route: "store".to_owned(),
         ecosystem: Ecosystem::Oci,
-        kind: IndexKind::Hosted {
-            upload_token: Some(TOKEN.to_owned()),
-            volatile: true,
-        },
+        kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
+        acl: IndexAcl::upload_token(TOKEN.to_owned()),
     };
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], Arc::new(|| 1000));
     peryx_ecosystem_oci::install(&mut state, std::collections::HashMap::new());

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::ConfigError;
-use super::raw::{PartialConfig, PartialLogConfig, PartialRateLimitConfig};
+use super::raw::{PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig};
 
 /// Parse a TOML document into a [`PartialConfig`].
 ///
@@ -46,6 +46,7 @@ pub fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialCo
             file: get("PERYX_LOG_FILE").map(PathBuf::from),
         },
         rate_limit: PartialRateLimitConfig::default(),
+        auth: PartialAuthConfig::default(),
     })
 }
 

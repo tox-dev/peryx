@@ -1,6 +1,7 @@
 //! The `/+api` discovery document, per index and per ecosystem.
 
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_discovery_document_uses_request_origin_and_redacts_token() {
@@ -77,21 +78,17 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "images".to_owned(),
             route: "images".to_owned(),
             ecosystem: peryx_core::Ecosystem::Oci,
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
     ];
     // No OCI driver is wired here, so the OCI index falls back to the neutral driver's minimal entry:
@@ -125,11 +122,9 @@ async fn test_per_index_discovery_dispatches_an_oci_index_to_the_oci_driver() {
         name: "images".to_owned(),
         route: "images".to_owned(),
         ecosystem: peryx_core::Ecosystem::Oci,
-        kind: IndexKind::Hosted {
-            upload_token: None,
-            volatile: true,
-        },
+        kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
+        acl: IndexAcl::default(),
     }];
     // The PyPI dispatch handles the neutral `/{route}/+api` route for every index, delegating an OCI
     // index's entry to the OCI driver rather than rendering a Simple-API document for it.

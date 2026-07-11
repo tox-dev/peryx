@@ -9,6 +9,7 @@ use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
@@ -41,11 +42,9 @@ fn hosted_with_webhook(dir: &tempfile::TempDir, events: &[&str]) -> (Arc<AppStat
             name: "store".to_owned(),
             route: "store".to_owned(),
             ecosystem: Ecosystem::Oci,
-            kind: IndexKind::Hosted {
-                upload_token: Some(TOKEN.to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::upload_token(TOKEN.to_owned()),
         }],
         Arc::new(|| 1000),
         webhooks,

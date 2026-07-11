@@ -1,14 +1,17 @@
 //! Hosted-push paths: blob upload (session and monolithic), mount, manifest PUT, and DELETE.
 
+use std::collections::BTreeSet;
+
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-use peryx_index::IndexKind;
+use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
+use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 use tower::ServiceExt as _;
 
 use super::{
-    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, oci_index, proxy, send, send_body,
+    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, proxy, send, send_body, writable_index,
 };
 
 const TOKEN: &str = "s3cret";
@@ -282,22 +285,8 @@ async fn test_manifest_delete_by_digest_retained_while_another_index_tags_it() {
     let (_state, app) = app_with_indexes(
         &dir,
         vec![
-            oci_index(
-                "store",
-                "store",
-                IndexKind::Hosted {
-                    upload_token: Some(TOKEN.to_owned()),
-                    volatile: true,
-                },
-            ),
-            oci_index(
-                "keep",
-                "keep",
-                IndexKind::Hosted {
-                    upload_token: Some(TOKEN.to_owned()),
-                    volatile: true,
-                },
-            ),
+            writable_index("store", "store", true, TOKEN),
+            writable_index("keep", "keep", true, TOKEN),
         ],
     );
     let manifest = br#"{"schemaVersion":2}"#;
@@ -464,6 +453,78 @@ async fn test_blob_delete_and_missing_and_bad_digest() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(super::body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+/// A hosted store whose one credential is a `ci` token that may push under `team/`.
+fn scoped(dir: &tempfile::TempDir) -> axum::Router {
+    let index = Index {
+        acl: IndexAcl {
+            anonymous_read: true,
+            tokens: vec![NamedToken {
+                name: "ci".to_owned(),
+                secret: TOKEN.to_owned(),
+                grants: vec![Grant {
+                    projects: vec![Glob::new("team/*")],
+                    actions: BTreeSet::from([Action::Write]),
+                }],
+                expires_at: None,
+            }],
+        },
+        ..super::oci_index("store", "store", IndexKind::Hosted { volatile: true })
+    };
+    app_with_indexes(dir, vec![index]).1
+}
+
+#[tokio::test]
+async fn test_a_scoped_token_pushes_a_repository_its_glob_covers() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = scoped(&dir);
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/team/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn test_a_scoped_token_may_not_push_outside_its_glob() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = scoped(&dir);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/other/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body_has_code(&body, "DENIED"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_a_write_only_token_may_not_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = scoped(&dir);
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        "/v2/store/team/app/manifests/v1",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -786,22 +847,8 @@ async fn test_upload_session_is_scoped_to_its_index() {
     let (_state, app) = app_with_indexes(
         &dir,
         vec![
-            oci_index(
-                "store",
-                "store",
-                IndexKind::Hosted {
-                    upload_token: Some(TOKEN.to_owned()),
-                    volatile: true,
-                },
-            ),
-            oci_index(
-                "other",
-                "other",
-                IndexKind::Hosted {
-                    upload_token: Some("other-token".to_owned()),
-                    volatile: true,
-                },
-            ),
+            writable_index("store", "store", true, TOKEN),
+            writable_index("other", "other", true, "other-token"),
         ],
     );
     let (status, headers, _) = send_body(

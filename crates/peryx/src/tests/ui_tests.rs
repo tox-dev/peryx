@@ -15,7 +15,7 @@ use rstest::{fixture, rstest};
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 
-use crate::config::{Config, IndexConfig, IndexKind};
+use crate::config::{Config, IndexConfig, IndexKind, SecretSource};
 use crate::server::{build_router, build_state, router_for};
 
 #[fixture]
@@ -45,6 +45,8 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
+                anonymous_read: None,
+                tokens: Vec::new(),
                 kind: IndexKind::Cached {
                     upstream: "http://127.0.0.1:9/simple/".to_owned(),
                     username: None,
@@ -63,8 +65,10 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
+                anonymous_read: None,
+                tokens: Vec::new(),
                 kind: IndexKind::Hosted {
-                    upload_token: Some("s3cret".to_owned()),
+                    upload_token: Some(SecretSource::Literal("s3cret".to_owned())),
                     volatile: true,
                 },
             },
@@ -76,6 +80,8 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
+                anonymous_read: None,
+                tokens: Vec::new(),
                 kind: IndexKind::Virtual {
                     layers: vec!["hosted".to_owned(), "pypi".to_owned()],
                     upload: Some("hosted".to_owned()),
@@ -105,8 +111,10 @@ fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Oci,
+            anonymous_read: None,
+            tokens: Vec::new(),
             kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
+                upload_token: Some(SecretSource::Literal("s3cret".to_owned())),
                 volatile: true,
             },
         }],

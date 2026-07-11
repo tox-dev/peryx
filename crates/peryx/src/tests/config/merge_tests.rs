@@ -6,7 +6,7 @@ use rstest::rstest;
 use super::toml_config;
 use crate::config::{
     self, AcmeConfig, Config, ConfigError, IndexKind, LogConfig, LogFormat, LogSink, PartialConfig, PartialLogConfig,
-    TlsConfig, WebhookSecret,
+    SecretSource, TlsConfig, WebhookSecret,
 };
 
 fn toml_error(text: &str) -> ConfigError {
@@ -268,7 +268,10 @@ fn test_nonempty_upload_token_is_hosted() {
     let c = toml_config("[[index]]\nname = \"hosted\"\nupload_token = \"s3cret\"\n");
     assert!(matches!(
         &c.indexes[0].kind,
-        IndexKind::Hosted { upload_token: Some(token), .. } if token == "s3cret"
+        IndexKind::Hosted {
+            upload_token: Some(SecretSource::Literal(token)),
+            ..
+        } if token == "s3cret"
     ));
 }
 

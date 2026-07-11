@@ -17,12 +17,12 @@ pub use load::{from_env, from_file, from_toml};
 #[cfg(test)]
 pub(crate) use merge::classify_tls;
 pub use model::{
-    AcmeConfig, Config, IndexConfig, IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, TlsConfig,
-    WebhookConfig, WebhookSecret,
+    AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig,
+    PrefetchMode, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
 };
 pub use raw::{
-    PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex, RawPolicy,
-    RawPrefetchConfig, RawTls, RawWebhook,
+    PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
+    RawPolicy, RawPrefetchConfig, RawTls, RawToken, RawWebhook,
 };
 
 /// An error while assembling configuration.
@@ -34,6 +34,16 @@ pub enum ConfigError {
     Parse { path: PathBuf, source: toml::de::Error },
     #[error("index {name}: {reason}")]
     Index { name: String, reason: &'static str },
+    #[error("index {index}: token {name}: {reason}")]
+    Token {
+        index: String,
+        name: String,
+        reason: &'static str,
+    },
+    #[error("auth: {reason}")]
+    Auth { reason: &'static str },
+    #[error("secret file {path} holds no secret")]
+    EmptySecret { path: PathBuf },
     #[error("webhook {name}: {reason}")]
     Webhook { name: String, reason: &'static str },
     #[error("tls: {reason}")]

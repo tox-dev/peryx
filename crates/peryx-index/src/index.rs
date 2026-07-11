@@ -1,6 +1,7 @@
 //! Index identity: the resolved shape of one configured index.
 
 use peryx_core::Ecosystem;
+use peryx_identity::IndexAcl;
 use peryx_policy::Policy;
 use peryx_upstream::UpstreamClient;
 
@@ -13,6 +14,9 @@ pub struct Index {
     pub ecosystem: Ecosystem,
     pub kind: IndexKind,
     pub policy: Policy,
+    /// Who may read, write, and delete here. Every role carries one: a cached index grants reads, a
+    /// hosted store grants writes to its tokens, and both answer the same [`peryx_identity::authorize`].
+    pub acl: IndexAcl,
 }
 
 impl Index {
@@ -35,8 +39,9 @@ pub enum IndexKind {
         client: UpstreamClient,
         offline: bool,
     },
+    /// A store that accepts uploads from whoever [`Index::acl`] grants a write to; `volatile` allows
+    /// delete and overwrite.
     Hosted {
-        upload_token: Option<String>,
         volatile: bool,
     },
     Virtual {

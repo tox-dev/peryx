@@ -24,6 +24,7 @@ use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_http::router;
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
@@ -57,6 +58,15 @@ fn oci_index(name: &str, route: &str, kind: IndexKind) -> Index {
         ecosystem: Ecosystem::Oci,
         kind,
         policy: Policy::default(),
+        acl: IndexAcl::default(),
+    }
+}
+
+/// A hosted OCI index whose one credential is the upload token `token`.
+fn writable_index(name: &str, route: &str, volatile: bool, token: &str) -> Index {
+    Index {
+        acl: IndexAcl::upload_token(token),
+        ..oci_index(name, route, IndexKind::Hosted { volatile })
     }
 }
 
@@ -123,32 +133,12 @@ fn proxy_with_stale(
 
 /// A hosted store at route `store`.
 fn hosted(dir: &TempDir) -> (Arc<AppState>, axum::Router) {
-    app_with(
-        dir,
-        oci_index(
-            "store",
-            "store",
-            IndexKind::Hosted {
-                upload_token: None,
-                volatile: false,
-            },
-        ),
-    )
+    app_with(dir, oci_index("store", "store", IndexKind::Hosted { volatile: false }))
 }
 
 /// A hosted store at route `store` that accepts uploads bearing `token`.
 fn hosted_writable(dir: &TempDir, token: &str) -> (Arc<AppState>, axum::Router) {
-    app_with(
-        dir,
-        oci_index(
-            "store",
-            "store",
-            IndexKind::Hosted {
-                upload_token: Some(token.to_owned()),
-                volatile: true,
-            },
-        ),
-    )
+    app_with(dir, writable_index("store", "store", true, token))
 }
 
 /// A hosted store reading the current time from `clock`, so a test can age out an upload session.
@@ -159,14 +149,7 @@ fn hosted_with_clock(
 ) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let index = oci_index(
-        "store",
-        "store",
-        IndexKind::Hosted {
-            upload_token: Some(token.to_owned()),
-            volatile: true,
-        },
-    );
+    let index = writable_index("store", "store", true, token);
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], clock);
     crate::install(&mut state, HashMap::new());
     let state = Arc::new(state);
@@ -180,14 +163,7 @@ fn virtual_stack(dir: &TempDir, upstream: &str) -> (Arc<AppState>, axum::Router)
     app_with_indexes(
         dir,
         vec![
-            oci_index(
-                "images",
-                "images",
-                IndexKind::Hosted {
-                    upload_token: Some("s3cret".to_owned()),
-                    volatile: true,
-                },
-            ),
+            writable_index("images", "images", true, "s3cret"),
             oci_index("hub", "hub", IndexKind::Cached { client, offline: false }),
             oci_index(
                 "reg",
@@ -282,11 +258,9 @@ async fn test_v2_without_an_oci_index_is_not_found() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             ecosystem: Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: None,
-                volatile: false,
-            },
+            kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
     );
     // With no OCI index configured, no driver claims `/v2/`, so the router never mounts it and the
@@ -338,14 +312,7 @@ async fn test_v2_reads_are_rate_limited_through_the_oci_classifier() {
         listing: RouteLimit::new(1, 60),
         ..RateLimitConfig::enabled_defaults()
     };
-    let index = oci_index(
-        "store",
-        "store",
-        IndexKind::Hosted {
-            upload_token: None,
-            volatile: false,
-        },
-    );
+    let index = oci_index("store", "store", IndexKind::Hosted { volatile: false });
     let mut state = AppState::with_limits(
         meta,
         blobs,

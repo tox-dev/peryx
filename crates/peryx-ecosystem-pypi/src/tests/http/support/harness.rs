@@ -1,6 +1,7 @@
 //! A wired state over temporary stores and a mock upstream, in the shapes the tests need.
 
 use super::*;
+use peryx_identity::IndexAcl;
 
 pub struct Harness {
     pub(crate) _dir: tempfile::TempDir,
@@ -56,21 +57,25 @@ pub async fn harness_with_stale(
                 offline: false,
             },
             policy: mirror_policy,
+            acl: IndexAcl::default(),
         },
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: local_policy,
-            ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: token.then(|| "s3cret".to_owned()),
-                volatile,
+            acl: if token {
+                IndexAcl::upload_token("s3cret")
+            } else {
+                IndexAcl::default()
             },
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Hosted { volatile },
         },
         Index {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: overlay_policy,
+            acl: IndexAcl::default(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: vec![1, 0],
@@ -115,26 +120,23 @@ pub async fn promotion_harness() -> Harness {
                 offline: false,
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
         Index {
             name: "staging".to_owned(),
             route: "staging".to_owned(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("s3cret".to_owned()),
         },
         Index {
             name: "prod".to_owned(),
             route: "prod".to_owned(),
             ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted {
-                upload_token: Some("s3cret".to_owned()),
-                volatile: true,
-            },
+            kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
+            acl: IndexAcl::upload_token("s3cret".to_owned()),
         },
         Index {
             name: "release".to_owned(),
@@ -145,6 +147,7 @@ pub async fn promotion_harness() -> Harness {
                 upload: Some(2),
             },
             policy: Policy::default(),
+            acl: IndexAcl::default(),
         },
     ];
     let state = crate::tests::wired(AppState::with_clock(

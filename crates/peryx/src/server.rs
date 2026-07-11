@@ -16,7 +16,7 @@ use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::{Auth, UpstreamClient, redact_url};
 
-use crate::config::{Config, IndexConfig, IndexKind as ConfigKind, WebhookSecret};
+use crate::config::{AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, WebhookSecret};
 
 /// Build the peryx router from configuration.
 ///
@@ -43,7 +43,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
-    let indexes = build_indexes(&config.indexes, config.offline)?;
+    let indexes = build_indexes(&config.indexes, &config.auth, config.offline)?;
     let oci_settings = build_index_settings(&config.indexes)?;
     let webhooks = build_webhooks(&config.indexes)?;
     let search_path = config.data_dir.join("search-v1");
@@ -91,9 +91,10 @@ pub(crate) fn drivers() -> &'static DriverSet {
     })
 }
 
-/// Resolve configured indexes into their runtime form, mapping virtual-index member names to positions and
-/// building each cached index's authenticated upstream client.
-pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::Result<Vec<Index>> {
+/// Resolve configured indexes into their runtime form, mapping virtual-index member names to positions,
+/// building each cached index's authenticated upstream client, and reading each index's access rules
+/// (which is where a secret kept in a file is read).
+pub(crate) fn build_indexes(configs: &[IndexConfig], auth: &AuthConfig, offline: bool) -> anyhow::Result<Vec<Index>> {
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
@@ -120,6 +121,9 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::R
                 ecosystem: index.ecosystem,
                 kind: build_kind(index, configs, &positions, offline)?,
                 policy: Policy::compile(&index.policy, |name| driver.normalize_name(name)).with_rules(rules),
+                acl: index
+                    .acl(auth)
+                    .with_context(|| format!("read the access rules of index {}", index.name))?,
             })
         })
         .collect()
@@ -205,10 +209,7 @@ fn build_kind(
                 offline: global_offline || *offline,
             })
         }
-        ConfigKind::Hosted { upload_token, volatile } => Ok(IndexKind::Hosted {
-            upload_token: upload_token.clone(),
-            volatile: *volatile,
-        }),
+        ConfigKind::Hosted { volatile, .. } => Ok(IndexKind::Hosted { volatile: *volatile }),
         ConfigKind::Virtual { layers, upload } => {
             let layer_positions = layers
                 .iter()

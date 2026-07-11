@@ -215,7 +215,7 @@ pub(super) fn delete_blob(
     name: &str,
     digest: &str,
 ) -> Result<Response, ServeError> {
-    let (index, repo) = match resolve_writable(state, name, headers) {
+    let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Delete) {
         Ok(target) => target,
         Err(response) => return Ok(response),
     };
@@ -235,7 +235,10 @@ pub(super) fn delete_blob(
     Ok(if removed {
         emit_webhook(
             state,
-            headers,
+            &Requester {
+                headers,
+                identity: &identity,
+            },
             WebhookEventKind::Delete,
             index,
             &repo,
