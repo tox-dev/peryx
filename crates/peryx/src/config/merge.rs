@@ -62,6 +62,14 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
         })?,
         None => Ecosystem::default(),
     };
+    if raw.upload_token.as_deref() == Some("") {
+        // An empty token authorizes any request whose Basic password is empty, so it is a
+        // configuration error, not "uploads with no token" (which is `hosted = true`).
+        return Err(ConfigError::Index {
+            name: raw.name,
+            reason: "`upload_token` must not be empty",
+        });
+    }
     let kind = if let Some(layers) = raw.layers {
         IndexKind::Virtual {
             layers,

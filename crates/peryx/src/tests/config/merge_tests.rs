@@ -256,6 +256,23 @@ fn test_index_webhook_rejects(#[case] text: &str, #[case] expected: &str) {
 }
 
 #[test]
+fn test_empty_upload_token_is_rejected() {
+    assert!(matches!(
+        toml_error("[[index]]\nname = \"hosted\"\nupload_token = \"\"\n"),
+        ConfigError::Index { name, reason } if name == "hosted" && reason.contains("`upload_token` must not be empty")
+    ));
+}
+
+#[test]
+fn test_nonempty_upload_token_is_hosted() {
+    let c = toml_config("[[index]]\nname = \"hosted\"\nupload_token = \"s3cret\"\n");
+    assert!(matches!(
+        &c.indexes[0].kind,
+        IndexKind::Hosted { upload_token: Some(token), .. } if token == "s3cret"
+    ));
+}
+
+#[test]
 fn test_index_ecosystem_parses_and_defaults() {
     let c = toml_config("[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\necosystem = \"pypi\"\n");
     assert_eq!(c.indexes[0].ecosystem, peryx_core::Ecosystem::Pypi);
