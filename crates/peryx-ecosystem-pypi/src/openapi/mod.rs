@@ -4,8 +4,9 @@
 use utoipa::openapi::PathsBuilder;
 use utoipa::openapi::path::{HttpMethod, PathItemBuilder};
 
-use peryx_driver::openapi::{index_discovery, package_search};
+use peryx_driver::openapi::package_search;
 
+mod discovery;
 mod files;
 mod inspect;
 mod legacy;
@@ -13,6 +14,7 @@ mod publish;
 mod shared;
 mod simple;
 
+use discovery::index_discovery;
 use files::{file_download, metadata_download};
 use inspect::{inspect_listing, inspect_member};
 use legacy::{legacy_project_json, legacy_release_json};
