@@ -59,7 +59,7 @@ pub use simple::{
     Provenance, SimpleError, Yanked, parse_detail, parse_index, parse_meta, render_detail_html, render_index_html,
     to_json,
 };
-pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc};
+pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc, versions_match};
 
 /// Wire the `PyPI` serving driver and search indexer into a freshly built
 /// [`AppState`](peryx_driver::ServingState).

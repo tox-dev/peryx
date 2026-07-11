@@ -2,11 +2,10 @@
 
 use std::collections::HashSet;
 
-use crate::file_matches_version;
 use crate::store::PypiStore as _;
 use crate::store::{Guard, UploadMutation};
 use crate::upload::{self, PreparedUpload, Uploaded};
-use crate::{ProjectStatus, Yanked, parse_distribution_filename, to_json};
+use crate::{ProjectStatus, Yanked, file_matches_version, parse_distribution_filename, to_json, versions_match};
 use peryx_core::path::local_file_url;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
@@ -45,7 +44,7 @@ pub fn promote_release(
     let mut records = Vec::new();
     for (filename, bytes) in state.meta.list_upload_entries(source, normalized)? {
         let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
-        if uploaded.version != version {
+        if !versions_match(&uploaded.version, version) {
             continue;
         }
         matched = true;
@@ -315,7 +314,7 @@ fn delete_uploads_of_version(
 ) -> Result<usize, CacheError> {
     state.meta.mutate_uploads(name, normalized, |_filename, bytes| {
         let uploaded: Uploaded = serde_json::from_slice(bytes)?;
-        if uploaded.version != version {
+        if !versions_match(&uploaded.version, version) {
             return Ok(UploadMutation::Keep);
         }
         if !volatile {
@@ -336,7 +335,8 @@ fn yank_uploads(
 ) -> Result<usize, CacheError> {
     state.meta.mutate_uploads(name, normalized, |_filename, bytes| {
         let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
-        if version.is_some_and(|version| uploaded.version != version) || uploaded.file.yanked == *yanked {
+        if version.is_some_and(|version| !versions_match(&uploaded.version, version)) || uploaded.file.yanked == *yanked
+        {
             return Ok(UploadMutation::Keep);
         }
         uploaded.file.yanked = yanked.clone();

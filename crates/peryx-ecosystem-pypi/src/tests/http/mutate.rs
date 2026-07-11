@@ -163,6 +163,18 @@ async fn test_yank_one_of_two_versions() {
     assert_eq!(detail.matches("\"yanked\":true").count(), 1);
 }
 #[tokio::test]
+async fn test_yank_matches_upload_by_pep440_equality() {
+    let h = harness().await;
+    // Uploaded with form version 1.0; a yank addressed to the PEP 440-equal 1.0.0 must still hit it.
+    put_local_file(&h.state, "peryxpkg-1.0-py3-none-any.whl", b"payload", "1.0");
+    assert_eq!(
+        request(&h.state, "PUT", "/hosted/peryxpkg/1.0.0/yank", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+    let (_, _, detail) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert!(detail.contains("\"yanked\":true"));
+}
+#[tokio::test]
 async fn test_yank_upstream_file_via_overlay() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
@@ -308,6 +320,19 @@ async fn test_versioned_delete_fallback_skips_other_versions() {
     let (_, _, detail) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
     assert!(detail.contains("peryxpkg-two.whl"));
     assert!(!detail.contains("peryxpkg-one.whl"));
+}
+#[tokio::test]
+async fn test_versioned_delete_fallback_matches_upload_by_pep440_equality() {
+    let h = harness().await;
+    // No parsable version in the filename forces the record fallback; the stored 1.0 must match a
+    // delete addressed to the PEP 440-equal 1.0.0.
+    put_local_file(&h.state, "peryxpkg.whl", b"payload", "1.0");
+    assert_eq!(
+        request(&h.state, "DELETE", "/hosted/peryxpkg/1.0.0/", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+    let (status, ..) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 #[tokio::test]
 async fn test_versioned_delete_fallback_on_non_volatile_is_forbidden() {

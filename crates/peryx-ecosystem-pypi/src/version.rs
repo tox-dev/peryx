@@ -16,6 +16,15 @@ pub fn parse_version_specifiers(text: &str) -> Option<VersionSpecifiers> {
     VersionSpecifiers::from_str(text).ok()
 }
 
+/// Whether two strings name the same release under PEP 440, so `1.0` and `1.0.0` match.
+///
+/// Falls back to byte equality when either side is not a valid PEP 440 version, so an unparseable
+/// spelling still matches itself.
+#[must_use]
+pub fn versions_match(left: &str, right: &str) -> bool {
+    left == right || matches!((parse_version(left), parse_version(right)), (Some(left), Some(right)) if left == right)
+}
+
 /// Sort version strings newest-first. Strings that do not parse as PEP 440 keep their input order
 /// after the parseable ones.
 #[must_use]

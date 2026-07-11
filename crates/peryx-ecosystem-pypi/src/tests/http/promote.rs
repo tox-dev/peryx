@@ -114,6 +114,28 @@ async fn test_promote_copies_release_records_without_copying_blobs() {
     assert_eq!(detail["files"].as_array().unwrap().len(), 1);
 }
 #[tokio::test]
+async fn test_promote_matches_source_by_pep440_equality() {
+    let h = promotion_harness().await;
+    // Staged with form version 1.0; a promote addressed to the PEP 440-equal 1.0.0 must still copy it.
+    upload_wheel_to(
+        &h.state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "promoted 1 file(s)");
+}
+#[tokio::test]
 async fn test_promote_skips_target_file_with_same_digest() {
     let h = promotion_harness().await;
     let wheel = fixture_wheel();

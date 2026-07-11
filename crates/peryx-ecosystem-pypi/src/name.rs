@@ -98,12 +98,5 @@ impl fmt::Display for PackageName {
 /// PEP 440-equal, so `1.0` matches a file of `1.0.0` but never one of `1.0.1`.
 #[must_use]
 pub fn file_matches_version(filename: &str, version: &str) -> bool {
-    let Some(candidate) = super::distribution_version_segment(filename) else {
-        return false;
-    };
-    candidate == version
-        || matches!(
-            (super::parse_version(candidate), super::parse_version(version)),
-            (Some(file_version), Some(wanted)) if file_version == wanted
-        )
+    super::distribution_version_segment(filename).is_some_and(|candidate| super::versions_match(candidate, version))
 }
