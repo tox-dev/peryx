@@ -153,8 +153,10 @@ pub fn promote_files_checked<E: From<MetaError>>(
 /// and be missed or resurrected. `mutate` sees each `(filename, record)` and returns
 /// [`UploadMutation::Keep`] to leave it,
 /// [`UploadMutation::Replace`] to rewrite it, or [`UploadMutation::Delete`] to remove it; an error
-/// aborts the whole transaction unchanged. Returns how many records were rewritten or removed. The
-/// mutation carries no journal entry: a yank or delete is local override state no replica reconciles.
+/// aborts the whole transaction unchanged. Returns how many records were rewritten or removed. It
+/// stages the row changes without a journal entry: the per-file `yank`/`unyank`/`delete-file` a
+/// replica must observe cannot be inferred from these opaque record bytes, so recording it belongs
+/// to the caller that knows which mutation it applied.
 ///
 /// # Errors
 /// Returns the closure's error, or a store error mapped into it, if the transaction fails.
@@ -209,12 +211,26 @@ pub fn list_upload_entries(
     Ok(entries)
 }
 
-/// Delete one uploaded file record, returning whether it existed.
+/// Delete one uploaded file record, journaling `delete-file` in the same transaction, and return
+/// whether it existed.
+///
+/// The removal and its journal entry commit together for the reason [`publish_file_if`] gives: a
+/// deletion no replica observes resurrects the file downstream, and nothing reconciles that later.
+/// A missing record is a no-op that records nothing.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_upload(meta: &MetaStore, index: &str, normalized: &str, filename: &str) -> Result<bool, MetaError> {
-    meta.delete_driver_value(&upload_key(index, normalized, filename))
+    meta.commit_driver_txn(|txn| {
+        if txn.remove(&upload_key(index, normalized, filename))? {
+            Ok((
+                true,
+                Some(journal_bytes("delete-file", normalized, None, Some(filename))),
+            ))
+        } else {
+            Ok((false, None))
+        }
+    })
 }
 
 /// Visit raw upload records, keyed by `{index}/{normalized}/{filename}`.
@@ -237,8 +253,13 @@ pub fn scan_upload_records<E>(
     Ok(())
 }
 
-/// Record an override for a file served from a read-only layer: `kind` is `yanked` or
-/// `hidden`. Keyed like uploads, by `{index}/{normalized}/{filename}`.
+/// Record an override for a file served from a read-only layer: `kind` is `yanked` or `hidden`,
+/// keyed like uploads by `{index}/{normalized}/{filename}`.
+///
+/// The override and a `hide` (for `hidden`) or `yank` (for anything else) journal entry commit in
+/// one transaction, so a replica observes the change the way it observes a publish, and nothing is
+/// left to reconcile after a crash. Re-recording an identical override is a no-op that allocates no
+/// serial.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
@@ -249,15 +270,35 @@ pub fn put_override(
     filename: &str,
     kind: &str,
 ) -> Result<(), MetaError> {
-    meta.put_driver_value(&override_key(index, normalized, filename), kind.as_bytes())
+    let key = override_key(index, normalized, filename);
+    meta.commit_driver_txn(|txn| {
+        if txn.get(&key)?.as_deref() == Some(kind.as_bytes()) {
+            return Ok(((), None));
+        }
+        txn.put(&key, kind.as_bytes())?;
+        let action = if kind == "hidden" { "hide" } else { "yank" };
+        Ok(((), Some(journal_bytes(action, normalized, None, Some(filename)))))
+    })
 }
 
-/// Remove a file's override, returning whether one existed.
+/// Remove a file's override, journaling the reversal in the same transaction, and return whether
+/// one existed.
+///
+/// A cleared `hidden` override records `restore`; any other (a `yanked` one) records `unyank`, so
+/// the un-hide or un-yank a replica must replay is never lost. A missing override records nothing.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_override(meta: &MetaStore, index: &str, normalized: &str, filename: &str) -> Result<bool, MetaError> {
-    meta.delete_driver_value(&override_key(index, normalized, filename))
+    let key = override_key(index, normalized, filename);
+    meta.commit_driver_txn(|txn| {
+        let Some(prior) = txn.get(&key)? else {
+            return Ok((false, None));
+        };
+        txn.remove(&key)?;
+        let action = if prior == b"hidden" { "restore" } else { "unyank" };
+        Ok((true, Some(journal_bytes(action, normalized, None, Some(filename)))))
+    })
 }
 
 /// List the `(filename, kind)` overrides recorded for `normalized` on `index`.
@@ -455,5 +496,119 @@ mod tests {
             seen,
             vec![("hosted/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
         );
+    }
+
+    #[test]
+    fn test_delete_upload_removes_the_record_and_journals_delete_file() {
+        let (_dir, meta) = store();
+        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"record").unwrap();
+
+        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl").unwrap();
+
+        assert!(existed);
+        assert!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(meta.current_serial().unwrap(), 1, "the deletion is journaled");
+    }
+
+    #[test]
+    fn test_delete_upload_of_a_missing_record_journals_nothing() {
+        let (_dir, meta) = store();
+
+        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl").unwrap();
+
+        assert!(!existed);
+        assert_eq!(meta.current_serial().unwrap(), 0, "a no-op delete records no serial");
+    }
+
+    #[test]
+    fn test_put_override_hidden_journals_hide() {
+        let (_dir, meta) = store();
+
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden").unwrap();
+
+        assert_eq!(
+            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .as_deref(),
+            Some(b"hidden".as_slice())
+        );
+        assert_eq!(meta.current_serial().unwrap(), 1, "the override is journaled");
+    }
+
+    #[test]
+    fn test_put_override_yanked_journals_yank() {
+        let (_dir, meta) = store();
+
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked").unwrap();
+
+        assert_eq!(
+            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .as_deref(),
+            Some(b"yanked".as_slice())
+        );
+        assert_eq!(meta.current_serial().unwrap(), 1, "the override is journaled");
+    }
+
+    #[test]
+    fn test_put_override_that_repeats_the_current_value_journals_nothing() {
+        let (_dir, meta) = store();
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked").unwrap();
+
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked").unwrap();
+
+        assert_eq!(
+            meta.current_serial().unwrap(),
+            1,
+            "re-recording an identical override allocates no second serial"
+        );
+    }
+
+    #[test]
+    fn test_delete_override_of_a_hidden_file_journals_restore() {
+        let (_dir, meta) = store();
+        meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"hidden")
+            .unwrap();
+
+        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl").unwrap();
+
+        assert!(existed);
+        assert!(
+            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(meta.current_serial().unwrap(), 1, "the restore is journaled");
+    }
+
+    #[test]
+    fn test_delete_override_of_a_yanked_file_journals_unyank() {
+        let (_dir, meta) = store();
+        meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"yanked")
+            .unwrap();
+
+        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl").unwrap();
+
+        assert!(existed);
+        assert!(
+            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(meta.current_serial().unwrap(), 1, "the un-yank is journaled");
+    }
+
+    #[test]
+    fn test_delete_override_of_a_missing_file_journals_nothing() {
+        let (_dir, meta) = store();
+
+        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl").unwrap();
+
+        assert!(!existed);
+        assert_eq!(meta.current_serial().unwrap(), 0, "a no-op reversal records no serial");
     }
 }
