@@ -2,7 +2,10 @@ use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use super::error::{MetaError, MetaScanError};
 use super::record::{CachedIndex, CachedIndexPage, ProjectStatusRecord};
-use super::{DRIVER_KV, FILE, INDEX, METADATA, MetaStore, PROJECT_STATUS, PROJECTS, file_source_value, metadata_value};
+use super::{
+    DRIVER_KV, DriverBatch, FILE, INDEX, JOURNAL, METADATA, MetaStore, PROJECT_STATUS, PROJECTS, SERIAL, SERIAL_KEY,
+    file_source_value, metadata_value,
+};
 
 impl MetaStore {
     /// Store everything a freshly fetched cached page produces in one transaction: the cached page
@@ -170,6 +173,64 @@ impl MetaStore {
             keys.push(key.value().to_owned());
         }
         Ok(keys)
+    }
+
+    /// Apply a batch of driver-owned writes in one transaction. `durable` requests an fsync-backed
+    /// commit; pass `false` for re-fetchable cache data, where skipping the fsync keeps a large-page
+    /// write at memory speed and a crash before the next durable commit only costs a refetch — the
+    /// fast path a write per key would lose.
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    ///
+    /// # Panics
+    /// Never in practice: reducing durability is rejected only after savepoint use, and this
+    /// transaction takes none.
+    pub fn commit_driver_batch(&self, batch: &DriverBatch, durable: bool) -> Result<(), MetaError> {
+        let mut txn = self.db.begin_write()?;
+        if !durable {
+            txn.set_durability(redb::Durability::None)
+                .expect("no savepoints in this transaction");
+        }
+        {
+            let mut table = txn.open_table(DRIVER_KV)?;
+            for (key, value) in &batch.puts {
+                table.insert(key.as_str(), value.as_slice())?;
+            }
+            for key in &batch.deletes {
+                table.remove(key.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Apply a driver-owned batch and, in the same transaction, allocate the next global serial and
+    /// record `journal` (opaque bytes the driver owns) under it, returning the serial. A hosted
+    /// publish keeps its rows, its journal entry, and its serial atomic: a row durable without its
+    /// journal entry would serve forever yet never reach a replica.
+    ///
+    /// # Errors
+    /// Returns a store error if the write or commit fails.
+    pub fn commit_driver_batch_journaled(&self, batch: &DriverBatch, journal: &[u8]) -> Result<u64, MetaError> {
+        let txn = self.db.begin_write()?;
+        let serial = {
+            let mut serials = txn.open_table(SERIAL)?;
+            let next = serials.get(SERIAL_KEY)?.map_or(0, |value| value.value()) + 1;
+            serials.insert(SERIAL_KEY, next)?;
+            let mut journal_table = txn.open_table(JOURNAL)?;
+            journal_table.insert(next, journal)?;
+            let mut table = txn.open_table(DRIVER_KV)?;
+            for (key, value) in &batch.puts {
+                table.insert(key.as_str(), value.as_slice())?;
+            }
+            for key in &batch.deletes {
+                table.remove(key.as_str())?;
+            }
+            next
+        };
+        txn.commit()?;
+        Ok(serial)
     }
 
     /// Every cached page's key, fetch timestamp, and upstream freshness lifetime, for the

@@ -45,6 +45,34 @@ const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv"
 const SERIAL_KEY: &str = "serial";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 
+/// A set of driver-owned writes to apply in one transaction.
+///
+/// Applied through [`MetaStore::commit_driver_batch`]. Keys and values are opaque bytes the store
+/// never interprets, so an ecosystem batches a multi-row mutation (a cached page, a publish)
+/// atomically without the store growing a table per format.
+#[derive(Debug, Default)]
+pub struct DriverBatch {
+    puts: Vec<(String, Vec<u8>)>,
+    deletes: Vec<String>,
+}
+
+impl DriverBatch {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Upsert `key` to `value` when the batch commits.
+    pub fn put(&mut self, key: String, value: Vec<u8>) {
+        self.puts.push((key, value));
+    }
+
+    /// Remove `key` when the batch commits.
+    pub fn delete(&mut self, key: String) {
+        self.deletes.push(key);
+    }
+}
+
 /// The metadata store.
 #[derive(Debug)]
 pub struct MetaStore {
