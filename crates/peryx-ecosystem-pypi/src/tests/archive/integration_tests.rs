@@ -1,5 +1,7 @@
 use std::io::Write as _;
 
+use rstest::rstest;
+
 use super::{temp_archive, valid_sdist};
 use crate::archive::{
     ArchiveError, DEFAULT_MEMBER_CHUNK, MAX_CONTAINER_DEPTH, MAX_LISTED_ENTRIES, MAX_NESTED_ARCHIVE_SIZE,
@@ -31,6 +33,15 @@ fn zip_with_file(path: &str, bytes: &[u8], compression: zip::CompressionMethod) 
         zip.write_all(bytes).unwrap();
         zip.finish().unwrap();
     }
+    buf
+}
+
+fn deflated_zip_with_forged_uncompressed_size(path: &str, bytes: &[u8], forged: u32) -> Vec<u8> {
+    let mut buf = zip_with_file(path, bytes, zip::CompressionMethod::Deflated);
+    let position = (0..buf.len())
+        .find(|&position| buf[position..].starts_with(b"PK\x01\x02"))
+        .unwrap();
+    buf[position + 24..position + 28].copy_from_slice(&forged.to_le_bytes());
     buf
 }
 
@@ -652,6 +663,60 @@ fn test_text_preview_rejects_binary_members_and_invalid_utf8() {
             DEFAULT_MEMBER_CHUNK,
         ),
         Err(ArchiveError::UnsafeMember(path)) if path == "../inner.zip"
+    ));
+}
+
+#[rstest]
+#[case::already_aligned("abcd", 1, b"bcd", 1)]
+#[case::two_byte_char("aébc", 2, b"bc", 3)]
+#[case::three_byte_char("a€b", 2, b"b", 4)]
+#[case::three_byte_char_second_continuation("a€b", 3, b"b", 4)]
+#[case::four_byte_char("a😀b", 2, b"b", 5)]
+#[case::four_byte_char_last_continuation("a😀b", 4, b"b", 5)]
+fn test_text_preview_realigns_offset_inside_multibyte_char(
+    #[case] content: &str,
+    #[case] offset: u64,
+    #[case] expected: &[u8],
+    #[case] expected_offset: u64,
+) {
+    let archive = zip_with_file("ok.txt", content.as_bytes(), zip::CompressionMethod::Stored);
+    let file = temp_archive(&archive);
+    let chunk =
+        read_text_member_chunk_nested_path("pkg-1.0-py3-none-any.whl", file.path(), &[], "ok.txt", offset, 16).unwrap();
+    assert_eq!(chunk.bytes, expected);
+    assert_eq!(chunk.offset, expected_offset);
+}
+
+#[test]
+fn test_text_preview_rejects_binary_content_at_offset() {
+    let archive = zip_with_file(
+        "bad.txt",
+        &[b'a', 0x80, 0x80, 0x80, 0x80],
+        zip::CompressionMethod::Stored,
+    );
+    let file = temp_archive(&archive);
+    assert!(matches!(
+        read_text_member_chunk_nested_path("pkg-1.0-py3-none-any.whl", file.path(), &[], "bad.txt", 1, DEFAULT_MEMBER_CHUNK),
+        Err(ArchiveError::BinaryMember(path)) if path == "bad.txt"
+    ));
+}
+
+#[test]
+fn test_read_compressed_zip_member_caps_offset_at_inspect_limit() {
+    let archive = deflated_zip_with_forged_uncompressed_size("pkg/mod.py", b"print('x')\n", 0x6000_0000);
+    let cap: u64 = 512 * 1024 * 1024;
+    assert!(matches!(
+        read_member_chunk("pkg-1.0-py3-none-any.whl", &archive, "pkg/mod.py", cap + 1, DEFAULT_MEMBER_CHUNK),
+        Err(ArchiveError::InvalidRange { offset, size }) if offset == cap + 1 && size == cap
+    ));
+}
+
+#[test]
+fn test_read_tar_member_offset_beyond_size_is_rejected() {
+    let tar = tar_with_file("pkg-1.0/mod.py", b"abc");
+    assert!(matches!(
+        read_member_chunk("pkg-1.0.tar", &tar, "pkg-1.0/mod.py", 10, DEFAULT_MEMBER_CHUNK),
+        Err(ArchiveError::InvalidRange { offset, size }) if offset == 10 && size == 3
     ));
 }
 
