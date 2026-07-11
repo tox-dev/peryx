@@ -3,21 +3,28 @@
   --bg-soft: #fffdf9;
   --bg-sink: #efeae1;
   --text: #1a1a1a;
+  --heading: #111111;
+  --text-strong: #111111;
   --text-soft: #3f3d3b;
   --text-faint: #6b6862;
   --accent: #c53d00;
   --accent-strong: #b23800;
   --brand-a: #f74c00;
   --brand-b: #ffb600;
+  // Foreground gold for text/marks: the brand gold (#ffb600) is invisible on the light page
+  // (1.6:1), so a dark amber carries the same role at AA contrast; on dark it becomes the brand gold.
+  --gold-fg: #8a6200;
   --border: #e6dfd2;
   --border-strong: #d8cfbe;
   --code-bg: #efeae1;
   --terminal-bg: #17140f;
   --terminal-text: #e7ddcf;
   --terminal-dim: #8a8175;
-  --ok: #0ca30c;
-  --warn: #d98a00;
-  --bad: #d03b3b;
+  // Status colors are theme-scoped: on the light page each is darkened to clear WCAG AA (4.5:1) as
+  // text; the dark theme lifts them back to a legible brightness on the dark page.
+  --ok: #0a7d0a;
+  --warn: #8f5a00;
+  --bad: #c62222;
   color-scheme: light;
 }
 
@@ -25,11 +32,25 @@
   --bg: #131110;
   --bg-soft: #1b1815;
   --bg-sink: #100e0c;
-  --text: #e7e7e9;
+  // Body stays off-white, never pure white: #ffffff on a dark page haloes ("halation") for readers
+  // with astigmatism. #e5e5e5 keeps the same ~15:1 the light page has, without the glow.
+  --text: #e5e5e5;
+  --heading: #fafafa;
+  // Bold gets a deliberate lift above the body brightness so emphasis pops. Light-mode bold reads as
+  // emphatic from weight alone (a perceptual effect); on dark that effect is weaker, so bold rides a
+  // brightness step up (body #e5e5e5, bold #f0f0f0, heading #fafafa) rather than resting on weight.
+  --text-strong: #f0f0f0;
   --text-soft: #bcbcbe;
-  --text-faint: #6f665a;
-  --accent: #ff8a3d;
-  --accent-strong: #ffb600;
+  --text-faint: #8f867a;
+  --accent: #d9682f;
+  --accent-strong: #e07838;
+  // Status and gold foregrounds matched to the light theme's contrast (~5:1) so the same element
+  // reads with the same emphasis in either theme, rather than shouting on one and whispering on the
+  // other.
+  --gold-fg: #ffb600;
+  --ok: #2f9d2f;
+  --warn: #c48a2c;
+  --bad: #df5b5b;
   --border: #2c2822;
   --border-strong: #3a352d;
   --code-bg: #1c1915;
@@ -59,6 +80,30 @@ body {
   line-height: 1.65;
   color: var(--text);
   background: var(--bg);
+}
+
+// Headings carry the brightest tier. On the dark theme emphasis rides on brightness, not weight
+// alone: headings sit above the off-white body, which reads as hierarchy without a pure-white glare.
+// Component headings that set their own color (accent card titles, hero) stay more specific and win.
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--heading);
+}
+
+// Bold body text rides one brightness step above the body colour (see --text-strong). Bold inside a
+// link keeps the link colour so emphasis never fights the accent.
+strong,
+b {
+  color: var(--text-strong);
+}
+
+a strong,
+a b {
+  color: inherit;
 }
 
 // One shell width, widened from the old 64rem (~50% more room on large screens) and fluid below it.
@@ -1567,7 +1612,7 @@ $brand-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 .brand-dim { color: var(--terminal-dim); }
-.brand-g { color: var(--brand-b); }
+.brand-g { color: var(--gold-fg); }
 .brand-ok { color: var(--ok); }
 
 .brand-specimens {
