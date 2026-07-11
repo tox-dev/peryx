@@ -198,9 +198,11 @@ impl Upstream {
 
     /// Send `method` with the token-auth flow: attach a cached token if any, and on a `401` carrying a
     /// bearer challenge, trade the configured credentials for a fresh token, cache it, and replay once.
-    /// The token cache is keyed by `(base, scope)`, so once one object in a repo authenticates the rest
-    /// reuse the token; the credentials only ever reach the realm, never the object (or a blob CDN it
-    /// redirects to).
+    /// The token cache is keyed by `(base, scope, identity)`, so once one object in a repo authenticates
+    /// the rest reuse the token; the credentials only ever reach the realm, never the object (or a blob
+    /// CDN it redirects to). The identity keys the cache by *whose* credentials minted the token: one
+    /// shared `Upstream` serves every proxy, so without it two indexes on the same host with different
+    /// credentials would trade tokens — an anonymous index riding a private token, or vice versa.
     async fn send(
         &self,
         method: Method,
@@ -211,7 +213,7 @@ impl Upstream {
         accept: Option<&str>,
     ) -> Result<Response, UpstreamError> {
         let scope = format!("repository:{repo}:pull");
-        let cache_key = format!("{base}\u{0}{scope}");
+        let cache_key = format!("{base}\u{0}{scope}\u{0}{}", auth_identity(auth));
         let cached = self.tokens.lock().await.get(&cache_key).cloned();
         let response = self.attempt(&method, url, accept, cached.as_deref()).await?;
         if response.status() != StatusCode::UNAUTHORIZED {
@@ -265,6 +267,27 @@ impl Upstream {
             .or(body.access_token)
             .ok_or_else(|| UpstreamError::Transport("token endpoint returned no token".to_owned()))
     }
+}
+
+/// A stable, opaque identity for the credentials that mint a token, for use in the token cache key.
+/// Distinct credentials must never collide, so `Basic`/`Bearer` fold their secret into a hash rather
+/// than the raw value — the key can end up in a log or a panic, and a password must not.
+fn auth_identity(auth: &Auth) -> String {
+    match auth {
+        Auth::None => "none".to_owned(),
+        Auth::Basic { username, password } => format!("basic:{:016x}", hash_secret(&[username, password])),
+        Auth::Bearer(token) => format!("bearer:{:016x}", hash_secret(&[token])),
+    }
+}
+
+/// Hash secret parts length-delimited (so `["ab","c"]` and `["a","bc"]` differ), never logging them.
+fn hash_secret(parts: &[&str]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Percent-encode a query-parameter value: the token scope and service names contain `:` and `/`.
@@ -403,5 +426,120 @@ mod tests {
             UpstreamError::RateLimited(Some("5".to_owned())).to_string(),
             "upstream rate limit reached"
         );
+    }
+
+    fn basic(username: &str, password: &str) -> Auth {
+        Auth::Basic {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        }
+    }
+
+    #[test]
+    fn test_auth_identity_distinguishes_credentials() {
+        let anon = auth_identity(&Auth::None);
+        let alice = auth_identity(&basic("alice", "pw"));
+        assert_eq!(anon, "none");
+        assert_ne!(anon, alice);
+        assert_ne!(alice, auth_identity(&basic("bob", "pw")));
+        assert_ne!(alice, auth_identity(&basic("alice", "other")));
+        assert_ne!(auth_identity(&Auth::Bearer("t".to_owned())), anon);
+        assert_ne!(auth_identity(&Auth::Bearer("t".to_owned())), alice);
+        assert_eq!(alice, auth_identity(&basic("alice", "pw")));
+    }
+
+    use base64::Engine as _;
+    use wiremock::matchers::{header as match_header, method, path};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    /// Match only the token-less first attempt, so the bearer-carrying retry falls through to the 200.
+    struct Unauthenticated;
+    impl Match for Unauthenticated {
+        fn matches(&self, request: &Request) -> bool {
+            !request.headers.contains_key("authorization")
+        }
+    }
+
+    fn challenge(base: &str) -> ResponseTemplate {
+        ResponseTemplate::new(401).insert_header(
+            "www-authenticate",
+            format!(r#"Bearer realm="{base}token",service="reg",scope="repository:library/nginx:pull""#).as_str(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_send_does_not_share_a_token_across_credentials() {
+        let server = MockServer::start().await;
+        let base = format!("{}/", server.uri());
+        let alice = base64::engine::general_purpose::STANDARD.encode("alice:pw1");
+        let bob = base64::engine::general_purpose::STANDARD.encode("bob:pw2");
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(Unauthenticated)
+            .respond_with(challenge(&base))
+            .mount(&server)
+            .await;
+        for (auth_header, token) in [(&alice, "tok-alice"), (&bob, "tok-bob")] {
+            Mock::given(method("GET"))
+                .and(path("/token"))
+                .and(match_header("authorization", format!("Basic {auth_header}").as_str()))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!(r#"{{"token":"{token}"}}"#)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/v2/library/nginx/manifests/latest"))
+                .and(match_header("authorization", format!("Bearer {token}").as_str()))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let upstream = Upstream::new();
+        upstream
+            .manifest(&base, &basic("alice", "pw1"), "library/nginx", "latest")
+            .await
+            .unwrap();
+        upstream
+            .manifest(&base, &basic("bob", "pw2"), "library/nginx", "latest")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_send_reuses_a_cached_token_for_the_same_credentials() {
+        let server = MockServer::start().await;
+        let base = format!("{}/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(Unauthenticated)
+            .respond_with(challenge(&base))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(match_header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let upstream = Upstream::new();
+        let auth = basic("alice", "pw1");
+        upstream
+            .manifest(&base, &auth, "library/nginx", "latest")
+            .await
+            .unwrap();
+        upstream
+            .manifest(&base, &auth, "library/nginx", "latest")
+            .await
+            .unwrap();
     }
 }
