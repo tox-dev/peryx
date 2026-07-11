@@ -38,6 +38,19 @@ pub struct RefreshSweep {
     pub changed: usize,
 }
 
+/// What a per-project cache purge planned or removed.
+///
+/// The driver owns the category names, so the neutral maintenance command tabulates them without
+/// knowing which records a format keeps: `PyPI` reports its index pages and file rows, another
+/// ecosystem whatever it stores.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PurgeReport {
+    /// The project name in the ecosystem's own normalized form.
+    pub project: String,
+    /// Ordered `(category, count)` pairs the command prints as columns.
+    pub categories: Vec<(String, u64)>,
+}
+
 /// How one ecosystem serves its wire protocol.
 ///
 /// The metadata methods ([`ecosystem`](Self::ecosystem), [`mount`](Self::mount),
@@ -160,7 +173,7 @@ pub trait EcosystemDriver: Send + Sync {
         _index: &str,
         _project: &str,
         _apply: bool,
-    ) -> Result<(String, peryx_storage::meta::ProjectCachePurgeCounts), String> {
+    ) -> Result<PurgeReport, String> {
         Err(format!(
             "the {} ecosystem does not support per-project cache purge",
             self.ecosystem().as_str()

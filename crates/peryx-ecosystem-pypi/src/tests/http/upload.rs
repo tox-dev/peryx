@@ -723,10 +723,10 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
         .fsck_metadata(meta, blobs, &mut report)
         .unwrap();
     // Purge the cached `pypi/flask` page so the project-reference walk runs over a real record.
-    let (normalized, _counts) = crate::serving::PypiServing
+    let report = crate::serving::PypiServing
         .purge_project(meta, "pypi", "flask", true)
         .unwrap();
-    assert_eq!(normalized, "flask");
+    assert_eq!(report.project, "flask");
 }
 
 #[tokio::test]

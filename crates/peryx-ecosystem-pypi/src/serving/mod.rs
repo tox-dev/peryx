@@ -189,7 +189,7 @@ impl EcosystemDriver for PypiServing {
         index: &str,
         project: &str,
         apply: bool,
-    ) -> Result<(String, peryx_storage::meta::ProjectCachePurgeCounts), String> {
+    ) -> Result<peryx_driver::serving::PurgeReport, String> {
         crate::admin::purge_project(meta, index, project, apply)
     }
 

@@ -6,10 +6,11 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 
+use peryx_driver::serving::PurgeReport;
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{BlobStore, Digest};
-use peryx_storage::meta::{CachedIndex, MetaStore, ProjectCachePurgeCounts};
+use peryx_storage::meta::{CachedIndex, MetaStore};
 
 use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
@@ -173,7 +174,7 @@ pub fn purge_project(
     index: &str,
     project: &str,
     apply: bool,
-) -> Result<(String, ProjectCachePurgeCounts), String> {
+) -> Result<PurgeReport, String> {
     let normalized = normalize_name(project);
     let target_key = format!("{index}/{normalized}");
     let target = project_refs(meta, &target_key)?;
@@ -191,7 +192,15 @@ pub fn purge_project(
         meta.count_project_cache_purge(index, &normalized, &file_digests, &metadata_digests)
             .map_err(|err| err.to_string())?
     };
-    Ok((normalized, counts))
+    Ok(PurgeReport {
+        project: normalized,
+        categories: vec![
+            ("index_pages".to_owned(), counts.index_pages as u64),
+            ("project_records".to_owned(), counts.project_records as u64),
+            ("file_url_records".to_owned(), counts.file_url_records as u64),
+            ("metadata_records".to_owned(), counts.metadata_records as u64),
+        ],
+    })
 }
 
 #[derive(Default)]

@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 use std::io::Write;
 
 use anyhow::Context as _;
-use peryx_storage::meta::{MetaStore, ProjectCachePurgeCounts};
+use peryx_driver::serving::PurgeReport;
+use peryx_storage::meta::MetaStore;
 
 use super::CacheStores;
 use crate::cli::{CachePurgeOrphanedBlobsArgs, CachePurgeProjectArgs};
@@ -25,18 +26,10 @@ pub(super) fn purge_project(
     let driver = crate::server::drivers()
         .get(ecosystem)
         .with_context(|| format!("no driver for the {ecosystem} ecosystem"))?;
-    let (normalized, counts) = driver
+    let report = driver
         .purge_project(&stores.meta, &args.index, &args.project, args.yes)
         .map_err(|reason| anyhow::anyhow!("{reason}"))?;
-    let header = b"action\ttarget\tindex\tproject\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\n";
-    out.write_all(header)?;
-    write_project_purge_counts(
-        out,
-        if args.yes { "removed" } else { "dry-run" },
-        &args.index,
-        &normalized,
-        counts,
-    )
+    write_project_purge_report(out, if args.yes { "removed" } else { "dry-run" }, &args.index, &report)
 }
 
 pub(super) fn purge_orphaned_blobs(
@@ -97,17 +90,21 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> anyhow::Result<BTreeSet<Stri
     Ok(digests)
 }
 
-fn write_project_purge_counts(
+fn write_project_purge_report(
     out: &mut dyn Write,
     action: &str,
     index: &str,
-    project: &str,
-    counts: ProjectCachePurgeCounts,
+    report: &PurgeReport,
 ) -> anyhow::Result<()> {
-    writeln!(
-        out,
-        "{action}\tproject\t{index}\t{project}\t{}\t{}\t{}\t{}",
-        counts.index_pages, counts.project_records, counts.file_url_records, counts.metadata_records
-    )?;
+    let mut header = "action\ttarget\tindex\tproject".to_owned();
+    let mut row = format!("{action}\tproject\t{index}\t{}", report.project);
+    for (category, count) in &report.categories {
+        header.push('\t');
+        header.push_str(category);
+        row.push('\t');
+        row.push_str(&count.to_string());
+    }
+    writeln!(out, "{header}")?;
+    writeln!(out, "{row}")?;
     Ok(())
 }
