@@ -88,11 +88,6 @@ impl AppState {
         self.drivers.iter().any(Option::is_some)
     }
 
-    /// Add another ecosystem's search indexer, composing with any already installed.
-    pub fn add_search_indexer(&mut self, indexer: Arc<dyn peryx_search::PackageIndexer>) {
-        self.serving_mut().search.add_indexer(indexer);
-    }
-
     /// Unique access to the serving state during build, before any handler holds a clone. Installing
     /// an ecosystem's indexer mutates the search index, which lives behind the shared `Arc`; this is
     /// sound only while that `Arc` is still uniquely owned, which it is until the router wraps it.

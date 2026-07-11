@@ -92,12 +92,6 @@ impl PackageSearch {
         })
     }
 
-    /// Replace the ecosystem indexer. The binary injects the configured ecosystem's indexer at
-    /// startup; without this the search index stays empty (see [`EmptyIndexer`](super::EmptyIndexer)).
-    pub fn set_indexer(&mut self, indexer: Arc<dyn PackageIndexer>) {
-        self.indexer = indexer;
-    }
-
     /// Add another ecosystem's indexer, keeping any already installed. A second ecosystem composes its
     /// documents with the first rather than replacing them, so a mixed deployment searches every index.
     pub fn add_indexer(&mut self, indexer: Arc<dyn PackageIndexer>) {
