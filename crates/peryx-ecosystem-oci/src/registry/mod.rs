@@ -126,11 +126,14 @@ struct UploadSession {
     pending: PendingBlob,
     offset: u64,
     index: String,
-    created_at: i64,
+    /// When the session last saw activity: its `POST`, a `PATCH`, or a status `GET`. The TTL runs from
+    /// here, not from creation, so a slow but active upload keeps its place instead of being evicted
+    /// mid-flight.
+    last_active_at: i64,
 }
-/// How long an open upload session lives before it is reclaimed. Each new upload evicts sessions past
-/// this age, so a client that starts uploads and abandons them cannot pin their file descriptors and
-/// temp files forever; dropping the session deletes its staged temp file.
+/// How long an open upload session may sit idle before it is reclaimed. Each new upload evicts sessions
+/// whose last activity is older than this, so a client that starts uploads and abandons them cannot pin
+/// their file descriptors and temp files forever; dropping the session deletes its staged temp file.
 const UPLOAD_SESSION_TTL_SECS: i64 = 3600;
 impl OciRegistry {
     /// Build the driver with its shared upstream client.

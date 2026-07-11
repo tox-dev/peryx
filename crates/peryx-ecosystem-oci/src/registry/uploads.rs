@@ -48,10 +48,10 @@ impl OciRegistry {
             pending,
             offset: 0,
             index: index.name.clone(),
-            created_at: now,
+            last_active_at: now,
         };
         let mut uploads = self.uploads.lock().await;
-        uploads.retain(|_, session| now - session.created_at < UPLOAD_SESSION_TTL_SECS);
+        uploads.retain(|_, session| now - session.last_active_at < UPLOAD_SESSION_TTL_SECS);
         uploads.insert(session.clone(), entry);
         drop(uploads);
         Ok(upload_accepted(name, &session, 0))
@@ -83,9 +83,12 @@ impl OciRegistry {
             .uploads
             .lock()
             .await
-            .get(session)
+            .get_mut(session)
             .filter(|entry| entry.index == index.name)
-            .map(|entry| entry.offset);
+            .map(|entry| {
+                entry.last_active_at = (state.clock)();
+                entry.offset
+            });
         Ok(offset.map_or_else(
             || error_response(ErrorCode::BlobUploadUnknown, "upload unknown"),
             |offset| upload_status_response(name, session, offset),
@@ -108,6 +111,8 @@ impl OciRegistry {
         let Some(mut entry) = self.take_session(&index.name, session).await else {
             return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
         };
+        // The TTL runs from last activity, so this chunk keeps the session alive whether or not it lands.
+        entry.last_active_at = (state.clock)();
         // A chunk whose `Content-Range` does not start where the last one ended is out of order, and
         // one whose `Content-Range` cannot be read makes a claim that cannot be honoured. Both answer
         // 416, and the session keeps its bytes so the client can resend.
