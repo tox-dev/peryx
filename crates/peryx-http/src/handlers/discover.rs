@@ -17,25 +17,16 @@ pub(super) fn index_api(state: &AppState, position: usize, uri: &axum::http::Uri
     axum::Json(peryx_driver::discovery::index_envelope(entry)).into_response()
 }
 
-/// The `/+api` entry for one index, rendered by whichever driver serves its ecosystem: a namespace
-/// driver when one claims the ecosystem, else the per-index driver, else a minimal entry for an
-/// ecosystem no installed driver serves.
+/// The `/+api` entry for one index, rendered by the driver serving its ecosystem, or a minimal entry
+/// for an ecosystem no installed driver serves.
 fn discover_index_entry(
     state: &AppState,
     index: peryx_driver::state::IndexDescription,
     base: Option<&peryx_driver::discovery::BaseUrl>,
 ) -> serde_json::Value {
-    if let Some(driver) = state.driver_for_name(index.ecosystem) {
-        driver.discover_index(index, base)
-    } else if let Some(serving) = index
-        .ecosystem
-        .parse()
-        .ok()
-        .and_then(|ecosystem| state.driver_for(ecosystem))
-    {
-        serving.discover_index(index, base)
-    } else {
-        peryx_driver::discovery::minimal_entry(&index)
+    match state.driver_for_name(index.ecosystem) {
+        Some(driver) => driver.discover_index(index, base),
+        None => peryx_driver::discovery::minimal_entry(&index),
     }
 }
 

@@ -61,14 +61,6 @@ pub enum UiBlock {
     },
 }
 
-impl UiMeta {
-    /// Whether there is anything to show, so a page can omit an empty panel.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.summary.is_none() && self.description.is_none() && self.blocks.is_empty()
-    }
-}
-
 /// A project page: the files of one project on one index, in display order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiProject {

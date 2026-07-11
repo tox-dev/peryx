@@ -27,12 +27,6 @@ impl AppState {
         self.lexicons.register(ecosystem, lexicon);
     }
 
-    /// The user-facing vocabulary for `ecosystem`, or peryx's neutral words if none is registered.
-    #[must_use]
-    pub fn lexicon(&self, ecosystem: Ecosystem) -> &'static peryx_core::Lexicon {
-        self.lexicons.get(ecosystem)
-    }
-
     /// What one search request reads from this state: the indexers' stores, the mutation epoch that
     /// decides whether the derived index is stale, and the registered vocabularies.
     #[must_use]

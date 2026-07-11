@@ -106,12 +106,11 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::R
     configs
         .iter()
         .map(|index| {
-            let rules = match drivers().get(index.ecosystem) {
-                Some(driver) => driver
-                    .compile_policy(&index.ecosystem_policy)
-                    .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?,
-                None => Vec::new(),
-            };
+            let rules = drivers()
+                .get(index.ecosystem)
+                .expect("every configured ecosystem has a registered driver")
+                .compile_policy(&index.ecosystem_policy)
+                .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?;
             Ok(Index {
                 name: index.name.clone(),
                 route: index.route.clone(),

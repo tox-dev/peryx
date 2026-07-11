@@ -91,17 +91,6 @@ impl ServingCache {
         }
     }
 
-    /// The lock concurrent misses for `key` share.
-    #[must_use]
-    pub fn flight_gate(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-        flight_gate(&self.inflight, key)
-    }
-
-    /// Release a single-flight hold held under `guard`.
-    pub fn release_flight(&self, key: &str, guard: tokio::sync::OwnedMutexGuard<()>) {
-        release_flight(&self.inflight, key, guard);
-    }
-
     /// Drop a single-flight entry after a fetch that held no owned guard, so later requests start
     /// fresh.
     ///
