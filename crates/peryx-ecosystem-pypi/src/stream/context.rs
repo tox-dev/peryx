@@ -33,6 +33,7 @@ pub fn page_context<S: std::hash::BuildHasher>(
     }
     PageContext {
         route: route.to_owned(),
+        base: None,
         project: project.to_owned(),
         policy,
         local_files,

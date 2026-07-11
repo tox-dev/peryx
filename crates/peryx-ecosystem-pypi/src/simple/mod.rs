@@ -12,6 +12,7 @@ mod render;
 pub use error::SimpleError;
 pub use file::{CoreMetadata, File, Provenance, Yanked};
 pub use meta::{API_VERSION, Meta, ProjectStatus};
+pub use parse::absolutize;
 pub use parse::{
     ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, parse_detail, parse_index, parse_meta, to_json,
 };

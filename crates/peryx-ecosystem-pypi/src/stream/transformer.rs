@@ -2,11 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use peryx_core::path::local_file_url;
+use peryx_core::path::{is_local_file_url, local_file_url};
 use peryx_policy::PolicyAction;
 
 use super::{PageContext, PageSummary, Registration, TransformError};
 use crate::policy::PypiPolicy;
+use crate::simple::absolutize;
 use crate::{CoreMetadata, File, parse_meta, to_json};
 
 /// The transformer's lexer state, kept across chunk boundaries.
@@ -393,7 +394,7 @@ impl PageTransformer {
         if let Some(yanked) = self.context.yanked.get(&file.filename) {
             file.yanked = yanked.clone();
         }
-        if file.url.starts_with('/') {
+        if is_local_file_url(&self.context.route, &file.url) {
             // A legacy cached record already carries peryx-route URLs; serve it as-is.
             if self.emitted_in_array {
                 out.push(b',');
@@ -401,6 +402,9 @@ impl PageTransformer {
             out.extend_from_slice(to_json(&file).as_bytes());
             self.emitted_in_array = true;
             return Ok(());
+        }
+        if let Some(base) = &self.context.base {
+            absolutize(base, &mut file.url);
         }
         if let Some(sha256) = file.hashes.get("sha256").cloned() {
             let metadata = if supports_metadata_sibling(&file.filename) {

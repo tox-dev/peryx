@@ -6,6 +6,7 @@ use super::{
     ServingState, UpstreamPermit, VecDeque, mirror_route, persist_streamed, release_flight, spawn_metadata_backfill,
     transform_error,
 };
+use crate::cache::fetch::canonical_json;
 
 pub(super) struct FreshJsonStream {
     pub(super) state: Arc<ServingState>,
@@ -41,8 +42,11 @@ impl FreshJsonStream {
         let etag = self.head.etag.clone();
         let last_serial = self.head.last_serial;
         let max_age = self.head.max_age;
+        let base = self.head.url.clone();
+        let mut context = self.context;
+        context.base = Some(base.clone());
         let preflight =
-            match preflight_json_stream(self.head.into_stream().boxed(), PageTransformer::new(self.context)).await {
+            match preflight_json_stream(self.head.into_stream().boxed(), PageTransformer::new(context)).await {
                 Ok(preflight) => preflight,
                 Err(err) => {
                     release_flight(&self.state, &self.key, self.guard);
@@ -74,6 +78,7 @@ impl FreshJsonStream {
                     last_serial,
                     fetched_at: self.now,
                     fresh_secs: max_age,
+                    base,
                     _permit: self.permit,
                 },
                 raw,
@@ -81,13 +86,14 @@ impl FreshJsonStream {
                 pending,
             ))),
             JsonPreflight::Complete { raw, served, summary } => {
+                let body = canonical_json(&raw, &base).unwrap_or(raw);
                 let record = CachedIndex {
                     etag,
                     last_serial,
                     fetched_at_unix: self.now,
                     content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
                     fresh_secs: max_age,
-                    body: raw,
+                    body,
                 };
                 let expires_at =
                     record.fetched_at_unix + crate::cache::freshness_secs(self.state.ttl_secs, record.fresh_secs);
@@ -197,6 +203,7 @@ struct LiveStream {
     last_serial: Option<u64>,
     fetched_at: i64,
     fresh_secs: Option<i64>,
+    base: url::Url,
     _permit: UpstreamPermit,
 }
 
@@ -246,13 +253,15 @@ fn live_stream(
                             ));
                         }
                     };
+                    let raw = std::mem::take(&mut raw);
+                    let body = canonical_json(&raw, &live.base).unwrap_or(raw);
                     let record = CachedIndex {
                         etag: live.etag.clone(),
                         last_serial: live.last_serial,
                         fetched_at_unix: live.fetched_at,
                         content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
                         fresh_secs: live.fresh_secs,
-                        body: std::mem::take(&mut raw),
+                        body,
                     };
                     let expires_at = record.fetched_at_unix + crate::cache::freshness_secs(state.ttl_secs, record.fresh_secs);
                     // One batched transaction, awaited before the body closes: every byte has been

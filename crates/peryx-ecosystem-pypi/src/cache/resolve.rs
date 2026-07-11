@@ -7,7 +7,7 @@ use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
-use peryx_core::path::local_file_url;
+use peryx_core::path::{is_local_file_url, local_file_url};
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
@@ -255,7 +255,7 @@ fn present_file(mut file: File, route: &str, known_metadata: &std::collections::
             metadata.clone(),
         )])));
     }
-    if !file.url.starts_with('/') {
+    if !is_local_file_url(route, &file.url) {
         file.url = local_file_url(route, &sha256, &file.filename);
     }
     file

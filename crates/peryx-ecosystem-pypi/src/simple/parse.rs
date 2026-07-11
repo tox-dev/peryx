@@ -1,9 +1,24 @@
 //! Parsing upstream PEP 691 JSON documents and the served response model.
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use super::meta::IncomingMeta;
 use super::{File, Meta, SimpleError};
+
+/// Resolve `url` in place against `base`, turning a relative, root-relative, or protocol-relative
+/// PEP 691 file reference into an absolute URL. An already-absolute URL is left byte-for-byte intact.
+///
+/// `PyPI` proper serves absolute URLs, but a static index (`dumb-pypi`, GitLab, Artifactory) may not;
+/// peryx must content-address and re-serve those files, which needs an absolute source URL.
+pub fn absolutize(base: &Url, url: &mut String) {
+    if Url::parse(url).is_ok() {
+        return;
+    }
+    if let Ok(resolved) = base.join(url) {
+        *url = resolved.into();
+    }
+}
 
 /// A project detail parsed from an upstream PEP 691 JSON response.
 #[derive(Debug, Clone, PartialEq, Eq)]

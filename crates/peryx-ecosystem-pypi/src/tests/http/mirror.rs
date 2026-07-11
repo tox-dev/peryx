@@ -23,6 +23,62 @@ async fn test_mirror_detail_json_rewrites_file_url_and_caches() {
     let (status2, ..) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     assert_eq!(status2, StatusCode::OK);
 }
+/// A JSON upstream serving `file_url` must content-address the file on peryx's own route and record
+/// `expected_source` as the blob's absolute origin, whatever shape the upstream URL took.
+async fn assert_mirror_json_resolves(file_url: &str, expected_source: impl FnOnce(&str) -> String) {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), file_url, None).await;
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str())));
+    assert!(!body.contains(&format!("\"url\":\"{file_url}\"")));
+    let source = h.state.meta.get_file_url(digest.as_str()).unwrap().unwrap();
+    assert_eq!(source.url, expected_source(&h.server.uri()));
+}
+#[tokio::test]
+async fn test_mirror_json_resolves_relative_file_url() {
+    assert_mirror_json_resolves("flask-1.0-py3-none-any.whl", |uri| {
+        format!("{uri}/simple/flask/flask-1.0-py3-none-any.whl")
+    })
+    .await;
+}
+#[tokio::test]
+async fn test_mirror_json_resolves_root_relative_file_url() {
+    assert_mirror_json_resolves("/packages/flask-1.0-py3-none-any.whl", |uri| {
+        format!("{uri}/packages/flask-1.0-py3-none-any.whl")
+    })
+    .await;
+}
+#[tokio::test]
+async fn test_mirror_json_resolves_protocol_relative_file_url() {
+    assert_mirror_json_resolves("//cdn.test/flask-1.0-py3-none-any.whl", |_uri| {
+        "http://cdn.test/flask-1.0-py3-none-any.whl".to_owned()
+    })
+    .await;
+}
+#[tokio::test]
+async fn test_mirror_json_already_local_record_round_trips() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let local_url = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let record = CachedIndex {
+        etag: None,
+        last_serial: None,
+        fetched_at_unix: 1000,
+        content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+        fresh_secs: None,
+        body: detail_json(digest.as_str(), &local_url).into_bytes(),
+    };
+    h.state.meta.put_index("pypi/flask", &record).unwrap();
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&local_url));
+}
 #[tokio::test]
 async fn test_mirror_detail_json_preserves_simple_api_fields() {
     let h = harness().await;

@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use peryx_policy::Policy;
+use url::Url;
 
 use crate::{File, Yanked};
 
@@ -11,6 +12,9 @@ use crate::{File, Yanked};
 pub struct PageContext {
     /// The route file URLs point back at, for example `root/pypi`.
     pub route: String,
+    /// The upstream page's response URL, present on a live fetch so relative file URLs resolve. A
+    /// warm re-transform reads an already-canonicalized body, so it leaves this `None`.
+    pub base: Option<Url>,
     /// The normalized project name this page serves.
     pub project: String,
     /// The compiled policy for the route being served.

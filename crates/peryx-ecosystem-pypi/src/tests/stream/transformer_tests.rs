@@ -433,6 +433,69 @@ fn test_two_local_files_emit_with_separators() {
     assert_eq!(detail.files.len(), 2);
 }
 
+fn based_context(base: &str) -> PageContext {
+    let mut context = plain_context();
+    context.base = Some(url::Url::parse(base).unwrap());
+    context
+}
+
+fn one_file_page(url: &str) -> String {
+    format!(
+        r#"{{"name":"demo","files":[{{"filename":"demo-1.0-py3-none-any.whl","url":"{url}","hashes":{{"sha256":"aa11"}}}}]}}"#
+    )
+}
+
+#[test]
+fn test_resolves_relative_file_url_against_the_response_url() {
+    let (out, registrations) = transform(
+        &one_file_page("demo-1.0-py3-none-any.whl"),
+        based_context("https://mirror.test/simple/demo/"),
+        5,
+    );
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.files[0].url, "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl");
+    assert_eq!(
+        registrations[0].url,
+        "https://mirror.test/simple/demo/demo-1.0-py3-none-any.whl"
+    );
+}
+
+#[test]
+fn test_resolves_root_relative_file_url_against_the_response_url() {
+    let (out, registrations) = transform(
+        &one_file_page("/packages/demo-1.0-py3-none-any.whl"),
+        based_context("https://mirror.test/simple/demo/"),
+        5,
+    );
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.files[0].url, "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl");
+    assert_eq!(
+        registrations[0].url,
+        "https://mirror.test/packages/demo-1.0-py3-none-any.whl"
+    );
+}
+
+#[test]
+fn test_resolves_protocol_relative_file_url_against_the_response_url() {
+    let (out, registrations) = transform(
+        &one_file_page("//cdn.test/demo-1.0-py3-none-any.whl"),
+        based_context("https://mirror.test/simple/demo/"),
+        5,
+    );
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.files[0].url, "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl");
+    assert_eq!(registrations[0].url, "https://cdn.test/demo-1.0-py3-none-any.whl");
+}
+
+#[test]
+fn test_absolute_file_url_is_left_intact_with_a_base() {
+    let page = r#"{"name":"demo","files":[{"filename":"demo-2.0.tar.gz","url":"https://files.test/demo-2.0.tar.gz","hashes":{}}]}"#;
+    let (out, registrations) = transform(page, based_context("https://mirror.test/simple/demo/"), 5);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.files[0].url, "https://files.test/demo-2.0.tar.gz");
+    assert!(registrations.is_empty());
+}
+
 #[test]
 fn test_legacy_record_urls_pass_through_unregistered() {
     let page = r#"{"files":[{"filename":"demo-1.0-py3-none-any.whl",

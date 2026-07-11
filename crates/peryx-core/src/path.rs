@@ -43,6 +43,20 @@ pub fn local_file_url(route: &str, sha256: &str, filename: &str) -> String {
     url
 }
 
+/// Whether `url` is a peryx-local file URL on `route`, the shape [`local_file_url`] produces.
+///
+/// This is the marker for an already-rewritten cache record. A bare leading `/` is not enough: a
+/// PEP 691 upstream may serve a legitimate root-relative file URL (`/packages/x.whl`), which must
+/// still resolve to a real blob rather than be mistaken for a local record.
+#[must_use]
+pub fn is_local_file_url(route: &str, url: &str) -> bool {
+    let mut prefix = String::with_capacity(route.len() + 8);
+    prefix.push('/');
+    push_path(&mut prefix, route);
+    prefix.push_str("/files/");
+    url.starts_with(&prefix)
+}
+
 /// Decode a percent-encoded route segment.
 ///
 /// # Errors
@@ -182,8 +196,8 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PathSafetyError, decode_path, decode_path_segment, local_file_url, validate_filename, validate_path_segment,
-        validate_route,
+        PathSafetyError, decode_path, decode_path_segment, is_local_file_url, local_file_url, validate_filename,
+        validate_path_segment, validate_route,
     };
 
     #[test]
@@ -192,6 +206,14 @@ mod tests {
             local_file_url("root/pypi", "aa", "pkg 1.0#x?.whl"),
             "/root/pypi/files/aa/pkg%201.0%23x%3F.whl"
         );
+    }
+
+    #[test]
+    fn test_is_local_file_url_matches_only_the_route_files_prefix() {
+        assert!(is_local_file_url("root/pypi", "/root/pypi/files/aa/pkg.whl"));
+        assert!(!is_local_file_url("root/pypi", "/packages/pkg.whl"));
+        assert!(!is_local_file_url("root/pypi", "/other/files/aa/pkg.whl"));
+        assert!(!is_local_file_url("root/pypi", "https://files.example/pkg.whl"));
     }
 
     #[test]

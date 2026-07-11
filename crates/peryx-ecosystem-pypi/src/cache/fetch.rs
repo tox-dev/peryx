@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::policy::PypiPolicy as _;
+use crate::simple::absolutize;
 use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
@@ -11,6 +12,7 @@ use peryx_events::metrics::Event;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_upstream::UpstreamClient;
+use url::Url;
 
 use crate::simple_client::{SimpleClientExt as _, SimpleResponse};
 
@@ -218,14 +220,36 @@ fn mirror_for_key<'a>(state: &'a ServingState, key: &str) -> Option<(&'a Index, 
         .max_by_key(|(index, _, _, _)| index.name.len())
 }
 
-/// The canonical raw body to persist: JSON pages verbatim, HTML pages converted once to PEP 691
-/// JSON (with upstream URLs intact), so every later read has one format to deal with.
+/// The canonical raw body to persist: file URLs resolved against the response URL and, for HTML
+/// pages, converted once to PEP 691 JSON, so every later read has one format with absolute URLs.
+///
+/// Resolving here is what lets the read path treat a leading-`/` URL as a peryx-local record: a
+/// root-relative upstream URL has already been made absolute by the time it lands in the cache.
 pub(super) fn canonical_raw(project: &str, response: &SimpleResponse) -> Result<Vec<u8>, CacheError> {
     if is_json(response.content_type.as_deref()) {
-        return Ok(response.body.to_vec());
+        return canonical_json(&response.body, &response.url);
     }
-    let parsed = parse_detail_html(project, &String::from_utf8_lossy(&response.body), &response.url);
-    let parsed = parsed?;
+    let parsed = parse_detail_html(project, &String::from_utf8_lossy(&response.body), &response.url)?;
+    let detail = ProjectDetail {
+        meta: parsed.meta,
+        name: parsed.name,
+        versions: parsed.versions,
+        files: parsed.files,
+    };
+    Ok(to_json(&detail).into_bytes())
+}
+
+/// Normalize a PEP 691 JSON body into the persisted form: every file URL made absolute against
+/// `base`, then reserialized. The streaming and buffered paths both persist through this, so
+/// identical upstream content compares byte-equal on a later revalidation.
+///
+/// # Errors
+/// Returns [`CacheError`] when `body` is not a valid PEP 691 project detail document.
+pub(super) fn canonical_json(body: &[u8], base: &Url) -> Result<Vec<u8>, CacheError> {
+    let mut parsed = parse_detail(body)?;
+    for file in &mut parsed.files {
+        absolutize(base, &mut file.url);
+    }
     let detail = ProjectDetail {
         meta: parsed.meta,
         name: parsed.name,
