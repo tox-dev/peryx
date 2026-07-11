@@ -24,6 +24,8 @@ use peryx_events::webhook::WebhookEventKind;
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::{BlobError, BlobStore, Digest, PendingBlob};
+use peryx_storage::meta::MetaError;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 impl OciRegistry {
@@ -225,30 +227,64 @@ pub(super) fn delete_blob(
             "only sha256 blob digests are supported",
         ));
     };
-    // Blobs are one global content-addressed pool, so a blob a manifest (in any index) still names is
-    // shared: physically removing it would break that manifest. Acknowledge the delete but retain the
-    // bytes; only an unreferenced blob is unlinked.
-    if store::referenced_blob_digests(&state.meta)?.contains(storage.as_str()) {
-        return Ok(accepted());
+    Ok(
+        match reclaim_unreferenced_blob(&state.blobs, &storage, || store::referenced_blob_digests(&state.meta))? {
+            BlobReclaim::Retained => accepted(),
+            BlobReclaim::Missing => error_response(ErrorCode::BlobUnknown, "blob unknown"),
+            BlobReclaim::Removed => {
+                emit_webhook(
+                    state,
+                    &Requester {
+                        headers,
+                        identity: &identity,
+                    },
+                    WebhookEventKind::Delete,
+                    index,
+                    &repo,
+                    None,
+                    Some(digest.to_owned()),
+                );
+                accepted()
+            }
+        },
+    )
+}
+
+/// What happened to a blob a `DELETE` targeted.
+enum BlobReclaim {
+    /// A manifest still names the blob (or one landed mid-delete), so its bytes stay.
+    Retained,
+    /// No blob is stored under the digest.
+    Missing,
+    /// The blob was unreferenced and its bytes were unlinked.
+    Removed,
+}
+
+/// Unlink a blob only while no manifest names it, re-checking across the unlink.
+///
+/// Blobs are one global content-addressed pool, so removing a blob a manifest (in any index) still
+/// names would break that manifest. The reference check and the unlink are separate steps, and a
+/// `put_manifest` that saw the blob present can commit its reference between them. To cover that
+/// window, read the bytes before unlinking and re-scan references after; if a push named the blob
+/// meanwhile, write the same bytes back and treat the delete as a no-op.
+fn reclaim_unreferenced_blob(
+    blobs: &BlobStore,
+    storage: &Digest,
+    mut referenced: impl FnMut() -> Result<BTreeSet<String>, MetaError>,
+) -> Result<BlobReclaim, ServeError> {
+    if referenced()?.contains(storage.as_str()) {
+        return Ok(BlobReclaim::Retained);
     }
-    let removed = state.blobs.remove(&storage).map_err(blob_fault)?;
-    Ok(if removed {
-        emit_webhook(
-            state,
-            &Requester {
-                headers,
-                identity: &identity,
-            },
-            WebhookEventKind::Delete,
-            index,
-            &repo,
-            None,
-            Some(digest.to_owned()),
-        );
-        accepted()
-    } else {
-        error_response(ErrorCode::BlobUnknown, "blob unknown")
-    })
+    if !blobs.exists(storage) {
+        return Ok(BlobReclaim::Missing);
+    }
+    let bytes = blobs.read(storage).map_err(blob_fault)?;
+    blobs.remove(storage).map_err(blob_fault)?;
+    if referenced()?.contains(storage.as_str()) {
+        blobs.write_verified(&bytes, storage).map_err(blob_fault)?;
+        return Ok(BlobReclaim::Retained);
+    }
+    Ok(BlobReclaim::Removed)
 }
 
 /// The outcome of fetching a missed blob from a virtual index's proxy members.
@@ -467,6 +503,27 @@ mod tests {
             blob_fault(BlobError::NotFound("x".to_owned())),
             ServeError::Transport(_)
         ));
+    }
+
+    #[test]
+    fn test_reclaim_blob_restores_bytes_when_a_reference_lands_mid_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let storage = blobs.write(b"layer").unwrap();
+        let mut scans = 0_u32;
+        // Unreferenced on the first scan; a manifest push then commits its reference across the
+        // unlink, so the blob must come back and the delete become a no-op.
+        let outcome = reclaim_unreferenced_blob(&blobs, &storage, || {
+            scans += 1;
+            Ok(if scans == 1 {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from([storage.as_str().to_owned()])
+            })
+        })
+        .unwrap();
+        assert!(matches!(outcome, BlobReclaim::Retained));
+        assert!(blobs.exists(&storage));
     }
 
     #[tokio::test]

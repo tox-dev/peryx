@@ -2,9 +2,11 @@
 
 use std::collections::BTreeSet;
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::Context as _;
 use peryx_driver::serving::PurgeReport;
+use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 
 use super::CacheStores;
@@ -37,41 +39,77 @@ pub(super) fn purge_orphaned_blobs(
     args: &CachePurgeOrphanedBlobsArgs,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let references = referenced_blob_digests(&stores.meta)?;
-    let mut count = 0_u64;
-    let mut bytes = 0_u64;
-    writeln!(out, "action\ttarget\tdigest\tsize_bytes\tpath")?;
-    stores
-        .blobs
+    let referenced = referenced_blob_digests(&stores.meta)?;
+    let candidates = orphan_candidates(&stores.blobs, &referenced)?;
+    // Re-read the reference set after the disk walk. An upload or mirror sync that committed a
+    // reference to a blob already on disk while we scanned lands in this second snapshot but not the
+    // first, so a blob it now names is spared rather than collected as an orphan.
+    let referenced = referenced_blob_digests(&stores.meta)?;
+    reclaim_orphans(&stores.blobs, args.yes, &candidates, &referenced, out)
+}
+
+/// A blob on disk that the up-front reference snapshot did not name, and so a candidate for
+/// collection pending a re-check against a fresh snapshot.
+struct OrphanCandidate {
+    digest: Digest,
+    bytes: u64,
+    path: PathBuf,
+}
+
+/// Walk the blob tree and gather every stored blob absent from `referenced`. Collecting the whole set
+/// before reclaiming lets the caller re-read references once the walk is done, closing the window in
+/// which a reference committed mid-scan would otherwise be missed.
+fn orphan_candidates(blobs: &BlobStore, referenced: &BTreeSet<String>) -> anyhow::Result<Vec<OrphanCandidate>> {
+    let mut candidates = Vec::new();
+    blobs
         .scan(|entry| {
-            let Some(digest) = &entry.digest else {
-                return Ok::<(), anyhow::Error>(());
-            };
-            if references.contains(digest.as_str()) {
-                return Ok(());
+            if let Some(digest) = entry.digest
+                && !referenced.contains(digest.as_str())
+            {
+                candidates.push(OrphanCandidate {
+                    digest,
+                    bytes: entry.bytes,
+                    path: entry.path,
+                });
             }
-            count += 1;
-            bytes += entry.bytes;
-            if args.yes {
-                stores.blobs.remove(digest)?;
-            }
-            writeln!(
-                out,
-                "{}\torphaned-blob\t{}\t{}\t{}",
-                if args.yes { "removed" } else { "dry-run" },
-                digest.as_str(),
-                entry.bytes,
-                entry.path.display()
-            )?;
-            Ok(())
+            Ok::<(), anyhow::Error>(())
         })
         .map_err(|err| anyhow::anyhow!("{err}"))
         .context("scan orphaned blob files")?;
-    writeln!(
-        out,
-        "summary\t{}\torphaned-blobs\t{count}\t{bytes}",
-        if args.yes { "removed" } else { "dry-run" }
-    )?;
+    Ok(candidates)
+}
+
+/// Report and, under `yes`, unlink each candidate the fresh `referenced` snapshot still does not name.
+/// A candidate a concurrent committer referenced during the walk shows up here and is left in place.
+fn reclaim_orphans(
+    blobs: &BlobStore,
+    yes: bool,
+    candidates: &[OrphanCandidate],
+    referenced: &BTreeSet<String>,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let action = if yes { "removed" } else { "dry-run" };
+    writeln!(out, "action\ttarget\tdigest\tsize_bytes\tpath")?;
+    let mut count = 0_u64;
+    let mut bytes = 0_u64;
+    for candidate in candidates {
+        if referenced.contains(candidate.digest.as_str()) {
+            continue;
+        }
+        count += 1;
+        bytes += candidate.bytes;
+        if yes {
+            blobs.remove(&candidate.digest)?;
+        }
+        writeln!(
+            out,
+            "{action}\torphaned-blob\t{}\t{}\t{}",
+            candidate.digest.as_str(),
+            candidate.bytes,
+            candidate.path.display()
+        )?;
+    }
+    writeln!(out, "summary\t{action}\torphaned-blobs\t{count}\t{bytes}")?;
     Ok(())
 }
 
@@ -107,4 +145,41 @@ fn write_project_purge_report(
     writeln!(out, "{header}")?;
     writeln!(out, "{row}")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reclaim_orphans_spares_a_reference_that_landed_during_the_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let orphan = blobs.write(b"orphan").unwrap();
+        let raced = blobs.write(b"raced").unwrap();
+        let candidates = orphan_candidates(&blobs, &BTreeSet::new()).unwrap();
+        // The committer named `raced` after the up-front snapshot; the fresh snapshot the walk hands
+        // back now carries it, so only the true orphan is reclaimed.
+        let referenced = BTreeSet::from([raced.as_str().to_owned()]);
+        let mut out = Vec::new();
+        reclaim_orphans(&blobs, true, &candidates, &referenced, &mut out).unwrap();
+        assert!(!blobs.exists(&orphan));
+        assert!(blobs.exists(&raced));
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains(&format!("removed\torphaned-blob\t{}\t", orphan.as_str())));
+        assert!(!text.contains(raced.as_str()));
+        assert!(text.contains("summary\tremoved\torphaned-blobs\t1\t6\n"));
+    }
+
+    #[test]
+    fn test_orphan_candidates_reports_a_scan_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("blobs");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("sha256"), b"not a directory").unwrap();
+        let err = orphan_candidates(&BlobStore::new(&root), &BTreeSet::new())
+            .err()
+            .expect("scanning a corrupt store fails");
+        assert!(err.to_string().contains("scan orphaned blob files"), "{err}");
+    }
 }
