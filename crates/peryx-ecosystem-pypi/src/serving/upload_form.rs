@@ -210,10 +210,6 @@ pub(super) fn upload_error_message(err: &UploadError) -> (StatusCode, String) {
             format!("filename version {filename:?} does not match upload version {form:?}"),
         ),
         UploadError::DigestMismatch(field) => (StatusCode::BAD_REQUEST, format!("{field} mismatch")),
-        UploadError::Md5Only => (
-            StatusCode::BAD_REQUEST,
-            "md5_digest is not accepted without a sha256_digest or blake2_256_digest".to_owned(),
-        ),
         UploadError::InvalidDigest { field, value } => (
             StatusCode::BAD_REQUEST,
             format!("{field} value {value:?} is not lowercase hex with the expected length"),

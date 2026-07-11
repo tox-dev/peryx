@@ -1,4 +1,7 @@
+use std::fmt::Write as _;
+
 use axum::http::StatusCode;
+use md5::{Digest as _, Md5};
 use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -58,41 +61,49 @@ async fn test_upload_conformance_accepts_wheel_and_sdist_with_metadata() {
 }
 
 #[tokio::test]
-async fn test_upload_conformance_rejects_legacy_and_weak_uploads() {
+async fn test_upload_conformance_rejects_legacy_egg() {
     let harness = harness().await;
     let wheel = fixture_wheel();
-
-    for (filename, filetype, extra_field, expected) in [
-        (
-            "peryxpkg-1.0-py3-none-any.egg",
-            "bdist_egg",
-            None,
-            "legacy .egg uploads are not accepted",
-        ),
-        (
-            "peryxpkg-1.0-py3-none-any.whl",
-            "bdist_wheel",
-            Some(("md5_digest", "d41d8cd98f00b204e9800998ecf8427e")),
-            "md5_digest is not accepted",
-        ),
-    ] {
-        let mut fields = vec![
+    let (content_type, body) = multipart_body(
+        &[
             (":action", "file_upload"),
             ("name", "peryxpkg"),
             ("version", "1.0"),
-            ("filetype", filetype),
-        ];
-        if let Some(field) = extra_field {
-            fields.push(field);
-        }
-        let (content_type, body) = multipart_body(&fields, Some((filename, &wheel)));
+            ("filetype", "bdist_egg"),
+        ],
+        Some(("peryxpkg-1.0-py3-none-any.egg", &wheel)),
+    );
 
-        let (status, text) =
-            post_upload_response(&harness.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
+    let (status, text) =
+        post_upload_response(&harness.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(text.contains(expected), "{text}");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(text.contains("legacy .egg uploads are not accepted"), "{text}");
+}
+
+#[tokio::test]
+async fn test_upload_conformance_accepts_md5_only_digest() {
+    let harness = harness().await;
+    let wheel = fixture_wheel();
+    let mut md5 = String::new();
+    for byte in Md5::digest(&wheel) {
+        write!(md5, "{byte:02x}").unwrap();
     }
+    let (content_type, body) = multipart_body(
+        &[
+            (":action", "file_upload"),
+            ("name", "peryxpkg"),
+            ("version", "1.0"),
+            ("filetype", "bdist_wheel"),
+            ("md5_digest", md5.as_str()),
+        ],
+        Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)),
+    );
+
+    let (status, text) =
+        post_upload_response(&harness.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "upload accepted"));
 }
 
 #[tokio::test]

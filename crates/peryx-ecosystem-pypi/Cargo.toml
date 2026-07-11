@@ -28,6 +28,7 @@ serving = [
   "dep:bytes",
   "dep:base64",
   "dep:blake2",
+  "dep:md-5",
   "dep:csv",
   "dep:reqwest",
   "dep:rustls",
@@ -72,6 +73,7 @@ http = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 blake2 = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
 csv = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
