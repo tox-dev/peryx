@@ -47,7 +47,6 @@ pypi --> driver
 oci --> driver
 driver --> foundation
 http --> foundation
-web -.->|hydration helper| pypi
 
 classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
 classDef good fill:#009E73,stroke:#009E73,color:#ffffff
@@ -68,9 +67,9 @@ dependency compiled for tests, never for the shipped binary), so their integrati
 without the normal build ever pointing an ecosystem back at its host. The binary at the top is the one place that names
 `pypi` and `oci` and wires them together.
 
-The dashed edge is the exception worth knowing: the UI's hydration island still calls one PyPI parse helper, so
-`peryx-web` carries a normal dependency on `peryx-ecosystem-pypi`. Server-side rendering goes through neutral models
-(see the block protocol below); the client-side data fetch has not moved yet.
+`peryx-web` points at no ecosystem. Server rendering calls the driver directly, and the browser fetches neutral
+view-model JSON the server produced by calling the driver, so the client draws a PyPI project or an OCI manifest through
+the same neutral models (see the block protocol below) without ever parsing a format itself.
 
 ## The layers
 
@@ -79,20 +78,23 @@ domain: the `Ecosystem` and `Role` [enums](https://doc.rust-lang.org/book/ch06-0
 whose value is exactly one of a fixed set of variants), the `Lexicon`, the `UiBlock` view models, and
 [URL](https://developer.mozilla.org/en-US/docs/Learn/Common_questions/Web_mechanics/What_is_a_URL) path safety.
 `peryx-index` is the role engine, covering `Index`, `IndexKind`, route resolution, virtual-layer shadowing, and the
-serving caches. `peryx-storage` is the two stores: package metadata in [redb](https://github.com/cberner/redb) (an
-embedded [key-value](https://en.wikipedia.org/wiki/Key%E2%80%93value_database) database, the Rust counterpart to
-[SQLite](https://www.sqlite.org/) or [LMDB](http://www.lmdb.tech/doc/)) and artifacts (the actual package files, a
-[blob](https://en.wikipedia.org/wiki/Object_storage) or binary object each) on disk under
-[content-addressable storage](https://en.wikipedia.org/wiki/Content-addressable_storage): a file's key is the
+serving caches. `peryx-storage` is the two neutral stores, neither knowing any format's schema: artifacts as
+[content-addressed](https://en.wikipedia.org/wiki/Content-addressable_storage)
+[blobs](https://en.wikipedia.org/wiki/Object_storage) on disk (a file's key is the
 [SHA-256](https://en.wikipedia.org/wiki/SHA-2) [hash](https://en.wikipedia.org/wiki/Hash_function) of its bytes, so
-identical bytes are stored once and every reference is tamper-evident. `peryx-search` is the package index, built on
-[Tantivy](https://github.com/quickwit-oss/tantivy) (a [full-text search](https://en.wikipedia.org/wiki/Full-text_search)
-library, the Rust counterpart to [Lucene](https://lucene.apache.org/)). `peryx-events` carries
-[Prometheus](https://prometheus.io/)-format [metrics](https://prometheus.io/docs/concepts/metric_types/), security
-events, and [webhooks](https://en.wikipedia.org/wiki/Webhook) (an outbound HTTP callback fired when something changes);
-`peryx-policy` the neutral allow/deny engine; `peryx-upstream` the client that fetches from an *upstream* (the real
-index peryx proxies, such as [pypi.org](https://pypi.org/) or [Docker Hub](https://hub.docker.com/)); `peryx-identity`
-the upload-token check.
+identical bytes are stored once and every reference is tamper-evident), and a [redb](https://github.com/cberner/redb)
+(an embedded [key-value](https://en.wikipedia.org/wiki/Key%E2%80%93value_database) database, the Rust counterpart to
+[SQLite](https://www.sqlite.org/) or [LMDB](http://www.lmdb.tech/doc/)) database holding the serial counter, the webhook
+queue, and the opaque `driver_kv` table each ecosystem lays its own metadata into. `peryx-search` is the package index,
+built on [Tantivy](https://github.com/quickwit-oss/tantivy) (a
+[full-text search](https://en.wikipedia.org/wiki/Full-text_search) library, the Rust counterpart to
+[Lucene](https://lucene.apache.org/)). `peryx-events` carries [Prometheus](https://prometheus.io/)-format
+[metrics](https://prometheus.io/docs/concepts/metric_types/), security events, and
+[webhooks](https://en.wikipedia.org/wiki/Webhook) (an outbound HTTP callback fired when something changes);
+`peryx-policy` the neutral allow/deny engine; `peryx-upstream` the neutral upstream transport — conditional GET, retry,
+and range and streaming fetch — that each ecosystem's protocol layer builds on to reach the real *upstream* index peryx
+proxies (such as [pypi.org](https://pypi.org/) or [Docker Hub](https://hub.docker.com/)); `peryx-identity` the
+upload-token check.
 
 **The seam.** `peryx-driver` defines what an ecosystem plugs into. The word *seam* here is the software-design sense: a
 place where you can change behavior by substituting a component rather than editing in place. The formal name for this
@@ -201,43 +203,76 @@ declares and hands it the whole request, which the driver resolves against the c
 ## The storage layer
 
 `peryx-storage` is the only crate that touches disk. It keeps two stores side by side under one data directory, so a
-restart loses nothing and a backup is a directory copy.
+restart loses nothing and a backup is a directory copy. Each layer below is read the same way: first the neutral
+**abstraction** every ecosystem shares, then the **extension** each format builds on top of it.
 
-The **metadata store** is a single [redb](https://github.com/cberner/redb) database: an embedded, transactional
-([ACID](https://en.wikipedia.org/wiki/ACID)) key-value store with one writer at a time and
-[MVCC](https://en.wikipedia.org/wiki/Multiversion_concurrency_control) readers that never block it, so a fetch reads
-consistent state while a publish commits. It holds one table per record kind, each keyed by a short string:
-
-- `index_document`: a cached upstream index page, keyed `index/project`.
-- `artifact_source`: where a blob's bytes come from, so a cold download knows which upstream URL to pull.
-- `metadata_sidecar`: the [PEP 658](https://peps.python.org/pep-0658/) `.metadata` companion of a wheel, so a resolver
-  reads a distribution's `METADATA` without downloading the whole wheel.
-- `projects` and `project_status`: a project's display name and its yank/hide state.
-- `uploads` and `overrides`: hosted publish records and the yank/hide overrides layered on them.
-- `webhook_delivery` and `webhook_due`: the durable queue behind signed webhook delivery.
-- `journal`: an append-only log of mutations, the seam a future
-  [replica](https://en.wikipedia.org/wiki/Replication_%28computing%29) reads.
-- `driver_kv`: a per-ecosystem key-value escape hatch, where OCI keeps manifests that fit no PyPI-shaped table.
-
-Each write is one transaction, so a record and its counters commit together or not at all.
-
-The **blob store** holds the artifacts themselves as ordinary files under a
-[content-addressed](https://en.wikipedia.org/wiki/Content-addressable_storage) tree: each file is named for the
+**Abstraction.** Two primitives are genuinely format-neutral. The **blob store** holds artifacts as ordinary files under
+a [content-addressed](https://en.wikipedia.org/wiki/Content-addressable_storage) tree: each file is named for the
 [SHA-256](https://en.wikipedia.org/wiki/SHA-2) of its bytes and sharded two levels deep (`sha256/ab/cd/abcd…`) so no
 directory holds millions of entries. A write streams to a temporary file and
 [atomically renames](https://man7.org/linux/man-pages/man2/rename.2.html) it into place once the hash is known, so a
 reader never sees a half-written blob and two clients fetching the same artifact converge on one file. Because the name
-is the hash, a truncated or tampered file is detectable, and a client can verify exactly what it downloaded.
+is the hash, identical bytes are stored once across every ecosystem, and a truncated or tampered file is detectable. The
+second neutral primitive is **`driver_kv`**, one [redb](https://github.com/cberner/redb) table of opaque bytes the store
+never interprets: a driver owns its keys end to end, reads and writes values the store treats as blobs, and enumerates
+them with an ordered `driver_prefix_keys` scan. redb is an embedded, transactional
+([ACID](https://en.wikipedia.org/wiki/ACID)) key-value store with one writer and
+[MVCC](https://en.wikipedia.org/wiki/Multiversion_concurrency_control) readers that never block it, so a fetch reads
+consistent state while a publish commits, and each write is one transaction.
+
+A driver rarely writes one row at a time. `commit_driver_batch` applies many opaque rows in one transaction — the
+atomicity a cached page or a publish needs — and a journaled variant allocates the store's monotonic **serial** and
+records an opaque changelog entry in the same commit, so a publish's rows, its serial, and its journal entry land
+together or not at all. Nothing here is format-specific: the store holds content-addressed blobs, `driver_kv`, the
+serial counter, and the durable webhook queue, and knows no ecosystem's schema.
+
+**Extension.** Both ecosystems build their whole model on `driver_kv`, each under its own null-delimited namespace, so
+the store never grows a table per format. PyPI lays cached
+[Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) pages, observed projects and
+their [PEP 700](https://peps.python.org/pep-0700/) yank/hide status, hosted uploads and their overrides,
+[PEP 658](https://peps.python.org/pep-0658/) metadata siblings, and the upstream URLs a cold blob refetches from under a
+`pypi\0<kind>\0…` namespace — committing a freshly fetched page's rows in one batch, and a publish's rows, serial, and
+[replication](https://en.wikipedia.org/wiki/Replication_%28computing%29) journal entry atomically. OCI lays manifests
+(byte-for-byte, so their digest stays stable), tags, cached tag-list pages, tag freshness, and the
+[referrers](https://github.com/opencontainers/distribution-spec/blob/main/spec.md#listing-referrers) graph under
+`oci\0<kind>\0…`. Both keep only artifact bytes in the shared blob store, where an OCI layer and a Python wheel dedupe
+against the same content-addressed tree. The value encodings and key layout are the driver's own; the store never reads
+them, so a third ecosystem adds its model without a storage change.
+
+{% mermaid() %}
+flowchart TD
+pypi["PyPI driver"]
+oci["OCI driver"]
+blob["BlobStore<br/>sha256 CAS · shared, deduped"]
+kv["driver_kv<br/>opaque bytes · driver owns keys<br/>atomic batch + serial journal"]
+pypi -->|"pypi\0i pages · pypi\0p projects<br/>pypi\0u uploads · pypi\0d metadata"| kv
+pypi -->|"artifact bytes"| blob
+oci -->|"oci\0m manifests · oci\0t tags<br/>oci\0r referrers · tag pages"| kv
+oci -->|"layer bytes"| blob
+
+classDef neutral fill:#0072B2,stroke:#0072B2,color:#ffffff
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+class blob,kv neutral
+class pypi,oci good
+{% end %}
+
+The blob store and `driver_kv` in blue are neutral; the typed tables in orange are the PyPI model living in the shared
+crate. Both drivers reach the blob store; only OCI extends `driver_kv`, and only PyPI touches the typed tables.
 
 ## The caching layer
 
-`peryx-index` owns the coordination that lets a cold cache serve at upstream wire speed and a warm one from memory. Four
-mechanisms share one `ServingCache`:
+`peryx-index` owns the coordination that lets a cold cache serve at upstream wire speed and a warm one from memory.
+
+**Abstraction.** One `ServingCache`, shared by every ecosystem, carries five mechanisms:
 
 - **Single-flight.** A per-key [`Mutex`](https://doc.rust-lang.org/std/sync/struct.Mutex.html) map (`inflight`): when
   many clients request the same uncached artifact at once, one fetch runs upstream and the rest await it instead of each
   starting its own download. The name comes from Go's [singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight)
   package; the effect is protection against a [thundering herd](https://en.wikipedia.org/wiki/Thundering_herd_problem).
+- **Stale-on-error.** A `within_stale_bound` check that lets a proxy serve the last good page for a bounded window when
+  the upstream is unreachable, following [RFC 5861](https://datatracker.ietf.org/doc/html/rfc5861)'s `stale-if-error` (a
+  close cousin of [stale-while-revalidate](https://web.dev/articles/stale-while-revalidate)). The bound is an operator's
+  explicit choice, so a lasting outage surfaces as an error rather than as quietly ancient data.
 - **The transformed-page cache** (`hot`). A parsed, rewritten index page kept in memory in a
   [moka](https://github.com/moka-rs/moka) [cache](https://en.wikipedia.org/wiki/Cache_%28computing%29) bounded by a byte
   budget, so a warm request skips re-parsing. Every entry is re-derivable from the stored raw page, so evicting one
@@ -249,10 +284,232 @@ mechanisms share one `ServingCache`:
   write. Derived state (the search index, hot entries) records the epoch it was built at and rebuilds when the counter
   moves, so a publish becomes visible without invalidating each cache by hand.
 
-On top of these, *stale-on-error* lets a proxy serve the last good page for a bounded window when the upstream is
-unreachable, following [RFC 5861](https://datatracker.ietf.org/doc/html/rfc5861)'s `stale-if-error` (a close cousin of
-[stale-while-revalidate](https://web.dev/articles/stale-while-revalidate)). That bound is an operator's explicit choice,
-so a lasting outage surfaces as an error rather than as quietly ancient data.
+**Extension.** The two ecosystems use different slices of that one cache. PyPI uses all five: it keys the hot cache by
+`route\0project\0variant\0epoch`, so the PEP 691 JSON, PEP 503 HTML, and legacy-JSON renderings of a page share a raw
+fetch yet cache separately, and one epoch bump on a yank or upload retires every variant at once. It reads the negative
+cache on a miss and coordinates each upstream fetch through single-flight. OCI uses only the two primitives that carry
+no assumption about an in-memory page: single-flight (keyed by blob digest or manifest reference) and the stale bound.
+It caches nothing in the hot or negative caches and never bumps the epoch; its proxy cache lives in `driver_kv`
+(`tag_page`, `tag_freshness`), and it gates freshness by comparing its own stored `fetched_at` through the same shared
+`within_stale_bound`.
+
+{% mermaid() %}
+flowchart TD
+pypi["PyPI"]
+oci["OCI"]
+flight["single-flight"]
+stale["within_stale_bound<br/>stale-on-error"]
+hot["hot page cache<br/>moka · epoch-keyed"]
+neg["negative cache"]
+epoch["mutation epoch"]
+kv["driver_kv<br/>tag pages · freshness"]
+pypi --> flight
+pypi --> stale
+pypi --> hot
+pypi --> neg
+pypi --> epoch
+oci --> flight
+oci --> stale
+oci --> kv
+
+classDef shared fill:#0072B2,stroke:#0072B2,color:#ffffff
+classDef pypionly fill:#009E73,stroke:#009E73,color:#ffffff
+classDef persist fill:#D55E00,stroke:#D55E00,color:#ffffff
+class flight,stale shared
+class hot,neg,epoch pypionly
+class kv persist
+{% end %}
+
+Blue marks the two primitives both ecosystems share; green marks the in-memory caches only PyPI uses; orange marks the
+persistent `driver_kv` fallback OCI reaches for instead.
+
+## The upstream layer
+
+`peryx-upstream` is how a cached role reaches the real index it proxies.
+
+**Abstraction.** The `UpstreamClient` is a neutral HTTP client that names no format. It fetches a resource
+[conditionally](https://developer.mozilla.org/en-US/docs/Web/HTTP/Conditional_requests): it sends the stored
+[`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag) as
+[`If-None-Match`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-None-Match) and returns the raw status,
+etag, serial, and `max-age` to the caller rather than acting on them, so a
+[`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304) or a `404` is a value the caching
+layer interprets, not a branch buried in the client. A transient failure retries up to twice (three attempts total) on a
+[5xx](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status#server_error_responses), `408`, or `429`, and on a
+timeout or connection error, with [exponential backoff](https://en.wikipedia.org/wiki/Exponential_backoff) and
+[jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) (100 ms base, 2 s cap).
+Bounding how many fetches run at once lives one layer up, in `peryx-driver`'s `UpstreamLimits`: an optional per-index
+[semaphore](https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html), off by default, that caps simultaneous
+upstream requests and applies
+[back-pressure](https://en.wikipedia.org/wiki/Back_pressure#Backpressure_in_information_technology) — a waiter blocks up
+to 30 s, then gets a retryable `UpstreamLimited` error.
+
+**Extension.** Both ecosystems fetch through the same client and the same limiter; the format-specific part is only what
+they request and how they read the reply. PyPI fetches Simple-index pages (conditional on the index's etag and serial)
+and wheels; OCI fetches manifests, blobs, and tag lists. Neither the client nor the limiter names a format.
+
+{% mermaid() %}
+flowchart TD
+caller["cached role needs a page / blob"]
+limit["UpstreamLimit (peryx-driver)<br/>per-index semaphore · off by default"]
+client["UpstreamClient<br/>If-None-Match: stored etag"]
+up["upstream index<br/>pypi.org · Docker Hub"]
+retry{"transient?<br/>5xx · 408 · 429 · timeout"}
+decide["caching layer decides<br/>status returned as-is"]
+caller --> limit
+limit -->|"permit"| client
+limit -.->|"full 30s → UpstreamLimited (retryable)"| bp["back-pressure"]
+client --> up
+up -->|"304 / 200 / 404"| decide
+up --> retry
+retry -->|"≤2 retries · jittered backoff"| client
+
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
+class client,up accent
+class limit good
+class retry,bp warn
+{% end %}
+
+## The search layer
+
+`peryx-search` answers a substring query across every index in the process.
+
+**Abstraction.** It is [full-text search](https://en.wikipedia.org/wiki/Full-text_search) on
+[Tantivy](https://github.com/quickwit-oss/tantivy) (a Rust search engine, the counterpart to
+[Lucene](https://lucene.apache.org/)) over a fixed neutral schema — display name, normalized name, route, ecosystem,
+summary, and a free-text field — tokenized with an [n-gram](https://en.wikipedia.org/wiki/N-gram) tokenizer so a
+fragment matches. The index records the [mutation epoch](#the-caching-layer) it was built at; when a write moves the
+epoch, it does a full wipe-and-rebuild (delete every document, re-add, commit, reload) rather than an incremental
+update, which keeps the indexing seam a single pure function of the current records. A query intersects the n-gram terms
+(or runs a [regex](https://docs.rs/tantivy/latest/tantivy/query/struct.RegexQuery.html) for a `re:` or very short query)
+and returns results ordered alphabetically by a composite sort key — not by
+[relevance score](https://en.wikipedia.org/wiki/Okapi_BM25), a deliberate choice for a package index where the exact
+name is what a user wants.
+
+**Extension.** Each ecosystem registers a `PackageIndexer` whose `documents()` maps its records into the neutral
+`PackageDocument`; a `CompositeIndexer` concatenates every ecosystem's documents into the one index. PyPI turns its
+projects into documents, OCI its repositories. The schema and the query path never name a format; a driver owns only the
+record-to-document mapping.
+
+{% mermaid() %}
+flowchart TD
+mut["mutation<br/>publish · yank · fresh upstream page"]
+epoch["mutation epoch++ (AtomicU64)"]
+check{"index epoch<br/>&lt; current?"}
+comp["CompositeIndexer<br/>each driver: records → PackageDocument"]
+tan["Tantivy index<br/>neutral schema · n-gram tokens"]
+q["/search query"]
+res["results<br/>alphabetical by sort key"]
+mut --> epoch
+epoch --> check
+check -->|"stale → full wipe + rebuild"| comp
+comp --> tan
+q --> tan
+tan --> res
+
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+class tan accent
+class comp good
+{% end %}
+
+## The policy layer
+
+`peryx-policy` decides whether an artifact may be served, cached, or uploaded. It is the cleanest example of the
+abstraction-plus-extension shape: a neutral engine that an ecosystem feeds typed rules.
+
+**Abstraction.** A `Policy` carries format-agnostic controls — allow and block project lists
+([PEP 503](https://peps.python.org/pep-0503/)-normalized keys), a maximum file size, a maximum project size — plus an
+ordered `Vec` of `ArtifactRule` [trait objects](https://doc.rust-lang.org/book/ch17-02-trait-objects.html) the ecosystem
+supplies. Evaluation is first-match: it checks the project lists (allow-list before block-list), then file size, then
+each rule in order, and the first denial wins. A denial returns a `PolicyDenial` carrying the action, the offending
+project, static rule and field identifiers, and a human reason, which maps to
+[`403 Forbidden`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403) with the serialized denial as the JSON
+body.
+
+**Extension.** `compile_policy` is the seam. The binary splits an index's `[policy]` table: neutral keys go to
+`Policy::compile`, and whatever remains goes to the driver's `compile_policy`. The default driver accepts no extra keys,
+so an unknown field is an error rather than a silent no-op. PyPI compiles its leftover keys into `ArtifactRule`s — a
+version-specifier rule, a package-type (sdist versus wheel) rule, and Python-tag and platform-tag wheel rules. OCI adds
+none today and runs on the neutral controls alone. A new format contributes rules without the engine ever learning its
+vocabulary.
+
+{% mermaid() %}
+flowchart TD
+toml["index [policy] table (TOML)"]
+split["binary splits keys"]
+neutral["Policy::compile<br/>allow/block projects · size caps"]
+driver["driver.compile_policy<br/>PyPI: version · package-type · wheel-tag rules"]
+pol["Policy<br/>neutral checks + Vec&lt;ArtifactRule&gt;"]
+req["upload / cached-fetch / serve"]
+eval["first-match:<br/>project → size → rules"]
+ok["allow → proceed"]
+deny["deny → 403 + PolicyDenial JSON"]
+toml --> split
+split --> neutral
+split --> driver
+neutral --> pol
+driver --> pol
+req --> eval
+pol --> eval
+eval -->|"no rule fires"| ok
+eval -->|"first denial"| deny
+
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
+class neutral accent
+class driver good
+class deny warn
+{% end %}
+
+## The events layer
+
+`peryx-events` carries three cross-cutting streams, all format-neutral.
+
+**Abstraction.** [Metrics](https://prometheus.io/docs/concepts/metric_types/): request-path code emits an event over an
+[mpsc channel](https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html) to a dedicated aggregator thread, off the hot
+path, rendered at `/metrics` as [Prometheus](https://prometheus.io/) counters and gauges (no histograms). Security
+events: structured [tracing](https://github.com/tokio-rs/tracing) records tagged `security_event=true` — an auth
+failure, a rate-limit denial — for an audit sink. [Webhooks](https://en.wikipedia.org/wiki/Webhook): durable, signed
+outbound callbacks. A change persists a delivery row to redb (`webhook_delivery` + `webhook_due`) before any network
+call, so a crash never drops one ([at-least-once](https://en.wikipedia.org/wiki/Delivery_%28commerce%29) delivery); a
+single background worker drains due rows in batches, POSTs with an [HMAC-SHA256](https://en.wikipedia.org/wiki/HMAC)
+signature (`x-peryx-signature: sha256=<hex>`) plus event, delivery, and timestamp headers, and on failure reschedules
+with exponential backoff (5 s, tripling each attempt, capped at 300 s) up to five attempts before marking the delivery
+`Failed`.
+
+**Extension.** This layer stays neutral by construction: an ecosystem emits an event through the shared API rather than
+defining its own stream. A publish or a yank from either driver becomes the same metric increment and the same webhook
+payload shape; the event names a project or a repository as data, never as a type the events crate knows.
+
+{% mermaid() %}
+flowchart TD
+evt["domain event<br/>publish · yank · auth fail · rate-limit deny"]
+mch["mpsc → aggregator thread<br/>off request path"]
+met["/metrics<br/>Prometheus counters + gauges"]
+sec["security events<br/>tracing security_event=true"]
+enq["persist delivery row<br/>webhook_delivery + webhook_due (redb)"]
+wk["delivery worker<br/>batch drain · HMAC-SHA256 signed POST"]
+sub["subscriber endpoint"]
+done["delivered"]
+evt --> mch
+mch --> met
+evt --> sec
+evt --> enq
+enq --> wk
+wk -->|"2xx"| done
+wk -->|"fail → backoff 5s…300s · ≤5"| enq
+wk --> sub
+
+classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
+classDef good fill:#009E73,stroke:#009E73,color:#ffffff
+classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
+class met accent
+class enq good
+class wk warn
+{% end %}
 
 ## Adding an ecosystem
 
