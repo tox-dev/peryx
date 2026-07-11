@@ -202,6 +202,18 @@ impl EcosystemDriver for PypiServing {
         crate::store::summarize_indexes(meta, index_names, recent_limit).map_err(|err| err.to_string())
     }
 
+    fn cache_pages(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index_names: &[&str],
+    ) -> Result<Vec<peryx_driver::serving::CachePage>, String> {
+        crate::admin::cache_pages(meta, index_names)
+    }
+
+    fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
+        crate::admin::cache_record_counts(meta)
+    }
+
     fn import_dir(
         &self,
         meta: &peryx_storage::meta::MetaStore,

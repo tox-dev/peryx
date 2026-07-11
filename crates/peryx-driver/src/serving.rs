@@ -73,6 +73,19 @@ pub struct RecentUpload {
     pub size: Option<u64>,
 }
 
+/// One cached index page for the `cache list`/`cache size` command, produced by the driver that owns
+/// the cache. `index` and `project` are the page's storage key split into the driver's own terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachePage {
+    pub index: String,
+    pub project: String,
+    pub fetched_at_unix: i64,
+    pub fresh_secs: Option<i64>,
+    pub body_bytes: u64,
+    pub record_bytes: u64,
+    pub key: String,
+}
+
 /// How one ecosystem serves its wire protocol.
 ///
 /// The metadata methods ([`ecosystem`](Self::ecosystem), [`mount`](Self::mount),
@@ -216,6 +229,30 @@ pub trait EcosystemDriver: Send + Sync {
         _recent_limit: usize,
     ) -> Result<std::collections::HashMap<String, IndexSummary>, String> {
         Ok(std::collections::HashMap::new())
+    }
+
+    /// This ecosystem's cached index pages for the `cache list`/`cache size` command, each split into
+    /// `(index, project)` in its own key terms. `index_names` are the configured index names, longest
+    /// first, so the driver can split a slash-bearing key against them. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the store cannot be read.
+    fn cache_pages(
+        &self,
+        _meta: &peryx_storage::meta::MetaStore,
+        _index_names: &[&str],
+    ) -> Result<Vec<CachePage>, String> {
+        Ok(Vec::new())
+    }
+
+    /// This ecosystem's cached metadata record counts as `(label, count)` pairs for `cache size`. The
+    /// driver labels its own record kinds, so the neutral command tabulates them without naming any.
+    /// Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the store cannot be read.
+    fn cache_record_counts(&self, _meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
+        Ok(Vec::new())
     }
 
     /// Import every artifact under `dir` into the hosted index `target_name` (reached at

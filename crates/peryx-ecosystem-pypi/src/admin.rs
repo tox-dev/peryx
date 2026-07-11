@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 
-use peryx_driver::serving::PurgeReport;
+use peryx_driver::serving::{CachePage, PurgeReport};
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{BlobStore, Digest};
@@ -59,6 +59,75 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
     })
     .map_err(|err| err.to_string())?;
     Ok(digests)
+}
+
+/// This driver's cached index pages, each key split into `(index, project)`, for `cache list`/`cache
+/// size`. `index_names` are the configured index names, longest first, so a slash-bearing key splits
+/// against a real index rather than at its first slash.
+///
+/// # Errors
+/// Returns a message when the store cannot be read.
+pub fn cache_pages(meta: &MetaStore, index_names: &[&str]) -> Result<Vec<CachePage>, String> {
+    let mut pages = Vec::new();
+    meta.scan_index_pages(|page| {
+        let (index, project) = split_page_key(&page.key, index_names);
+        pages.push(CachePage {
+            index,
+            project,
+            fetched_at_unix: page.summary.fetched_at_unix,
+            fresh_secs: page.summary.fresh_secs,
+            body_bytes: page.summary.body_bytes,
+            record_bytes: page.summary.record_bytes,
+            key: page.key,
+        });
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|err| err.to_string())?;
+    Ok(pages)
+}
+
+/// This driver's cached metadata record counts, labeled by kind, for `cache size`.
+///
+/// # Errors
+/// Returns a message when the store cannot be read.
+pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, String> {
+    let mut file_urls = 0_u64;
+    let mut metadata = 0_u64;
+    let mut projects = 0_u64;
+    let mut uploads = 0_u64;
+    let mut overrides = 0_u64;
+    meta.scan_file_urls(|_digest, _value| {
+        file_urls += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|err| err.to_string())?;
+    meta.scan_metadata_records(|_digest, _value| {
+        metadata += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|err| err.to_string())?;
+    meta.scan_project_records(|_key, _display| {
+        projects += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|err| err.to_string())?;
+    meta.scan_upload_records(|_key, _bytes| {
+        uploads += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|err| err.to_string())?;
+    meta.scan_override_records(|_key, _kind| {
+        overrides += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|err| err.to_string())?;
+    Ok(vec![
+        ("file_url_records".to_owned(), file_urls),
+        ("metadata_records".to_owned(), metadata),
+        ("project_records".to_owned(), projects),
+        ("upload_records".to_owned(), uploads),
+        ("override_records".to_owned(), overrides),
+    ])
 }
 
 /// Preview this ecosystem's policy decisions over its cached and uploaded records, writing one

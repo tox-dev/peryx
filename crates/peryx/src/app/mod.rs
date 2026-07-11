@@ -41,15 +41,3 @@ fn index_names(config: &Config) -> Vec<&str> {
     names.sort_by_key(|name| std::cmp::Reverse(name.len()));
     names
 }
-
-fn split_page_key(key: &str, index_names: &[&str]) -> (String, String) {
-    for name in index_names {
-        if let Some(project) = key.strip_prefix(name).and_then(|rest| rest.strip_prefix('/')) {
-            return ((*name).to_owned(), project.to_owned());
-        }
-    }
-    key.split_once('/').map_or_else(
-        || (key.to_owned(), String::new()),
-        |(index, project)| (index.to_owned(), project.to_owned()),
-    )
-}
