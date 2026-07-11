@@ -67,6 +67,24 @@ impl OciRegistry {
         uploads.remove(session)
     }
 
+    /// Stream `body` into a session's staged blob. On a mid-body read error the session is put back
+    /// with the bytes that landed, so a transient hiccup leaves the client a resumable session at the
+    /// recorded offset instead of forcing a full re-upload.
+    async fn append_or_restore(
+        &self,
+        session: &str,
+        mut entry: UploadSession,
+        body: Body,
+    ) -> Result<UploadSession, ServeError> {
+        match append_chunk(&mut entry, body).await {
+            Ok(()) => Ok(entry),
+            Err(err) => {
+                self.uploads.lock().await.insert(session.to_owned(), entry);
+                Err(err)
+            }
+        }
+    }
+
     /// Report an open upload session's progress: `204` with the bytes received so far.
     pub(super) async fn upload_status(
         &self,
@@ -121,7 +139,7 @@ impl OciRegistry {
             self.uploads.lock().await.insert(session.to_owned(), entry);
             return Ok(range_not_satisfiable(offset));
         }
-        entry.offset += stream_into(&mut entry.pending, body).await?;
+        let entry = self.append_or_restore(session, entry, body).await?;
         let offset = entry.offset;
         self.uploads.lock().await.insert(session.to_owned(), entry);
         Ok(upload_accepted(name, session, offset))
@@ -141,7 +159,7 @@ impl OciRegistry {
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        let Some(mut entry) = self.take_session(&index.name, session).await else {
+        let Some(entry) = self.take_session(&index.name, session).await else {
             return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
         };
         // A final chunk carrying a `Content-Range` must also be contiguous, exactly like a `PATCH`.
@@ -150,8 +168,11 @@ impl OciRegistry {
             self.uploads.lock().await.insert(session.to_owned(), entry);
             return Ok(range_not_satisfiable(offset));
         }
-        entry.offset += stream_into(&mut entry.pending, body).await?;
+        let entry = self.append_or_restore(session, entry, body).await?;
+        // A `PUT` without a digest cannot commit, but the staged bytes are still good: keep the
+        // session so the client can retry with the digest rather than re-upload everything.
         let Some(digest) = query_params(query).remove("digest") else {
+            self.uploads.lock().await.insert(session.to_owned(), entry);
             return Ok(error_response(
                 ErrorCode::DigestInvalid,
                 "finishing an upload requires a digest",
@@ -162,6 +183,21 @@ impl OciRegistry {
         }
         Ok(commit_blob(&state.blobs, entry.pending, name, &digest))
     }
+}
+
+/// Append a request body to a session's staged blob, advancing `offset` as each chunk lands.
+///
+/// Bumping per chunk, rather than once at the end like [`stream_into`], keeps `offset` in step with
+/// the bytes the hasher has absorbed. So when a body read fails partway, the caller can leave the
+/// session in the map at the offset it reached and the client resumes from there.
+async fn append_chunk(entry: &mut UploadSession, body: Body) -> Result<(), ServeError> {
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| ServeError::Transport(err.to_string()))?;
+        entry.pending.write(&chunk).map_err(blob_fault)?;
+        entry.offset += chunk.len() as u64;
+    }
+    Ok(())
 }
 
 /// A `201 Created` carrying a `Location` and the canonical `Docker-Content-Digest`.

@@ -11,7 +11,8 @@ use peryx_storage::blob::Digest;
 use tower::ServiceExt as _;
 
 use super::{
-    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, proxy, send, send_body, writable_index,
+    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, proxy, send, send_body, send_with,
+    writable_index,
 };
 
 const TOKEN: &str = "s3cret";
@@ -663,26 +664,17 @@ async fn test_manifest_put_body_error_is_a_gateway_error() {
 }
 
 #[tokio::test]
-async fn test_upload_body_read_error_is_a_gateway_error() {
+async fn test_monolithic_upload_body_read_error_is_a_gateway_error() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    // Open a session, then PATCH a body stream that fails mid-transfer.
-    let (_status, headers, _) = send_body(
-        &app,
-        Method::POST,
-        "/v2/store/app/blobs/uploads/",
-        &[("authorization", &auth(TOKEN))],
-        Vec::new(),
-    )
-    .await;
-    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    // A monolithic `POST` streams straight into the blob, so a mid-transfer failure is a gateway error.
     let erroring = futures_util::stream::iter(vec![
         Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"partial")),
         Err(std::io::Error::other("boom")),
     ]);
     let request = Request::builder()
-        .method(Method::PATCH)
-        .uri(&location)
+        .method(Method::POST)
+        .uri("/v2/store/app/blobs/uploads/?digest=sha256:0000000000000000000000000000000000000000000000000000000000000000")
         .header("authorization", auth(TOKEN))
         .body(Body::from_stream(erroring))
         .unwrap();
@@ -1086,4 +1078,122 @@ async fn test_upload_status_read_refreshes_the_session_ttl() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn test_patch_body_read_error_keeps_session_resumable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"a-real-layer-of-bytes";
+    let (landed, rest) = blob.split_at(8);
+    let digest = oci_digest(blob);
+
+    let (_, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+
+    // A chunk that streams a few bytes and then hits a read error: the bytes that landed must stay.
+    let chunks = futures_util::stream::iter([
+        Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(landed)),
+        Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset")),
+    ]);
+    let request = Request::builder()
+        .method(Method::PATCH)
+        .uri(&location)
+        .header("authorization", auth(TOKEN))
+        .body(Body::from_stream(chunks))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    // The session survives at the offset the accepted bytes reached, so the client can resume.
+    let (status, headers, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers[header::RANGE], format!("0-{}", landed.len() - 1));
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        rest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &blob[..]);
+}
+
+#[tokio::test]
+async fn test_put_without_digest_keeps_session_resumable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"a-real-layer-of-bytes";
+    let digest = oci_digest(blob);
+
+    let (_, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // Closing the session without a digest cannot commit, but the staged bytes must not be lost.
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+
+    let (status, headers, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers[header::RANGE], format!("0-{}", blob.len() - 1));
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &blob[..]);
 }
