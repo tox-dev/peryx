@@ -13,18 +13,11 @@ consolidation of most of them; peryx serves `meta.api-version` 1.4.
 Knowing the request sequence makes the table below concrete. For `pip install requests` against any standards-compliant
 index:
 
-{% mermaid() %}
-sequenceDiagram
-participant P as pip / uv
-participant I as index
-P->>+I: GET /simple/requests/ (Accept: PEP 691 JSON)
-I-->>-P: file list: names, URLs, sha256, yanked, core-metadata
-P->>+I: GET …requests-2.32.5…whl.metadata (PEP 658)
-I-->>-P: core metadata: dependencies, requires-python
-Note over P: resolve, repeating metadata fetches<br/>for candidates as needed
-P->>+I: GET …requests-2.32.5…whl
-I-->>-P: the wheel, which pip verifies against its sha256
-{% end %}
+{% mermaid() %} sequenceDiagram participant P as pip / uv participant I as index P->>+I: GET /simple/requests/ (Accept:
+PEP 691 JSON) I-->>-P: file list: names, URLs, sha256, yanked, core-metadata P->>+I: GET …requests-2.32.5…whl.metadata
+(PEP 658) I-->>-P: core metadata: dependencies, requires-python Note over P: resolve, repeating metadata fetches<br/>for
+candidates as needed P->>+I: GET …requests-2.32.5…whl I-->>-P: the wheel, which pip verifies against its sha256 {% end
+%}
 
 Every hop names a standard: the page format is PEP 503/691, its fields are PEP 700, the yank markers are PEP 592, the
 metadata shortcut is PEP 658/714, and the filename [pip](https://pip.pypa.io/) parsed to pick a wheel is PEP 427. peryx
@@ -41,7 +34,8 @@ below mixes "served" and "parsed".
 | [PEP 658](https://peps.python.org/pep-0658/) / [PEP 714](https://peps.python.org/pep-0714/)                                                                                                 | The `.metadata` sibling that lets resolvers skip wheel downloads; advertised, fetched, verified, and cached                           |
 | [PEP 740](https://peps.python.org/pep-0740/)                                                                                                                                                | Provenance URLs on Simple API file entries; preserved when an upstream provides them                                                  |
 | [PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/)                                                                                                        | Version parsing, ordering, and `Requires-Python` validation                                                                           |
-| [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; modern `.tar.gz` sdist filename, root, and required-file checks           |
+| [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; `.tar.gz` and `.zip` sdist filename, root, and required-file checks       |
+| [PEP 527](https://peps.python.org/pep-0527/)                                                                                                                                                | The `.zip` source distribution accepted on upload alongside `.tar.gz`, held to the same layout and metadata checks                    |
 | [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/)                                                                                                       | `METADATA` and `PKG-INFO` parsing for upload identity checks, PEP 658 siblings, and Metadata 2.4+ sdist license-file checks           |
 | [Legacy JSON API](https://docs.pypi.org/api/json/)                                                                                                                                          | Compatibility responses for tools that call `/pypi/{project}/json` and `/pypi/{project}/{version}/json`                               |
 | [Legacy upload API](https://docs.pypi.org/api/upload/)                                                                                                                                      | The multipart upload protocol [twine](https://twine.readthedocs.io/) and `uv publish` speak                                           |

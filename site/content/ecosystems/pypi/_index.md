@@ -11,8 +11,9 @@ logos = [ "logos/pypi.svg"]
 PyPI is the Python packaging ecosystem: the format of wheels and sdists, and the HTTP protocol installers use to find
 and download them. A **[wheel](https://packaging.python.org/en/latest/specifications/binary-distribution-format/)**
 (`.whl`) is a pre-built, ready-to-install package; an
-**[sdist](https://packaging.python.org/en/latest/specifications/source-distribution-format/)** (source distribution,
-`.tar.gz`) is the source a wheel is built from. Both are **artifacts**: the actual files an installer fetches.
+**[sdist](https://packaging.python.org/en/latest/specifications/source-distribution-format/)** (source distribution, a
+`.tar.gz` or a `.zip`) is the source a wheel is built from. Both are **artifacts**: the actual files an installer
+fetches.
 
 ## How PyPI concepts map to peryx
 
@@ -25,7 +26,7 @@ ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/gloss
 | index (`--index-url`)      | index            | the endpoint a client points at; a cached index proxies one upstream                                   |
 | project / package          | project          | one distribution name, like `requests`                                                                 |
 | release / version          | version          | one released version of a project                                                                      |
-| distribution (wheel/sdist) | artifact         | what you install: a `.whl` or a `.tar.gz` file                                                         |
+| distribution (wheel/sdist) | artifact         | what you install: a `.whl`, `.tar.gz`, or `.zip` file                                                  |
 | file                       | file             | one content-addressed distribution file                                                                |
 | publish / upload           | upload / publish | putting a distribution into a hosted index with [twine](https://twine.readthedocs.io/) or `uv publish` |
 | install / download         | download         | fetching a distribution through peryx                                                                  |

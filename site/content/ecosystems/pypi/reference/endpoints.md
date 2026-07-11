@@ -127,14 +127,16 @@ Each request carries these headers:
 The signature input is `{timestamp}.{delivery}.{body}`, where `body` is the exact request body bytes. Consumers should
 compare the HMAC with the configured target secret and reject timestamps outside their replay window.
 
-Uploads accept wheels and `.tar.gz` sdists. The server validates the filename, form `name` and `version`, `filetype`,
-archive contents, and [core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/) before the
-artifact becomes visible. Wheel validation requires normalized `.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD`
-files, WHEEL tag/build consistency, RECORD hashes, and matching RECORD sizes when present. Sdist validation requires a
-[PEP 625](https://peps.python.org/pep-0625/) `.tar.gz` filename, one safe `{name}-{version}/` top-level directory,
-`pyproject.toml`, and `PKG-INFO`; unsafe tar members and Metadata 2.4+ missing `License-File` entries are rejected.
-Wheel uploads serve `METADATA` as the PEP 658/714 `.metadata` sibling. Sdist uploads serve the verified `PKG-INFO` the
-same way.
+Uploads accept wheels, `.tar.gz` sdists, and `.zip` sdists ([PEP 527](https://peps.python.org/pep-0527/)). The server
+validates the filename, form `name` and `version`, `filetype`, archive contents, and
+[core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/) before the artifact becomes
+visible. Wheel validation requires normalized `.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD` files, WHEEL
+tag/build consistency, RECORD hashes, and matching RECORD sizes when present. Both sdist forms meet the same
+[PEP 625](https://peps.python.org/pep-0625/) strictness: a name-version filename split at the last `-`, one safe
+`{name}-{version}/` top-level directory, `pyproject.toml`, and a `PKG-INFO` whose `Metadata-Version` is at least `2.2`;
+unsafe archive members and Metadata 2.4+ missing `License-File` entries are rejected. A `.egg` reports a legacy-egg
+error and any other extension, such as `.tar.bz2`, is rejected as unsupported. Wheel uploads serve `METADATA` as the PEP
+658/714 `.metadata` sibling. Sdist uploads serve the verified `PKG-INFO` the same way.
 
 Archive inspection is broader than uploads. It can list and preview cached wheels, zips, zipped eggs, `.tar`, `.tar.gz`,
 and `.tgz` archives, including supported archives nested inside them. Other legacy compressed tar formats stay
