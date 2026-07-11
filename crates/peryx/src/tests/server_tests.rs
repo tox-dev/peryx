@@ -200,6 +200,44 @@ fn test_build_state_reports_missing_webhook_secret_env() {
     );
 }
 
+#[test]
+fn test_build_state_wires_the_token_realm_signing_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            signing_key: Some(SecretSource::Literal("super-secret".to_owned())),
+            token_ttl_secs: 900,
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert!(state.signer.is_some());
+    assert_eq!(state.token_ttl_secs, 900);
+}
+
+#[test]
+fn test_build_state_reports_an_unreadable_signing_key_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            signing_key: Some(SecretSource::File(PathBuf::from("/nonexistent/peryx/signing-key"))),
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(err) = build_state(&config) else {
+        panic!("expected signing-key read error");
+    };
+
+    assert!(err.to_string().contains("read the token realm signing key"), "{err}");
+}
+
 #[tokio::test]
 async fn test_build_state_starts_webhook_runtime() {
     let dir = tempfile::tempdir().unwrap();

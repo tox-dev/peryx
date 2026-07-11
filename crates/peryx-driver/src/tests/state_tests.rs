@@ -43,6 +43,20 @@ fn test_hot_cache_defaults_to_the_documented_budget() {
     assert_eq!(state.cache.hot.policy().max_capacity(), Some(DEFAULT_HOT_CACHE_BYTES));
 }
 
+#[test]
+fn test_token_realm_is_unset_until_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::new(meta, blobs, 60, Vec::new());
+    assert!(state.signer.is_none());
+    assert_eq!(state.token_ttl_secs, crate::state::DEFAULT_TOKEN_TTL_SECS);
+
+    state.set_token_realm(peryx_identity::Signer::new(b"key"), 900);
+    assert!(state.signer.is_some());
+    assert_eq!(state.token_ttl_secs, 900);
+}
+
 /// A zero budget turns the cache off: a warm page pays its transform again rather than being served
 /// from memory. Asserted through the cache itself, so a knob that never reached moka would fail here.
 #[test]

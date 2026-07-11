@@ -148,4 +148,13 @@ impl AppState {
     pub fn openapi(&self) -> &str {
         &self.openapi
     }
+
+    /// Install the token realm's signing key and how long its tokens live. The binary calls this once
+    /// at startup when a signing key is configured; without it the realm stays unbuilt and an ecosystem
+    /// serves Basic-only auth.
+    pub fn set_token_realm(&mut self, signer: peryx_identity::Signer, ttl_secs: i64) {
+        let serving = self.serving_mut();
+        serving.signer = Some(signer);
+        serving.token_ttl_secs = ttl_secs;
+    }
 }

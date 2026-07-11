@@ -45,6 +45,12 @@ pub struct RuntimeOptions<I> {
 /// that a lasting outage surfaces as an error rather than as quietly ancient data.
 pub const DEFAULT_MAX_STALE_SECS: i64 = 300;
 
+/// How long a realm token lives when an operator configures no `[auth] token_ttl_secs`.
+///
+/// One freshness window: long enough for a `docker pull`/`push` to run against it, short enough that a
+/// revoked ACL takes hold soon after the token that was minted under it expires.
+pub const DEFAULT_TOKEN_TTL_SECS: i64 = 300;
+
 /// The transformed-page cache budget when an operator configures none.
 ///
 /// Sized for the working set of a busy `PyPI` index, whose transformed pages are the large ones
@@ -283,6 +289,8 @@ impl AppState {
                 rate_limits: RateLimiter::new(rate_limit),
                 upstream_limits: UpstreamLimits::new(upstream_limits),
                 webhooks,
+                signer: None,
+                token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,
             }),
             drivers: std::array::from_fn(|_| None),
             absolute_prefixes: Vec::new(),

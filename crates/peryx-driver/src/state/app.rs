@@ -54,6 +54,12 @@ pub struct ServingState {
     pub upstream_limits: UpstreamLimits,
     /// Signed webhook delivery runtime.
     pub webhooks: WebhookRuntime,
+    /// The token realm's signing key, or `None` when no signing key is configured. Without it an
+    /// ecosystem's token endpoint cannot mint a JWT, so an OCI index falls back to Basic-only auth and
+    /// never challenges with the Bearer scheme.
+    pub signer: Option<peryx_identity::Signer>,
+    /// How long a token the realm mints stays valid, in seconds.
+    pub token_ttl_secs: i64,
 }
 
 /// The whole process state: the serving data every handler needs, plus the driver registry only the

@@ -39,6 +39,7 @@ use peryx_upstream::UpstreamClient;
 use std::borrow::Cow;
 use std::sync::Arc;
 
+mod auth;
 mod blobs;
 mod discovery;
 mod manifests;
@@ -180,17 +181,24 @@ impl EcosystemDriver for OciRegistry {
 
     async fn serve(&self, state: Arc<ServingState>, request: Request) -> Response {
         let method = request.method().clone();
-        let read = matches!(method, Method::GET | Method::HEAD);
-        if read {
-            let path = request.uri().path();
-            if path == "/v2/" || path == "/v2" {
-                return version_check();
-            }
-        }
         let (parts, body) = request.into_parts();
-        let Some(route) = classify(parts.uri.path()) else {
+        let path = parts.uri.path();
+        let read = matches!(method, Method::GET | Method::HEAD);
+        if method == Method::GET && (path == "/v2/token" || path == "/v2/token/") {
+            return auth::issue_token(&state, &parts.headers, parts.uri.query().unwrap_or_default());
+        }
+        if read && (path == "/v2/" || path == "/v2") {
+            return auth::negotiate_version(&state, &parts.headers);
+        }
+        let Some(route) = classify(path) else {
             return error_response(ErrorCode::NameUnknown, "repository name unknown");
         };
+        if read
+            && let Some(name) = read_name(&route)
+            && let Err(response) = auth::authorize_read(&state, &parts.headers, name)
+        {
+            return response;
+        }
         let headers = &parts.headers;
         let query = parts.uri.query().unwrap_or_default();
         let head = method == Method::HEAD;
@@ -461,13 +469,26 @@ fn resolve_writable<'a>(
     if !matches!(target.kind, IndexKind::Hosted { .. }) {
         return Err(error_response(ErrorCode::Denied, "index is read-only"));
     }
-    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    let identity = target.acl.identify(auth, (state.clock)());
+    let (identity, bad_token) = auth::identify(state, &target.acl, headers);
     match peryx_identity::authorize(&identity.principal, &target.acl, Some(repo), action) {
         Ok(()) => Ok((target, repo.to_owned(), identity)),
         Err(Denial::Unavailable) => Err(error_response(ErrorCode::Denied, "uploads are disabled")),
-        Err(Denial::Unauthenticated) => Err(unauthorized()),
-        Err(Denial::Forbidden) => Err(error_response(ErrorCode::Denied, "token does not grant this action")),
+        Err(denial) => Err(auth::resource_challenge(
+            state, headers, name, action, denial, bad_token,
+        )),
+    }
+}
+
+/// The repository `<name>` a readable route addresses, which its index authorizes the read against
+/// before the handler runs; `None` for the registry-wide catalog, which is not repository-scoped.
+fn read_name(route: &OciRoute) -> Option<&str> {
+    match route {
+        OciRoute::Manifest { name, .. }
+        | OciRoute::Blob { name, .. }
+        | OciRoute::BlobContents { name, .. }
+        | OciRoute::TagsList { name }
+        | OciRoute::Referrers { name, .. } => Some(name),
+        _ => None,
     }
 }
 /// Whether the index's policy blocks this repository name. A blocked image is hidden on reads (served
@@ -541,8 +562,8 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
 }
-/// Answer the API version check.
-fn version_check() -> Response {
+/// The API version check's success answer: `200` with the distribution API-version header.
+fn version_ok() -> Response {
     (
         [(
             HeaderName::from_static("docker-distribution-api-version"),
@@ -599,17 +620,6 @@ fn query_params(query: &str) -> std::collections::HashMap<String, String> {
 /// A bare `202 Accepted` for a completed delete.
 fn accepted() -> Response {
     (StatusCode::ACCEPTED, Body::empty()).into_response()
-}
-/// `401 Unauthorized` with the Basic-auth challenge a pushing client expects.
-fn unauthorized() -> Response {
-    let body =
-        serde_json::json!({"errors": [{"code": "UNAUTHORIZED", "message": "authentication required"}]}).to_string();
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .expect("unauthorized response builds from validated parts")
 }
 /// Whether something fetched at `fetched_at` may still answer while the upstream cannot confirm it.
 ///

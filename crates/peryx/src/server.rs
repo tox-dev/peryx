@@ -11,6 +11,7 @@ use peryx_driver::{AppState, DriverSet, Index, IndexKind};
 use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
+use peryx_identity::Signer;
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -64,6 +65,10 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     .context(format!("open search index {}", search_path.display()))?;
     peryx_ecosystem_pypi::install(&mut state);
     peryx_ecosystem_oci::install(&mut state, oci_settings);
+    if let Some(source) = &config.auth.signing_key {
+        let key = source.read().context("read the token realm signing key")?;
+        state.set_token_realm(Signer::new(key.as_bytes()), config.auth.token_ttl_secs);
+    }
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
     if !state.webhooks.is_empty() {

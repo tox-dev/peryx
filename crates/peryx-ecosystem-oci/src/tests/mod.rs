@@ -1,5 +1,6 @@
 //! Serving tests for the OCI driver, driven end to end through the router with a wiremock upstream.
 
+mod bearer_tests;
 mod conformance_tests;
 mod contents_tests;
 mod discovery_tests;
@@ -25,7 +26,7 @@ use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_http::router;
-use peryx_identity::IndexAcl;
+use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken, Signer};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
@@ -69,6 +70,56 @@ fn writable_index(name: &str, route: &str, volatile: bool, token: &str) -> Index
         acl: IndexAcl::upload_token(token),
         ..oci_index(name, route, IndexKind::Hosted { volatile })
     }
+}
+
+/// A hosted OCI index with a Bearer token realm signing key installed, so `/v2/` challenges and the
+/// `/v2/token` endpoint mint JWTs. The clock reads real time: `jsonwebtoken` validates a token's `exp`
+/// against the wall clock, so a token minted here has to expire in the real future to verify.
+fn realm_app(dir: &TempDir, indexes: Vec<Index>) -> (Arc<AppState>, axum::Router) {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let clock = Arc::new(|| {
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap()
+    });
+    let mut state = AppState::with_clock(meta, blobs, 60, indexes, clock);
+    crate::install(&mut state, HashMap::new());
+    state.set_token_realm(Signer::new(b"realm-test-signing-key"), 300);
+    let state = Arc::new(state);
+    (state.clone(), router(state))
+}
+
+/// A hosted OCI index that gates reads (`anonymous_read = false`) behind a single named token whose
+/// grant covers `glob` for `actions`.
+fn scoped_index(name: &str, route: &str, token: &str, secret: &str, glob: &str, actions: &[Action]) -> Index {
+    Index {
+        acl: IndexAcl {
+            anonymous_read: false,
+            tokens: vec![NamedToken {
+                name: token.to_owned(),
+                secret: secret.to_owned(),
+                grants: vec![Grant {
+                    projects: vec![Glob::new(glob)],
+                    actions: actions.iter().copied().collect(),
+                }],
+                expires_at: None,
+            }],
+        },
+        ..oci_index(name, route, IndexKind::Hosted { volatile: true })
+    }
+}
+
+/// The `token` field of a `/v2/token` response body.
+fn token_from(body: &Bytes) -> String {
+    serde_json::from_slice::<serde_json::Value>(body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 /// A caching proxy of `upstream`, at route `hub`.
