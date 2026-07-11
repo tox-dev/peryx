@@ -11,7 +11,7 @@ use peryx_storage::meta::{MetaError, MetaStore};
 
 /// The driver-KV prefix every manifest is keyed under, its digest following.
 mod descriptors;
-pub use descriptors::{blob_digest, manifest_descriptors, referenced_blob_digests};
+pub use descriptors::{blob_digest, linux_amd64_child, manifest_descriptors, referenced_blob_digests};
 
 const MANIFEST_PREFIX: &str = "oci\u{0}m\u{0}";
 const TAG_PREFIX: &str = "oci\u{0}t\u{0}";

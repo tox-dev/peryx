@@ -176,7 +176,8 @@ impl EcosystemDriver for OciRegistry {
         let head = method == Method::HEAD;
         let result = match route {
             OciRoute::Manifest { name, reference } if read => {
-                self.serve_manifest(&state, &name, &reference, head).await
+                let accept = headers.get(header::ACCEPT).and_then(|value| value.to_str().ok());
+                self.serve_manifest(&state, &name, &reference, head, accept).await
             }
             OciRoute::Manifest { name, reference } if method == Method::PUT => {
                 put_manifest(&state, headers, body, &name, &reference).await
@@ -270,7 +271,9 @@ impl EcosystemDriver for OciRegistry {
         let Some(reference) = crate::name::parse_reference(&reference) else {
             return Ok(None);
         };
-        let response = self.serve_manifest(&state, &name, &reference, false).await?;
+        // The browse view renders the index document itself, so it opts out of the legacy Accept
+        // rewrite that would swap an index for its child.
+        let response = self.serve_manifest(&state, &name, &reference, false, None).await?;
         if response.status() != StatusCode::OK {
             return Ok(None);
         }

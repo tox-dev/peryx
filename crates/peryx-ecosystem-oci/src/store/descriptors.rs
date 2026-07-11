@@ -43,6 +43,21 @@ pub fn manifest_descriptors(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
         .filter_map(|layer| layer["digest"].as_str().map(str::to_owned));
     (Vec::new(), config.into_iter().chain(layers).collect())
 }
+/// The digest of the index's `linux/amd64` child image manifest, if it lists one.
+///
+/// Content negotiation serves this child to a client that will not accept an index (legacy Docker
+/// < 17.06). The platform lives on each `manifests[]` entry, which the digest-only
+/// [`manifest_descriptors`] split does not carry, so the entries are walked here for their platform.
+#[must_use]
+pub fn linux_amd64_child(bytes: &[u8]) -> Option<String> {
+    let document = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
+    document["manifests"].as_array()?.iter().find_map(|entry| {
+        let platform = &entry["platform"];
+        (platform["os"] == "linux" && platform["architecture"] == "amd64")
+            .then(|| entry["digest"].as_str())?
+            .map(str::to_owned)
+    })
+}
 /// Every stored blob digest, as storage hex, that a manifest references across all manifests.
 ///
 /// Iterating every stored manifest and unioning its direct blob descriptors covers the whole graph:
@@ -135,6 +150,44 @@ mod tests {
         assert_eq!(
             blobs,
             vec![format!("sha256:{}", hex('a')), format!("sha256:{}", hex('b'))]
+        );
+    }
+
+    #[test]
+    fn test_linux_amd64_child_selects_the_matching_platform_digest() {
+        let hex = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let index = format!(
+            concat!(
+                r#"{{"manifests":["#,
+                r#"{{"digest":"{arm}","platform":{{"os":"linux","architecture":"arm64"}}}},"#,
+                r#"{{"digest":"{amd}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
+            ),
+            arm = hex('a'),
+            amd = hex('b'),
+        );
+        assert_eq!(linux_amd64_child(index.as_bytes()), Some(hex('b')));
+    }
+
+    #[test]
+    fn test_linux_amd64_child_is_none_without_a_matching_entry() {
+        let hex = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        // Unparseable bytes, a document with no `manifests`, a `linux/amd64` entry missing its digest,
+        // and an index whose only child is another platform each yield no child.
+        assert_eq!(linux_amd64_child(b"not json"), None);
+        assert_eq!(linux_amd64_child(br#"{"schemaVersion":2}"#), None);
+        assert_eq!(
+            linux_amd64_child(br#"{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}}]}"#),
+            None
+        );
+        assert_eq!(
+            linux_amd64_child(
+                format!(
+                    r#"{{"manifests":[{{"digest":"{}","platform":{{"os":"windows","architecture":"amd64"}}}}]}}"#,
+                    hex('c'),
+                )
+                .as_bytes()
+            ),
+            None
         );
     }
 

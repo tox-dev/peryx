@@ -5,6 +5,7 @@ mod contents_tests;
 mod discovery_tests;
 mod metrics_tests;
 mod mirror_tests;
+mod negotiate_tests;
 mod policy_tests;
 mod push_tests;
 mod search_tests;

@@ -28,6 +28,7 @@ impl OciRegistry {
         name: &str,
         reference: &Reference,
         head: bool,
+        accept: Option<&str>,
     ) -> Result<Response, ServeError> {
         let Some((index, repo)) = resolve(&state.indexes, name) else {
             return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
@@ -64,6 +65,9 @@ impl OciRegistry {
                 served.unwrap_or_else(|| error_response(ErrorCode::ManifestUnknown, "manifest unknown"))
             }
         };
+        let response = self
+            .negotiate_manifest(state, index, repo, accept, response, head)
+            .await?;
         // A served manifest is this ecosystem's index document, so it counts as a page like a Simple
         // page does; a HEAD is a metadata check and carries no body, so it does not.
         if !head && response.status() == StatusCode::OK {
@@ -71,6 +75,54 @@ impl OciRegistry {
                 route: index.route.clone(),
                 project: repo.to_owned(),
             });
+        }
+        Ok(response)
+    }
+
+    /// Rewrite an index response to its `linux/amd64` child when the client will not accept a list
+    /// media type, the substitution `distribution` makes for legacy Docker (< 17.06) that sends only
+    /// the schema-2 image type. An `Accept` that is absent or lists an index type, a non-index
+    /// response, or an index without a `linux/amd64` child all serve the resolved manifest unchanged.
+    async fn negotiate_manifest(
+        &self,
+        state: &ServingState,
+        index: &Index,
+        repo: &str,
+        accept: Option<&str>,
+        response: Response,
+        head: bool,
+    ) -> Result<Response, ServeError> {
+        if response.status() != StatusCode::OK
+            || !accept.is_some_and(accept_excludes_list_types)
+            || !response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(is_list_media_type)
+        {
+            return Ok(response);
+        }
+        let digest = response
+            .headers()
+            .get(DOCKER_CONTENT_DIGEST)
+            .and_then(|value| value.to_str().ok())
+            .expect("a served manifest carries its content digest")
+            .to_owned();
+        let list = store::get_manifest(&state.meta, &digest)?.expect("a served manifest is stored under its digest");
+        let Some(child) = store::linux_amd64_child(&list.bytes) else {
+            return Ok(response);
+        };
+        if let Some(manifest) = store::get_manifest(&state.meta, &child)? {
+            return Ok(manifest_response(manifest, &child, head));
+        }
+        for member in serving_members(state, index) {
+            if let Some(client) = member.proxy_client()
+                && let Some(served) = self
+                    .pull_manifest_by_digest(state, client, &member.name, repo, &child, head)
+                    .await?
+            {
+                return Ok(served);
+            }
         }
         Ok(response)
     }
@@ -300,6 +352,27 @@ pub async fn store_manifest(
     Ok((manifest, canonical))
 }
 
+/// The OCI image index media type.
+const OCI_INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+/// The Docker v2 manifest-list media type, the schema-2 equivalent of an OCI index.
+const DOCKER_MANIFEST_LIST_TYPE: &str = "application/vnd.docker.distribution.manifest.list.v2+json";
+
+/// A media type stripped of its parameters (`;q=`, `;charset=`), so a comparison keys on the type
+/// alone.
+fn media_type_base(value: &str) -> &str {
+    value.split(';').next().unwrap_or(value).trim()
+}
+/// Whether a media type names an image index or manifest list, the two list types a manifest read may
+/// have to negotiate against the client's `Accept`.
+fn is_list_media_type(media_type: &str) -> bool {
+    let base = media_type_base(media_type);
+    base == OCI_INDEX_TYPE || base == DOCKER_MANIFEST_LIST_TYPE
+}
+/// Whether the client's `Accept` names neither list type, the signal that it cannot parse an index and
+/// wants the `linux/amd64` child instead — the same explicit-accept test `distribution` applies.
+fn accept_excludes_list_types(accept: &str) -> bool {
+    !accept.split(',').any(is_list_media_type)
+}
 /// Build the response for a stored manifest, headers-only for a `HEAD`. The content length is set the
 /// same either way, so a `HEAD` reports the size a `GET` would return.
 fn manifest_response(manifest: Manifest, digest: &str, head: bool) -> Response {
