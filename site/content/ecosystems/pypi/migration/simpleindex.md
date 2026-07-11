@@ -14,9 +14,9 @@ design: no caching, no uploads, no storage.
 
 If simpleindex covers your need, it is admirably small. The reasons people outgrow it map one-to-one onto what peryx
 adds: redirected clients still need (and wait on) the upstream, so a cache helps every machine behind one uplink; a
-directory of files needs a separate upload workflow, so twine support helps; and pattern routing protects against
-[dependency confusion](@/core/indexes.md) only as well as the patterns you remember to write, where a virtual index's
-hosted-first shadowing is the default for every name you publish.
+directory of files needs a separate upload workflow, so [twine](https://twine.readthedocs.io/) support helps; and
+pattern routing protects against [dependency confusion](@/core/indexes.md) only as well as the patterns you remember to
+write, where a virtual index's hosted-first shadowing is the default for every name you publish.
 
 ## The renames
 

@@ -17,8 +17,8 @@ peryx serve --host 0.0.0.0 --port 4433 --data-dir /var/lib/peryx
 
 The data directory is the cache; give it a persistent volume. Nothing else is stateful.
 
-In Kubernetes or docker-compose, the same thing is one container with one volume. The image only needs the binary and
-the data mount; there is no database or sidecar.
+In [Kubernetes](https://kubernetes.io/) or [docker-compose](https://docs.docker.com/compose/), the same thing is one
+container with one volume. The image only needs the binary and the data mount; there is no database or sidecar.
 
 ## Point the installers at it
 
@@ -57,8 +57,9 @@ RUN pip install -r requirements.txt
 docker build --build-arg PIP_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/ .
 ```
 
-or run the build on a network where `peryx.internal` resolves (`--network` with BuildKit). BuildKit's own cache mounts
-still help per machine; peryx makes the cache shared across machines, tags, and projects.
+or run the build on a network where `peryx.internal` resolves (`--network` with
+[BuildKit](https://github.com/moby/buildkit)). BuildKit's own cache mounts still help per machine; peryx makes the cache
+shared across machines, tags, and projects.
 
 ## Verify it is working
 
@@ -70,7 +71,7 @@ curl -s 'http://peryx.internal:4433/+stats?index=root/pypi' | jq .totals
 
 `downloads` and `bytes` count what peryx served; once the working set is warm, upstream traffic drops to page
 revalidations (`refreshes`, mostly `304`s with no body). The [dashboard](@/core/web-ui.md) shows the same numbers with
-per-project drill-down, and [`/metrics`](@/core/monitor.md) feeds Prometheus.
+per-project drill-down, and [`/metrics`](@/core/monitor.md) feeds [Prometheus](https://prometheus.io/).
 
 ## Why this works as well as it does
 

@@ -12,8 +12,8 @@ upstream. See [the index model](@/core/indexes.md) for the semantics.
 
 ## Configure the stack
 
-Three indexes: a proxy that caches Docker Hub, a hosted store for your own images, and a virtual index that stacks them
-hosted-first. Members and the virtual index must share the `oci` ecosystem.
+Three indexes: a proxy that caches [Docker Hub](https://hub.docker.com/), a hosted store for your own images, and a
+virtual index that stacks them hosted-first. Members and the virtual index must share the `oci` ecosystem.
 
 ```toml
 # peryx.toml

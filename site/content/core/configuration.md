@@ -4,8 +4,8 @@ description = "Every TOML key, flag, and default. Precedence is defaults < TOML 
 weight = 1
 +++
 
-peryx reads one TOML file, passed with `--config <path>`. A few operational settings double as flags or `PERYX_*`
-environment variables, which override the file. Precedence is `defaults < TOML file < environment < flags`.
+peryx reads one [TOML](https://toml.io/) file, passed with `--config <path>`. A few operational settings double as flags
+or `PERYX_*` environment variables, which override the file. Precedence is `defaults < TOML file < environment < flags`.
 
 ## Top level
 
@@ -51,9 +51,9 @@ transform again. Lower it on a memory-tight host; raise it when a few projects w
 `numpy` run to megabytes of JSON) carry the traffic. The PyPI driver is the only ecosystem that populates it today.
 
 `offline = true` disables upstream network access for configured cached indexes. Whatever an ecosystem has cached serves
-from disk: PyPI project pages, PEP 658 metadata siblings, and wheels; OCI manifests and blobs. A cold cached-index miss
-returns `503`; virtual-index routes still serve any hosted layer that can answer. Use `peryx mirror sync` before
-enabling offline mode on a machine that must run without network access.
+from disk: PyPI project pages, [PEP 658](https://peps.python.org/pep-0658/) metadata siblings, and wheels; OCI manifests
+and blobs. A cold cached-index miss returns `503`; virtual-index routes still serve any hosted layer that can answer.
+Use `peryx mirror sync` before enabling offline mode on a machine that must run without network access.
 
 ## TLS
 
@@ -70,8 +70,9 @@ cert = "/etc/peryx/fullchain.pem"
 key = "/etc/peryx/privkey.pem"
 ```
 
-An `[acme]` table obtains and renews a certificate from an ACME provider (Let's Encrypt), so a publicly reachable
-deployment serves trusted HTTPS with no manual certificate handling and no client-side insecure flag:
+An `[acme]` table obtains and renews a certificate from an [ACME](https://datatracker.ietf.org/doc/html/rfc8555)
+provider ([Let's Encrypt](https://letsencrypt.org/)), so a publicly reachable deployment serves trusted HTTPS with no
+manual certificate handling and no client-side insecure flag:
 
 ```toml
 [acme]
@@ -165,7 +166,7 @@ mix ecosystems, and an `upload` target that is not a hosted index.
 
 Policy rules apply to the index that owns the table. A cached-index policy filters that cache; a hosted policy filters
 direct uploads and hosted-route reads; a virtual policy filters the merged index clients use. Project names are compared
-after PEP 503 normalization.
+after [PEP 503](https://peps.python.org/pep-0503/) normalization.
 
 ```toml
 [[index]]
@@ -201,14 +202,16 @@ max_project_size_bytes = 1073741824
 
 File and project size rules require declared sizes. A file without `size` is denied by `max_file_size_bytes`; a project
 page with any retained file lacking `size` is denied by `max_project_size_bytes`. Active policies use the buffered
-Simple-page path so file lists and PEP 691 `versions` are filtered together before peryx serves bytes.
+Simple-page path so file lists and [PEP 691](https://peps.python.org/pep-0691/) `versions` are filtered together before
+peryx serves bytes.
 
 `allow_projects`, `block_projects`, `max_file_size_bytes`, and `max_project_size_bytes` are ecosystem-neutral and apply
 to an OCI index too, matching on image name and blob size: a blocked image is hidden on reads and refused on push, and a
 layer or manifest over the size limit is refused. The rest of the keys above cover version specifiers, package types,
-and wheel tags. These are Python-specific (PEP 440 versions, wheel/sdist types, wheel tags) and have no OCI counterpart,
-so they are implemented in the PyPI ecosystem crate and apply only to a PyPI index. Each ecosystem contributes its own
-matchers to the same neutral `[index.policy]` engine through a rule trait.
+and wheel tags. These are Python-specific
+([PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) versions, wheel/sdist types, wheel
+tags) and have no OCI counterpart, so they are implemented in the PyPI ecosystem crate and apply only to a PyPI index.
+Each ecosystem contributes its own matchers to the same neutral `[index.policy]` engine through a rule trait.
 
 ### `[index.prefetch]`
 

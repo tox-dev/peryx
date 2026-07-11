@@ -4,9 +4,10 @@ description = "Run peryx as a container registry on a network with no path to Do
 weight = 6
 +++
 
-A network with no route to Docker Hub can still pull public images through peryx, as long as the images land in peryx's
-content-addressed blob store before the gap closes. Two topologies cover the common cases: a cache pinned offline, or a
-data directory carried across. Images your team pushes directly to a hosted store need no upstream at all.
+A network with no route to [Docker Hub](https://hub.docker.com/) can still pull public images through peryx, as long as
+the images land in peryx's content-addressed blob store before the gap closes. Two topologies cover the common cases: a
+cache pinned offline, or a data directory carried across. Images your team pushes directly to a hosted store need no
+upstream at all.
 
 ## Pre-seed the cache on a connected machine
 

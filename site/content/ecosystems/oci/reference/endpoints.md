@@ -7,9 +7,9 @@ weight = 2
 peryx serves the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull-and-push API.
 Every route is `/v2/<name>/…`, and `<name>` carries the index route as a prefix: peryx matches the longest configured
 OCI index route that segment-aligns with `<name>`, and the remainder is the upstream repository. An index at route
-`dockerhub` serves Docker Hub's `library/alpine` as `/v2/dockerhub/library/alpine/…`. A request whose `<name>` matches
-no OCI index route answers `404 NAME_UNKNOWN`. For the concept map, see [OCI](@/ecosystems/oci/_index.md); for the wire
-standards, see [standards](@/ecosystems/oci/reference/standards.md).
+`dockerhub` serves [Docker Hub](https://hub.docker.com/)'s `library/alpine` as `/v2/dockerhub/library/alpine/…`. A
+request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. For the concept map, see
+[OCI](@/ecosystems/oci/_index.md); for the wire standards, see [standards](@/ecosystems/oci/reference/standards.md).
 
 `<name>` is one or more lowercase path components (`[a-z0-9._-]`, no bare `.`/`..`, ≤ 255 chars). A manifest
 `<reference>` is a tag (`[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`) or a digest (`algorithm:encoded`). Blob digests must be

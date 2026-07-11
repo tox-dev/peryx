@@ -37,16 +37,16 @@ peryx accepts wheels and modern `.tar.gz` source distributions. It rejects `.egg
 on upload; those files can still be mirrored if an upstream index lists them. During upload, peryx checks the declared
 sha256 and blake2b-256 digests while streaming the artifact into a staged blob. A lone md5 digest is rejected.
 
-Before publishing the staged blob, peryx validates the project name, PEP 440 version, safe filename shape, `filetype`,
-archive readability, and metadata identity. Wheel uploads must contain one normalized `{name}-{version}.dist-info/`
-directory with `METADATA`, `WHEEL`, and `RECORD`. The `WHEEL` tags and optional build field must match the filename, and
-`RECORD` must cover each archive file except `RECORD` and deprecated RECORD signatures with sha256-or-better hashes.
-When `RECORD` includes a size, the size must match the archive member.
+Before publishing the staged blob, peryx validates the project name, [PEP 440](https://peps.python.org/pep-0440/)
+version, safe filename shape, `filetype`, archive readability, and metadata identity. Wheel uploads must contain one
+normalized `{name}-{version}.dist-info/` directory with `METADATA`, `WHEEL`, and `RECORD`. The `WHEEL` tags and optional
+build field must match the filename, and `RECORD` must cover each archive file except `RECORD` and deprecated RECORD
+signatures with sha256-or-better hashes. When `RECORD` includes a size, the size must match the archive member.
 
-Modern sdists must be `.tar.gz` files whose filename follows PEP 625. The archive must contain one top-level
-`{name}-{version}/` directory with `pyproject.toml` and `PKG-INFO`. peryx rejects tar entries with absolute paths,
-traversal, unsafe links, special files, or device entries. For Metadata 2.4 and newer, every `License-File` header must
-name a file inside the sdist.
+Modern sdists must be `.tar.gz` files whose filename follows [PEP 625](https://peps.python.org/pep-0625/). The archive
+must contain one top-level `{name}-{version}/` directory with `pyproject.toml` and `PKG-INFO`. peryx rejects tar entries
+with absolute paths, traversal, unsafe links, special files, or device entries. For Metadata 2.4 and newer, every
+`License-File` header must name a file inside the sdist.
 
 The filename, form fields, and `METADATA` or `PKG-INFO` `Name` and `Version` must agree. `Metadata-Version`,
 `Requires-Python`, license fields, extras, and project URLs are compared when the upload form supplies them and the
@@ -55,8 +55,8 @@ specifiers.
 
 Accepted files are stored content-addressed and served from `/root/pypi/simple/<project>/` alongside the cached index's
 packages. Your file shadows an upstream file of the same name. For wheels, peryx extracts `METADATA`; for sdists, it
-extracts the verified `PKG-INFO`. Both are served as PEP 658/714 `.metadata` siblings, so resolvers get the fast path
-for your uploads and the web UI can show the full package page.
+extracts the verified `PKG-INFO`. Both are served as [PEP 658/714](https://peps.python.org/pep-0658/) `.metadata`
+siblings, so resolvers get the fast path for your uploads and the web UI can show the full package page.
 
 ## In `.pypirc`
 

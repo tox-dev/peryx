@@ -5,7 +5,7 @@ weight = 8
 +++
 
 peryx counts everything it serves, off the request path. Four surfaces show the same numbers: the dashboard, the admin
-status page, the `/+stats` JSON endpoint, and Prometheus `/metrics`.
+status page, the `/+stats` JSON endpoint, and [Prometheus](https://prometheus.io/) `/metrics`.
 
 ## Drill down from the dashboard
 

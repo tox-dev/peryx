@@ -6,8 +6,8 @@ template = "section.html"
 +++
 
 An **ecosystem** is a packaging format and the wire protocol that carries it: how clients ask for packages, how versions
-and filenames are shaped, and what an "artifact" (an installable file) looks like. PyPI (Python packages) is one
-ecosystem; OCI (container images) is another.
+and filenames are shaped, and what an "artifact" (an installable file) looks like. [PyPI](https://pypi.org/) (Python
+packages) is one ecosystem; [OCI](https://opencontainers.org/) (container images) is another.
 
 peryx treats the ecosystem as a first-class axis. Every index you configure is a **role** (what it does: cached, hosted,
 or virtual; see [the index model](@/core/indexes.md)) paired with an **ecosystem** (which format it speaks). The two are

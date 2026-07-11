@@ -5,10 +5,10 @@ weight = 3
 +++
 
 An index server earns its keep the day you have a package that must not come from the public internet. This page
-explains peryx's answer. An **index** is the list of packages a client installs from (pip and uv call it an index-url);
-a **registry** is the same idea under a different name. peryx builds every index from two independent choices, a
-**role** (what the index does) and an **ecosystem** (which packaging format it speaks), and one composition rule. That
-rule is a security control before it is a convenience.
+explains peryx's answer. An **index** is the list of packages a client installs from ([pip](https://pip.pypa.io/) and
+[uv](https://docs.astral.sh/uv/) call it an index-url); a **registry** is the same idea under a different name. peryx
+builds every index from two independent choices, a **role** (what the index does) and an **ecosystem** (which packaging
+format it speaks), and one composition rule. That rule is a security control before it is a convenience.
 
 ## Two axes: role and ecosystem
 
@@ -17,15 +17,17 @@ independent.
 
 - **role** is what the index does. There are three:
   - **cached** is a read-through cache of one upstream index. "Upstream" means the index peryx fetches from, e.g.
-    pypi.org. On a first request peryx fetches from upstream, stores the result, and serves it; later requests come from
-    local disk. (This was called a "mirror".)
+    [pypi.org](https://pypi.org/). On a first request peryx fetches from upstream, stores the result, and serves it;
+    later requests come from local disk. (This was called a "mirror".)
   - **hosted** is an authoritative store you upload to. Nothing upstream; the packages live here because you published
     them. (This was called a "local" index.)
   - **virtual** is an ordered aggregation of other indexes served under one URL. Its member list is called `layers`.
     (This was called an "overlay".)
 - **ecosystem** is which packaging format the index speaks: **pypi** and **oci** today. It fixes the wire protocol (the
-  PyPI Simple API, the OCI `/v2/` distribution API) and the artifact shapes (wheels and sdists; manifests and blobs).
-  See [ecosystems](@/ecosystems/_index.md) and the [standards](@/core/standards.md) each one implements.
+  PyPI [Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/), the
+  [OCI](https://opencontainers.org/) `/v2/` [distribution API](https://github.com/opencontainers/distribution-spec)) and
+  the artifact shapes (wheels and sdists; manifests and blobs). See [ecosystems](@/ecosystems/_index.md) and the
+  [standards](@/core/standards.md) each one implements.
 
 The axes are orthogonal at creation but coupled at aggregation: a virtual index may only combine members of the **same
 ecosystem**. The roles below work the same in every ecosystem; the diagrams use a PyPI example, and each ecosystem's
@@ -35,10 +37,10 @@ page shows the same shapes in its own protocol.
 
 The index servers teams run in production converged on the same role shape, and peryx adopts it:
 
-- **Artifactory** aggregates *local* and *remote* repositories into a *virtual* repository behind one URL, with a
-  default deployment target for writes and local-before-remote resolution.
-- **Nexus** groups *hosted* and *proxy* repositories the same way; the member order decides who wins, and the
-  documentation recommends hosted first.
+- **[Artifactory](https://jfrog.com/artifactory/)** aggregates *local* and *remote* repositories into a *virtual*
+  repository behind one URL, with a default deployment target for writes and local-before-remote resolution.
+- **[Nexus](https://www.sonatype.com/products/nexus-repository)** groups *hosted* and *proxy* repositories the same way;
+  the member order decides who wins, and the documentation recommends hosted first.
 
 The shared pattern: a read-through cache primitive, a writable hosted primitive, and an ordered composition served at
 one URL where your own content wins over upstream. peryx names these cached, hosted, and virtual.
@@ -56,8 +58,6 @@ flowchart LR
   req["GET simple/utils/"] --> virtual["virtual root/pypi"]
   virtual -->|"1st: hosted layer"| hosted["your uploads<br/>utils-2.0 ✓"]
   virtual -->|"2nd: cached layer"| cached["pypi.org cache<br/>utils-9.9 ✗ shadowed"]
-  classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-  classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
   class hosted good
   class cached warn
 {% end %}
@@ -77,9 +77,9 @@ be repeated in every project, for every tool, forever.
 
 A virtual index moves the decision server-side. The client has one `index-url` and no fallback; the virtual index's
 hosted layer is consulted first; a name that exists in the hosted layer never falls through to the cached layer. The
-guarantee holds for pip, uv, poetry, and whatever comes next, because it lives where the indexes meet rather than in
-each client's configuration. Publishing a package privately is what turns its name off upstream; there is no separate
-deny-list to maintain.
+guarantee holds for pip, uv, [poetry](https://python-poetry.org/), and whatever comes next, because it lives where the
+indexes meet rather than in each client's configuration. Publishing a package privately is what turns its name off
+upstream; there is no separate deny-list to maintain.
 
 ## Removal semantics
 
@@ -99,9 +99,10 @@ maps them to its own protocol):
 ## The default topology
 
 Out of the box peryx runs one trio per ecosystem: a cached index of the public upstream, an empty hosted index, and a
-virtual index combining them. For PyPI that is a pypi.org cache behind `root/pypi`; for OCI, a Docker Hub cache behind
-`root/oci`. Each virtual URL serves the whole public index for its ecosystem, and the day you need to host a private
-artifact you add a token to that ecosystem's hosted index; nothing about the client setup changes.
+virtual index combining them. For PyPI that is a pypi.org cache behind `root/pypi`; for OCI, a
+[Docker Hub](https://hub.docker.com/) cache behind `root/oci`. Each virtual URL serves the whole public index for its
+ecosystem, and the day you need to host a private artifact you add a token to that ecosystem's hosted index; nothing
+about the client setup changes.
 
 ## In practice
 

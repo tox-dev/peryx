@@ -13,20 +13,21 @@ cloud once and served from local disk after.
 
 What their pull-through and limits look like today:
 
-- **Amazon ECR** offers a
+- **[Amazon ECR](https://aws.amazon.com/ecr/)** offers a
   [pull-through cache](https://docs.aws.amazon.com/AmazonECR/latest/userguide/pull-through-cache.html) for a fixed set
   of upstreams, but the cache is per-repository and its images still bill against
   [ECR storage and data-transfer pricing](https://aws.amazon.com/ecr/pricing/); auth is a 12-hour token from
   `aws ecr get-login-password`, so every runner re-logs in.
-- **GitHub Container Registry (GHCR)** hosts images but has no pull-through cache of Docker Hub, so a build that pulls a
-  public base image still hits Docker Hub and its [rate limits](https://docs.docker.com/docker-hub/download-rate-limit/)
-  on every cold runner.
-- **Google Artifact Registry** has remote (pull-through) and virtual (aggregation) Docker repositories (the closest
-  cloud analog to peryx's model, split across resource types), with
+- **[GitHub Container Registry (GHCR)](https://docs.github.com/packages)** hosts images but has no pull-through cache of
+  [Docker Hub](https://hub.docker.com/), so a build that pulls a public base image still hits Docker Hub and its
+  [rate limits](https://docs.docker.com/docker-hub/download-rate-limit/) on every cold runner.
+- **[Google Artifact Registry](https://cloud.google.com/artifact-registry)** has remote (pull-through) and virtual
+  (aggregation) Docker repositories (the closest cloud analog to peryx's model, split across resource types), with
   [metered storage and egress](https://cloud.google.com/artifact-registry/pricing).
-- **Azure Container Registry** caches upstream images with
-  [artifact cache](https://learn.microsoft.com/en-us/azure/container-registry/tutorial-artifact-cache), gated behind the
-  Standard/Premium tiers and [metered per GiB](https://azure.microsoft.com/en-us/pricing/details/container-registry/).
+- **[Azure Container Registry](https://learn.microsoft.com/en-us/azure/container-registry/)** caches upstream images
+  with [artifact cache](https://learn.microsoft.com/en-us/azure/container-registry/tutorial-artifact-cache), gated
+  behind the Standard/Premium tiers and
+  [metered per GiB](https://azure.microsoft.com/en-us/pricing/details/container-registry/).
 
 ## Why peryx
 

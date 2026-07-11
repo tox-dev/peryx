@@ -9,6 +9,12 @@
   --text-faint: #6b6862;
   --accent: #a83600;
   --accent-strong: #8a2c00;
+  // Links are blue, not brand orange: any orange vivid enough to separate from the near-black body
+  // copy on this cream page falls under AA (the brand #f74c00 manages only 3.2:1). Blue carries the
+  // same job at 5.8:1, reads as a link without an underline, and leaves orange to mean "peryx" —
+  // buttons, active nav, accents. The dark theme lifts it to stay legible on the dark page.
+  --link: #0b57d0;
+  --link-hover: #08409c;
   --brand-a: #f74c00;
   --brand-b: #ffb600;
   // Foreground gold for text/marks: the brand gold (#ffb600) is invisible on the light page
@@ -44,6 +50,10 @@
   --text-faint: #8f867a;
   --accent: #d9682f;
   --accent-strong: #e07838;
+  // The dark page keeps orange links: on this background a bright, saturated orange already separates
+  // cleanly from the body copy (5.4:1), so the blue the light theme needs buys nothing here.
+  --link: #d9682f;
+  --link-hover: #e07838;
   // Status and gold foregrounds matched to the light theme's contrast (~5:1) so the same element
   // reads with the same emphasis in either theme, rather than shouting on one and whispering on the
   // other.
@@ -121,11 +131,11 @@ a b {
 }
 
 a {
-  color: var(--accent);
+  color: var(--link);
   text-decoration: none;
 
   &:hover {
-    color: var(--accent-strong);
+    color: var(--link-hover);
     text-decoration: underline;
   }
 }
@@ -852,10 +862,12 @@ a {
 // Docs shell: three columns on desktop (nav | content | on-this-page), following the proportions
 // the Material-based docs (uv/ruff) settle on — a ~16rem section tree, a readable content column
 // capped near 54rem, and a ~15rem table of contents. Below 72rem the TOC drops; below 52rem both
-// rails fold into <details> disclosures stacked above the content.
+// rails fold into <details> disclosures stacked above the content. Either rail can also be collapsed
+// by hand to a stub column holding just its toggle, which the prose then reflows into.
 $docs-break-toc: 72rem;
 $docs-break-nav: 52rem;
 $header-offset: 4.3rem;
+$rail-stub: 2.6rem;
 
 .docs-shell {
   display: grid;
@@ -1060,22 +1072,113 @@ $header-offset: 4.3rem;
   }
 }
 
-// Desktop keeps both rails open (JS holds the open attribute in sync with the breakpoint). The
-// sidebar's "Documentation" summary is only the mobile toggle, so it is hidden here; the TOC's
-// summary stays as a static "On this page" heading.
+// The per-rail collapse control. Hidden by default because it is a desktop affordance: on mobile the
+// rail's own summary is already the disclosure. It rides in the rail header when the rail is open
+// and is all that remains in the stub column once it is collapsed, so it is also the way back.
+.rail-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+
+  svg {
+    width: 1rem;
+    height: 1rem;
+    transition: transform 0.15s ease;
+  }
+
+  &:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
+// The chevron points the way the rail will move: left to fold the sidebar away, right to fold the
+// TOC away, and back toward the content once collapsed.
+.docs-toc .rail-toggle svg,
+:root.nav-collapsed .docs-nav .rail-toggle svg {
+  transform: rotate(180deg);
+}
+
+:root.toc-collapsed .docs-toc .rail-toggle svg {
+  transform: none;
+}
+
+// Desktop keeps both rails open as columns (JS holds the open attribute in sync with the breakpoint),
+// so each summary is a static header rather than a disclosure — the only live control in it is the
+// collapse button.
 @media (min-width: #{$docs-break-nav + 0.01rem}) {
-  .docs-nav > summary {
+  .docs-nav > summary,
+  .docs-toc > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    pointer-events: none;
+  }
+
+  .rail-toggle {
+    display: inline-flex;
+    pointer-events: auto;
+  }
+
+  :root.nav-collapsed .docs-nav > :not(summary),
+  :root.nav-collapsed .docs-nav .rail-label,
+  :root.toc-collapsed .docs-toc > :not(summary),
+  :root.toc-collapsed .docs-toc .rail-label {
     display: none;
   }
 
-  .docs-toc > summary {
-    pointer-events: none;
+  :root.nav-collapsed .docs-nav > summary,
+  :root.toc-collapsed .docs-toc > summary {
+    justify-content: center;
+  }
+
+  // Alone in the stub column the toggle has no header to belong to, so it takes on button chrome to
+  // stay findable as the way back.
+  :root.nav-collapsed .docs-nav .rail-toggle,
+  :root.toc-collapsed .docs-toc .rail-toggle {
+    border-color: var(--border);
+    background: var(--bg-soft);
+    color: var(--text-soft);
+  }
+
+  // Collapsing a rail is a request for room, so the prose drops its readable cap and takes it.
+  :root.nav-collapsed .docs-main article,
+  :root.toc-collapsed .docs-main article {
+    max-width: none;
+  }
+}
+
+@media (min-width: #{$docs-break-toc + 0.01rem}) {
+  :root.nav-collapsed .docs-shell {
+    grid-template-columns: $rail-stub minmax(0, 1fr) 15rem;
+  }
+
+  :root.toc-collapsed .docs-shell {
+    grid-template-columns: 16rem minmax(0, 1fr) $rail-stub;
+  }
+
+  :root.nav-collapsed.toc-collapsed .docs-shell {
+    grid-template-columns: $rail-stub minmax(0, 1fr) $rail-stub;
   }
 }
 
 @media (max-width: $docs-break-toc) {
   .docs-shell {
     grid-template-columns: 15rem minmax(0, 1fr);
+  }
+
+  :root.nav-collapsed .docs-shell {
+    grid-template-columns: $rail-stub minmax(0, 1fr);
   }
 
   .docs-toc {

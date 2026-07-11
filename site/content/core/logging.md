@@ -12,9 +12,9 @@ output quiet:
 peryx serve --log-level "info,peryx_upstream=debug"
 ```
 
-peryx logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch pip
-and uv take the [PEP 658](https://peps.python.org/pep-0658/) `.metadata` path, or docker fetch a manifest before its
-blobs, without raising verbosity.
+peryx logs each HTTP request with its method, path, status, and latency at info, the default level, so you can watch
+[pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/) take the [PEP 658](https://peps.python.org/pep-0658/)
+`.metadata` path, or [docker](https://www.docker.com/) fetch a manifest before its blobs, without raising verbosity.
 
 ## Sinks
 
@@ -22,7 +22,7 @@ Output goes to one sink, selected with `--log-sink` or `[log] sink`:
 
 - `stdout` (default): pretty for a terminal, or one JSON object per line with `--log-format json` for log aggregation.
 - `file`: a daily-rotating file at `--log-file <path>`.
-- `journald`: the systemd journal (Linux only).
+- `journald`: the [systemd](https://systemd.io/) journal (Linux only).
 - `syslog`: the local syslog daemon (Unix only).
 
 In the config file:

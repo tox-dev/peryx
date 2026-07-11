@@ -22,7 +22,7 @@ peryx <COMMAND>
 | `import-dir`     | Import local wheels and sdists into a hosted index                                    |
 | `policy`         | Preview index policy decisions against cached records                                 |
 | `mirror`         | Plan, populate, and verify mirror cache contents                                      |
-| `openapi`        | Print the OpenAPI description of the HTTP API as JSON                                 |
+| `openapi`        | Print the [OpenAPI](https://www.openapis.org/) description of the HTTP API as JSON    |
 | `self update`    | Replace the binary with the newest release (installer-managed builds only; see below) |
 
 ## `serve` and `init` options
@@ -147,8 +147,9 @@ digest filter applies to blob files. Age and size filters apply before output.
 `cache size` reports cached page counts, stale page counts, page record bytes, blob counts and bytes, invalid blob-path
 counts, and metadata table row counts.
 
-`cache fsck` checks cached page records, file URL rows, PEP 658 metadata rows, project rows, uploads, overrides, and
-blob hashes. It prints `ok` when it finds no problem; otherwise it prints one row per problem and a `problems` total.
+`cache fsck` checks cached page records, file URL rows, [PEP 658](https://peps.python.org/pep-0658/) metadata rows,
+project rows, uploads, overrides, and blob hashes. It prints `ok` when it finds no problem; otherwise it prints one row
+per problem and a `problems` total.
 
 `cache purge project` removes one project's cached simple page and project-display row. It also removes file URL and PEP
 658 metadata rows for digests that no other cached page or upload record references. It does not delete blob files; run

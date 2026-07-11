@@ -11,18 +11,19 @@ pieces stop composing.
 
 ## dumb-pypi
 
-[dumb-pypi](https://github.com/chriskuehl/dumb-pypi) generates a static PEP 503 index from a list of filenames; the
-files live wherever a URL can reach (S3, nginx), and having no server is the design. Publishing means regenerating the
-site; PyPI itself still needs `--extra-index-url`; name normalization is your web server's problem. In peryx, uploads
-are the write path (`twine upload`, index updated transactionally) and the same process mirrors PyPI, so clients keep
-one `index-url`. Migration is a one-time twine loop over the bucket's files.
+[dumb-pypi](https://github.com/chriskuehl/dumb-pypi) generates a static [PEP 503](https://peps.python.org/pep-0503/)
+index from a list of filenames; the files live wherever a URL can reach ([S3](https://aws.amazon.com/s3/),
+[nginx](https://nginx.org/)), and having no server is the design. Publishing means regenerating the site; PyPI itself
+still needs `--extra-index-url`; name normalization is your web server's problem. In peryx, uploads are the write path
+(`twine upload`, index updated transactionally) and the same process mirrors PyPI, so clients keep one `index-url`.
+Migration is a one-time [twine](https://twine.readthedocs.io/) loop over the bucket's files.
 
 ## Plain directories and `python -m http.server`
 
 pip's [`--find-links`](https://pip.pypa.io/en/stable/cli/pip_install/) accepts a directory listing, and `--index-url`
 accepts any PEP 503-shaped tree, so a shared folder works with zero tooling. It also serves whole wheels to every
-resolve (no PEP 658 metadata), lists everything in one flat page, offers no fallback to PyPI, and authenticates nobody.
-It remains the right tool for a laptop and a handful of wheels.
+resolve (no [PEP 658](https://peps.python.org/pep-0658/) metadata), lists everything in one flat page, offers no
+fallback to PyPI, and authenticates nobody. It remains the right tool for a laptop and a handful of wheels.
 
 ## pip2pi
 

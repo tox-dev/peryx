@@ -5,10 +5,10 @@ weight = 1
 +++
 
 You run your own `/v2/` registry: CNCF [distribution](https://distribution.github.io/distribution/)'s `registry:2` as a
-Docker Hub pull-through cache and/or a private store, or [Harbor](https://goharbor.io/) wrapping the same core with
-projects, replication, and scanning. You want peryx's single-flight fetch, one content-addressed blob store shared
-across every index, and virtual shadowing, without running the registry, a database, and a job stack. This page maps a
-`/v2/` setup onto peryx.
+[Docker Hub](https://hub.docker.com/) pull-through cache and/or a private store, or [Harbor](https://goharbor.io/)
+wrapping the same core with projects, replication, and scanning. You want peryx's single-flight fetch, one
+content-addressed blob store shared across every index, and virtual shadowing, without running the registry, a database,
+and a job stack. This page maps a `/v2/` setup onto peryx.
 
 ## What moves cleanly
 
@@ -61,7 +61,8 @@ layers = ["images", "dockerhub"]
 
 A pull of `all/library/alpine` you have never published falls through to Docker Hub; once you push `all/library/alpine`,
 your image wins. That is the [dependency-confusion defense](@/core/glossary.md#shadowing) for containers. Point `cached`
-at GHCR, ECR, or a Harbor `/v2/` the same way; any registry that implements the spec.
+at [GHCR](https://docs.github.com/packages), [ECR](https://aws.amazon.com/ecr/), or a Harbor `/v2/` the same way; any
+registry that implements the spec.
 
 ## What changes for clients
 
@@ -86,8 +87,9 @@ the hosted index once; there is no registry-to-registry copy step to run. See th
 Be clear about the trade before you switch, especially coming from Harbor. peryx is a fast cache, host, and merge, not a
 Harbor replacement:
 
-- **No vulnerability scanning.** Harbor ships Trivy/Clair integration and can block a pull on a CVE. peryx does not scan
-  images; run scanning in your pipeline or in front of peryx.
+- **No vulnerability scanning.** Harbor ships [Trivy](https://trivy.dev/)/[Clair](https://github.com/quay/clair)
+  integration and can block a pull on a CVE. peryx does not scan images; run scanning in your pipeline or in front of
+  peryx.
 - **No project-level RBAC.** Harbor has users, roles, and per-project permissions. peryx has one `upload_token` per
   hosted index and open reads on its network; for per-team write control, issue a distinct hosted index and token per
   team.

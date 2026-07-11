@@ -17,9 +17,10 @@ caps usage at 40,000 components or 100,000 requests per day.
 
 ## Why peryx
 
-For the Python slice of the job, protocol support is the concrete difference. Nexus shipped PEP 658 metadata and the PEP
-691 JSON API in [3.93.0 (June 2026)](https://help.sonatype.com/en/sonatype-nexus-repository-3-93-0-release-notes.html);
-Artifactory added opt-in PEP 691 in 7.146.7 (April 2026) and still has
+For the Python slice of the job, protocol support is the concrete difference. Nexus shipped
+[PEP 658](https://peps.python.org/pep-0658/) metadata and the [PEP 691](https://peps.python.org/pep-0691/) JSON API in
+[3.93.0 (June 2026)](https://help.sonatype.com/en/sonatype-nexus-repository-3-93-0-release-notes.html); Artifactory
+added opt-in PEP 691 in 7.146.7 (April 2026) and still has
 [no PEP 658 support](https://jfrog.atlassian.net/si/jira.issueviews:issue-html/RTFACT-26891/RTFACT-26891.html), with the
 request open since 2022; every resolve against it downloads wheels to read their metadata. peryx serves both by default,
 backfills them for upstreams that lack them, and idles in tens of megabytes of RAM.

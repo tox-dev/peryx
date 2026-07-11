@@ -9,12 +9,14 @@ logos = [ "logos/oci.svg"]
 logos_dark = [ "logos/oci-white.svg"]
 +++
 
-OCI is the container-image ecosystem: the format of container images and the HTTP protocol clients such as Docker and
-Podman use to pull and push them. An image is a small tree, not one file: a **manifest** (a JSON document listing an
-image's parts), a **config** blob, and one or more **layer** blobs (the filesystem, gzip-compressed). Every part is a
-**blob** addressed by the sha256 of its bytes; a mutable **tag** (`latest`, `1.25`) points at a manifest's digest. peryx
-serves OCI over the [distribution spec](https://github.com/opencontainers/distribution-spec) that registries (Docker
-Hub, GHCR, ECR, Artifactory) implement.
+OCI is the container-image ecosystem: the format of container images and the HTTP protocol clients such as
+[Docker](https://docs.docker.com/) and [Podman](https://podman.io/) use to pull and push them. An image is a small tree,
+not one file: a **manifest** (a JSON document listing an image's parts), a **config** blob, and one or more **layer**
+blobs (the filesystem, gzip-compressed). Every part is a **blob** addressed by the sha256 of its bytes; a mutable
+**tag** (`latest`, `1.25`) points at a manifest's digest. peryx serves OCI over the
+[distribution spec](https://github.com/opencontainers/distribution-spec) that registries
+([Docker Hub](https://hub.docker.com/), [GHCR](https://docs.github.com/packages), [ECR](https://aws.amazon.com/ecr/),
+[Artifactory](https://jfrog.com/artifactory/)) implement.
 
 ## How OCI concepts map to peryx
 
@@ -147,7 +149,8 @@ crane push --insecure alpine.tar 127.0.0.1:4433/images/alpine:latest
 
 ## In practice
 
-- How peryx compares to distribution and zot as a Docker Hub cache: [OCI performance](@/ecosystems/oci/performance.md)
+- How peryx compares to [distribution](https://distribution.github.io/distribution/) and [zot](https://zotregistry.dev/)
+  as a Docker Hub cache: [OCI performance](@/ecosystems/oci/performance.md)
 - The full walkthrough: [run a container registry](@/ecosystems/oci/guides/container-registry.md)
 - Front a registry that is not Docker Hub: point `cached` at GHCR (`https://ghcr.io`), ECR, or an Artifactory `/v2/`.
 - Serve trusted HTTPS so clients need no insecure flag: [configure TLS or ACME](@/core/configuration.md#tls).

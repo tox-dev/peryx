@@ -5,8 +5,9 @@ weight = 4
 +++
 
 peryx implements the interoperability standards that let unmodified clients talk to it. Those standards are
-ecosystem-specific: Python has the packaging PEPs, containers have the OCI specifications. The detailed maps live on
-each ecosystem's own Standards page. This page is the frame they share.
+ecosystem-specific: Python has the packaging [PEPs](https://peps.python.org/), containers have the
+[OCI](https://opencontainers.org/) specifications. The detailed maps live on each ecosystem's own Standards page. This
+page is the frame they share.
 
 ## peryx sits on both sides
 
@@ -28,10 +29,13 @@ protocol:
 
 ## The per-ecosystem maps
 
-- [PyPI standards](@/ecosystems/pypi/reference/standards.md): the Simple API and the packaging PEPs (503/691, 700, 592,
-  658/714, 440, 427/625, core metadata, legacy JSON and upload).
-- [OCI standards](@/ecosystems/oci/reference/standards.md): the distribution spec `/v2/` API, the image spec manifests
-  and blobs, the referrers API, and bearer-token auth.
+- [PyPI standards](@/ecosystems/pypi/reference/standards.md): the
+  [Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) and the packaging PEPs
+  (503/691, 700, 592, 658/714, 440, 427/625, core metadata, legacy JSON and upload).
+- [OCI standards](@/ecosystems/oci/reference/standards.md): the
+  [distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` API, the
+  [image spec](https://github.com/opencontainers/image-spec) manifests and blobs, the referrers API, and bearer-token
+  auth.
 
 ## In practice
 

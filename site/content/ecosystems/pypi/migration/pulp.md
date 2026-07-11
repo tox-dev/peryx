@@ -9,8 +9,9 @@ logos = [ "logos/pulp.png"]
 [Pulp](https://pulpproject.org/) is a content-management platform whose
 [pulp_python plugin](https://pulpproject.org/pulp_python/) is, feature for feature, peryx's closest living relative:
 lazy (`on_demand`) mirroring of PyPI subsets, pull-through caching, uploads, curation with allow/deny lists, and
-versioned repository snapshots. The difference is the machinery: a Pulp deployment is a Django REST API, a separate
-content-serving app, one or more task workers, and PostgreSQL
+versioned repository snapshots. The difference is the machinery: a Pulp deployment is a
+[Django](https://www.djangoproject.com/) REST API, a separate content-serving app, one or more task workers, and
+[PostgreSQL](https://www.postgresql.org/)
 ([architecture](https://pulpproject.org/pulpcore/docs/admin/learn/architecture/)), and Pulp also manages RPMs,
 containers, and other content types with the same model.
 
@@ -23,15 +24,15 @@ and its pull-through composes: virtual indexes can layer cached indexes of cache
 
 ## The renames
 
-| Pulp (pulp_python)                   | peryx                                                                        |
-| ------------------------------------ | ---------------------------------------------------------------------------- |
-| repository + remote + distribution   | one `[[index]]` entry                                                        |
-| `policy = "on_demand"` remote        | the cached default                                                           |
-| pull-through cache on a distribution | a cached layer in a virtual index                                            |
-| includes/excludes curation           | shadowing plus [yank and hide overrides](@/ecosystems/pypi/guides/remove.md) |
-| `…/pypi/{base_path}/simple/`         | `/{route}/simple/`                                                           |
-| `pulp python content upload` / twine | twine / `uv publish`, unchanged                                              |
-| repository version rollback          | not offered; deletes are the undo                                            |
+| Pulp (pulp_python)                                                    | peryx                                                                        |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| repository + remote + distribution                                    | one `[[index]]` entry                                                        |
+| `policy = "on_demand"` remote                                         | the cached default                                                           |
+| pull-through cache on a distribution                                  | a cached layer in a virtual index                                            |
+| includes/excludes curation                                            | shadowing plus [yank and hide overrides](@/ecosystems/pypi/guides/remove.md) |
+| `…/pypi/{base_path}/simple/`                                          | `/{route}/simple/`                                                           |
+| `pulp python content upload` / [twine](https://twine.readthedocs.io/) | twine / `uv publish`, unchanged                                              |
+| repository version rollback                                           | not offered; deletes are the undo                                            |
 
 ## Pitfalls
 

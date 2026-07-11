@@ -5,8 +5,8 @@ weight = 3
 +++
 
 In this tutorial you will point peryx at a second upstream, TestPyPI, and serve it two ways: on its own route, and
-layered with pypi.org under one URL. The same recipe fronts an Artifactory, a GitLab registry, or any other PEP 503
-index. It takes about ten minutes.
+layered with pypi.org under one URL. The same recipe fronts an [Artifactory](https://jfrog.com/artifactory/), a GitLab
+registry, or any other [PEP 503](https://peps.python.org/pep-0503/) index. It takes about ten minutes.
 
 ## Why TestPyPI
 
@@ -43,9 +43,10 @@ curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     http://127.0.0.1:4433/testpypi/simple/sampleproject/ | python3 -m json.tool | head
 ```
 
-A PEP 691 JSON document with PEP 700 fields, whatever the upstream offered. peryx negotiates the best format the
-upstream has, canonicalizes it once, and serves the modern stack downstream; an HTML-only Artifactory gets the same
-treatment ([how the degradation works](@/ecosystems/pypi/reference/standards.md)).
+A [PEP 691](https://peps.python.org/pep-0691/) JSON document with [PEP 700](https://peps.python.org/pep-0700/) fields,
+whatever the upstream offered. peryx negotiates the best format the upstream has, canonicalizes it once, and serves the
+modern stack downstream; an HTML-only Artifactory gets the same treatment
+([how the degradation works](@/ecosystems/pypi/reference/standards.md)).
 
 ## Layer it with PyPI
 

@@ -4,8 +4,9 @@ description = "Serve container images through peryx: cache Docker Hub, pull an i
 weight = 1
 +++
 
-In this tutorial you configure peryx as a container registry, start it, pull an image through a cached proxy of Docker
-Hub, then build and push an image of your own to a private hosted store. It takes about ten minutes.
+In this tutorial you configure peryx as a container registry, start it, pull an image through a cached proxy of
+[Docker Hub](https://hub.docker.com/), then build and push an image of your own to a private hosted store. It takes
+about ten minutes.
 
 An OCI image is a small tree, not one file: a **manifest** (a JSON document listing the image's parts), a config blob,
 and one or more **layer** blobs. Each part is a **blob** addressed by the sha256 of its bytes, and a mutable **tag**
@@ -138,7 +139,8 @@ docker pull 127.0.0.1:4433/images/app:1.0
 ```
 
 peryx also serves a web interface on the same port. Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for a live
-dashboard of the configured indexes and their request counters; the same numbers are Prometheus metrics at `/metrics`.
+dashboard of the configured indexes and their request counters; the same numbers are
+[Prometheus](https://prometheus.io/) metrics at `/metrics`.
 
 ## Where next
 

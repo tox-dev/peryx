@@ -27,9 +27,9 @@ I-->>-P: the wheel, which pip verifies against its sha256
 {% end %}
 
 Every hop names a standard: the page format is PEP 503/691, its fields are PEP 700, the yank markers are PEP 592, the
-metadata shortcut is PEP 658/714, and the filename pip parsed to pick a wheel is PEP 427. peryx sits on both sides of
-this conversation, a server to your clients and a client to its upstreams, which is why the table below mixes "served"
-and "parsed".
+metadata shortcut is PEP 658/714, and the filename [pip](https://pip.pypa.io/) parsed to pick a wheel is PEP 427. peryx
+sits on both sides of this conversation, a server to your clients and a client to its upstreams, which is why the table
+below mixes "served" and "parsed".
 
 | Standard                                                                                                                                                                                    | Role in peryx                                                                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -44,7 +44,7 @@ and "parsed".
 | [PEP 427](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) / [PEP 625](https://packaging.python.org/en/latest/specifications/source-distribution-format/) | Wheel filename, `.dist-info`, `WHEEL`, and `RECORD` checks; modern `.tar.gz` sdist filename, root, and required-file checks           |
 | [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/)                                                                                                       | `METADATA` and `PKG-INFO` parsing for upload identity checks, PEP 658 siblings, and Metadata 2.4+ sdist license-file checks           |
 | [Legacy JSON API](https://docs.pypi.org/api/json/)                                                                                                                                          | Compatibility responses for tools that call `/pypi/{project}/json` and `/pypi/{project}/{version}/json`                               |
-| [Legacy upload API](https://docs.pypi.org/api/upload/)                                                                                                                                      | The multipart upload protocol twine and `uv publish` speak                                                                            |
+| [Legacy upload API](https://docs.pypi.org/api/upload/)                                                                                                                                      | The multipart upload protocol [twine](https://twine.readthedocs.io/) and `uv publish` speak                                           |
 | [`.pypirc`](https://packaging.python.org/en/latest/specifications/pypirc/)                                                                                                                  | The `__token__` authentication convention for uploads and upstream mirrors                                                            |
 
 ## PEP 714 and the `core-metadata` key
@@ -55,11 +55,11 @@ present, and emits both spellings downstream for older clients.
 
 ## Graceful degradation
 
-Some upstreams implement only part of the stack; Artifactory and GitLab serve HTML alone. peryx negotiates JSON first,
-parses PEP 503 HTML as the fallback, and re-serves the modern formats downstream, so a client gets api-version 1.4.
-Features the upstream cannot express (a missing `.metadata` sibling, absent sizes) degrade per file rather than per
-index. An upstream that advertises another Simple API major version is rejected with a 502 response; peryx supports
-Simple API 1.x.
+Some upstreams implement only part of the stack; [Artifactory](https://jfrog.com/artifactory/) and GitLab serve HTML
+alone. peryx negotiates JSON first, parses PEP 503 HTML as the fallback, and re-serves the modern formats downstream, so
+a client gets api-version 1.4. Features the upstream cannot express (a missing `.metadata` sibling, absent sizes)
+degrade per file rather than per index. An upstream that advertises another Simple API major version is rejected with a
+502 response; peryx supports Simple API 1.x.
 
 The discovery documents at `/+api` and `/{route}/+api` report only capabilities peryx implements today. They advertise
 Simple HTML/JSON, api-version 1.4, PEP 658 metadata siblings, project status, provenance, and legacy JSON. The legacy

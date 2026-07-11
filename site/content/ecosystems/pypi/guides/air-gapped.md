@@ -39,8 +39,9 @@ peryx mirror sync root/pypi --data-dir ./peryx-data --requirements requirements.
 peryx mirror verify root/pypi --data-dir ./peryx-data --requirements requirements.txt
 ```
 
-Everything selected (pages, PEP 658 metadata, wheels, and sdists) now sits under `./peryx-data`. Create a backup, verify
-it, carry the backup directory across the gap, restore it, and serve it in offline mode:
+Everything selected (pages, [PEP 658](https://peps.python.org/pep-0658/) metadata, wheels, and sdists) now sits under
+`./peryx-data`. Create a backup, verify it, carry the backup directory across the gap, restore it, and serve it in
+offline mode:
 
 ```shell
 # connected side

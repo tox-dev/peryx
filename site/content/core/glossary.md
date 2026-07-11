@@ -10,9 +10,10 @@ anchor if you came here from a link.
 
 ## What is a package index? {#index}
 
-An **index** is the list a package installer downloads from. When you run `pip install requests`, pip asks an index
-"what files exist for `requests`, and where are they?", then downloads one. The public index for Python is
-[pypi.org](https://pypi.org/). pip and uv call the address of an index its **index-url**.
+An **index** is the list a package installer downloads from. When you run `pip install requests`,
+[pip](https://pip.pypa.io/) asks an index "what files exist for `requests`, and where are they?", then downloads one.
+The public index for Python is [pypi.org](https://pypi.org/). pip and [uv](https://docs.astral.sh/uv/) call the address
+of an index its **index-url**.
 
 A **registry** is the same idea under a different name. Some tools and ecosystems say "registry" where Python says
 "index". This site says **index** throughout.
@@ -22,11 +23,12 @@ questions: from its cache, from packages you uploaded, or by asking an upstream 
 
 ## Why "index", not "repository"? {#index-not-repository}
 
-Other tools call this a "repository" (Artifactory, Nexus) or a "registry" (npm, container tooling). They all mean the
-same thing: a place a client resolves and downloads packages from. peryx standardizes on **index** because that is the
-word Python's own tools and specifications use (`--index-url`, the "Simple **index**"), and because "repository"
-collides with the source-control meaning (a git repo). When you read another tool's docs, read its "repository" or
-"registry" as peryx's "index".
+Other tools call this a "repository" ([Artifactory](https://jfrog.com/artifactory/),
+[Nexus](https://www.sonatype.com/products/nexus-repository)) or a "registry" ([npm](https://www.npmjs.com/), container
+tooling). They all mean the same thing: a place a client resolves and downloads packages from. peryx standardizes on
+**index** because that is the word Python's own tools and specifications use (`--index-url`, the "Simple **index**"),
+and because "repository" collides with the source-control meaning (a git repo). When you read another tool's docs, read
+its "repository" or "registry" as peryx's "index".
 
 ## What is an upstream? {#upstream}
 
@@ -44,10 +46,10 @@ you publish into a [hosted](#roles) index. Publishing a name privately is also w
 ## What is an artifact? {#artifact}
 
 An **artifact** is an installable thing an index stores and serves. What one looks like depends on the
-[ecosystem](#ecosystem): in the PyPI ecosystem it is a single file, a wheel or an sdist; in the OCI ecosystem it is a
-small tree of content-addressed pieces: a manifest and its blobs. Each ecosystem's own page defines its artifact shape:
-see [PyPI](@/ecosystems/pypi/_index.md) for wheels and sdists, and [OCI](@/ecosystems/oci/_index.md) for manifests,
-blobs, and tags.
+[ecosystem](#ecosystem): in the PyPI ecosystem it is a single file, a wheel or an sdist; in the
+[OCI](https://opencontainers.org/) ecosystem it is a small tree of content-addressed pieces: a manifest and its blobs.
+Each ecosystem's own page defines its artifact shape: see [PyPI](@/ecosystems/pypi/_index.md) for wheels and sdists, and
+[OCI](@/ecosystems/oci/_index.md) for manifests, blobs, and tags.
 
 Whatever the shape, peryx stores every artifact by the sha256 hash of its bytes (**content-addressed**), so a file
 needed by ten projects is stored once and is correct forever. A different file would have a different hash, and
@@ -77,7 +79,6 @@ flowchart TB
     v1["pypi"]
     v2["oci"]
   end
-  classDef good fill:#009E73,stroke:#009E73,color:#ffffff
   class c1,h1,v1,c2,h2,v2 good
 {% end %}
 
@@ -112,8 +113,6 @@ flowchart TB
   V -->|"1st: hosted layer"| L1["your upload<br/>utils-2.0 ✓ wins"]
   V -->|"2nd: another hosted layer"| L2["utils-1.0<br/>later, kept as older version"]
   V -->|"last: cached layer (pypi.org)"| L3["utils-99.0<br/>✗ shadowed, never served"]
-  classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-  classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
   class L1 good
   class L3 warn
 {% end %}
@@ -152,12 +151,14 @@ local registry (`registry:2`) runs on `localhost:5000`.
 Two situations fall outside the loopback rule and need HTTPS or an explicit insecure setting:
 
 - **Reaching peryx over the network**: a registry at a hostname or non-loopback IP is not trusted over HTTP.
-- **Docker Desktop / a VM engine**: on macOS and Windows the engine runs in a VM, so the host's `localhost` is not the
-  engine's `localhost`; you reach the host by another name, which is no longer loopback.
+- **[Docker Desktop](https://www.docker.com/products/docker-desktop/) / a VM engine**: on macOS and Windows the engine
+  runs in a VM, so the host's `localhost` is not the engine's `localhost`; you reach the host by another name, which is
+  no longer loopback.
 
 The production answer is to [serve HTTPS](@/core/serve-https.md) with a real or ACME certificate, which every client
-trusts with no flag. For quick local testing you can instead pass `--tls-verify=false` (podman, crane) or add the
-address to docker's `insecure-registries`.
+trusts with no flag. For quick local testing you can instead pass `--tls-verify=false` ([podman](https://podman.io/),
+[crane](https://github.com/google/go-containerregistry)) or add the address to [docker](https://www.docker.com/)'s
+`insecure-registries`.
 
 ## Related
 

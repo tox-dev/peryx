@@ -30,6 +30,34 @@ const mmdc = existsSync(join(site, "node_modules", ".bin", "mmdc"))
 
 const BLOCK = /\{%\s*mermaid\(\)\s*%\}\n([\s\S]*?)\n\{%\s*end\s*%\}/g;
 
+// A diagram names a role — `class cache accent` — and the palette for that role lives here, once per
+// theme, rather than as a `classDef` line repeated in every diagram. One palette baked into the
+// source cannot suit both pages: a fill that reads on cream glares on the dark page. So each role is
+// a tinted chip of its hue on the page's own surface, with the hue itself only on the border and the
+// text — legible without the saturated block fills mermaid reaches for by default.
+const ROLES = {
+  light: {
+    accent: "fill:#dbe6f5,stroke:#4a6f9f,color:#16304d",
+    good: "fill:#d8ebe1,stroke:#3f8467,color:#14402f",
+    warn: "fill:#f6e2d0,stroke:#b06f36,color:#5a3212",
+  },
+  dark: {
+    accent: "fill:#1e2b3a,stroke:#6d9fd6,color:#cfe0f5",
+    good: "fill:#182d25,stroke:#5aa98a,color:#cfe8dc",
+    warn: "fill:#33241a,stroke:#c9843f,color:#f0d6bb",
+  },
+};
+
+const ROLE_USE = /^\s*class\s+[\w,]+\s+(\w+)\s*$/gm;
+
+// mermaid rejects a classDef for a role the diagram never uses, and sequence diagrams take none at
+// all, so only the roles a diagram actually names are appended.
+function withRoles(source, theme) {
+  const used = new Set(Array.from(source.matchAll(ROLE_USE), (match) => match[1]));
+  const defs = [...used].filter((role) => ROLES[theme][role]).map((role) => `classDef ${role} ${ROLES[theme][role]}`);
+  return defs.length ? `${source}\n${defs.join("\n")}` : source;
+}
+
 function markdownFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
@@ -62,7 +90,6 @@ function normalizeRoot(svg) {
 
 function render(source, hash, tmp) {
   const input = join(tmp, "diagram.mmd");
-  writeFileSync(input, source);
   // Both variants sit in the DOM at once, so they cannot share mermaid's default `my-svg` id: an
   // SVG `<style>` applies document-wide even under `display: none`, so the later block would repaint
   // the visible variant in the other palette, and every `url(#…)` marker reference would resolve to
@@ -70,6 +97,7 @@ function render(source, hash, tmp) {
   const variant = (config, name) => {
     const out = join(tmp, `${name}.svg`);
     const id = `peryx-${hash}-${name}`;
+    writeFileSync(input, withRoles(source, name));
     execFileSync(mmdc, ["--input", input, "--output", out, "--configFile", config, "--svgId", id, "--quiet"], {
       stdio: ["ignore", "ignore", "inherit"],
     });

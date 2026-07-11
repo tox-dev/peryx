@@ -34,8 +34,8 @@ cargo llvm-cov nextest --workspace --ignore-filename-regex 'main\.rs' \
   --fail-under-lines 100 --fail-under-functions 100
 ```
 
-Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on stable Rust
-can reach compiler-generated branches (async expansions, drop glue).
+Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on stable
+[Rust](https://www.rust-lang.org/) can reach compiler-generated branches (async expansions, drop glue).
 
 ## End-to-end tests
 
@@ -52,8 +52,9 @@ proof, so assert on peryx's own state or metrics.
 
 ## The web UI
 
-`cargo leptos build` compiles the UI's wasm bundle into `ui/pkg/` (mise provides cargo-leptos and node). The Playwright
-suite drives the hydrated UI against a real peryx with an uploaded fixture package:
+`cargo leptos build` compiles the UI's wasm bundle into `ui/pkg/` (mise provides
+[cargo-leptos](https://github.com/leptos-rs/cargo-leptos) and node). The [Playwright](https://playwright.dev/) suite
+drives the hydrated UI against a real peryx with an uploaded fixture package:
 
 ```shell
 cargo build -p peryx
@@ -77,8 +78,8 @@ gives reasons. Put new pages in the quadrant that matches their job.
 zola --root site serve   # live-reloading preview at 127.0.0.1:1111
 ```
 
-Read the Docs builds and hosts the site from `.readthedocs.yaml` on each merge; CI builds it on each pull request so a
-broken site blocks the merge.
+[Read the Docs](https://readthedocs.org/) builds and hosts the site from `.readthedocs.yaml` on each merge; CI builds it
+on each pull request so a broken site blocks the merge.
 
 ## Gotchas
 
@@ -88,9 +89,10 @@ Two dev-environment behaviors are non-obvious enough to have cost real debugging
 
 `cargo leptos build` writes a matched pair: `target/debug/peryx` (the server that renders HTML) and
 `ui/pkg/peryx_web*.wasm` (the bundle that hydrates it). Both embed the same component tree, and hydration only works
-when they agree. Mix two builds and the server emits hydration markers the wasm does not expect; Leptos then panics in
-the browser (`tachys::hydration::failed_to_cast_marker_node`, `RuntimeError: unreachable`), never sets
-`body[data-hydrated]`, and every Playwright test times out at navigation with no hint as to why.
+when they agree. Mix two builds and the server emits hydration markers the wasm does not expect;
+[Leptos](https://leptos.dev/) then panics in the browser (`tachys::hydration::failed_to_cast_marker_node`,
+`RuntimeError: unreachable`), never sets `body[data-hydrated]`, and every Playwright test times out at navigation with
+no hint as to why.
 
 The Playwright harness (`tests/frontend/serve.mjs`) prefers `target/release/peryx` when it exists, and a plain
 `cargo build --release` rebuilds only the binary, leaving it paired with a stale debug wasm. After touching UI source,
@@ -113,5 +115,5 @@ gate will catch the omission, but it is faster to write the unit test up front t
 - Commits: imperative subject up to 50 characters, no period; a wrapped body explaining what and why for anything
   non-obvious. Keep commits atomic.
 - Markdown wraps at 120 columns via `mdformat` (the pre-commit hook handles it).
-- Code style is whatever `cargo fmt` and the clippy configuration in `Cargo.toml` say; fix findings rather than
-  suppressing them, and give any unavoidable suppression a reason.
+- Code style is whatever `cargo fmt` and the [clippy](https://github.com/rust-lang/rust-clippy) configuration in
+  `Cargo.toml` say; fix findings rather than suppressing them, and give any unavoidable suppression a reason.

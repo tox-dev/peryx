@@ -11,9 +11,9 @@ user-owned indexes with inheritance, a web UI, primary/replica replication, and 
 [pluggy](https://pluggy.readthedocs.io/)-based plugin ecosystem. It runs as a
 [Pyramid](https://docs.pylonsproject.org/projects/pyramid/) application on an embedded
 [waitress](https://docs.pylonsproject.org/projects/waitress/) server, keeps its state in an
-[SQLite](https://www.sqlite.org/) key-value store with release files on the filesystem, and expects an nginx and
-supervisor front for production (its own `devpi-gen-config` generates those files). peryx covers the same read-through
-core in one static Rust binary.
+[SQLite](https://www.sqlite.org/) key-value store with release files on the filesystem, and expects an
+[nginx](https://nginx.org/) and [supervisor](http://supervisord.org/) front for production (its own `devpi-gen-config`
+generates those files). peryx covers the same read-through core in one static Rust binary.
 
 ## Comparison against peryx
 
@@ -23,7 +23,8 @@ Both are read-through pypi.org mirrors that cache what they fetch, host private 
 cached index. For a caching mirror the two overlap almost completely:
 
 - **Read-through mirroring** of pypi.org (or any simple index), cached on first use.
-- **Private uploads** over the twine API, served from the same host as the cached index.
+- **Private uploads** over the [twine](https://twine.readthedocs.io/) API, served from the same host as the cached
+  index.
 - **Composition**: devpi's index inheritance (`bases`) maps onto peryx's [virtual indexes](@/core/indexes.md), and
   hosted files shadow upstream ones in both.
 - **Yank and delete** of hosted files.
@@ -52,10 +53,10 @@ Migrating to peryx means giving these up:
   the upstream once metadata is cached.
 - **Correctness under a concurrent cold burst.** On the first parallel fetch of a project, devpi can evaluate the
   request against an as-yet-empty project list, return a `404`, and cache that "does not exist" for its 30-minute mirror
-  window; uv then fails the install. peryx single-flights concurrent misses onto one upstream fetch, so ten cold
-  installs of the same project all succeed.
-- **Built-in observability.** Prometheus metrics and per-file usage counters are part of the server, not plugin
-  territory.
+  window; [uv](https://docs.astral.sh/uv/) then fails the install. peryx single-flights concurrent misses onto one
+  upstream fetch, so ten cold installs of the same project all succeed.
+- **Built-in observability.** [Prometheus](https://prometheus.io/) metrics and per-file usage counters are part of the
+  server, not plugin territory.
 - **One process.** A single static binary with no nginx or supervisor front, no `devpi-init` step, and no external
   database.
 

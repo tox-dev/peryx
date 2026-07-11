@@ -4,9 +4,10 @@ description = "The problems a read-through cache and private index solves for an
 weight = 0
 +++
 
-peryx sits between your clients and the indexes they download from: Python installers and pypi.org, container clients
-and Docker Hub, whatever the ecosystem. That position solves a specific set of problems. If yours is on the first list,
-peryx is a one-binary answer; if it is on the second, use the tool named there instead.
+peryx sits between your clients and the indexes they download from: Python installers and [pypi.org](https://pypi.org/),
+container clients and [Docker Hub](https://hub.docker.com/), whatever the ecosystem. That position solves a specific set
+of problems. If yours is on the first list, peryx is a one-binary answer; if it is on the second, use the tool named
+there instead.
 
 ## Use peryx when…
 
@@ -16,9 +17,10 @@ Container-based CI rebuilds environments from scratch on every run, so a busy mo
 pypi.org and the same base images from Docker Hub hundreds of times a day. That is slow for you and expensive for the
 upstream. PyPI's operators
 [ask CI-heavy users to run local mirrors](https://discuss.python.org/t/draft-pep-pypi-cost-solutions-ci-mirrors-containers-and-caching-to-scale/3681),
-and Docker Hub enforces pull-rate limits that stall unauthenticated builds. A read-through cache fixes both with a
-one-line change: point the client's index or registry at peryx and every job after the first serves from local disk. The
-[usage counters](@/core/monitor.md) show what it saves you.
+and Docker Hub enforces [pull-rate limits](https://docs.docker.com/docker-hub/download-rate-limit/) that stall
+unauthenticated builds. A read-through cache fixes both with a one-line change: point the client's index or registry at
+peryx and every job after the first serves from local disk. The [usage counters](@/core/monitor.md) show what it saves
+you.
 
 ### You install private artifacts next to public ones
 

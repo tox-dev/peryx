@@ -24,8 +24,8 @@ was archived on August 27, 2023 ("Pypicloud has transitioned to maintenance mode
 ### Extra: what pypicloud does that peryx does not
 
 - **Cloud storage backends.** pypicloud stores artifacts on [S3](https://aws.amazon.com/s3/),
-  [GCS](https://cloud.google.com/storage), [Azure Blob](https://azure.microsoft.com/products/storage/blobs), or local
-  disk. peryx stores on local disk only.
+  [GCS](https://cloud.google.com/storage), [Azure Blob](https://azure.microsoft.com/en-us/products/storage/blobs), or
+  local disk. peryx stores on local disk only.
 - **Pluggable cache and access backends.** pypicloud keeps its package index in
   [SQLAlchemy](https://www.sqlalchemy.org/), [Redis](https://redis.io/), or
   [DynamoDB](https://aws.amazon.com/dynamodb/), and drives access through config, SQL, or
@@ -42,8 +42,8 @@ was archived on August 27, 2023 ("Pypicloud has transitioned to maintenance mode
   cache row, and only then serves it, so the client waits for the whole download plus the disk write plus the DB commit.
   peryx [streams the bytes to the client and into the store at once](@/core/architecture.md).
 - **Concurrency correctness.** A cold burst of clients asking pypicloud for the same wheel each download it and race to
-  insert the same primary key into single-writer SQLite; the losers surface as `HTTP 500`. peryx single-flights the
-  fetch, so all waiters tail one download.
+  insert the same primary key into single-writer [SQLite](https://www.sqlite.org/); the losers surface as `HTTP 500`.
+  peryx single-flights the fetch, so all waiters tail one download.
 - **Content-addressed dedup and [PEP 658](https://peps.python.org/pep-0658/) metadata**, neither of which pypicloud
   offers (it stores files by `name/version/filename` and serves no `.metadata` sibling).
 

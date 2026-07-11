@@ -32,12 +32,13 @@ peryx supports three credential fields on a cached index:
 
 Which you set depends on the upstream:
 
-- **GHCR**: `username = "<github-user>"`, `token = "<personal-access-token>"` (a PAT with `read:packages`).
-- **Amazon ECR**: `cached = "https://<account>.dkr.ecr.<region>.amazonaws.com"`, with `username = "AWS"` and the
-  password from `aws ecr get-login-password`. ECR tokens are short-lived; rotate the value on the schedule the token's
-  lifetime demands.
-- **Artifactory or Harbor**: point `cached` at the registry's `/v2/` root and set `username`/`password`, or `token` if
-  the server issues bearer tokens.
+- **[GHCR](https://docs.github.com/packages)**: `username = "<github-user>"`, `token = "<personal-access-token>"` (a PAT
+  with `read:packages`).
+- **[Amazon ECR](https://aws.amazon.com/ecr/)**: `cached = "https://<account>.dkr.ecr.<region>.amazonaws.com"`, with
+  `username = "AWS"` and the password from `aws ecr get-login-password`. ECR tokens are short-lived; rotate the value on
+  the schedule the token's lifetime demands.
+- **[Artifactory](https://jfrog.com/artifactory/) or [Harbor](https://goharbor.io/)**: point `cached` at the registry's
+  `/v2/` root and set `username`/`password`, or `token` if the server issues bearer tokens.
 
 ## Keep secrets out of the file
 
@@ -48,9 +49,9 @@ a template at deploy time, injecting the value from a `PERYX`-scoped environment
 
 ## Pull
 
-Assume peryx runs at `127.0.0.1:4433`. Docker and Podman trust a loopback registry over plain HTTP with no setup, so on
-the same host a pull just works; `crane` and `podman` reaching it take an insecure flag. Over the network, serve
-[TLS](@/core/serve-https.md) so clients need no flag at all.
+Assume peryx runs at `127.0.0.1:4433`. [Docker](https://docs.docker.com/) and [Podman](https://podman.io/) trust a
+loopback registry over plain HTTP with no setup, so on the same host a pull just works; `crane` and `podman` reaching it
+take an insecure flag. Over the network, serve [TLS](@/core/serve-https.md) so clients need no flag at all.
 
 Pull through peryx's route prefix; the upstream repository name follows it:
 

@@ -2,6 +2,14 @@
 {# Left docs navigation: the diátaxis sections in a fixed order, each with its pages, current page
    marked active. Rendered as a <details> so the same markup is a static column on desktop and a
    collapsible drawer on mobile. #}
+{# The rail's collapse control. It lives inside the <summary> so it shares the rail header row on
+   desktop and is the only thing left in the stub column once the rail is collapsed; on mobile the
+   summary itself is the drawer toggle and this is hidden. #}
+{% macro rail_toggle(rail, label) %}
+<button class="rail-toggle" type="button" data-rail="{{ rail }}" aria-expanded="true" aria-label="Collapse the {{ label }}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+</button>
+{% endmacro %}
 {# The diátaxis section glyphs, moved out of the header into the sidebar. #}
 {% macro icon(name) %}
 {%- if name == "tutorials" %}<svg class="docs-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5 10-5v6"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
@@ -18,7 +26,7 @@
    ecosystems/, then Contributing. Adding an ecosystem is a content folder — the nav needs no edit. #}
 {% macro nav(current) %}
 <details class="docs-nav" open>
-  <summary>Documentation</summary>
+  <summary><span class="rail-label">Documentation</span>{{ self::rail_toggle(rail="nav", label="documentation sidebar") }}</summary>
   <div class="docs-nav-search" data-search-slot></div>
   <nav aria-label="Documentation sections">
     {% set core = get_section(path="core/_index.md") %}
@@ -72,7 +80,7 @@
 {% macro toc(entries) %}
 {% if entries %}
 <details class="docs-toc" open>
-  <summary>On this page</summary>
+  <summary><span class="rail-label">On this page</span>{{ self::rail_toggle(rail="toc", label="table of contents") }}</summary>
   <nav aria-label="On this page">
     <ul>
       {% for h in entries %}

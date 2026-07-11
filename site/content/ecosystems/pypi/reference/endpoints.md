@@ -14,7 +14,8 @@ each endpoint down with copyable example requests and responses.
 - `GET /{route}/{project}/{version}/json`: legacy PyPI release JSON for one version.
 - `GET /{route}/files/{sha256}/{filename}`: artifact download, cached content-addressed.
 - `GET /{route}/files/{sha256}/{filename}.metadata`: [PEP 658](https://peps.python.org/pep-0658/) core-metadata sibling.
-- `POST /{route}/`: upload ([legacy API](https://docs.pypi.org/api/upload/), used by twine and `uv publish`).
+- `POST /{route}/`: upload ([legacy API](https://docs.pypi.org/api/upload/), used by
+  [twine](https://twine.readthedocs.io/) and `uv publish`).
 - `GET /{route}/+api`: index discovery, absolute URLs, capabilities, and redacted client config.
 - `GET /{route}/inspect/{sha256}/{filename}`: archive member listing as JSON.
 - `GET /{route}/inspect/{sha256}/{filename}/{member}`: one archive member's content.
@@ -127,12 +128,13 @@ The signature input is `{timestamp}.{delivery}.{body}`, where `body` is the exac
 compare the HMAC with the configured target secret and reject timestamps outside their replay window.
 
 Uploads accept wheels and `.tar.gz` sdists. The server validates the filename, form `name` and `version`, `filetype`,
-archive contents, and core metadata before the artifact becomes visible. Wheel validation requires normalized
-`.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD` files, WHEEL tag/build consistency, RECORD hashes, and matching
-RECORD sizes when present. Sdist validation requires a PEP 625 `.tar.gz` filename, one safe `{name}-{version}/`
-top-level directory, `pyproject.toml`, and `PKG-INFO`; unsafe tar members and Metadata 2.4+ missing `License-File`
-entries are rejected. Wheel uploads serve `METADATA` as the PEP 658/714 `.metadata` sibling. Sdist uploads serve the
-verified `PKG-INFO` the same way.
+archive contents, and [core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/) before the
+artifact becomes visible. Wheel validation requires normalized `.dist-info` paths, required `METADATA`/`WHEEL`/`RECORD`
+files, WHEEL tag/build consistency, RECORD hashes, and matching RECORD sizes when present. Sdist validation requires a
+[PEP 625](https://peps.python.org/pep-0625/) `.tar.gz` filename, one safe `{name}-{version}/` top-level directory,
+`pyproject.toml`, and `PKG-INFO`; unsafe tar members and Metadata 2.4+ missing `License-File` entries are rejected.
+Wheel uploads serve `METADATA` as the PEP 658/714 `.metadata` sibling. Sdist uploads serve the verified `PKG-INFO` the
+same way.
 
 Archive inspection is broader than uploads. It can list and preview cached wheels, zips, zipped eggs, `.tar`, `.tar.gz`,
 and `.tgz` archives, including supported archives nested inside them. Other legacy compressed tar formats stay

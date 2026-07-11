@@ -4,10 +4,10 @@ description = "Put peryx between your runners and Docker Hub: pull base images t
 weight = 1
 +++
 
-CI jobs start from clean runners, so every build and test job pulls the same base images again. Docker Hub caps
-anonymous pulls at 100 per six hours per IP, and a busy fleet behind one NAT egress burns through that in minutes. Run
-one peryx where your runners live, point their container clients at it, and the first job warms the cache while the rest
-pull layers from local disk.
+CI jobs start from clean runners, so every build and test job pulls the same base images again.
+[Docker Hub](https://hub.docker.com/) caps anonymous pulls at 100 per six hours per IP, and a busy fleet behind one NAT
+egress burns through that in minutes. Run one peryx where your runners live, point their container clients at it, and
+the first job warms the cache while the rest pull layers from local disk.
 
 ## Run peryx next to the runners
 
@@ -29,7 +29,8 @@ cached = "https://registry-1.docker.io"
 ```
 
 The data directory is the cache; give it a persistent volume. Nothing else is stateful (no database, no sidecar), so in
-Kubernetes or docker-compose this is one container with one volume.
+[Kubernetes](https://kubernetes.io/) or [docker-compose](https://docs.docker.com/compose/) this is one container with
+one volume.
 
 ## Transport: HTTP on loopback, TLS over the network
 
@@ -69,7 +70,8 @@ from disk. Because blobs are content-addressed, a layer shared across images cro
 
 ## Rewrite images in a pipeline
 
-Most pipelines name images inline, so the direct form is to prefix the route in the pull step. A GitHub Actions job:
+Most pipelines name images inline, so the direct form is to prefix the route in the pull step. A
+[GitHub Actions](https://docs.github.com/actions) job:
 
 ```yaml
 jobs:
@@ -108,9 +110,9 @@ the mirror endpoint must be TLS, so peryx needs a trusted certificate. If it ser
 }
 ```
 
-`registry-mirrors` covers Docker Hub only; images from GHCR, ECR, or a private registry still resolve directly. For
-those, front each with its own proxy index (point `cached` at `https://ghcr.io` and pull through that route) and rewrite
-the image reference.
+`registry-mirrors` covers Docker Hub only; images from [GHCR](https://docs.github.com/packages),
+[ECR](https://aws.amazon.com/ecr/), or a private registry still resolve directly. For those, front each with its own
+proxy index (point `cached` at `https://ghcr.io` and pull through that route) and rewrite the image reference.
 
 ## Verify it is working
 
@@ -121,7 +123,8 @@ curl -s 'http://peryx.internal:4433/+stats?index=dockerhub' | jq .totals
 ```
 
 `downloads` and `bytes` count what peryx served; once the working set is warm, upstream traffic drops to manifest
-revalidations while layer bytes come from disk. [`/metrics`](@/core/monitor.md) feeds the same numbers to Prometheus.
+revalidations while layer bytes come from disk. [`/metrics`](@/core/monitor.md) feeds the same numbers to
+[Prometheus](https://prometheus.io/).
 
 ## Why this works as well as it does
 
@@ -131,6 +134,7 @@ revalidations while layer bytes come from disk. [`/metrics`](@/core/monitor.md) 
   multiply the miss.
 - The anonymous pull-rate limit stops being the wall: after warm-up, peryx serves the fleet and Docker Hub sees
   revalidations, not a hundred cold pulls an hour.
-- How peryx compares to distribution and zot as a Docker Hub cache: [OCI performance](@/ecosystems/oci/performance.md).
+- How peryx compares to [distribution](https://distribution.github.io/distribution/) and [zot](https://zotregistry.dev/)
+  as a Docker Hub cache: [OCI performance](@/ecosystems/oci/performance.md).
 - The full role walkthrough, hosted and virtual as well as proxy:
   [run a container registry](@/ecosystems/oci/guides/container-registry.md).

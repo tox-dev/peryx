@@ -62,10 +62,11 @@ Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for the web dashboard: the
 peryx is up. From here the steps depend on what you serve: the client, the wire protocol, and how you publish differ by
 ecosystem. Follow the tutorial for yours:
 
-- [**PyPI**: Python packages](@/ecosystems/pypi/tutorials/getting-started.md): cache pypi.org, install with pip and uv,
-  publish a private package, then yank and delete it.
-- [**OCI**: container images](@/ecosystems/oci/tutorials/getting-started.md): cache Docker Hub, pull an image, build and
-  push one of your own, then verify it round-trips.
+- [**PyPI**: Python packages](@/ecosystems/pypi/tutorials/getting-started.md): cache [pypi.org](https://pypi.org/),
+  install with [pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/), publish a private package, then yank
+  and delete it.
+- [**OCI**: container images](@/ecosystems/oci/tutorials/getting-started.md): cache
+  [Docker Hub](https://hub.docker.com/), pull an image, build and push one of your own, then verify it round-trips.
 
 Each starts from a running peryx and takes about ten minutes.
 

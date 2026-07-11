@@ -57,11 +57,12 @@ Set `offline = true` on the cached index when only that upstream should stay cac
 
 ## HTML upstreams
 
-Some upstreams, including Artifactory, serve the PEP 503 HTML form instead of PEP 691 JSON. peryx requests
+Some upstreams, including [Artifactory](https://jfrog.com/artifactory/), serve the
+[PEP 503](https://peps.python.org/pep-0503/) HTML form instead of PEP 691 JSON. peryx requests
 [PEP 691](https://peps.python.org/pep-0691/) JSON first, parses HTML when the upstream returns it, and serves JSON to
-pip and uv. You do not configure this; it happens per response. The upstream response must send a Simple API content
-type (`text/html`, `application/vnd.pypi.simple.v1+html`, or `application/vnd.pypi.simple.v1+json`); other content types
-return `502` with the upstream URL in the error body.
+[pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/). You do not configure this; it happens per response.
+The upstream response must send a Simple API content type (`text/html`, `application/vnd.pypi.simple.v1+html`, or
+`application/vnd.pypi.simple.v1+json`); other content types return `502` with the upstream URL in the error body.
 
 ## Notes
 

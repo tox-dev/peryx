@@ -74,8 +74,6 @@ miss --> V["peryx, devpi:<br/>stream to the client while<br/>teeing into a conte
 miss --> P["proxpi:<br/>download to a disk temp dir in a thread;<br/>client waits, or is redirected after 0.9 s"]
 miss --> S["pypiserver:<br/>302 redirect to pypi.org;<br/>nothing is downloaded or cached"]
 miss --> C["pypicloud:<br/>buffer the whole file to a temp file,<br/>write to store + DB, then serve"]
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
 class V good
 class C,S warn
 {% end %}
@@ -168,9 +166,12 @@ adds over talking to pypi.org yourself.
 
 The table covers every alternative that can be started hermetically from a published package: peryx, devpi, proxpi,
 pypiserver (whose upstream fallback is a redirect rather than a cache), and pypicloud (archived upstream; it still runs,
-but only under Python 3.10 with SQLAlchemy pinned below 2). Pulp needs PostgreSQL plus four services, nginx_pypi_cache
-is a Docker configuration rather than a package, and Artifactory, Nexus, and the cloud registries need licenses or
-accounts, so none of them can be measured this way.
+but only under Python 3.10 with SQLAlchemy pinned below 2). [Pulp](https://pulpproject.org/) needs
+[PostgreSQL](https://www.postgresql.org/) plus four services,
+[nginx_pypi_cache](https://github.com/hauntsaninja/nginx_pypi_cache) is a [Docker](https://www.docker.com/)
+configuration rather than a package, and [Artifactory](https://jfrog.com/artifactory/),
+[Nexus](https://www.sonatype.com/products/nexus-repository), and the cloud registries need licenses or accounts, so none
+of them can be measured this way.
 
 The install workload is the top 51 most-downloaded PyPI packages
 ([the snapshot](https://github.com/tox-dev/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs), torch
@@ -180,9 +181,9 @@ reset.
 
 {{ bench(file="install-uv") }}
 
-The same workload through pip tells a different story: pip installs serially and does its own work between requests, so
-the client dominates and every server lands within a few seconds of the rest. A faster index cannot rescue a slow
-client; through uv, the index is what you feel.
+The same workload through [pip](https://pip.pypa.io/) tells a different story: pip installs serially and does its own
+work between requests, so the client dominates and every server lands within a few seconds of the rest. A faster index
+cannot rescue a slow client; through uv, the index is what you feel.
 
 {{ bench(file="install-pip") }}
 
@@ -206,8 +207,8 @@ concludes the package does not exist.
 The request workload drives a swarm against each warm server: one user, then 32, each a client that fetches project
 pages and reads every byte of the body, the way a resolver does. The pages average ~480 KB, so this row prices full page
 transfers, not header round-trips. Every client sends the `Accept` header pip and uv send, because peryx picks the
-representation from it: a swarm asking for `*/*` receives the PEP 503 HTML render instead, which is not the page an
-installer ever gets, and prices work no install performs.
+representation from it: a swarm asking for `*/*` receives the [PEP 503](https://peps.python.org/pep-0503/) HTML render
+instead, which is not the page an installer ever gets, and prices work no install performs.
 
 peryx answers **7,658 requests a second** to a single client at a 2.3 ms p95, and **17,707** to thirty-two at 3.8 ms;
 the next-fastest local cache manages 176 and 752. The gap is the cached page: a warm hit is a lookup and a copy of bytes

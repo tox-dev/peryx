@@ -32,11 +32,18 @@
   <link rel="icon" type="image/svg+xml" href="{{ get_url(path='icon.svg') }}">
   <script>
     // Apply a saved theme before first paint so there is no flash; OS preference stays the default.
+    // Same for the docs rails: restoring them here rather than after load keeps the grid from
+    // reflowing under the reader on every page.
     (function () {
       var theme = localStorage.getItem("theme");
       if (theme === "light" || theme === "dark") {
         document.documentElement.dataset.theme = theme;
       }
+      ["nav", "toc"].forEach(function (rail) {
+        if (localStorage.getItem("docs-rail-" + rail) === "collapsed") {
+          document.documentElement.classList.add(rail + "-collapsed");
+        }
+      });
     })();
   </script>
   <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
@@ -246,6 +253,25 @@
       sizeBench();
       window.addEventListener("resize", sizeBench);
     }
+    // Each rail can be folded to a stub column that keeps only its toggle, so the same button both
+    // collapses and restores it. The choice is per rail and persists across pages. The button sits
+    // inside the rail's <summary>, so the click has to be stopped from reaching the disclosure.
+    document.querySelectorAll(".rail-toggle").forEach(function (button) {
+      var rail = button.dataset.rail;
+      var label = rail === "nav" ? "documentation sidebar" : "table of contents";
+      var sync = function () {
+        var collapsed = document.documentElement.classList.contains(rail + "-collapsed");
+        button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        button.setAttribute("aria-label", (collapsed ? "Expand the " : "Collapse the ") + label);
+      };
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        var collapsed = document.documentElement.classList.toggle(rail + "-collapsed");
+        localStorage.setItem("docs-rail-" + rail, collapsed ? "collapsed" : "open");
+        sync();
+      });
+      sync();
+    });
     var railQuery = window.matchMedia("(max-width: 52rem)");
     function syncDocsRails() {
       var collapsed = railQuery.matches;
@@ -315,23 +341,43 @@
       var blocks = Array.prototype.slice.call(document.querySelectorAll("pre.mermaid"));
       if (!blocks.length) return;
       var sources = blocks.map(function (pre) { return pre.textContent; });
+      // The role palette the build injects (site/scripts/render_diagrams.mjs). Kept in step by hand:
+      // it exists only so a diagram looks the same on the dev server as it does in production.
+      var roles = {
+        light: {
+          accent: "fill:#dbe6f5,stroke:#4a6f9f,color:#16304d",
+          good: "fill:#d8ebe1,stroke:#3f8467,color:#14402f",
+          warn: "fill:#f6e2d0,stroke:#b06f36,color:#5a3212"
+        },
+        dark: {
+          accent: "fill:#1e2b3a,stroke:#6d9fd6,color:#cfe0f5",
+          good: "fill:#182d25,stroke:#5aa98a,color:#cfe8dc",
+          warn: "fill:#33241a,stroke:#c9843f,color:#f0d6bb"
+        }
+      };
       var loader = document.createElement("script");
       loader.type = "module";
       loader.textContent =
         'import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";' +
         'const sources = ' + JSON.stringify(sources) + ';' +
-        'async function renderAll(theme) {' +
+        'const roles = ' + JSON.stringify(roles) + ';' +
+        'function withRoles(source, palette) {' +
+        '  const used = new Set(Array.from(source.matchAll(/^\\s*class\\s+[\\w,]+\\s+(\\w+)\\s*$/gm), (m) => m[1]));' +
+        '  const defs = [...used].filter((r) => palette[r]).map((r) => `classDef ${r} ${palette[r]}`);' +
+        '  return defs.length ? source + "\\n" + defs.join("\\n") : source;' +
+        '}' +
+        'async function renderAll(theme, palette) {' +
         '  mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme });' +
         '  const out = [];' +
         '  for (let i = 0; i < sources.length; i++) {' +
-        '    const { svg } = await mermaid.render("mmd-" + theme + "-" + i, sources[i]);' +
+        '    const { svg } = await mermaid.render("mmd-" + theme + "-" + i, withRoles(sources[i], palette));' +
         '    out.push(svg);' +
         '  }' +
         '  return out;' +
         '}' +
         '(async () => {' +
-        '  const light = await renderAll("default");' +
-        '  const dark = await renderAll("dark");' +
+        '  const light = await renderAll("default", roles.light);' +
+        '  const dark = await renderAll("dark", roles.dark);' +
         '  const blocks = document.querySelectorAll("pre.mermaid");' +
         '  blocks.forEach((pre, i) => {' +
         '    const fig = document.createElement("figure");' +

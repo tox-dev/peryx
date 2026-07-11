@@ -11,10 +11,10 @@ visual style as this site.
 
 `http://<host>:<port>/` shows the version, the change serial, and the counters in two groups: a **Global** group with
 the instance-wide request count, then one group per ecosystem (labelled with its badge) holding that ecosystem's scoped
-counters: PyPI's listings, artifacts, and PEP 658 metadata hits; OCI's served manifests (pages), pulled blobs
-(downloads), and pushed images (uploads). Below the counters sits a card per configured index (PyPI and OCI alike) with
-its ecosystem badge, kind, route, layers, whether it accepts uploads, and its usage. The counters refresh every few
-seconds.
+counters: [PyPI](https://pypi.org/)'s listings, artifacts, and [PEP 658](https://peps.python.org/pep-0658/) metadata
+hits; [OCI](https://opencontainers.org/)'s served manifests (pages), pulled blobs (downloads), and pushed images
+(uploads). Below the counters sits a card per configured index (PyPI and OCI alike) with its ecosystem badge, kind,
+route, layers, whether it accepts uploads, and its usage. The counters refresh every few seconds.
 
 {{ screen(alt="The dashboard: counters on top, one card per index with its layer stack and usage", name="dashboard") }}
 
@@ -26,7 +26,8 @@ table, and per-file download counts.
 `/admin/status` reads `GET /+status?details=admin` and top-level `GET /+stats`. It shows configured indexes, routes,
 virtual-index member order, upload targets by name, observed project counts, uploaded file counts, recent uploads,
 cached index URLs, redacted authentication state, and cache-health counters. It also links to the JSON status, JSON
-stats, Prometheus metrics, Simple API, browse, and usage pages.
+stats, [Prometheus](https://prometheus.io/) metrics,
+[Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/), browse, and usage pages.
 
 The admin status document scans metadata keys once to count observed projects and uploaded files, then keeps only a
 capped recent-upload list per index. It does not fetch upstreams, read package detail pages, read artifacts, or expose

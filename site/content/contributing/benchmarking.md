@@ -31,10 +31,11 @@ cargo run --release -p peryx-bench -- ab <base-commit>
 
 ## OCI runs need Docker and a mirror
 
-The OCI benchmarks need a running Docker daemon. Pulling from Docker Hub with nothing in front of it, an anonymous
-account hits the pull ceiling partway through a comparison, so export `DOCKERHUB_USERNAME` and a read-only
+The OCI benchmarks need a running [Docker](https://www.docker.com/) daemon. Pulling from
+[Docker Hub](https://hub.docker.com/) with nothing in front of it, an anonymous account hits the pull ceiling partway
+through a comparison, so export `DOCKERHUB_USERNAME` and a read-only
 [access token](https://docs.docker.com/security/for-developers/access-tokens/) in `DOCKERHUB_TOKEN`; the harness threads
-them into every registry and into crane.
+them into every registry and into [crane](https://github.com/google/go-containerregistry).
 
 Under `--mirror` the harness stands a local pull-through cache in front of Docker Hub and points every registry at it,
 so the run is rate-limit-free and repeatable. Without it the cold rows carry the real upstream fetch, so the harness
@@ -46,8 +47,9 @@ cargo run --release -p peryx-bench -- --ecosystem oci --mirror
 
 ## Price one request, per ecosystem
 
-The runs above time a whole client against a real network. The criterion suites price a single request served in process
-through the full router, with no socket and no upstream, from a warm store:
+The runs above time a whole client against a real network. The [criterion](https://github.com/bheisler/criterion.rs)
+suites price a single request served in process through the full router, with no socket and no upstream, from a warm
+store:
 
 ```shell
 cargo bench -p peryx-ecosystem-pypi --bench operations

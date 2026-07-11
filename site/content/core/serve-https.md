@@ -15,8 +15,8 @@ nothing until you do. There are three approaches; pick one.
 
 ## Bring your own certificate
 
-If you already have a certificate and key (from your organization's CA, `mkcert`, or a previous Let's Encrypt run), a
-`[tls]` table serves HTTPS from them:
+If you already have a certificate and key (from your organization's CA, `mkcert`, or a previous
+[Let's Encrypt](https://letsencrypt.org/) run), a `[tls]` table serves HTTPS from them:
 
 ```toml
 # peryx.toml
@@ -27,7 +27,8 @@ key = "/etc/peryx/privkey.pem"    # PEM private key
 
 peryx negotiates HTTP/2 and answers on the same port. A client trusts the connection when the certificate's CA is in its
 trust store: a public CA is trusted everywhere; a private or `mkcert` CA must be installed into the client's trust store
-(`mkcert -install` does this for the local machine, and Docker Desktop then trusts it too).
+(`mkcert -install` does this for the local machine, and
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) then trusts it too).
 
 ## Automatic certificates with ACME
 
@@ -43,15 +44,16 @@ staging = false                    # true uses Let's Encrypt staging while testi
 ```
 
 For this to work the domain's DNS must point at the server and port 443 must be reachable from the internet, since the
-ACME challenge happens there. While testing, set `staging = true` to use Let's Encrypt's staging environment. It has
-higher rate limits and issues untrusted certificates, so a test run does not spend the production quota. The `[tls]` and
-`[acme]` tables are mutually exclusive.
+[ACME](https://datatracker.ietf.org/doc/html/rfc8555) challenge happens there. While testing, set `staging = true` to
+use Let's Encrypt's staging environment. It has higher rate limits and issues untrusted certificates, so a test run does
+not spend the production quota. The `[tls]` and `[acme]` tables are mutually exclusive.
 
 ## Terminate TLS at a reverse proxy
 
-If a load balancer, ingress controller, or reverse proxy (nginx, Caddy, a cloud LB) already holds your certificate,
-leave both tables unset and let it terminate TLS, forwarding plain HTTP to peryx on a private network. A clustered
-deployment usually takes this shape, and it needs no peryx TLS config.
+If a load balancer, ingress controller, or reverse proxy ([nginx](https://nginx.org/),
+[Caddy](https://caddyserver.com/), a cloud LB) already holds your certificate, leave both tables unset and let it
+terminate TLS, forwarding plain HTTP to peryx on a private network. A clustered deployment usually takes this shape, and
+it needs no peryx TLS config.
 
 ## Point clients at HTTPS
 

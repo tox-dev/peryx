@@ -4,10 +4,10 @@ description = "One hosted store a whole team pushes to, fronted by a virtual ind
 weight = 2
 +++
 
-In this tutorial you build a registry a whole team shares: a cached proxy of Docker Hub, one hosted store everyone
-pushes images to, and a virtual index that layers the team's images over the upstream so a name your team publishes is
-never pulled from Docker Hub. You will point every client at one URL for both push and pull. It takes about fifteen
-minutes and builds on [getting started](@/ecosystems/oci/tutorials/getting-started.md).
+In this tutorial you build a registry a whole team shares: a cached proxy of [Docker Hub](https://hub.docker.com/), one
+hosted store everyone pushes images to, and a virtual index that layers the team's images over the upstream so a name
+your team publishes is never pulled from Docker Hub. You will point every client at one URL for both push and pull. It
+takes about fifteen minutes and builds on [getting started](@/ecosystems/oci/tutorials/getting-started.md).
 
 ## The goal
 

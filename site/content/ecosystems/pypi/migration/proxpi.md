@@ -18,8 +18,9 @@ its file cache defaults to a temporary directory, and it has no uploads and no p
 
 - **Read-through caching** of the simple API, pages and files both.
 - **JSON and HTML** simple responses.
-- **PEP 658 metadata**: proxpi passes through `.metadata` siblings (with the PEP 714 `data-core-metadata` key) when the
-  upstream offers them; peryx serves and synthesizes them.
+- **PEP 658 metadata**: proxpi passes through `.metadata` siblings (with the
+  [PEP 714](https://peps.python.org/pep-0714/) `data-core-metadata` key) when the upstream offers them; peryx serves and
+  synthesizes them.
 - **Multiple upstreams**: proxpi's `PROXPI_EXTRA_INDEX_URLS` maps onto peryx cached indexes composed by a
   [virtual index](@/ecosystems/pypi/guides/compose-overlays.md).
 

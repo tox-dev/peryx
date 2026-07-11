@@ -7,8 +7,10 @@ weight = 2
 peryx is fast for the same reasons whichever ecosystem it serves: it never buffers a whole response, concurrent misses
 for one thing share a single upstream fetch, and everything it has served once is content-addressed on local disk. This
 page explains those mechanisms and how they are measured. The head-to-head numbers against the tools you would run
-instead live per ecosystem: [PyPI](@/ecosystems/pypi/performance.md) against devpi, proxpi, pypiserver, and pypicloud;
-[OCI](@/ecosystems/oci/performance.md) against the distribution reference registry and zot.
+instead live per ecosystem: [PyPI](@/ecosystems/pypi/performance.md) against [devpi](https://devpi.net/),
+[proxpi](https://github.com/EpicWink/proxpi), [pypiserver](https://github.com/pypiserver/pypiserver), and
+[pypicloud](https://github.com/stevearc/pypicloud); [OCI](@/ecosystems/oci/performance.md) against the
+[distribution](https://distribution.github.io/distribution/) reference registry and [zot](https://zotregistry.dev/).
 
 The headline both pages share: a **cold** request through peryx costs about what going straight to the upstream costs,
 and a **warm** one is bounded by the client's own work, not the network.
@@ -28,8 +30,8 @@ Warm numbers on loopback measure overhead, not value; the value shows up when th
 effects compound:
 
 - **Bytes stop repeating.** The store is content-addressed, so the 47 MB wheel or the base image layer that four CI
-  jobs, two Docker builds, and a laptop all need crosses your uplink once and is stored once, however many projects or
-  images reference it.
+  jobs, two [Docker](https://www.docker.com/) builds, and a laptop all need crosses your uplink once and is stored once,
+  however many projects or images reference it.
 - **A concurrent burst costs one fetch.** When several clients miss the same uncached thing at once (a page, a wheel, a
   layer), peryx's single-flight collapses them into one upstream transfer that every waiter tails, so a ten-job CI fleet
   reaching for a fresh release does not become ten upstream downloads.
@@ -97,9 +99,9 @@ repository lives on the other disk, an external drive, and contributes nothing b
 
 The competitor tables time a whole workload against a real network. A second set of benchmarks prices peryx against
 itself: each row below is one request served in process through the full router, with no socket and no upstream, from a
-warm store. They come from the criterion suites the repository carries per ecosystem, and they answer the narrower
-question the workload tables cannot isolate: once the bytes are local, what does peryx spend to turn a request into a
-response?
+warm store. They come from the [criterion](https://github.com/bheisler/criterion.rs) suites the repository carries per
+ecosystem, and they answer the narrower question the workload tables cannot isolate: once the bytes are local, what does
+peryx spend to turn a request into a response?
 
 PyPI, serving a cached project from the store:
 

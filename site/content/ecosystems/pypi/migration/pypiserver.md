@@ -9,15 +9,16 @@ logos = [ "logos/pypiserver.png"]
 [pypiserver](https://github.com/pypiserver/pypiserver) is a [Bottle](https://bottlepy.org/docs/dev/) app that serves a
 directory of your own packages over the simple API, with htpasswd-gated uploads. Its upstream story is a redirect:
 `--fallback-url` sends the client to pypi.org for anything the directory lacks, and nothing comes back into a cache. It
-serves under whichever WSGI server is importable (waitress if installed, otherwise the single-threaded stdlib server),
-and the project advertises that it is looking for new maintainers.
+serves under whichever WSGI server is importable ([waitress](https://docs.pylonsproject.org/projects/waitress/) if
+installed, otherwise the single-threaded stdlib server), and the project advertises that it is looking for new
+maintainers.
 
 ## Comparison against peryx
 
 ### Overlap
 
-- **Hosting your own packages** over the PEP 503 simple API.
-- **twine uploads** as the write path, authenticated against a credential file.
+- **Hosting your own packages** over the [PEP 503](https://peps.python.org/pep-0503/) simple API.
+- **[twine](https://twine.readthedocs.io/) uploads** as the write path, authenticated against a credential file.
 - **sha256 in file links** so installers verify what they download.
 
 ### Extra: what pypiserver does that peryx does not
@@ -36,7 +37,7 @@ and the project advertises that it is looking for new maintainers.
 - **Outage resilience.** An upstream outage takes pypiserver's fallback installs down with it. peryx serves the last
   good page while the upstream is unreachable, so a pypi.org blip degrades to stale-but-working.
 - **Shadowing.** Your uploads [shadow upstream names](@/core/indexes.md) instead of coexisting with a redirect.
-- **PEP 658 metadata.** pypiserver serves none; peryx serves it by default.
+- **[PEP 658](https://peps.python.org/pep-0658/) metadata.** pypiserver serves none; peryx serves it by default.
 
 ### Performance vs peryx
 

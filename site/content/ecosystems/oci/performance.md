@@ -108,7 +108,8 @@ the field, and the numbers stop moving with Docker Hub's weather.
 
 `crane pull` needs three endpoints: the version check, a manifest, and a blob. The workloads above therefore never
 measure the rest of what a registry serves, and an unmeasured endpoint is where a regression hides. Unlike a PyPI index,
-an OCI registry's paths are fixed by the distribution spec, so these rows compare like for like across the field.
+an OCI registry's paths are fixed by the [distribution spec](https://github.com/opencontainers/distribution-spec), so
+these rows compare like for like across the field.
 
 {{ bench(file="image-endpoints-mirror") }}
 

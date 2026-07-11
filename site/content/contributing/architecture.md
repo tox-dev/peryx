@@ -48,9 +48,6 @@ oci --> driver
 driver --> foundation
 http --> foundation
 
-classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
 class driver accent
 class pypi,oci good
 class bin warn
@@ -86,7 +83,9 @@ caches. `peryx-storage` is the two neutral stores, neither knowing any format's 
 identical bytes are stored once and every reference is tamper-evident), and a [redb](https://github.com/cberner/redb)
 (an embedded [key-value](https://en.wikipedia.org/wiki/Key%E2%80%93value_database) database, the Rust counterpart to
 [SQLite](https://www.sqlite.org/) or [LMDB](http://www.lmdb.tech/doc/)) database holding the serial counter, the webhook
-queue, and the shared key-value store each ecosystem lays its own metadata into. `peryx-search` is the package index,
+queue, and the shared key-value store each ecosystem lays its own metadata into.
+
+The rest of the foundation is the cross-cutting machinery every ecosystem reuses. `peryx-search` is the package index,
 built on [Tantivy](https://github.com/quickwit-oss/tantivy) (a
 [full-text search](https://en.wikipedia.org/wiki/Full-text_search) library, the Rust counterpart to
 [Lucene](https://lucene.apache.org/)). `peryx-events` carries [Prometheus](https://prometheus.io/)-format
@@ -123,7 +122,7 @@ resolves a request to a configured index and hands it to that index's driver; it
 web UI, built on [Leptos](https://leptos.dev/), a Rust UI framework that runs the same components in two places. On the
 server it does **SSR** ([server-side rendering](https://developer.mozilla.org/en-US/docs/Glossary/SSR)): it produces
 finished HTML so the first page load shows content without waiting on the browser. That HTML then needs **hydration**
-([the step](https://developer.mozilla.org/en-US/docs/Glossary/Hydration) where client-side code attaches event handlers
+([the step](<https://en.wikipedia.org/wiki/Hydration_(web_development)>) where client-side code attaches event handlers
 to the already-rendered HTML so it becomes interactive), which runs as [WebAssembly](https://webassembly.org/) (Wasm, a
 portable binary instruction format browsers execute at near-native speed) compiled from the same Rust. `peryx-web`
 renders the neutral view models a driver produces.
@@ -138,7 +137,7 @@ that gets to know both formats at once.
 **Ecosystem.** A closed set in `peryx-core`, one entry per packaging format. Each maps to a fixed slot, so a driver
 registry is a fixed-size array and dispatch is a [static match](https://doc.rust-lang.org/book/ch06-02-match.html)
 rather than a runtime lookup. *Static dispatch* means the compiler resolves the call at build time; the alternative,
-*dynamic dispatch* through a [trait object](https://doc.rust-lang.org/book/ch17-02-trait-objects.html), resolves it at
+*dynamic dispatch* through a [trait object](https://doc.rust-lang.org/book/ch18-02-trait-objects.html), resolves it at
 run time through a pointer. An ecosystem a request does not touch costs it nothing.
 
 **Role.** How an index (a package [repository](https://en.wikipedia.org/wiki/Software_repository)) behaves: a *cached*
@@ -176,10 +175,9 @@ label from an index's ecosystem without the neutral core naming any format's wor
 
 **The block protocol.** `peryx-web` renders a page from a list of neutral presentation blocks, an
 [open set](https://doc.rust-lang.org/reference/attributes/type_system.html) of primitives keyed by shape (key-value,
-chips, links, groups) rather than by format. This is the same idea as a
-[server-driven UI](https://www.judo.app/blog/server-driven-ui): the server decides what blocks to show, the client knows
-how to draw each block type. A driver turns its metadata into these blocks, so the UI gains an ecosystem's page without
-a web-crate change.
+chips, links, groups) rather than by format. This is the same idea as a server-driven UI: the server decides what blocks
+to show, the client knows how to draw each block type. A driver turns its metadata into these blocks, so the UI gains an
+ecosystem's page without a web-crate change.
 
 ## The serving path
 
@@ -194,8 +192,6 @@ router --> lookup["select driver<br/>by the index's ecosystem"]
 lookup --> serve["driver serves the request<br/>reads shared serving state"]
 serve --> state["stores · caches · indexes"]
 
-classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
 class router accent
 class serve good
 {% end %}
@@ -253,9 +249,7 @@ pypi -->|"artifact bytes"| blob
 oci -->|"manifests · tags<br/>referrers · tag pages"| kv
 oci -->|"layer bytes"| blob
 
-classDef neutral fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-class blob,kv neutral
+class blob,kv accent
 class pypi,oci good
 {% end %}
 
@@ -314,12 +308,9 @@ oci --> flight
 oci --> stale
 oci --> kv
 
-classDef shared fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef pypionly fill:#009E73,stroke:#009E73,color:#ffffff
-classDef persist fill:#D55E00,stroke:#D55E00,color:#ffffff
-class flight,stale shared
-class hot,neg,epoch pypionly
-class kv persist
+class flight,stale accent
+class hot,neg,epoch good
+class kv warn
 {% end %}
 
 Blue marks the two primitives both ecosystems share; green marks the in-memory caches only PyPI uses; orange marks the
@@ -341,8 +332,7 @@ timeout or connection error, with [exponential backoff](https://en.wikipedia.org
 [jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) (100 ms base, 2 s cap).
 Bounding how many fetches run at once lives one layer up, in the driver's upstream limiter: an optional per-index
 [semaphore](https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html), off by default, that caps simultaneous
-upstream requests and applies
-[back-pressure](https://en.wikipedia.org/wiki/Back_pressure#Backpressure_in_information_technology). A waiter blocks up
+upstream requests and applies [back-pressure](https://en.wikipedia.org/wiki/Flow_control_%28data%29). A waiter blocks up
 to 30 s, then gets a retryable rate-limit error.
 
 **Extension.** Both ecosystems fetch through the same client and the same limiter; the format-specific part is only what
@@ -365,9 +355,6 @@ up -->|"304 / 200 / 404"| decide
 up --> retry
 retry -->|"≤2 retries · jittered backoff"| client
 
-classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
 class client,up accent
 class limit good
 class retry,bp warn
@@ -415,8 +402,6 @@ comp --> tan
 q --> tan
 tan --> res
 
-classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
 class tan accent
 class comp good
 {% end %}
@@ -428,7 +413,7 @@ abstraction-plus-extension shape: a neutral engine that an ecosystem feeds typed
 
 **Abstraction.** A compiled policy carries format-agnostic controls (allow and block project lists with
 [PEP 503](https://peps.python.org/pep-0503/)-normalized keys, a maximum file size, a maximum project size) plus an
-ordered list of artifact rules ([trait objects](https://doc.rust-lang.org/book/ch17-02-trait-objects.html)) the
+ordered list of artifact rules ([trait objects](https://doc.rust-lang.org/book/ch18-02-trait-objects.html)) the
 ecosystem supplies. Evaluation is first-match: it checks the project lists (allow-list before block-list), then file
 size, then each rule in order, and the first denial wins. A denial carries the action, the offending project, stable
 rule and field identifiers, and a human reason, which maps to
@@ -462,9 +447,6 @@ pol --> eval
 eval -->|"no rule fires"| ok
 eval -->|"first denial"| deny
 
-classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
 class neutral accent
 class driver good
 class deny warn
@@ -480,10 +462,10 @@ path, rendered at `/metrics` as [Prometheus](https://prometheus.io/) counters an
 events: structured [tracing](https://github.com/tokio-rs/tracing) records tagged as security events (an auth failure, a
 rate-limit denial) for an audit sink. [Webhooks](https://en.wikipedia.org/wiki/Webhook): durable, signed outbound
 callbacks. A change persists a delivery record to redb before any network call, so a crash never drops one
-([at-least-once](https://en.wikipedia.org/wiki/Delivery_%28commerce%29) delivery); a single background worker drains due
-deliveries in batches, POSTs with an [HMAC-SHA256](https://en.wikipedia.org/wiki/HMAC) signature plus event, delivery,
-and timestamp headers, and on failure reschedules with exponential backoff (5 s, tripling each attempt, capped at 300 s)
-up to five attempts before marking the delivery failed.
+([at-least-once](https://www.cloudcomputingpatterns.org/at_least_once_delivery/) delivery); a single background worker
+drains due deliveries in batches, POSTs with an [HMAC-SHA256](https://en.wikipedia.org/wiki/HMAC) signature plus event,
+delivery, and timestamp headers, and on failure reschedules with exponential backoff (5 s, tripling each attempt, capped
+at 300 s) up to five attempts before marking the delivery failed.
 
 **Extension.** This layer stays neutral by construction: an ecosystem emits an event through the shared API rather than
 defining its own stream. A publish or a yank from either driver becomes the same metric increment and the same webhook
@@ -508,9 +490,6 @@ wk -->|"2xx"| done
 wk -->|"fail → backoff 5s…300s · ≤5"| enq
 wk --> sub
 
-classDef accent fill:#0072B2,stroke:#0072B2,color:#ffffff
-classDef good fill:#009E73,stroke:#009E73,color:#ffffff
-classDef warn fill:#D55E00,stroke:#D55E00,color:#ffffff
 class met accent
 class enq good
 class wk warn

@@ -16,9 +16,9 @@ every package offline with no warm-up phase.
 
 Most mirrors exist to serve a working set thousands of times smaller than PyPI. A read-through cache stores that set,
 populated on first use at [no install-time penalty](@/core/performance.md) or ahead of time with `peryx mirror sync`,
-serves it itself (no nginx layer, no name-normalization rewrite rules), stays as fresh as upstream's `Cache-Control`,
-and hosts your private packages besides. bandersnatch's filter plugins narrow the terabytes; requirements-based sync
-removes the guessing when clients already install from locks or requirements files.
+serves it itself (no [nginx](https://nginx.org/) layer, no name-normalization rewrite rules), stays as fresh as
+upstream's `Cache-Control`, and hosts your private packages besides. bandersnatch's filter plugins narrow the terabytes;
+requirements-based sync removes the guessing when clients already install from locks or requirements files.
 
 ## The renames
 

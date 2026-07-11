@@ -16,9 +16,10 @@ Every channel ships the same single static binary; pick by how you manage tools.
 ## Platforms
 
 GitHub releases carry binaries for macOS (Apple Silicon and Intel), Linux glibc (x86_64 and aarch64), and Windows x64,
-each with a sha256 checksum. PyPI wheels additionally cover musl Linux (Alpine) on both architectures and Windows arm64;
-the wheel embeds the same binary as a console script, so no Python ABI is involved and one wheel per platform serves
-every interpreter.
+each with a sha256 checksum. [PyPI](https://pypi.org/)
+[wheels](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) additionally cover musl
+Linux ([Alpine](https://alpinelinux.org/)) on both architectures and Windows arm64; the wheel embeds the same binary as
+a console script, so no Python ABI is involved and one wheel per platform serves every interpreter.
 
 ## Self-update
 

@@ -5,8 +5,9 @@ weight = 11
 +++
 
 peryx speaks the [OCI distribution protocol](@/ecosystems/oci/_index.md), so `docker`, `podman`, and `crane` pull and
-push against it the same way they do against Docker Hub or GHCR. This guide sets up the three roles for containers and
-points a client at each. It assumes a built peryx; see [Getting started](@/core/getting-started.md).
+push against it the same way they do against [Docker Hub](https://hub.docker.com/) or
+[GHCR](https://docs.github.com/packages). This guide sets up the three roles for containers and points a client at each.
+It assumes a built peryx; see [Getting started](@/core/getting-started.md).
 
 ## Configure the indexes
 

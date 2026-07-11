@@ -53,20 +53,26 @@ the full protocol map, see each ecosystem's [standards](@/core/standards.md) pag
 
 ### PyPI
 
-- PEP 691 JSON and PEP 503 HTML Simple index, negotiated and canonicalized in both directions
-- PEP 658/714 `.metadata` fast path: advertised, fetched, back-filled from wheels by byte range, and cached
-- PEP 592 yank markers and PEP 700 `versions`/`size`/`upload-time` fields
+- [PEP 691](https://peps.python.org/pep-0691/) JSON and [PEP 503](https://peps.python.org/pep-0503/) HTML Simple index,
+  negotiated and canonicalized in both directions
+- [PEP 658/714](https://peps.python.org/pep-0658/) `.metadata` fast path: advertised, fetched, back-filled from wheels
+  by byte range, and cached
+- [PEP 592](https://peps.python.org/pep-0592/) yank markers and [PEP 700](https://peps.python.org/pep-0700/)
+  `versions`/`size`/`upload-time` fields
 - Wheel and sdist filename, `.dist-info`, and `PKG-INFO` validation on upload
 - Wheel and sdist archive inspection in the web UI
-- Policy rules for version specifiers (PEP 440), package types, and wheel tags, on top of the neutral name and size
-  rules
+- Policy rules for version specifiers
+  ([PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/)), package types, and wheel tags,
+  on top of the neutral name and size rules
 - Legacy JSON API and the multipart legacy upload API
 
 ### OCI
 
-- Distribution-spec `/v2/` pull and push, with byte-exact manifests addressed by their own digest
+- [Distribution-spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull and push, with byte-exact
+  manifests addressed by their own digest
 - Bearer-token pull-through: peryx runs the `401` + `WWW-Authenticate: Bearer` handshake against upstreams
-- Referrers API and the `OCI-Subject` header for attestations and signatures
+- [Referrers API](https://github.com/opencontainers/distribution-spec/blob/main/spec.md#listing-referrers) and the
+  `OCI-Subject` header for attestations and signatures
 - Chunked and monolithic blob uploads, plus cross-repo blob mount by digest
 - Tag listing with `n`/`last` pagination and a `Link` next-page header
 - Single-flight blob fetch so concurrent pulls of one cached layer share one upstream transfer
