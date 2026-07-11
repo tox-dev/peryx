@@ -127,6 +127,33 @@ async fn test_browse_project_lists_a_repository_tags() {
 }
 
 #[tokio::test]
+async fn test_browse_project_on_a_root_route_index_uses_the_bare_repository_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = oci_index(
+        "root",
+        "",
+        peryx_index::IndexKind::Hosted {
+            upload_token: None,
+            volatile: false,
+        },
+    );
+    let (state, _app) = super::app_with(&dir, index);
+    let digest = format!("sha256:{}", "a".repeat(64));
+    crate::store::put_tag(&state.meta, "root", "library/nginx", "1.0", &digest).unwrap();
+    let (driver, serving) = oci_driver(&state);
+    // With an empty index route the browse name is the bare repository, not a route-prefixed one.
+    let view = driver
+        .browse_project(serving, 0, "library/nginx".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    match view {
+        UiProjectView::References { names } => assert_eq!(names, vec!["1.0".to_owned()]),
+        other => panic!("expected a reference listing, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn test_manifest_view_reads_an_image_manifest() {
     let (_dir, state, _app, layer_digest) = populated().await;
     let (driver, serving) = oci_driver(&state);

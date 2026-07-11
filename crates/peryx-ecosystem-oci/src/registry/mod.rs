@@ -332,11 +332,16 @@ impl OciRegistry {
         repo: &str,
     ) -> Result<Vec<String>, ServeError> {
         let members = serving_members(state, index);
+        let name = if index.route.is_empty() {
+            repo.to_owned()
+        } else {
+            format!("{}/{repo}", index.route)
+        };
         let mut tags = std::collections::BTreeSet::new();
         for member in &members {
             match member.proxy_client() {
                 Some(client) => {
-                    if let Some(names) = self.fetch_tag_names(state, &member.name, client, repo).await {
+                    if let Some(names) = self.fetch_tag_names(state, &name, &member.name, client, repo).await {
                         tags.extend(names);
                     }
                 }

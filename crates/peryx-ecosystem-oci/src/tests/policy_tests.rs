@@ -167,6 +167,39 @@ async fn test_policy_refuses_a_blocked_cross_repo_mount() {
     assert!(String::from_utf8_lossy(&body).contains("DENIED"));
 }
 
+#[tokio::test]
+async fn test_policy_hides_a_blocked_repository_from_tags_referrers_and_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_blocking(&dir);
+    let bytes = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(bytes);
+    let manifest = Manifest {
+        media_type: MANIFEST_TYPE.to_owned(),
+        bytes: bytes.to_vec(),
+    };
+    store::put_manifest(&state.meta, &digest, &manifest).unwrap();
+    for repo in ["blocked/app", "public/app"] {
+        store::put_tag(&state.meta, "store", repo, "1.0", &digest).unwrap();
+        store::put_referrer(&state.meta, "store", repo, &digest, &digest, br#"{"digest":"x"}"#).unwrap();
+    }
+
+    // The tag list and referrers of a blocked repository are hidden, exactly as its manifest is.
+    let (status, _, _) = send(&app, Method::GET, "/v2/store/blocked/app/tags/list").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/blocked/app/referrers/{digest}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, body) = send(&app, Method::GET, "/v2/store/public/app/tags/list").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("1.0"));
+
+    // The catalog lists the allowed repository but omits the blocked one.
+    let (status, _, body) = send(&app, Method::GET, "/v2/_catalog").await;
+    assert_eq!(status, StatusCode::OK);
+    let catalog = String::from_utf8_lossy(&body);
+    assert!(catalog.contains("store/public/app"), "{catalog}");
+    assert!(!catalog.contains("store/blocked/app"), "{catalog}");
+}
+
 /// A writable hosted store whose policy caps a blob at `max_file_size_bytes` bytes.
 fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();

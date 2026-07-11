@@ -2,7 +2,7 @@
 
 use peryx_core::Ecosystem;
 use peryx_index::{Index, IndexKind};
-use peryx_policy::Policy;
+use peryx_policy::{Policy, PolicyConfig};
 use peryx_search::{PackageIndexer as _, PackageSource};
 
 use super::{app_with_indexes, hosted_writable, oci_index, virtual_stack};
@@ -59,6 +59,36 @@ async fn test_oci_indexer_walks_a_virtual_index() {
     assert_eq!(virtual_doc.route, "reg");
     assert_eq!(virtual_doc.source, PackageSource::Cached);
     assert!(virtual_doc.text.contains("1.0"));
+}
+
+#[tokio::test]
+async fn test_oci_indexer_omits_a_policy_blocked_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = Policy::compile(
+        &PolicyConfig {
+            block_projects: vec!["blocked/app".to_owned()],
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
+    let index = Index {
+        name: "store".to_owned(),
+        route: "store".to_owned(),
+        ecosystem: Ecosystem::Oci,
+        kind: IndexKind::Hosted {
+            upload_token: Some(TOKEN.to_owned()),
+            volatile: true,
+        },
+        policy,
+    };
+    let (state, _app) = app_with_indexes(&dir, vec![index]);
+    store::put_tag(&state.meta, "store", "blocked/app", "1.0", DIGEST).unwrap();
+    store::put_tag(&state.meta, "store", "public/app", "1.0", DIGEST).unwrap();
+
+    // A blocked repository is hidden on reads, so it must not surface through search either.
+    let documents = OciIndexer.documents(&state.indexer_ctx()).unwrap();
+    let names: Vec<&str> = documents.iter().map(|doc| doc.display_name.as_str()).collect();
+    assert_eq!(names, vec!["public/app"]);
 }
 
 #[tokio::test]

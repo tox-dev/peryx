@@ -298,6 +298,13 @@ async fn test_tag_list_pagination() {
     let (_status, _, body) = send(&app, Method::GET, "/v2/store/app/tags/list?last=b").await;
     let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(page["tags"], serde_json::json!(["c", "d"]));
+
+    // `n=0` is an empty list with no Link; a self-referencing Link here loops a following client.
+    let (status, headers, body) = send(&app, Method::GET, "/v2/store/app/tags/list?n=0").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["tags"], serde_json::json!([]));
+    assert!(!headers.contains_key(header::LINK));
 }
 
 #[tokio::test]
@@ -315,4 +322,53 @@ async fn test_proxy_tag_list_forwards_the_pagination_query() {
     let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list?n=5&last=x").await;
     assert_eq!(status, StatusCode::OK);
     assert!(std::str::from_utf8(&body).unwrap().contains("\"only\""));
+}
+
+#[tokio::test]
+async fn test_proxy_tag_list_rewrites_the_next_link_to_the_client_facing_name() {
+    let server = MockServer::start().await;
+    // The upstream's Link names the upstream repository with no index route; served verbatim it would
+    // send a client to `/v2/app/...` on peryx, which resolves to no index (NAME_UNKNOWN).
+    Mock::given(method("GET"))
+        .and(path("/v2/app/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("link", "</v2/app/tags/list?last=z&n=1>; rel=\"next\"")
+                .set_body_raw(br#"{"name":"app","tags":["only"]}"#.to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let (status, headers, _) = send(&app, Method::GET, "/v2/hub/app/tags/list?n=1").await;
+    assert_eq!(status, StatusCode::OK);
+    let link = headers[header::LINK].to_str().unwrap();
+    assert!(link.contains("</v2/hub/app/tags/list?last=z&n=1>"), "{link}");
+    assert!(link.contains("rel=\"next\""), "{link}");
+}
+
+#[tokio::test]
+async fn test_proxy_tag_list_skips_a_prev_member_to_rewrite_the_next_link() {
+    let server = MockServer::start().await;
+    // A multi-value Link carries `rel="prev"` before `rel="next"`; picking the first `<...>` blindly
+    // would walk a paging client backwards, so the `next` member must drive the rewritten Link.
+    Mock::given(method("GET"))
+        .and(path("/v2/app/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "link",
+                    "</v2/app/tags/list?last=a>; rel=\"prev\", </v2/app/tags/list?last=z>; rel=\"next\"",
+                )
+                .set_body_raw(br#"{"name":"app","tags":["m"]}"#.to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let (status, headers, _) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+    assert_eq!(status, StatusCode::OK);
+    let link = headers[header::LINK].to_str().unwrap();
+    assert!(link.contains("</v2/hub/app/tags/list?last=z>"), "{link}");
+    assert!(!link.contains("last=a"), "{link}");
 }

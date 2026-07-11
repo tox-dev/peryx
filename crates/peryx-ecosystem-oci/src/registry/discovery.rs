@@ -23,17 +23,20 @@ impl OciRegistry {
         let Some((index, repo)) = resolve(&state.indexes, name) else {
             return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
         };
+        if policy_blocks(index, PolicyAction::Serve, repo) {
+            return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
+        }
         let members = serving_members(state, index);
         if let [member] = members.as_slice()
             && let Some(client) = member.proxy_client()
         {
-            return self.proxy_tags(state, &member.name, client, repo, query).await;
+            return self.proxy_tags(state, name, &member.name, client, repo, query).await;
         }
         let mut tags = std::collections::BTreeSet::new();
         for member in &members {
             match member.proxy_client() {
                 Some(client) => {
-                    if let Some(names) = self.fetch_tag_names(state, &member.name, client, repo).await {
+                    if let Some(names) = self.fetch_tag_names(state, name, &member.name, client, repo).await {
                         tags.extend(names);
                     }
                 }
@@ -52,6 +55,7 @@ impl OciRegistry {
     async fn proxy_tags(
         &self,
         state: &ServingState,
+        name: &str,
         index: &str,
         client: &UpstreamClient,
         repo: &str,
@@ -62,7 +66,7 @@ impl OciRegistry {
         if let Some((fetched_at, link, body)) = &cached
             && now.saturating_sub(*fetched_at) < state.ttl_secs
         {
-            return Ok(tag_page_response(link.as_deref(), body.clone()));
+            return Ok(tag_page_response(name, link.as_deref(), body.clone()));
         }
         match self.upstream.tags(client.base_url(), client.auth(), repo, query).await {
             Ok(response) => {
@@ -73,11 +77,11 @@ impl OciRegistry {
                     .map(str::to_owned);
                 let body = bounded_body(response, MAX_TAGS_BYTES).await?;
                 store::set_tag_page(&state.meta, index, repo, query, now, link.as_deref(), &body)?;
-                Ok(tag_page_response(link.as_deref(), body.to_vec()))
+                Ok(tag_page_response(name, link.as_deref(), body.to_vec()))
             }
             Err(err) => match cached {
                 Some((fetched_at, link, body)) if within_stale_bound(state, fetched_at) => {
-                    Ok(tag_page_response(link.as_deref(), body))
+                    Ok(tag_page_response(name, link.as_deref(), body))
                 }
                 _ => Ok(upstream_error_response(&err, "tags")),
             },
@@ -89,6 +93,7 @@ impl OciRegistry {
     pub(super) async fn fetch_tag_names(
         &self,
         state: &ServingState,
+        name: &str,
         index: &str,
         client: &UpstreamClient,
         repo: &str,
@@ -99,7 +104,7 @@ impl OciRegistry {
         loop {
             // Each page is cached under its own query, so a virtual index that unions several proxies
             // no longer re-walks every upstream's pagination on every request.
-            let response = self.proxy_tags(state, index, client, repo, &query).await.ok()?;
+            let response = self.proxy_tags(state, name, index, client, repo, &query).await.ok()?;
             let (parts, body) = response.into_parts();
             if !parts.status.is_success() {
                 return None;
@@ -150,6 +155,9 @@ impl OciRegistry {
         let Some((index, repo)) = resolve(&state.indexes, name) else {
             return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
         };
+        if policy_blocks(index, PolicyAction::Serve, repo) {
+            return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
+        }
         let mut seen = std::collections::HashSet::new();
         let mut manifests = Vec::new();
         let mut add = |descriptor: serde_json::Value| {
@@ -201,6 +209,12 @@ fn paginate(items: std::collections::BTreeSet<String>, query: &str) -> (Vec<Stri
     let params = query_params(query);
     let last = params.get("last").map_or("", String::as_str);
     let limit = params.get("n").and_then(|value| value.parse::<usize>().ok());
+    // The spec requires `n=0` to return an empty list with no `Link`; without this special case
+    // truncate(0) empties the page while `page.len() > 0` still asks for a next cursor, so the marker
+    // falls back to `""` and the self-referencing `Link` loops a following client forever.
+    if limit == Some(0) {
+        return (Vec::new(), None);
+    }
     let mut page: Vec<String> = items.into_iter().filter(|item| item.as_str() > last).collect();
     let next = limit.filter(|&n| page.len() > n).map(|n| {
         page.truncate(n);
@@ -238,6 +252,9 @@ pub(super) fn serve_catalog(state: &ServingState, query: &str) -> Result<Respons
             continue;
         }
         for repo in store::list_repositories(&state.meta, &index.name)? {
+            if policy_blocks(index, PolicyAction::Serve, &repo) {
+                continue;
+            }
             repositories.insert(if index.route.is_empty() {
                 repo
             } else {
@@ -260,12 +277,14 @@ pub(super) fn serve_catalog(state: &ServingState, query: &str) -> Result<Respons
         .expect("catalog response builds from validated parts"))
 }
 
-/// A tag-list page as this registry answers it: the upstream body, its `Link` header when the page is
-/// not the last, and nothing else.
-fn tag_page_response(link: Option<&str>, body: Vec<u8>) -> Response {
+/// A tag-list page as this registry answers it: the upstream body, and a `Link` to the next page
+/// rewritten to this registry's client-facing name. The upstream's `Link` names the upstream
+/// repository (`/v2/library/nginx/...`, no index route), which a client would resolve back against
+/// peryx and 404; only its query carries over.
+fn tag_page_response(name: &str, upstream_link: Option<&str>, body: Vec<u8>) -> Response {
     let mut response = ([(header::CONTENT_TYPE, "application/json")], body).into_response();
-    if let Some(link) = link
-        && let Ok(value) = HeaderValue::from_str(link)
+    if let Some(query) = upstream_link.and_then(next_page_query)
+        && let Ok(value) = HeaderValue::from_str(&format!("</v2/{name}/tags/list?{query}>; rel=\"next\""))
     {
         response.headers_mut().insert(header::LINK, value);
     }
@@ -274,11 +293,15 @@ fn tag_page_response(link: Option<&str>, body: Vec<u8>) -> Response {
 
 /// `next_page_query`, reading an already-parsed header value.
 fn next_page_query_of(value: &HeaderValue) -> Option<String> {
-    let link = value.to_str().ok()?;
-    if !link.contains("rel=\"next\"") {
-        return None;
-    }
-    let start = link.find('<')? + 1;
-    let end = link[start..].find('>')? + start;
-    link[start..end].split_once('?').map(|(_, query)| query.to_owned())
+    next_page_query(value.to_str().ok()?)
+}
+
+/// The query string of the `rel="next"` link in an RFC 8288 `Link` header. A header may carry several
+/// comma-separated link-values (`rel="prev"`, `rel="next"`, …); the `next` one drives pagination, so
+/// picking the first `<...>` blindly can walk backwards.
+fn next_page_query(link: &str) -> Option<String> {
+    let target = link.split(',').find(|value| value.contains("rel=\"next\""))?;
+    let start = target.find('<')? + 1;
+    let end = target[start..].find('>')? + start;
+    target[start..end].split_once('?').map(|(_, query)| query.to_owned())
 }

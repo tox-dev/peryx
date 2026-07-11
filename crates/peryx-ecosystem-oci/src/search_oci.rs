@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use peryx_core::Ecosystem;
 use peryx_index::{Index, IndexKind};
+use peryx_policy::PolicyAction;
 use peryx_search::{IndexerCtx, PackageDocument, PackageIndexer, PackageSource, SearchError};
 
 use crate::store;
@@ -43,7 +44,13 @@ fn repositories(ctx: &IndexerCtx<'_>, index: &Index) -> Result<BTreeSet<String>,
 fn collect(ctx: &IndexerCtx<'_>, index: &Index, repos: &mut BTreeSet<String>) -> Result<(), SearchError> {
     match &index.kind {
         IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
-            repos.extend(store::list_repositories(ctx.meta, &index.name)?);
+            // A policy-blocked repository is hidden on reads (`policy_blocks` in the serving path), so
+            // it must not surface through search either; the PyPI indexer filters the same way.
+            for repo in store::list_repositories(ctx.meta, &index.name)? {
+                if index.policy.check_project(PolicyAction::Serve, &repo).is_ok() {
+                    repos.insert(repo);
+                }
+            }
         }
         IndexKind::Virtual { layers, .. } => {
             for &position in layers {
