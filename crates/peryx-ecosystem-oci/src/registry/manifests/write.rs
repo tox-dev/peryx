@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use peryx_driver::ServingState;
 use peryx_events::webhook::WebhookEventKind;
+use peryx_storage::meta::MetaStore;
 
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self, Manifest};
@@ -136,7 +137,11 @@ pub(in crate::registry) fn delete_manifest(
             Some(tag.clone()),
             None,
         ),
-        Reference::Digest(digest) => (store::delete_manifest(&state.meta, digest)?, None, Some(digest.clone())),
+        Reference::Digest(digest) => (
+            delete_manifest_by_digest(&state.meta, &index.name, &repo, digest)?,
+            None,
+            Some(digest.clone()),
+        ),
     };
     Ok(if removed {
         emit_webhook(state, headers, WebhookEventKind::Delete, index, &repo, version, digest);
@@ -144,6 +149,18 @@ pub(in crate::registry) fn delete_manifest(
     } else {
         error_response(ErrorCode::ManifestUnknown, "manifest unknown")
     })
+}
+/// Delete a manifest by digest, mirroring blob retention. Manifests are one global content-addressed
+/// pool shared across indexes, so clean this repo's own tags and referrers to the digest, then unlink
+/// the global record only when nothing else still references it. Reports whether anything changed, so
+/// an untouched absent digest still answers `404 MANIFEST_UNKNOWN`.
+fn delete_manifest_by_digest(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, ServeError> {
+    let present = store::get_manifest(meta, digest)?.is_some();
+    let cleaned = store::delete_repo_tags_to(meta, index, repo, digest)?;
+    if present && !store::referenced_manifest_digests(meta)?.contains(digest) {
+        store::delete_manifest(meta, digest)?;
+    }
+    Ok(present || cleaned > 0)
 }
 /// A `201 Created` for a stored manifest, echoing `OCI-Subject` when the manifest declared a subject.
 fn manifest_created(location: &str, digest: &str, subject: Option<&str>) -> Response {

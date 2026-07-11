@@ -277,6 +277,156 @@ async fn test_manifest_delete_by_digest_and_missing() {
 }
 
 #[tokio::test]
+async fn test_manifest_delete_by_digest_retained_while_another_index_tags_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = app_with_indexes(
+        &dir,
+        vec![
+            oci_index(
+                "store",
+                "store",
+                IndexKind::Hosted {
+                    upload_token: Some(TOKEN.to_owned()),
+                    volatile: true,
+                },
+            ),
+            oci_index(
+                "keep",
+                "keep",
+                IndexKind::Hosted {
+                    upload_token: Some(TOKEN.to_owned()),
+                    volatile: true,
+                },
+            ),
+        ],
+    );
+    let manifest = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(manifest);
+    for route in ["store", "keep"] {
+        let (status, _, _) = send_body(
+            &app,
+            Method::PUT,
+            &format!("/v2/{route}/app/manifests/v1"),
+            &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+            manifest.to_vec(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/manifests/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // `keep` still tags the shared manifest, so it survives and serves.
+    let (status, _, got) = send(&app, Method::GET, "/v2/keep/app/manifests/v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &manifest[..]);
+    // `store`'s own tag to it is cleaned, gone from its listing.
+    let (status, _, tags) = send(&app, Method::GET, "/v2/store/app/tags/list").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!std::str::from_utf8(&tags).unwrap().contains("\"v1\""), "{tags:?}");
+}
+
+#[tokio::test]
+async fn test_manifest_delete_by_digest_retains_an_image_index_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let child_digest = oci_digest(child);
+    send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/app/manifests/{child_digest}"),
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        child.to_vec(),
+    )
+    .await;
+    let index = format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"{child_digest}"}}]}}"#);
+    send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/latest",
+        &[
+            ("authorization", &auth(TOKEN)),
+            ("content-type", "application/vnd.oci.image.index.v1+json"),
+        ],
+        index.into_bytes(),
+    )
+    .await;
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/manifests/{child_digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    // The index still lists it as a child, so the child manifest is retained.
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/manifests/{child_digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &child[..]);
+}
+
+#[tokio::test]
+async fn test_manifest_delete_by_digest_unlinks_when_unreferenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(manifest);
+    send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/app/manifests/{digest}"),
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.to_vec(),
+    )
+    .await;
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/manifests/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    // Nothing references it, so the record is unlinked and no longer served.
+    let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/app/manifests/{digest}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_manifest_delete_by_digest_clears_a_dangling_tag() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    // A tag left pointing at a digest whose manifest is already gone.
+    let absent = format!("sha256:{}", "3".repeat(64));
+    crate::store::put_tag(&state.meta, "store", "app", "ghost", &absent).unwrap();
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/manifests/{absent}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(
+        crate::store::get_tag(&state.meta, "store", "app", "ghost").unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn test_blob_delete_and_missing_and_bad_digest() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
