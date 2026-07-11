@@ -44,3 +44,18 @@ fn test_parse_basic_extracts_user_and_password() {
     assert_eq!(parsed.user, "alice");
     assert_eq!(parsed.password, "s3cret");
 }
+
+#[test]
+fn test_parse_basic_scheme_is_case_insensitive() {
+    // RFC 7617 makes the auth-scheme token case-insensitive, so these must match the canonical form.
+    let encoded = STANDARD.encode(b"alice:s3cret");
+    let canonical = parse_basic(&format!("Basic {encoded}")).unwrap();
+    assert_eq!(parse_basic(&format!("basic {encoded}")), Some(canonical.clone()));
+    assert_eq!(parse_basic(&format!("BaSiC {encoded}")), Some(canonical));
+}
+
+#[test]
+fn test_authorized_accepts_case_insensitive_scheme() {
+    let encoded = STANDARD.encode(b"__token__:s3cret");
+    assert!(authorized(Some(&format!("basic {encoded}")), "s3cret"));
+}
