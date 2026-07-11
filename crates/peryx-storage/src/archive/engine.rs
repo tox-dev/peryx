@@ -155,6 +155,7 @@ fn read_member_chunk_source(
 }
 
 fn text_chunk(member: &str, mut chunk: MemberChunk) -> Result<MemberChunk, ArchiveError> {
+    realign_to_char_boundary(&mut chunk);
     match std::str::from_utf8(&chunk.bytes) {
         Ok(_) => Ok(chunk),
         Err(err) if err.error_len().is_none() && chunk.next_offset.is_some() && err.valid_up_to() > 0 => {
@@ -164,6 +165,26 @@ fn text_chunk(member: &str, mut chunk: MemberChunk) -> Result<MemberChunk, Archi
             Ok(chunk)
         }
         Err(_) => Err(ArchiveError::BinaryMember(member.to_owned())),
+    }
+}
+
+/// Advance a chunk that starts mid-character past its stray continuation bytes.
+///
+/// A non-zero read offset can land between a character's bytes, so its tail leads the chunk and a
+/// genuinely-textual member would otherwise read as binary. A UTF-8 character carries at most three
+/// continuation bytes, so a longer leading run is malformed and the caller rejects it as binary.
+fn realign_to_char_boundary(chunk: &mut MemberChunk) {
+    if chunk.offset == 0 {
+        return;
+    }
+    let lead = chunk
+        .bytes
+        .iter()
+        .take_while(|&&byte| byte & 0b1100_0000 == 0b1000_0000)
+        .count();
+    if (1..=3).contains(&lead) {
+        chunk.bytes.drain(..lead);
+        chunk.offset += lead as u64;
     }
 }
 
@@ -213,6 +234,16 @@ fn read_zip_member(
     };
     safe_member_name(entry.name())?;
     let size = entry.size();
+    // The skip in `read_slice` decompresses `offset` bytes for a compressed member, so a crafted
+    // member with a huge declared size could force unbounded work. Cap the reachable range at the
+    // decompression budget, matching the `.take(MAX_DECOMPRESSED_INSPECT_BYTES)` on the tar readers.
+    let inspectable = size.min(MAX_DECOMPRESSED_INSPECT_BYTES);
+    if offset > inspectable {
+        return Err(ArchiveError::InvalidRange {
+            offset,
+            size: inspectable,
+        });
+    }
     read_slice(entry, size, offset, limit)
 }
 
