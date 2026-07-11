@@ -552,7 +552,6 @@ fn resolve<'a, 'b>(indexes: &'a [Index], name: &'b str) -> Option<(&'a Index, &'
     }
     best
 }
-/// Map a blob-store failure to an internal serving fault.
 /// Parse a raw query string into its percent-decoded `key=value` pairs. Clients percent-encode the
 /// colon in `digest=sha256:…`, so decoding is required, not cosmetic.
 fn query_params(query: &str) -> std::collections::HashMap<String, String> {
@@ -575,9 +574,6 @@ fn unauthorized() -> Response {
         .body(Body::from(body))
         .expect("unauthorized response builds from validated parts")
 }
-/// Read an upstream response body into memory, refusing one larger than `max`. A caching proxy holds
-/// the whole body to hash or re-serve it, so an unbounded read would let a hostile or broken upstream
-/// drive peryx out of memory.
 /// Whether something fetched at `fetched_at` may still answer while the upstream cannot confirm it.
 ///
 /// The same bound a stale `PyPI` page gets: serve past the freshness window while an upstream is
@@ -586,6 +582,9 @@ fn within_stale_bound(state: &ServingState, fetched_at: i64) -> bool {
     peryx_index::serving::within_stale_bound((state.clock)(), state.max_stale_secs, fetched_at, state.ttl_secs)
 }
 
+/// Read an upstream response body into memory, refusing one larger than `max`. A caching proxy holds
+/// the whole body to hash or re-serve it, so an unbounded read would let a hostile or broken upstream
+/// drive peryx out of memory.
 async fn bounded_body(response: reqwest::Response, max: usize) -> Result<bytes::Bytes, ServeError> {
     let mut stream = response.bytes_stream();
     let mut body: Vec<u8> = Vec::new();

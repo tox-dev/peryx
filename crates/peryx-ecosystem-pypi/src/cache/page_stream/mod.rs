@@ -28,8 +28,6 @@ use super::{
     project_negative_key, release_flight, upstream_permit,
 };
 
-/// Persist a raw page and everything derived from it in one transaction: the page record, the
-/// project name, and every file's source URL and PEP 658 sibling.
 /// Persist a streamed page from what the transformer already extracted: no re-parse of the raw
 /// body sits on the serving path, which a serial client feels on every large cold page.
 fn persist_streamed(

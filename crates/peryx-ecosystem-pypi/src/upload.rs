@@ -244,7 +244,7 @@ pub fn store_prepared(
         digest: content_digest,
         content,
         metadata,
-        record,
+        mut record,
     } = prepared;
     if let Some(existing) = meta.get_upload(name, &normalized, &filename)? {
         let uploaded: Uploaded = serde_json::from_slice(&existing)?;
@@ -260,7 +260,6 @@ pub fn store_prepared(
         return Err(UploadStoreError::FileExists(filename));
     }
     blobs.commit_staged(content)?;
-    let mut record = record;
     let metadata_digest = blobs.write(&metadata)?;
     let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
     record.file.set_metadata(CoreMetadata::Hashes(hashes));

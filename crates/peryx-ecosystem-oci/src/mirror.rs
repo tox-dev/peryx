@@ -342,8 +342,7 @@ impl Mirror<'_> {
     }
 }
 
-/// The child manifest digests and blob digests a manifest names. An image index carries `manifests`;
-/// an image manifest carries `config` and `layers`.
+/// The on-disk size of a stored blob, or `0` when its file cannot be stat'd.
 fn blob_size(state: &ServingState, storage: &Digest) -> u64 {
     state
         .blobs

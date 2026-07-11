@@ -16,7 +16,8 @@ use peryx_upstream::UpstreamClient;
 use super::fetch::fetch_and_store;
 use super::{CacheError, flight_gate, fresh_cached, project_negative_key, supports_generated_metadata};
 
-/// returns `None` when no layer has the project.
+/// Resolve one project's detail across a virtual index's layers, first-match, returning `None` when
+/// no layer has the project.
 ///
 /// # Errors
 /// Returns [`CacheError`] on a store, parse, or (with no cached fallback) upstream error.

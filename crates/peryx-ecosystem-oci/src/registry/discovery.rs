@@ -195,8 +195,6 @@ impl OciRegistry {
     }
 }
 
-/// Build a `tags/list` response over a sorted tag set, applying `n`/`last` pagination and a `Link`
-/// header to the next page when the set is truncated.
 /// Apply distribution-spec `n`/`last` pagination to a sorted set: the page after `last`, truncated to
 /// `n`, and the `(n, last-of-page)` cursor for a `Link` when more remains.
 fn paginate(items: std::collections::BTreeSet<String>, query: &str) -> (Vec<String>, Option<(usize, String)>) {
@@ -211,6 +209,8 @@ fn paginate(items: std::collections::BTreeSet<String>, query: &str) -> (Vec<Stri
     (page, next)
 }
 
+/// Build a `tags/list` response over a sorted tag set, applying `n`/`last` pagination and a `Link`
+/// header to the next page when the set is truncated.
 fn tag_list_response(name: &str, tags: std::collections::BTreeSet<String>, query: &str) -> Response {
     let (page, next) = paginate(tags, query);
     let mut builder = Response::builder()
@@ -260,7 +260,6 @@ pub(super) fn serve_catalog(state: &ServingState, query: &str) -> Result<Respons
         .expect("catalog response builds from validated parts"))
 }
 
-/// Pass an upstream JSON response through, preserving its status and content type.
 /// A tag-list page as this registry answers it: the upstream body, its `Link` header when the page is
 /// not the last, and nothing else.
 fn tag_page_response(link: Option<&str>, body: Vec<u8>) -> Response {

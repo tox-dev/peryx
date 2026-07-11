@@ -28,8 +28,6 @@ pub fn index_response(result: Result<ProjectList, CacheError>, format: Format, i
     }
 }
 
-/// Map a resolved project detail to a negotiated response. Kept sync so every arm is directly
-/// unit-testable.
 /// Serve an already-rendered PEP 503 page, from the hot cache or from the render that just filled it.
 pub(super) fn html_bytes_response(body: bytes::Bytes) -> Response {
     ([(header::CONTENT_TYPE, MIME_HTML), (header::VARY, "Accept")], body).into_response()
