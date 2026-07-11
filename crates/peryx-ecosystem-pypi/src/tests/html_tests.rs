@@ -70,6 +70,26 @@ fn test_parse_full_anchor() {
 }
 
 #[test]
+fn test_fragment_keeps_every_supported_hash_including_sha256() {
+    let html = r#"<a href="pkg-1.0.whl#md5=deadbeef&sha256=abc123">pkg-1.0.whl</a>"#;
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+    assert_eq!(
+        file.hashes,
+        BTreeMap::from([
+            ("md5".to_owned(), "deadbeef".to_owned()),
+            ("sha256".to_owned(), "abc123".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn test_fragment_surfaces_a_non_sha256_only_hash() {
+    let html = r#"<a href="pkg-1.0.whl#md5=deadbeef">pkg-1.0.whl</a>"#;
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+    assert_eq!(file.hashes, BTreeMap::from([("md5".to_owned(), "deadbeef".to_owned())]));
+}
+
+#[test]
 fn test_parse_yanked_empty_and_core_metadata_values() {
     let html = r#"<a href="x-1.whl" data-yanked="" data-core-metadata="true">x-1.whl</a>
         <a href="x-2.whl" data-core-metadata="false">x-2.whl</a>

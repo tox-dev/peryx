@@ -367,4 +367,30 @@ mod tests {
         assert_eq!(file.url, local_file_url("pypi", &artifact, "pkg-1.0-py3-none-any.whl"));
         assert!(matches!(file.metadata(), CoreMetadata::Hashes(hashes) if hashes["sha256"] == metadata));
     }
+
+    #[test]
+    fn test_present_file_content_addresses_when_sha256_accompanies_other_hashes() {
+        let sha256 = "a".repeat(64);
+        let file = File {
+            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
+            url: "https://files.example/pkg-1.0-py3-none-any.whl".to_owned(),
+            hashes: BTreeMap::from([
+                ("md5".to_owned(), "deadbeef".to_owned()),
+                ("sha256".to_owned(), sha256.clone()),
+            ]),
+            requires_python: None,
+            size: None,
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::default(),
+        };
+
+        let file = present_file(file, "pypi", &HashMap::new());
+
+        assert_eq!(file.url, local_file_url("pypi", &sha256, "pkg-1.0-py3-none-any.whl"));
+        assert_eq!(file.hashes.get("md5").map(String::as_str), Some("deadbeef"));
+    }
 }

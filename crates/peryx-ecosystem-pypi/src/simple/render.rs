@@ -27,8 +27,12 @@ pub fn render_detail_html(detail: &ProjectDetail) -> String {
     for file in &detail.files {
         out.push_str("    <a href=\"");
         push_escaped(&mut out, &file.url, Escape::Attr);
-        if let Some(sha256) = file.hashes.get("sha256") {
-            let _ = write!(out, "#sha256={sha256}");
+        if let Some((algo, hash)) = file
+            .hashes
+            .get_key_value("sha256")
+            .or_else(|| file.hashes.iter().next())
+        {
+            let _ = write!(out, "#{algo}={hash}");
         }
         out.push('"');
         if let Some(requires_python) = &file.requires_python {
@@ -58,14 +62,15 @@ fn push_core_metadata_attr(out: &mut String, core_metadata: &CoreMetadata) {
     match core_metadata {
         CoreMetadata::Absent => {}
         CoreMetadata::Available => out.push_str(" data-core-metadata=\"true\" data-dist-info-metadata=\"true\""),
-        CoreMetadata::Hashes(hashes) => {
-            if let Some(sha256) = hashes.get("sha256") {
+        CoreMetadata::Hashes(hashes) => match hashes.get("sha256") {
+            Some(sha256) => {
                 let _ = write!(
                     out,
                     " data-core-metadata=\"sha256={sha256}\" data-dist-info-metadata=\"sha256={sha256}\""
                 );
             }
-        }
+            None => out.push_str(" data-core-metadata=\"true\" data-dist-info-metadata=\"true\""),
+        },
     }
 }
 

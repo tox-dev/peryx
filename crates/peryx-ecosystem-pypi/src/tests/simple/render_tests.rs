@@ -14,9 +14,8 @@ fn test_index_html_snapshot() {
 }
 
 #[test]
-fn test_render_detail_html_omits_non_sha256_metadata_hash_attr() {
-    let mut hashes = BTreeMap::new();
-    hashes.insert("sha512".to_owned(), "abc".to_owned());
+fn test_render_detail_html_non_sha256_metadata_hash_advertises_true() {
+    let hashes = BTreeMap::from([("sha512".to_owned(), "abc".to_owned())]);
     let html = render_detail_html(&ProjectDetail {
         meta: Meta::default(),
         name: "proj".to_owned(),
@@ -36,6 +35,30 @@ fn test_render_detail_html_omits_non_sha256_metadata_hash_attr() {
         }],
     });
 
-    assert!(!html.contains("data-core-metadata"));
-    assert!(!html.contains("data-dist-info-metadata"));
+    assert!(html.contains("data-core-metadata=\"true\""));
+    assert!(html.contains("data-dist-info-metadata=\"true\""));
+}
+
+#[test]
+fn test_render_detail_html_falls_back_to_non_sha256_hash_fragment() {
+    let html = render_detail_html(&ProjectDetail {
+        meta: Meta::default(),
+        name: "proj".to_owned(),
+        versions: vec!["1.0".to_owned()],
+        files: vec![File {
+            filename: "proj-1.0.tar.gz".to_owned(),
+            url: "https://files.example/proj-1.0.tar.gz".to_owned(),
+            hashes: BTreeMap::from([("md5".to_owned(), "deadbeef".to_owned())]),
+            requires_python: None,
+            size: None,
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
+        }],
+    });
+
+    assert!(html.contains("#md5=deadbeef"));
 }

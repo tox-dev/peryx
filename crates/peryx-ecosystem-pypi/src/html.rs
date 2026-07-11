@@ -171,7 +171,6 @@ fn fragment_hash(fragment: Option<&str>) -> BTreeMap<String, String> {
         };
         if is_supported_hash(algo) && !value.is_empty() {
             hashes.insert(algo.to_owned(), value.to_owned());
-            break;
         }
     }
     hashes
