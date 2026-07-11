@@ -144,6 +144,8 @@ dashboard of the configured indexes and their request counters; the same numbers
 
 ## Where next
 
+- [Pull a Docker Hub official image](@/ecosystems/oci/tutorials/hub-official-images.md): pull `ubuntu` through the cache
+  by its short name, the way you would against Docker Hub.
 - [Run a container registry](@/ecosystems/oci/guides/container-registry.md): add a virtual index so your hosted images
   shadow upstream, and delete images you no longer want.
 - [OCI performance](@/ecosystems/oci/performance.md): how peryx compares to distribution and zot as a Docker Hub cache.

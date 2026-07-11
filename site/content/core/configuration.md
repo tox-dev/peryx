@@ -216,32 +216,13 @@ Each ecosystem contributes its own matchers to the same neutral `[index.policy]`
 
 ### `[index.settings]`
 
-Settings the index's ecosystem defines for itself. peryx carries the table to that ecosystem and rejects a key the
-ecosystem does not know, so a PyPI index accepts no key here today.
+Settings the index's ecosystem defines for itself. The keys belong to the ecosystem, not to this layer: peryx carries
+the table to the ecosystem of the index that owns it and compiles it there, so a key that ecosystem does not know is a
+startup error.
 
-An OCI index reads one: `library_prefix`, which decides whether a single-segment repository (`ubuntu`) is asked of the
-upstream as `library/ubuntu`. Docker Hub keeps its official images under `library/` — `docker pull ubuntu` pulls
-`library/ubuntu` — and a client pulling through a routed proxy index sends the name it typed, so peryx adds the
-namespace before it asks Hub.
-
-```toml
-[[index]]
-name = "dockerhub"
-ecosystem = "oci"
-cached = "https://registry-1.docker.io"
-
-[index.settings]
-library_prefix = "auto"
-```
-
-| Value    | Meaning                                                                                                       |
-| -------- | ------------------------------------------------------------------------------------------------------------- |
-| `"auto"` | Prefix only when the upstream host is `docker.io`, `index.docker.io`, or `registry-1.docker.io` (the default) |
-| `true`   | Prefix whatever the upstream, for a Hub-compatible mirror on another host                                     |
-| `false`  | Never rewrite; ask the upstream for the name the client typed                                                 |
-
-A name that already carries a namespace (`acme/app`) is never rewritten, and the rewrite reaches the upstream request
-only: what peryx caches, tags, and serves keeps the spelling the client used.
+PyPI defines no settings, so `[index.settings]` on a PyPI index fails to start. OCI defines `library_prefix` on a cached
+index, which decides how that index spells a repository name when it asks its upstream for it. Its values, and what each
+one rewrites, are in [OCI index settings](@/ecosystems/oci/reference/settings.md).
 
 ### `[index.prefetch]`
 

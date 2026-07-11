@@ -79,6 +79,17 @@ peryx authenticates to the private upstream with the index's credentials, verifi
 them, and serves them back. Clients never see the upstream secret; later pulls come from disk. Concurrent pulls of one
 uncached layer share a single upstream fetch.
 
+## When the upstream refuses
+
+If the upstream rejects the index's credentials, the pull fails with `401` and the `UNAUTHORIZED` code, carrying a
+message that names the upstream rather than reporting a missing manifest. A cached index asks no credentials of its own
+clients, so read that `401` as the upstream refusing peryx: a wrong or expired `username`/`password`/`token`, an account
+that cannot see the repository, or a repository name the upstream will not serve.
+
+An image already in the cache keeps pulling through it. A cached tag whose revalidation draws a `401` still serves stale
+within `max_stale_secs`, so an expired credential degrades pulls of new images while the working set keeps running. See
+[Docker Hub names and upstream auth](@/ecosystems/oci/hub-names-and-auth.md).
+
 ## Client-facing auth
 
 The upstream credentials are separate from what clients present to peryx. A cached index does not require clients to

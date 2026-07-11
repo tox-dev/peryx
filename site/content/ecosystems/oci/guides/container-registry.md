@@ -75,6 +75,16 @@ crane pull --insecure 127.0.0.1:4433/dockerhub/library/alpine:latest alpine.tar
 
 {% end %}
 
+Docker Hub official images work by their short name too, since the cached index resolves `ubuntu` to `library/ubuntu`
+before it asks Hub:
+
+```shell
+docker pull 127.0.0.1:4433/dockerhub/ubuntu:latest
+```
+
+See [mirror Docker Hub official images](@/ecosystems/oci/guides/hub-official-images.md) for the setting behind that and
+when to override it.
+
 ## Push your own images
 
 Pushing needs the hosted index's `upload_token`; peryx accepts any username, and the token is the Basic-auth password.
@@ -136,3 +146,5 @@ crane delete --insecure 127.0.0.1:4433/images/my-app@sha256:<digest>
 - The protocol, roles, and every client snippet: [OCI ecosystem](@/ecosystems/oci/_index.md)
 - Serve trusted HTTPS so clients need no insecure flag: [serve HTTPS](@/core/serve-https.md)
 - What ships per ecosystem: [capability matrix](@/core/capabilities.md)
+- Why Hub needs the `library/` namespace, and what an upstream `401` means:
+  [Docker Hub names and upstream auth](@/ecosystems/oci/hub-names-and-auth.md)

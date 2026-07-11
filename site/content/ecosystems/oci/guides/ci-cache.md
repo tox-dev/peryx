@@ -110,6 +110,10 @@ the mirror endpoint must be TLS, so peryx needs a trusted certificate. If it ser
 }
 ```
 
+In this mode the daemon resolves `alpine` to `library/alpine` before it calls the mirror, so peryx receives the full
+name. A routed pull (`peryx.internal:4433/dockerhub/alpine`) arrives as the short name the user typed, and the cached
+index resolves it; see [mirror Docker Hub official images](@/ecosystems/oci/guides/hub-official-images.md).
+
 `registry-mirrors` covers Docker Hub only; images from [GHCR](https://docs.github.com/packages),
 [ECR](https://aws.amazon.com/ecr/), or a private registry still resolve directly. For those, front each with its own
 proxy index (point `cached` at `https://ghcr.io` and pull through that route) and rewrite the image reference.
