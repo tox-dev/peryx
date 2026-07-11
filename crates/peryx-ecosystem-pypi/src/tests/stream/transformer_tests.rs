@@ -239,6 +239,42 @@ fn test_quarantined_project_streams_without_files() {
 }
 
 #[test]
+fn test_seeded_quarantine_withholds_files_when_meta_follows_files() {
+    // The whole-page path seeds the status up front, so a quarantined page drops its files even
+    // though `files` precedes `meta` in the document.
+    let page = r#"{"name":"demo","versions":["1.0"],"files":[
+        {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+         "hashes":{"sha256":"aa11"}}],
+        "meta":{"api-version":"1.4","project-status":"quarantined"}}"#;
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.seed_project_status(Some("quarantined".to_owned()));
+    let out = transformer.push(page.as_bytes()).unwrap();
+    let summary = transformer.finish().unwrap();
+    let detail = parse_detail(&out).unwrap();
+    assert_eq!(detail.meta.status(), crate::ProjectStatus::Quarantined);
+    assert!(detail.files.is_empty());
+    assert!(summary.registrations.is_empty());
+}
+
+#[test]
+fn test_files_before_meta_ends_preflight_for_buffering() {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.push(br#"{"name":"demo","files":["#).unwrap();
+    assert!(transformer.meta_preflight_done());
+    assert!(transformer.files_precede_meta());
+}
+
+#[test]
+fn test_meta_before_files_keeps_streaming() {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer
+        .push(br#"{"meta":{"api-version":"1.4"},"name":"demo","files":["#)
+        .unwrap();
+    assert!(transformer.meta_preflight_done());
+    assert!(!transformer.files_precede_meta());
+}
+
+#[test]
 fn test_escapes_and_braces_inside_strings_survive() {
     let page = r#"{"name":"de\"mo}{","versions":[],"files":[
         {"filename":"a{1}-1.0.whl","url":"https://up/a\"b[",

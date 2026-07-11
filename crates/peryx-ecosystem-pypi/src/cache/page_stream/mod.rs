@@ -366,8 +366,12 @@ fn transform_whole(
     record: &CachedIndex,
     mut context: crate::stream::PageContext,
 ) -> Result<Bytes, CacheError> {
-    context.known_metadata = known_metadata(state, &parse_detail(&record.body)?.files)?;
+    let detail = parse_detail(&record.body)?;
+    context.known_metadata = known_metadata(state, &detail.files)?;
     let mut transformer = PageTransformer::new(context);
+    // Seed the status so a quarantined page withholds its files whether `meta` precedes or follows
+    // `files`; the whole-page pass otherwise learns the status only once it reaches `meta`.
+    transformer.seed_project_status(detail.meta.project_status);
     let mut out = transformer.push(&record.body).map_err(transform_error)?;
     transformer.finish().map_err(transform_error)?;
     out.shrink_to_fit();

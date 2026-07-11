@@ -47,8 +47,9 @@ pub struct PageTransformer {
     meta_seen: bool,
     project_status: Option<String>,
     project_status_reason: Option<String>,
-    /// Preflight reached page content before seeing `meta`.
-    meta_search_done: bool,
+    /// The `files` array opened before `meta` was seen, so a streaming pass cannot know whether the
+    /// project is quarantined and its files must be withheld.
+    files_before_meta: bool,
     /// The document root has closed; anything but whitespace afterwards is malformed.
     closed: bool,
     trailing: bool,
@@ -75,7 +76,7 @@ impl PageTransformer {
             capturing_name: false,
             name: Vec::new(),
             meta_seen: false,
-            meta_search_done: false,
+            files_before_meta: false,
             closed: false,
             trailing: false,
             capture: Vec::new(),
@@ -87,10 +88,26 @@ impl PageTransformer {
         }
     }
 
-    /// Whether a bounded preflight has enough information to return to the streaming path.
+    /// Whether a bounded preflight has enough information to leave the streaming loop: either `meta`
+    /// was seen (status known, safe to stream) or `files` opened first (status not yet known, so the
+    /// caller buffers the whole page before emitting any file).
     #[must_use]
     pub const fn meta_preflight_done(&self) -> bool {
-        self.meta_seen || self.meta_search_done
+        self.meta_seen || self.files_before_meta
+    }
+
+    /// Whether streaming reached the `files` array before `meta`, which leaves the project status
+    /// unknown; the caller then buffers the whole page and transforms it with the status seeded, so
+    /// a quarantined project withholds its files regardless of key order.
+    #[must_use]
+    pub const fn files_precede_meta(&self) -> bool {
+        self.files_before_meta
+    }
+
+    /// Seed the project status before a whole-page pass so a quarantined page withholds its files
+    /// even when `files` precedes `meta` in the document.
+    pub fn seed_project_status(&mut self, status: Option<String>) {
+        self.project_status = status;
     }
 
     /// Transform one chunk of upstream bytes, returning the bytes to send downstream.
@@ -218,8 +235,8 @@ impl PageTransformer {
             }
             b':' if self.depth == 1 => {
                 self.expect_name_value = self.key == b"name";
-                if !self.meta_seen && self.key != b"meta" && self.key != b"name" {
-                    self.meta_search_done = true;
+                if !self.meta_seen && self.key == b"files" {
+                    self.files_before_meta = true;
                 }
                 out.push(byte);
             }

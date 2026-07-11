@@ -45,6 +45,7 @@ impl FreshJsonStream {
         let base = self.head.url.clone();
         let mut context = self.context;
         context.base = Some(base.clone());
+        let buffered_context = context.clone();
         let preflight =
             match preflight_json_stream(self.head.into_stream().boxed(), PageTransformer::new(context)).await {
                 Ok(preflight) => preflight,
@@ -53,6 +54,21 @@ impl FreshJsonStream {
                     return Err(err);
                 }
             };
+        // `files` streamed ahead of `meta`, so the project status is not yet known: buffer the rest
+        // of the page and transform it whole with the status seeded, then finish it on the buffered
+        // path. Otherwise a quarantined project's files would stream out before `meta` was read.
+        let preflight = match preflight {
+            JsonPreflight::Streaming {
+                body, transformer, raw, ..
+            } if transformer.files_precede_meta() => match buffer_whole_page(body, raw, buffered_context).await {
+                Ok((raw, served, summary)) => JsonPreflight::Complete { raw, served, summary },
+                Err(err) => {
+                    release_flight(&self.state, &self.key, self.guard);
+                    return Err(err);
+                }
+            },
+            preflight => preflight,
+        };
         match preflight {
             JsonPreflight::Streaming {
                 body,
@@ -86,15 +102,7 @@ impl FreshJsonStream {
                 pending,
             ))),
             JsonPreflight::Complete { raw, served, summary } => {
-                let body = canonical_json(&raw, &base).unwrap_or(raw);
-                let record = CachedIndex {
-                    etag,
-                    last_serial,
-                    fetched_at_unix: self.now,
-                    content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
-                    fresh_secs: max_age,
-                    body,
-                };
+                let record = build_record(raw, &base, etag, last_serial, max_age, self.now);
                 let expires_at =
                     record.fetched_at_unix + crate::cache::freshness_secs(self.state.ttl_secs, record.fresh_secs);
                 #[rustfmt::skip]
@@ -107,6 +115,46 @@ impl FreshJsonStream {
             }
         }
     }
+}
+
+fn build_record(
+    raw: Vec<u8>,
+    base: &url::Url,
+    etag: Option<String>,
+    last_serial: Option<u64>,
+    fresh_secs: Option<i64>,
+    now: i64,
+) -> CachedIndex {
+    CachedIndex {
+        etag,
+        last_serial,
+        fetched_at_unix: now,
+        content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+        fresh_secs,
+        body: canonical_json(&raw, base).unwrap_or(raw),
+    }
+}
+
+/// Drain the rest of a page whose `files` preceded `meta`, then transform it whole with the project
+/// status seeded so a quarantined project withholds its files regardless of key order.
+async fn buffer_whole_page(
+    mut body: futures_util::stream::BoxStream<'static, Result<Bytes, peryx_upstream::UpstreamError>>,
+    mut raw: Vec<u8>,
+    context: crate::stream::PageContext,
+) -> Result<(Vec<u8>, Vec<u8>, PageSummary), CacheError> {
+    use futures_util::StreamExt as _;
+    while let Some(chunk) = body.next().await {
+        raw.extend_from_slice(&chunk?);
+    }
+    let status = crate::parse_detail(&raw)
+        .map_err(CacheError::Simple)?
+        .meta
+        .project_status;
+    let mut transformer = PageTransformer::new(context);
+    transformer.seed_project_status(status);
+    let served = transformer.push(&raw).map_err(transform_error)?;
+    let summary = transformer.finish().map_err(transform_error)?;
+    Ok((raw, served, summary))
 }
 
 enum JsonPreflight {

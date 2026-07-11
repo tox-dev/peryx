@@ -3,6 +3,14 @@
 use super::support::*;
 use peryx_identity::IndexAcl;
 
+fn files_before_meta_page(file_url: &str, digest: &str, meta: &str) -> String {
+    format!(
+        "{{\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}],\"meta\":{meta}}}"
+    )
+}
+
 #[tokio::test]
 async fn test_stream_detail_offline_cold_miss_falls_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -122,7 +130,11 @@ async fn test_materialize_detail_fetches_and_reuses_cached_page() {
 #[tokio::test]
 async fn test_materialize_detail_returns_stream_errors() {
     let h = harness().await;
-    mount_json_page(&h.server, r#"{"name":"flask","files":[{"bad": }]}"#).await;
+    mount_json_page(
+        &h.server,
+        r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[{"bad": }]}"#,
+    )
+    .await;
 
     let err = cache::materialize_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
@@ -133,21 +145,29 @@ async fn test_materialize_detail_returns_stream_errors() {
 #[tokio::test]
 async fn test_live_stream_surfaces_malformed_file_objects() {
     let h = harness().await;
-    mount_json_page(&h.server, r#"{"name":"flask","files":[{"bad": }]}"#).await;
+    mount_json_page(
+        &h.server,
+        r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[{"bad": }]}"#,
+    )
+    .await;
     let items = stream_outcome(&h.state).await;
     assert!(items.iter().any(Result::is_err));
 }
 #[tokio::test]
 async fn test_live_stream_surfaces_truncated_pages() {
     let h = harness().await;
-    mount_json_page(&h.server, r#"{"name":"flask","files":["#).await;
+    mount_json_page(&h.server, r#"{"meta":{"api-version":"1.4"},"name":"flask","files":["#).await;
     let items = stream_outcome(&h.state).await;
     assert!(items.last().is_some_and(Result::is_err));
 }
 #[tokio::test]
 async fn test_live_stream_with_trailing_garbage_errors_and_never_persists() {
     let h = harness().await;
-    mount_json_page(&h.server, r#"{"name":"flask","versions":["1.0"],"files":[]}trailing"#).await;
+    mount_json_page(
+        &h.server,
+        r#"{"meta":{"api-version":"1.4"},"name":"flask","versions":["1.0"],"files":[]}trailing"#,
+    )
+    .await;
     let items = stream_outcome(&h.state).await;
     // The transformer flags data after the document root, so the stream ends in an error…
     assert!(items.last().is_some_and(Result::is_err));
@@ -204,7 +224,7 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
             let _ = socket.read(&mut buffer);
             let _ = socket.write_all(
                 b"HTTP/1.1 200 OK\r\ncontent-type: application/vnd.pypi.simple.v1+json\r\n\
-                  content-length: 500\r\n\r\n{\"name\":\"flask\",\"files\":[",
+                  content-length: 500\r\n\r\n{\"meta\":{\"api-version\":\"1.4\"},\"name\":\"flask\",\"files\":[",
             );
         }
     });
@@ -221,4 +241,91 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
     });
     let items = stream_outcome(&state).await;
     assert!(items.last().is_some_and(Result::is_err));
+}
+#[tokio::test]
+async fn test_live_stream_buffers_quarantined_files_before_meta() {
+    let h = harness().await;
+    let page = files_before_meta_page(
+        &format!("{}/files/flask.whl", h.server.uri()),
+        Digest::of(b"wheel").as_str(),
+        r#"{"api-version":"1.4","project-status":"quarantined"}"#,
+    );
+    mount_json_page(&h.server, &page).await;
+
+    // `files` precedes `meta`, so the live path buffers the whole page and transforms it once the
+    // quarantine status is known, serving a Ready page with no files.
+    let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
+    let PageOutcome::Ready(bytes) = outcome else {
+        panic!("expected a ready outcome, got {}", matches_name(&outcome));
+    };
+    let detail = crate::parse_detail(&bytes).unwrap();
+    assert_eq!(detail.meta.status(), crate::ProjectStatus::Quarantined);
+    assert!(detail.files.is_empty());
+}
+#[tokio::test]
+async fn test_buffered_files_before_meta_surfaces_parse_errors() {
+    let h = harness().await;
+    // `files` precedes `meta`, so the page is buffered whole; a malformed file then fails the
+    // buffered re-parse and releases the flight rather than streaming a half page.
+    mount_json_page(&h.server, r#"{"name":"flask","files":[{"bad": }]}"#).await;
+    let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned()).await;
+    assert!(matches!(outcome, Err(cache::CacheError::Simple(_))));
+    assert!(h.state.serving.cache.inflight.lock().unwrap().is_empty());
+}
+#[tokio::test]
+async fn test_live_stream_buffers_downloadable_files_before_meta() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let page = files_before_meta_page(
+        &format!("{}/files/flask.whl", h.server.uri()),
+        digest.as_str(),
+        r#"{"api-version":"1.4"}"#,
+    );
+    mount_json_page(&h.server, &page).await;
+
+    // A non-quarantined `files`-before-`meta` page still serves its files, with peryx URLs.
+    let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
+    let PageOutcome::Ready(bytes) = outcome else {
+        panic!("expected a ready outcome, got {}", matches_name(&outcome));
+    };
+    let detail = crate::parse_detail(&bytes).unwrap();
+    assert_eq!(detail.files.len(), 1);
+    assert!(detail.files[0].url.contains(digest.as_str()));
+}
+#[tokio::test]
+async fn test_transform_whole_withholds_quarantined_files_before_meta() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, "https://example.invalid/simple/", |client| {
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Cached { client, offline: true },
+            policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
+        }]
+    });
+    let page = files_before_meta_page(
+        "https://example.invalid/files/flask.whl",
+        Digest::of(b"wheel").as_str(),
+        r#"{"api-version":"1.4","project-status":"quarantined"}"#,
+    );
+    state
+        .meta
+        .put_index("pypi/flask", &fresh_record(page.as_bytes()))
+        .unwrap();
+
+    let outcome = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
+    let PageOutcome::Ready(bytes) = outcome else {
+        panic!("expected a ready outcome, got {}", matches_name(&outcome));
+    };
+    let detail = crate::parse_detail(&bytes).unwrap();
+    assert_eq!(detail.meta.status(), crate::ProjectStatus::Quarantined);
+    assert!(detail.files.is_empty());
 }
