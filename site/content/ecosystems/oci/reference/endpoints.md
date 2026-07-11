@@ -19,7 +19,8 @@ request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. Fo
 
 | Method       | Path                                 | Purpose                                | Success       |
 | ------------ | ------------------------------------ | -------------------------------------- | ------------- |
-| `GET`        | `/v2/`                               | API version check                      | `200`         |
+| `GET`        | `/v2/`                               | API version check                      | `200` / `401` |
+| `GET`        | `/v2/token`                          | Mint a scoped Bearer token             | `200`         |
 | `GET` `HEAD` | `/v2/<name>/manifests/<reference>`   | Pull a manifest by tag or digest       | `200`         |
 | `PUT`        | `/v2/<name>/manifests/<reference>`   | Push a manifest                        | `201`         |
 | `DELETE`     | `/v2/<name>/manifests/<reference>`   | Delete a manifest or untag             | `202`         |
@@ -35,8 +36,12 @@ request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. Fo
 
 ## Version check
 
-`GET /v2/` (with or without the trailing slash) answers `200` with `Docker-Distribution-API-Version: registry/2.0` and
-an empty body. It takes no authentication and is the first request every container client sends.
+`GET /v2/` (with or without the trailing slash) is the first request every container client sends. It answers `200` with
+`Docker-Distribution-API-Version: registry/2.0` and an empty body when no OCI index restricts access, or when the
+request carries a credential the realm accepts. When an OCI index restricts access and the request carries none, it
+answers `401` with `WWW-Authenticate: Bearer realm="<base>/v2/token",service="peryx"`, the challenge that starts
+`docker login`. The `/v2/token` endpoint, the scope grammar, and the resource-route error codes are covered in
+[token authentication](@/ecosystems/oci/reference/token-auth.md).
 
 ## Manifests
 

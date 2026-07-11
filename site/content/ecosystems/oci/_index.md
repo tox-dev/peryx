@@ -56,15 +56,16 @@ The three [index roles](@/core/indexes.md) map onto OCI like this:
 Container clients speak the **distribution spec** over a `/v2/` API. peryx serves it directly:
 
 - `GET /v2/`: the version check every client pings first; peryx answers `200` with
-  `Docker-Distribution-API-Version: registry/2.0`.
+  `Docker-Distribution-API-Version: registry/2.0`, or a `401` Bearer challenge when an index restricts access.
 - **Manifests**: `GET|HEAD|PUT|DELETE /v2/<name>/manifests/<tag-or-digest>`. peryx keeps a manifest byte-for-byte and
   addresses it by the sha256 of those exact bytes, so the `Docker-Content-Digest` a client verifies matches.
 - **Blobs**: `GET|HEAD|DELETE /v2/<name>/blobs/<digest>`, plus the upload dance
   (`POST`/`PATCH`/`PUT /v2/<name>/blobs/uploads/…`) for push. Blobs are content-addressed and deduplicate across every
   index, so a cross-repo mount is a digest check. Concurrent pulls of one uncached layer share a single upstream fetch.
 - **Tags**: `GET /v2/<name>/tags/list`.
-- **Token auth**: a `401` carries a `WWW-Authenticate: Bearer` challenge; peryx runs that handshake for you when it
-  pulls through, and requires a Basic-auth token when you push.
+- **Token auth**: peryx serves its own [Bearer token realm](@/ecosystems/oci/token-realm.md). `GET /v2/` challenges when
+  an index restricts access, `GET /v2/token` mints a repository-scoped JWT, and resource routes enforce it, so
+  `docker login` validates a credential. It runs the upstream's own handshake for you when it pulls through.
 
 For the full standards map, see [standards](@/ecosystems/oci/reference/standards.md).
 
