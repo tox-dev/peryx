@@ -1,11 +1,12 @@
 //! Mirroring pulls an image's manifest and every blob it names into the store, so a cached index can
 //! serve it offline; verify reports whether the store already holds all of it.
 
+use axum::http::{Method, StatusCode};
 use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{oci_digest, proxy};
+use super::{oci_digest, proxy, send};
 use crate::mirror::{MirrorMode, mirror};
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -75,6 +76,76 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
             .all(|row| row.status == "cached")
     );
     assert_eq!(verify.last().unwrap().status, "synced");
+}
+
+#[tokio::test]
+async fn test_mirror_records_tag_freshness_so_the_tag_serves_offline() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let layer = b"a-layer-of-bytes";
+    let manifest = image_manifest(config, layer);
+    let digest = oci_digest(&manifest);
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", config).await;
+    mount_blob(&server, "library/app", layer).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    mirror(
+        &state.serving,
+        &state.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    // The sync writes the freshness record the serving path reads to answer a tag from cache.
+    assert_eq!(
+        crate::store::tag_freshness(&state.meta, "hub", "library/app", "latest").unwrap(),
+        Some((1000, digest.clone()))
+    );
+
+    // With the upstream gone, the mirrored tag still serves from that record.
+    drop(server);
+    let (status, headers, _) = send(&app, Method::GET, "/v2/hub/library/app/manifests/latest").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("docker-content-digest").unwrap(), &digest);
+}
+
+#[tokio::test]
+async fn test_mirror_by_digest_rejects_bytes_that_hash_to_something_else() {
+    let server = MockServer::start().await;
+    let requested = oci_digest(b"the-manifest-we-asked-for");
+    let substituted = b"a-substituted-manifest";
+    // The upstream (or a proxy between) answers the by-digest request with different bytes.
+    mount_manifest(&server, "library/app", &requested, substituted, MANIFEST_TYPE).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let by_digest = format!("library/app@{requested}");
+    let rows = mirror(
+        &state.serving,
+        &state.indexes[0],
+        std::slice::from_ref(&by_digest),
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    let row = rows
+        .iter()
+        .find(|row| row.kind == "manifest")
+        .expect("a manifest row is reported");
+    assert_eq!(row.status, "error");
+    assert!(row.reason.contains("does not match requested"), "{}", row.reason);
+    assert!(row.reason.contains(&requested), "{}", row.reason);
+    // The substituted bytes are rejected outright, never stored under the digest they hash to.
+    assert!(
+        crate::store::get_manifest(&state.meta, &oci_digest(substituted))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

@@ -138,6 +138,35 @@ async fn test_policy_hides_a_blocked_blob_on_serve() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn test_policy_refuses_a_blocked_cross_repo_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_blocking(&dir);
+    let blob = b"a-shared-layer";
+    let digest = oci_digest(blob);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/public/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Mounting the existing blob into a blocked repository must be denied, not silently created.
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/blocked/app/blobs/uploads/?mount={digest}&from=public/app"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("DENIED"));
+}
+
 /// A writable hosted store whose policy caps a blob at `max_file_size_bytes` bytes.
 fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();

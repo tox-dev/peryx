@@ -217,6 +217,19 @@ impl Mirror<'_> {
             .to_owned();
         let bytes = response.bytes().await?;
         let digest = format!("sha256:{}", Digest::of(&bytes).as_str());
+        // A reference that is itself a digest (no tag) pins the exact bytes; if the upstream, or a proxy
+        // between, returns something else, storing it under the computed digest would report `synced`
+        // while the requested manifest was never mirrored. The serving path makes the same check.
+        if tag.is_none() && reference != digest {
+            rows.push(MirrorRow::error(
+                "manifest",
+                repo,
+                reference,
+                "",
+                format!("upstream digest {digest} does not match requested {reference}"),
+            ));
+            return Ok(None);
+        }
         let manifest = Manifest {
             media_type,
             bytes: bytes.to_vec(),
@@ -224,6 +237,7 @@ impl Mirror<'_> {
         store::put_manifest(&self.state.meta, &digest, &manifest)?;
         if let Some(tag) = tag {
             store::put_tag(&self.state.meta, self.index, repo, tag, &digest)?;
+            store::set_tag_freshness(&self.state.meta, self.index, repo, tag, &digest, (self.state.clock)())?;
         }
         rows.push(MirrorRow::synced(
             "manifest",

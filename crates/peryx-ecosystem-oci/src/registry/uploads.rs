@@ -28,6 +28,9 @@ impl OciRegistry {
         if let Some(mount) = params.get("mount")
             && store::blob_digest(mount).is_some_and(|storage| state.blobs.exists(&storage))
         {
+            if policy_blocks(index, PolicyAction::Upload, &repo) {
+                return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
+            }
             return Ok(blob_created(name, mount));
         }
         if let Some(digest) = params.get("digest") {
