@@ -61,7 +61,11 @@ impl FreshJsonStream {
                 LiveStream {
                     body,
                     transformer: *transformer,
-                    key: self.key,
+                    flight: FlightGuard {
+                        state: self.state,
+                        key: self.key,
+                        guard: Some(self.guard),
+                    },
                     hot_key: self.hot_key,
                     route: self.route,
                     cached: self.cached_name,
@@ -70,7 +74,6 @@ impl FreshJsonStream {
                     last_serial,
                     fetched_at: self.now,
                     fresh_secs: max_age,
-                    guard: self.guard,
                     _permit: self.permit,
                 },
                 raw,
@@ -164,11 +167,28 @@ fn prepend_chunk(
     }
 }
 
+/// Releases the single-flight hold however the live stream ends. Completion, a transform or upstream
+/// error, and a mid-page client disconnect all drop the owning `LiveStream`, so `Drop` is the one
+/// place that covers every terminal path; without it the error and disconnect paths would leak one
+/// map entry per distinct failing project. Unlock before forgetting, matching `release_flight`.
+struct FlightGuard {
+    state: Arc<ServingState>,
+    key: String,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.state.cache.forget_flight(&self.key);
+    }
+}
+
 /// Everything a live streaming fetch carries between polls.
 struct LiveStream {
     body: futures_util::stream::BoxStream<'static, Result<Bytes, peryx_upstream::UpstreamError>>,
     transformer: PageTransformer,
-    key: String,
+    flight: FlightGuard,
     hot_key: String,
     route: String,
     cached: String,
@@ -177,7 +197,6 @@ struct LiveStream {
     last_serial: Option<u64>,
     fetched_at: i64,
     fresh_secs: Option<i64>,
-    guard: tokio::sync::OwnedMutexGuard<()>,
     _permit: UpstreamPermit,
 }
 
@@ -242,7 +261,7 @@ fn live_stream(
                     let raw_len = record.body.len();
                     let registrations = summary.registrations.clone();
                     let persist_state = state.clone();
-                    let (key, cached, project) = (live.key.clone(), live.cached.clone(), live.project.clone());
+                    let (key, cached, project) = (live.flight.key.clone(), live.cached.clone(), live.project.clone());
                     #[rustfmt::skip]
                     tokio::task::spawn_blocking(move || {
                         if let Err(err) = persist_streamed(&persist_state, &key, &cached, &project, &record, &summary) { tracing::error!(error = ?err, %key, "page persist failed"); }
@@ -258,10 +277,8 @@ fn live_stream(
                         Bytes::from(std::mem::take(&mut served)),
                         expires_at,
                     );
-                    state.cache.forget_flight(&live.key);
-                    drop(live.guard);
                     let elapsed_ms = started.elapsed().as_millis();
-                    tracing::debug!(key = %live.key, bytes = raw_len, elapsed_ms, "page streamed from upstream");
+                    tracing::debug!(key = %live.flight.key, bytes = raw_len, elapsed_ms, "page streamed from upstream");
                     None
                 }
                 Some(Err(err)) => Some((

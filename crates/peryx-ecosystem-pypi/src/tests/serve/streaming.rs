@@ -152,6 +152,44 @@ async fn test_live_stream_with_trailing_garbage_errors_and_never_persists() {
     assert!(h.state.meta.get_index("pypi/flask").unwrap().is_none());
 }
 #[tokio::test]
+async fn test_live_stream_error_releases_the_inflight_entry() {
+    let h = harness().await;
+    mount_json_page(
+        &h.server,
+        r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[{"bad": }]}"#,
+    )
+    .await;
+    let items = stream_outcome(&h.state).await;
+    assert!(items.last().is_some_and(Result::is_err));
+    assert!(h.state.serving.cache.inflight.lock().unwrap().is_empty());
+}
+#[tokio::test]
+async fn test_client_disconnect_releases_the_inflight_entry() {
+    let (upstream, _release) = split_project_upstream(
+        br#"{"meta":{"api-version":"1.4"},"name":"flask","files":["#.to_vec(),
+        br"]}".to_vec(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, &upstream, |client| {
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Cached { client, offline: false },
+            policy: peryx_policy::Policy::default(),
+        }]
+    });
+    let PageOutcome::Streaming(stream) = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap()
+    else {
+        panic!("expected a streaming outcome");
+    };
+    assert!(!state.serving.cache.inflight.lock().unwrap().is_empty());
+    drop(stream);
+    assert!(state.serving.cache.inflight.lock().unwrap().is_empty());
+}
+#[tokio::test]
 async fn test_live_stream_forwards_a_broken_upstream_transfer() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
