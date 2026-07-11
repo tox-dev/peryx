@@ -3,13 +3,14 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::policy::PypiPolicy as _;
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
 use peryx_core::path::local_file_url;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
-use peryx_storage::meta::CachedIndex;
 use peryx_upstream::UpstreamClient;
 
 use super::fetch::fetch_and_store;

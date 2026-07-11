@@ -3,10 +3,12 @@
 pub(super) use std::collections::BTreeMap;
 pub(super) use std::sync::Arc;
 
+pub(super) use crate::store::CachedIndex;
+pub(super) use crate::store::PypiStore as _;
 pub(super) use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
 pub(super) use axum::http::StatusCode;
 pub(super) use peryx_storage::blob::{BlobStore, Digest};
-pub(super) use peryx_storage::meta::{CachedIndex, MetaError, MetaScanError, MetaStore};
+pub(super) use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 pub(super) use peryx_upstream::UpstreamClient;
 
 pub(super) use crate::cache;

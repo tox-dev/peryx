@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use peryx_driver::AppState;
+use peryx_ecosystem_pypi::store::CachedIndex;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_ecosystem_pypi::{ProjectDetail, parse_detail, parse_detail_html};
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::CachedIndex;
 use peryx_upstream::SimpleResponse;
 
 use super::report::{

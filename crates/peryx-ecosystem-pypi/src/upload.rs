@@ -12,7 +12,10 @@ use crate::{
     parse_version_specifiers, to_json,
 };
 use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
-use peryx_storage::meta::{MetaError, MetaStore, MetadataSibling, PublishedFile};
+use peryx_storage::meta::{MetaError, MetaStore};
+
+use crate::store::PypiStore as _;
+use crate::store::{MetadataSibling, PublishedFile};
 use serde::{Deserialize, Serialize};
 
 use peryx_core::path::{local_file_url, validate_filename};

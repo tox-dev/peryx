@@ -24,12 +24,13 @@ pub use index::{
     get_index, get_project_status, list_index_pages, put_cached_page, put_index, scan_index_pages, scan_index_records,
 };
 pub use journal::JournalEntry;
+pub use peryx_driver::serving::{IndexSummary, RecentUpload};
 pub use projects::{
     ProjectCachePurgeCounts, count_project_cache_purge, delete_project_cache, get_project, list_projects, put_project,
     scan_project_records,
 };
 pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, ProjectStatusRecord};
-pub use summary::{IndexSummary, RecentUpload, summarize_indexes};
+pub use summary::summarize_indexes;
 pub use uploads::{
     MetadataSibling, PublishedFile, delete_override, delete_upload, get_upload, list_overrides, list_upload_entries,
     promote_files, publish_file, put_override, put_upload, scan_override_records, scan_upload_records,

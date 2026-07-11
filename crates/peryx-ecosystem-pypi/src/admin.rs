@@ -10,7 +10,10 @@ use peryx_driver::serving::PurgeReport;
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{BlobStore, Digest};
-use peryx_storage::meta::{CachedIndex, MetaStore};
+use peryx_storage::meta::MetaStore;
+
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 
 use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;

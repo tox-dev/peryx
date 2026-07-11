@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::project_of_filename;
+use crate::store::PypiStore as _;
 use bytes::Bytes;
 use peryx_driver::download::{DownloadHandle, DownloadProgress};
 use peryx_driver::rate_limit::UpstreamPermit;

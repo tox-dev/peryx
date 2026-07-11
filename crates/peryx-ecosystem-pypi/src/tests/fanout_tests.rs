@@ -10,6 +10,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 use super::http::{detail_json, get, harness};
 use crate::cache;
+use crate::store::PypiStore as _;
 use peryx_driver::download::{DownloadHandle, DownloadProgress};
 use peryx_driver::state::AppState;
 

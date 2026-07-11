@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_ecosystem_pypi::{
     CoreMetadata, DistributionKind, File, ProjectDetail, is_valid_name, normalize_name, parse_distribution_filename,
     parse_index, parse_index_html, parse_version_specifiers,

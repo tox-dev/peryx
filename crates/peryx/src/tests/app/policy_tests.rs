@@ -162,7 +162,7 @@ fn test_policy_dry_run_reports_upload_write_errors() {
 
 #[test]
 fn test_policy_dry_run_skips_a_record_for_an_unconfigured_index() {
-    use peryx_storage::meta::CachedIndex;
+    use peryx_ecosystem_pypi::store::CachedIndex;
 
     let (_dir, config, _digest) = cache_fixture();
     // A cached page for an index no longer in the config: its key matches no configured index name,

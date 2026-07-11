@@ -6,12 +6,13 @@
 
 use std::sync::Arc;
 
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use crate::upload;
 use peryx_driver::rate_limit::UpstreamPermit;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyDenial;
-use peryx_storage::meta::CachedIndex;
 use peryx_upstream::UpstreamClient;
 
 mod download;

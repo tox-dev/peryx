@@ -1,3 +1,4 @@
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 

@@ -1,5 +1,7 @@
+use peryx_ecosystem_pypi::store::CachedIndex;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_storage::blob::{BlobStore, Digest};
-use peryx_storage::meta::{CachedIndex, MetaStore};
+use peryx_storage::meta::MetaStore;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 

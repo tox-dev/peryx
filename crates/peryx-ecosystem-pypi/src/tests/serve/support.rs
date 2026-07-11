@@ -4,11 +4,13 @@ pub(super) use std::sync::Arc;
 pub(super) use std::sync::atomic::Ordering;
 
 pub(super) use crate::SimpleError;
+pub(super) use crate::store::CachedIndex;
+pub(super) use crate::store::PypiStore as _;
 pub(super) use axum::http::StatusCode;
 pub(super) use bytes::Bytes;
 pub(super) use futures_util::StreamExt as _;
 pub(super) use peryx_storage::blob::{BlobError, BlobStore, Digest};
-pub(super) use peryx_storage::meta::{CachedIndex, MetaError, MetaStore};
+pub(super) use peryx_storage::meta::{MetaError, MetaStore};
 pub(super) use peryx_upstream::UpstreamClient;
 pub(super) use wiremock::matchers::{method, path};
 pub(super) use wiremock::{Mock, MockServer, ResponseTemplate};

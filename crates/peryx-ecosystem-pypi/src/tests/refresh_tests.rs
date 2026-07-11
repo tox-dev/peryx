@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::CachedIndex;
 use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -427,7 +428,7 @@ async fn test_stale_serve_records_metric() {
 #[tokio::test]
 async fn test_refresh_skips_keys_without_a_mirror() {
     let h = harness().await;
-    let record = peryx_storage::meta::CachedIndex {
+    let record = CachedIndex {
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,

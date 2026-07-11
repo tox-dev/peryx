@@ -169,9 +169,13 @@ pub fn policy(configure: impl FnOnce(&mut PolicyConfig, &mut PypiPolicyConfig)) 
 }
 pub fn put_raw_project_status(path: &Path, key: &str, value: &[u8]) {
     let db = redb::Database::create(path).unwrap();
-    let table: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("project_status");
+    let table: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("driver_kv");
+    let namespaced = format!("pypi\u{0}s\u{0}{key}");
     let txn = db.begin_write().unwrap();
-    txn.open_table(table).unwrap().insert(key, value).unwrap();
+    txn.open_table(table)
+        .unwrap()
+        .insert(namespaced.as_str(), value)
+        .unwrap();
     txn.commit().unwrap();
 }
 /// Build a mirror harness whose cached flask page was fetched at `fetched_at`, and whose upstream

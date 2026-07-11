@@ -3,6 +3,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use crate::stream::{PageSummary, PageTransformer};
 use crate::{ProjectDetail, ProjectStatus, parse_detail};
 use bytes::Bytes;
@@ -11,7 +13,6 @@ use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
-use peryx_storage::meta::CachedIndex;
 use peryx_upstream::{SimpleResponse, UpstreamClient};
 
 use super::fetch::canonical_raw;

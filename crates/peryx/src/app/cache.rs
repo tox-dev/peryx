@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use peryx_ecosystem_pypi::normalize_name;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_storage::meta::MetaStore;
 
 use super::fsck::fsck_cache;

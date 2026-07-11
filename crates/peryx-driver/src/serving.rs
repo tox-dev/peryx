@@ -51,6 +51,28 @@ pub struct PurgeReport {
     pub categories: Vec<(String, u64)>,
 }
 
+/// One index's activity counts for the neutral status page and dashboard.
+///
+/// The field names are generic: a "project" is whatever unit an ecosystem stores (a `PyPI` project,
+/// an `OCI` repository), an "upload" a hosted addition. A driver fills what it tracks; the default is
+/// empty, so an ecosystem without a hosted count simply reports zero.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IndexSummary {
+    pub project_count: u64,
+    pub upload_count: u64,
+    pub recent_uploads: Vec<RecentUpload>,
+}
+
+/// One recently uploaded artifact, token-free metadata only, for the dashboard's activity list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentUpload {
+    pub project: String,
+    pub filename: String,
+    pub version: String,
+    pub uploaded_at: Option<String>,
+    pub size: Option<u64>,
+}
+
 /// How one ecosystem serves its wire protocol.
 ///
 /// The metadata methods ([`ecosystem`](Self::ecosystem), [`mount`](Self::mount),
@@ -178,6 +200,22 @@ pub trait EcosystemDriver: Send + Sync {
             "the {} ecosystem does not support per-project cache purge",
             self.ecosystem().as_str()
         ))
+    }
+
+    /// Summarize this ecosystem's per-index activity (project/upload counts and recent uploads) for
+    /// the status page and dashboard, keyed by index name. The neutral status path groups configured
+    /// indexes by ecosystem and dispatches each group here, so no shared code reads a format's tables.
+    /// Default: no summary, which reports zeros.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the store cannot be read.
+    fn summarize_indexes(
+        &self,
+        _meta: &peryx_storage::meta::MetaStore,
+        _index_names: &[String],
+        _recent_limit: usize,
+    ) -> Result<std::collections::HashMap<String, IndexSummary>, String> {
+        Ok(std::collections::HashMap::new())
     }
 
     /// Import every artifact under `dir` into the hosted index `target_name` (reached at

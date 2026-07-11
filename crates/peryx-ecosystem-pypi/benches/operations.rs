@@ -15,6 +15,8 @@ use http::Request;
 use http_body_util::BodyExt as _;
 use peryx_driver::AppState;
 use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
+use peryx_ecosystem_pypi::store::CachedIndex;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_ecosystem_pypi::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked, normalize_name,
     parse_detail, parse_detail_html, parse_distribution_filename, parse_index, parse_index_html, parse_metadata,
@@ -25,7 +27,7 @@ use peryx_http::router;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
-use peryx_storage::meta::{CachedIndex, MetaStore};
+use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
 use tokio::runtime::Runtime;
 use tower::ServiceExt as _;

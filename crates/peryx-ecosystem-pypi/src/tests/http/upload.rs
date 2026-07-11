@@ -750,7 +750,7 @@ async fn test_pypi_policy_dry_run_writes_a_denial() {
         .meta
         .put_index(
             "pypi/flask",
-            &peryx_storage::meta::CachedIndex {
+            &crate::store::CachedIndex {
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 1000,

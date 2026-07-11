@@ -21,13 +21,7 @@ const STATUS_RECENT_UPLOADS: usize = 5;
 /// dashboard refreshes from this document.
 pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<StatusQuery>) -> Response {
     let serial = state.meta.current_serial().unwrap_or(0);
-    let summaries = (query.details.as_deref() == Some("admin")).then(|| {
-        let index_names = state.indexes.iter().map(|index| index.name.clone()).collect::<Vec<_>>();
-        state
-            .meta
-            .summarize_indexes(&index_names, STATUS_RECENT_UPLOADS)
-            .unwrap_or_default()
-    });
+    let summaries = (query.details.as_deref() == Some("admin")).then(|| state.index_summaries(STATUS_RECENT_UPLOADS));
     let indexes: Vec<serde_json::Value> = state
         .describe_indexes()
         .into_iter()

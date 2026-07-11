@@ -3,6 +3,7 @@
 use std::io::{Cursor, Read as _};
 use std::sync::Arc;
 
+use crate::store::PypiStore as _;
 use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;

@@ -1,26 +1,9 @@
 use std::collections::HashMap;
 
+use peryx_driver::serving::{IndexSummary, RecentUpload};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use super::{PROJECTS_PREFIX, UPLOAD_PREFIX};
-
-/// Per-index package and upload counts for read-only status pages.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct IndexSummary {
-    pub project_count: u64,
-    pub upload_count: u64,
-    pub recent_uploads: Vec<RecentUpload>,
-}
-
-/// One uploaded file summary with token-free metadata only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecentUpload {
-    pub project: String,
-    pub filename: String,
-    pub version: String,
-    pub uploaded_at: Option<String>,
-    pub size: Option<u64>,
-}
 
 /// Summarize observed projects and uploads for configured indexes.
 ///

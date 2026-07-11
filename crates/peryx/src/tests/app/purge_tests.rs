@@ -77,7 +77,7 @@ fn test_cache_purge_project_reports_corrupt_target_record() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("peryx.redb");
     MetaStore::open(&db_path).unwrap();
-    raw_insert_bytes(&db_path, "index_document", "pypi/flask", b"not json");
+    raw_insert_bytes(&db_path, "driver_kv", "pypi\u{0}i\u{0}pypi/flask", b"not json");
     let config = config_at(&dir);
     let mut out = Vec::new();
     let err = app::cache(&config, &purge_project_command(false), &mut out).unwrap_err();
@@ -92,8 +92,8 @@ fn test_cache_purge_project_reports_corrupt_shared_record() {
     let (_dir, config, _digest) = cache_fixture();
     raw_insert_bytes(
         &config.data_dir.join("peryx.redb"),
-        "index_document",
-        "pypi/other",
+        "driver_kv",
+        "pypi\u{0}i\u{0}pypi/other",
         b"not json",
     );
     let mut out = Vec::new();
@@ -106,8 +106,8 @@ fn test_cache_purge_project_reports_corrupt_upload_record() {
     let (_dir, config, _digest) = cache_fixture();
     raw_insert_bytes(
         &config.data_dir.join("peryx.redb"),
-        "uploads",
-        "hosted/pkg/bad.whl",
+        "driver_kv",
+        "pypi\u{0}u\u{0}hosted/pkg/bad.whl",
         b"not json",
     );
     let mut out = Vec::new();
@@ -237,7 +237,12 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_metadata_references() {
         let meta = MetaStore::open(&db_path).unwrap();
         if let Some(raw) = raw {
             drop(meta);
-            raw_insert_str(&db_path, "metadata_sidecar", &wheel, raw);
+            raw_insert_bytes(
+                &db_path,
+                "driver_kv",
+                &format!("pypi\u{0}d\u{0}{wheel}"),
+                raw.as_bytes(),
+            );
         } else {
             meta.put_metadata(&wheel, "https://files.example/pkg.whl.metadata", &metadata, "pypi")
                 .unwrap();
@@ -331,17 +336,6 @@ fn test_cache_purge_orphaned_blobs_yes_removes_blob() {
     assert!(text.contains(&format!("removed\torphaned-blob\t{}\t6\t", orphan.as_str())));
     assert!(text.contains("summary\tremoved\torphaned-blobs\t1\t6\n"));
     assert!(!blobs.exists(&orphan));
-}
-
-fn raw_insert_str(path: &std::path::Path, table: &'static str, key: &str, value: &str) {
-    let db = redb::Database::open(path).unwrap();
-    let table = redb::TableDefinition::<&str, &str>::new(table);
-    let txn = db.begin_write().unwrap();
-    {
-        let mut table = txn.open_table(table).unwrap();
-        table.insert(key, value).unwrap();
-    }
-    txn.commit().unwrap();
 }
 
 fn purge_project_command(yes: bool) -> CacheCommand {

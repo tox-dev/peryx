@@ -1,6 +1,7 @@
 //! What an `AppState` has installed: each ecosystem's serving driver, its search indexer, its
 //! vocabulary, and the assembled `OpenAPI` document.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use peryx_core::Ecosystem;
@@ -59,6 +60,29 @@ impl AppState {
     #[must_use]
     pub fn driver_for(&self, ecosystem: Ecosystem) -> Option<&Arc<dyn crate::serving::EcosystemDriver>> {
         self.drivers[ecosystem.slot()].as_ref()
+    }
+
+    /// Per-index activity (project/upload counts and recent uploads) for the status page and
+    /// dashboard, keyed by index name. Configured indexes are grouped by ecosystem and each group is
+    /// summarized through its own driver, so no neutral code reads a format's tables.
+    #[must_use]
+    pub fn index_summaries(&self, recent_limit: usize) -> HashMap<String, crate::serving::IndexSummary> {
+        let mut by_ecosystem: HashMap<Ecosystem, Vec<String>> = HashMap::new();
+        for index in &self.indexes {
+            by_ecosystem
+                .entry(index.ecosystem)
+                .or_default()
+                .push(index.name.clone());
+        }
+        let mut summaries = HashMap::new();
+        for (ecosystem, names) in by_ecosystem {
+            if let Some(driver) = self.driver_for(ecosystem)
+                && let Ok(map) = driver.summarize_indexes(&self.meta, &names, recent_limit)
+            {
+                summaries.extend(map);
+            }
+        }
+        summaries
     }
 
     /// The indexed-mount driver that would serve `path`, found by resolving the index it addresses.

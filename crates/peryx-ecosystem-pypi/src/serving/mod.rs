@@ -193,6 +193,15 @@ impl EcosystemDriver for PypiServing {
         crate::admin::purge_project(meta, index, project, apply)
     }
 
+    fn summarize_indexes(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index_names: &[String],
+        recent_limit: usize,
+    ) -> Result<std::collections::HashMap<String, peryx_driver::serving::IndexSummary>, String> {
+        crate::store::summarize_indexes(meta, index_names, recent_limit).map_err(|err| err.to_string())
+    }
+
     fn import_dir(
         &self,
         meta: &peryx_storage::meta::MetaStore,

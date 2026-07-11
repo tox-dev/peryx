@@ -8,10 +8,11 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::policy::PypiPolicy;
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use crate::{CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::CachedIndex;
 
 use crate::upload::Uploaded;
 use peryx_core::path::local_file_url;
