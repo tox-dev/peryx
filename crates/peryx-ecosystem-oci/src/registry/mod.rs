@@ -84,6 +84,16 @@ impl From<reqwest::Error> for ServeError {
     }
 }
 impl ServeError {
+    /// A user-visible one-line description of the fault, for the web view methods that surface a
+    /// message rather than a `/v2/` response.
+    fn message(&self) -> String {
+        match self {
+            Self::Store(err) => format!("metadata store error: {err}"),
+            Self::Io(err) => format!("blob io error: {err}"),
+            Self::Transport(err) => format!("upstream transfer failed: {err}"),
+        }
+    }
+
     /// Every internal fault is a gateway error to the client; the specifics go to the log context.
     fn into_response(self) -> Response {
         match self {
@@ -215,6 +225,186 @@ impl EcosystemDriver for OciRegistry {
         meta: &peryx_storage::meta::MetaStore,
     ) -> Result<std::collections::BTreeSet<String>, String> {
         crate::referenced_blob_digests(meta).map_err(|err| err.to_string())
+    }
+
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = "/v2/".to_owned();
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push('/');
+        url
+    }
+
+    fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
+        repositories(state, state.index_at(position)).map_err(|err| err.to_string())
+    }
+
+    async fn browse_project(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+    ) -> Result<Option<peryx_core::UiProjectView>, String> {
+        let index = state.index_at(position);
+        let names = self
+            .repository_tags(&state, index, &project)
+            .await
+            .map_err(|err| err.message())?;
+        Ok(Some(peryx_core::UiProjectView::References { names }))
+    }
+
+    async fn manifest_view(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+        reference: String,
+    ) -> Result<Option<peryx_core::UiManifest>, String> {
+        let name = full_name(&state.index_at(position).route, &project);
+        let Some(reference) = crate::name::parse_reference(&reference) else {
+            return Ok(None);
+        };
+        let response = self
+            .serve_manifest(&state, &name, &reference, false)
+            .await
+            .map_err(|err| err.message())?;
+        if response.status() != StatusCode::OK {
+            return Ok(None);
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_MANIFEST_BYTES)
+            .await
+            .map_err(|err| err.to_string())?;
+        crate::web::manifest_from_bytes(&bytes).map(Some)
+    }
+
+    async fn artifact_members(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+        digest: String,
+    ) -> Result<Vec<peryx_core::UiMember>, String> {
+        let name = full_name(&state.index_at(position).route, &project);
+        let response = self
+            .serve_layer_contents(&state, &name, &digest, "")
+            .await
+            .map_err(|err| err.message())?;
+        if !response.status().is_success() {
+            return Err(layer_error_message(&name, &digest, response).await);
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), 8 << 20)
+            .await
+            .map_err(|err| err.to_string())?;
+        let value = serde_json::from_slice(&bytes).map_err(|err| err.to_string())?;
+        Ok(crate::web::members_from_listing(&value))
+    }
+
+    async fn artifact_member_chunk(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+        digest: String,
+        member: String,
+        offset: u64,
+    ) -> Result<peryx_core::UiMemberChunk, String> {
+        let name = full_name(&state.index_at(position).route, &project);
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("member", &member)
+            .append_pair("offset", &offset.to_string())
+            .finish();
+        let response = self
+            .serve_layer_contents(&state, &name, &digest, &query)
+            .await
+            .map_err(|err| err.message())?;
+        if !response.status().is_success() {
+            return Err(layer_error_message(&name, &digest, response).await);
+        }
+        let size = crate::web::header_u64(response.headers(), "x-peryx-member-size");
+        let chunk_offset = crate::web::header_u64(response.headers(), "x-peryx-member-offset").unwrap_or_default();
+        let next_offset = crate::web::header_u64(response.headers(), "x-peryx-next-offset");
+        let bytes = axum::body::to_bytes(response.into_body(), 4 << 20)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(peryx_core::UiMemberChunk {
+            text: String::from_utf8(bytes.to_vec())
+                .map_err(|err| format!("layer member {member:?} on {name:?} for {digest} is not valid UTF-8: {err}"))?,
+            size,
+            offset: chunk_offset,
+            next_offset,
+        })
+    }
+}
+
+impl OciRegistry {
+    /// Every tag of `repo` on `index`, unioned across a virtual index's members and each proxy
+    /// member's upstream, sorted and distinct — the same union [`Self::serve_tags`] paginates.
+    async fn repository_tags(
+        &self,
+        state: &ServingState,
+        index: &Index,
+        repo: &str,
+    ) -> Result<Vec<String>, ServeError> {
+        let members = serving_members(state, index);
+        let mut tags = std::collections::BTreeSet::new();
+        for member in &members {
+            match member.proxy_client() {
+                Some(client) => {
+                    if let Some(names) = self.fetch_tag_names(state, &member.name, client, repo).await {
+                        tags.extend(names);
+                    }
+                }
+                None => tags.extend(crate::store::list_tags(&state.meta, &member.name, repo)?),
+            }
+        }
+        Ok(tags.into_iter().collect())
+    }
+}
+
+/// The repositories `index` serves for the web index listing: a cached or hosted index reads its own
+/// store; a virtual index unions its members'.
+fn repositories(state: &ServingState, index: &Index) -> Result<Vec<String>, MetaError> {
+    let mut repos = std::collections::BTreeSet::new();
+    collect_repositories(state, index, &mut repos)?;
+    Ok(repos.into_iter().collect())
+}
+
+fn collect_repositories(
+    state: &ServingState,
+    index: &Index,
+    repos: &mut std::collections::BTreeSet<String>,
+) -> Result<(), MetaError> {
+    match &index.kind {
+        IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
+            repos.extend(crate::store::list_repositories(&state.meta, &index.name)?);
+        }
+        IndexKind::Virtual { layers, .. } => {
+            for &position in layers {
+                collect_repositories(state, state.index_at(position), repos)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The full `/v2/` name for a repository on an index: the index route prefixes the repository, matching
+/// how a client addresses it, so [`resolve`] resolves it back to this index.
+fn full_name(route: &str, repo: &str) -> String {
+    if route.is_empty() {
+        repo.to_owned()
+    } else {
+        format!("{route}/{repo}")
+    }
+}
+
+/// A user-visible message for a non-success layer-browser response, reading its status and body.
+async fn layer_error_message(name: &str, digest: &str, response: Response) -> String {
+    let status = response.status();
+    match axum::body::to_bytes(response.into_body(), 1 << 20).await {
+        Ok(bytes) => format!(
+            "layer contents for {digest} on {name:?}: {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ),
+        Err(err) => format!("layer contents for {digest} on {name:?}: {status}: {err}"),
     }
 }
 /// Resolve the writable hosted index behind `name` and authorize the request, or return a ready error

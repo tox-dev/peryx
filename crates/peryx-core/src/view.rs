@@ -80,3 +80,67 @@ pub struct UiFile {
     pub yanked: bool,
     pub has_metadata: bool,
 }
+
+/// What a project-level browse request renders as.
+///
+/// Chosen by the ecosystem driver so the web crate dispatches without naming a format. A file-based
+/// ecosystem returns its file listing and descriptive metadata; a registry returns its list of
+/// references, each resolving to a manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UiProjectView {
+    /// A file listing with descriptive metadata (a `PyPI` project page).
+    Files { project: UiProject, meta: UiMeta },
+    /// A list of named references, each resolving to a manifest (an `OCI` repository's tags).
+    References { names: Vec<String> },
+}
+
+/// One referenced content item in a manifest view.
+///
+/// A primary blob, a listed blob, or a per-platform child of an index: its digest, size, and content
+/// type, an optional platform tag, and whether the web browser can list its contents. The driver
+/// decides `browsable`, so shared code never inspects a content type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiArtifactRef {
+    pub digest: String,
+    pub size: u64,
+    pub media_type: String,
+    /// `os/architecture` when this entry is a per-platform child of an index.
+    pub platform: Option<String>,
+    /// Whether the layer browser can list this entry's contents.
+    pub browsable: bool,
+}
+
+/// A manifest view, neutral so the web crate renders it without parsing any wire format.
+///
+/// A content type and total size, an optional primary item (a config) and a list of referenced items
+/// (layers), or a flag that it is an index of per-platform child manifests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiManifest {
+    pub media_type: String,
+    pub is_index: bool,
+    pub config: Option<UiArtifactRef>,
+    /// Listed items: the layers of a manifest, or the per-platform children of an index.
+    pub entries: Vec<UiArtifactRef>,
+    pub total_size: u64,
+}
+
+/// One member of a nested content item (a distribution archive or an image layer), as a browser lists
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiMember {
+    pub path: String,
+    pub size: u64,
+    pub kind: String,
+    pub previewable: bool,
+}
+
+/// One rendered chunk of a nested content member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UiMemberChunk {
+    pub text: String,
+    pub size: Option<u64>,
+    pub offset: u64,
+    pub next_offset: Option<u64>,
+}

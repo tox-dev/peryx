@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use axum::extract::{Multipart, Request};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use peryx_core::{Ecosystem, UiMeta, UiProject};
+use peryx_core::{Ecosystem, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject, UiProjectView};
 
 use crate::state::ServingState;
 
@@ -269,6 +269,80 @@ pub trait EcosystemDriver: Send + Sync {
         _project: String,
     ) -> Result<Option<(UiProject, UiMeta)>, String> {
         Ok(None)
+    }
+
+    /// The client-facing API endpoint one index of this ecosystem is served at — where a user points
+    /// their tool. The neutral status document carries this so the web dashboard shows it without
+    /// knowing any ecosystem's URL scheme. Default: the index route itself.
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = String::with_capacity(route.len() + 2);
+        url.push('/');
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push('/');
+        url
+    }
+
+    /// A project-level browse view for `project` on the index at `position`: a file listing with
+    /// metadata (a file ecosystem) or a list of references (a registry). The web crate dispatches on
+    /// the returned shape without naming a format. `None` when the project is absent. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the project or its metadata cannot be read.
+    async fn browse_project(
+        &self,
+        _state: Arc<ServingState>,
+        _position: usize,
+        _project: String,
+    ) -> Result<Option<UiProjectView>, String> {
+        Ok(None)
+    }
+
+    /// A manifest view for one `reference` of `project` on the index at `position`, produced from this
+    /// ecosystem's format so the web crate carries none of that logic. `None` when the reference is not
+    /// served. Default: none, which suits an ecosystem with no manifest concept.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the manifest cannot be read or parsed.
+    async fn manifest_view(
+        &self,
+        _state: Arc<ServingState>,
+        _position: usize,
+        _project: String,
+        _reference: String,
+    ) -> Result<Option<UiManifest>, String> {
+        Ok(None)
+    }
+
+    /// The member listing of the nested content item `digest` under `project` on the index at
+    /// `position` (an image layer), for the web layer browser. Default: none.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the item cannot be found, fetched, or listed.
+    async fn artifact_members(
+        &self,
+        _state: Arc<ServingState>,
+        _position: usize,
+        _project: String,
+        _digest: String,
+    ) -> Result<Vec<UiMember>, String> {
+        Ok(Vec::new())
+    }
+
+    /// One text chunk of `member` inside the nested content item `digest` under `project` on the index
+    /// at `position`. Default: empty.
+    ///
+    /// # Errors
+    /// Returns a user-visible message when the member cannot be previewed as text.
+    async fn artifact_member_chunk(
+        &self,
+        _state: Arc<ServingState>,
+        _position: usize,
+        _project: String,
+        _digest: String,
+        _member: String,
+        _offset: u64,
+    ) -> Result<UiMemberChunk, String> {
+        Ok(UiMemberChunk::default())
     }
 
     /// Ensure the artifact `digest_hex`/`filename` on the index at `position` is present locally,

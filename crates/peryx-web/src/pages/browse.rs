@@ -8,13 +8,17 @@ use leptos_router::hooks::use_query_map;
 
 use super::ErrorMessage;
 use super::archive::{ArchiveView, split_legacy_archive_file};
-use super::oci::{OciIndexView, OciLayerView, OciManifestView, OciRepositoryView};
+use super::manifest::{LayerView, ManifestView};
 use super::project::ProjectView;
-use crate::data::{load_projects, load_snapshot};
+use crate::data::load_projects;
 use crate::url::browse_project_url;
 
-/// The browse page: a searchable project list, one project's detail, or an archive's contents,
-/// selected by query parameters.
+/// The browse page: a searchable project list, one project's detail, a manifest, or an archive's or
+/// layer's contents, selected by query parameters.
+///
+/// The dispatch is ecosystem-neutral: a `project` renders as whatever [`ProjectView`] gets back from
+/// the index's driver (a file listing or a reference list), and the `ref`/`layer` parameters — which
+/// only a registry's own URLs carry — select the manifest and layer views. No branch names a format.
 #[component]
 pub fn Browse() -> impl IntoView {
     let query = use_query_map();
@@ -41,59 +45,41 @@ pub fn Browse() -> impl IntoView {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or_default()
     });
-    // The browse shape is ecosystem-specific: a PyPI project page versus an OCI repository's tags.
-    // The snapshot resolves the route's ecosystem, and this one boundary selects the matching view.
-    let snapshot = Resource::new(|| (), |()| load_snapshot());
     view! {
         <section class="page">
-            <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-                {move || {
-                    let route = route.get();
-                    let project = project.get();
-                    let reference = reference.get();
-                    let sha256 = sha256.get();
-                    let layer = layer.get();
-                    let file = file.get();
-                    let member = member.get();
-                    let containers = containers.get();
-                    let offset = offset.get();
-                    Suspend::new(async move {
-                        let snapshot = snapshot.await;
-                        let is_oci = snapshot
-                            .indexes
-                            .iter()
-                            .any(|index| index.route == route && index.ecosystem == "oci");
-                        match (project, sha256, file, reference) {
-                            (Some(name), Some(sha256), Some(file), _) => {
-                                view! {
-                                    <ArchiveView route project=name sha256 filename=file containers member offset />
-                                }.into_any()
-                            }
-                            (Some(name), None, Some(file), _) => {
-                                let (sha256, filename) = split_legacy_archive_file(&file);
-                                view! {
-                                    <ArchiveView route project=name sha256 filename containers member offset />
-                                }.into_any()
-                            }
-                            (Some(repo), _, None, Some(reference)) if is_oci && layer.is_some() => {
-                                let digest = layer.unwrap_or_default();
-                                view! {
-                                    <OciLayerView route repo reference digest member offset />
-                                }.into_any()
-                            }
-                            (Some(repo), _, None, Some(reference)) if is_oci => {
-                                view! { <OciManifestView route repo reference /> }.into_any()
-                            }
-                            (Some(repo), _, None, _) if is_oci => {
-                                view! { <OciRepositoryView route repo /> }.into_any()
-                            }
-                            (Some(name), _, None, _) => view! { <ProjectView route project=name /> }.into_any(),
-                            (None, _, _, _) if is_oci => view! { <OciIndexView route /> }.into_any(),
-                            (None, _, _, _) => view! { <IndexView route /> }.into_any(),
-                        }
-                    })
-                }}
-            </Suspense>
+            {move || {
+                let route = route.get();
+                let project = project.get();
+                let reference = reference.get();
+                let sha256 = sha256.get();
+                let layer = layer.get();
+                let file = file.get();
+                let member = member.get();
+                let containers = containers.get();
+                let offset = offset.get();
+                match (project, sha256, file, reference) {
+                    (Some(name), Some(sha256), Some(file), _) => {
+                        view! {
+                            <ArchiveView route project=name sha256 filename=file containers member offset />
+                        }.into_any()
+                    }
+                    (Some(name), None, Some(file), _) => {
+                        let (sha256, filename) = split_legacy_archive_file(&file);
+                        view! {
+                            <ArchiveView route project=name sha256 filename containers member offset />
+                        }.into_any()
+                    }
+                    (Some(repo), _, None, Some(reference)) if layer.is_some() => {
+                        let digest = layer.unwrap_or_default();
+                        view! { <LayerView route repo reference digest member offset /> }.into_any()
+                    }
+                    (Some(repo), _, None, Some(reference)) => {
+                        view! { <ManifestView route repo reference /> }.into_any()
+                    }
+                    (Some(name), _, None, _) => view! { <ProjectView route project=name /> }.into_any(),
+                    (None, _, _, _) => view! { <IndexView route /> }.into_any(),
+                }
+            }}
         </section>
     }
 }

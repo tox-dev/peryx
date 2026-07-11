@@ -6,123 +6,20 @@
 use leptos::prelude::*;
 
 use super::{ErrorMessage, copy_to_clipboard, human_size};
-use crate::data::{
-    load_oci_layer_chunk, load_oci_layer_members, load_oci_manifest, load_oci_repositories, load_oci_tags,
-};
-use crate::model::UiOciManifest;
-use crate::url::{
-    browse_index_url, browse_oci_layer_member_url, browse_oci_layer_url, browse_oci_ref_url, browse_project_url,
-};
+use crate::data::{load_layer_chunk, load_layer_members, load_manifest};
+use crate::model::UiManifest;
+use crate::url::{browse_index_url, browse_layer_member_url, browse_layer_url, browse_project_url, browse_ref_url};
 
-/// An OCI repository: its tags, each linking to the manifest that tag resolves to.
-#[component]
-pub(super) fn OciRepositoryView(route: String, repo: String) -> impl IntoView {
-    let tags = Resource::new(
-        {
-            let key = (route.clone(), repo.clone());
-            move || key.clone()
-        },
-        |(route, repo)| load_oci_tags(route, repo),
-    );
-    let crumb_route = route.clone();
-    let crumb_repo = repo.clone();
-    view! {
-        <p class="breadcrumb">
-            <a href=browse_index_url(&crumb_route)>{crumb_route.clone()}</a>
-            " / "
-            <span>{crumb_repo}</span>
-        </p>
-        <h1><code>{repo.clone()}</code></h1>
-        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-            {move || {
-                let route = route.clone();
-                let repo = repo.clone();
-                Suspend::new(async move {
-                    match tags.await {
-                        Ok(tags) if tags.is_empty() => {
-                            view! { <p class="dim">"No tags for this repository yet."</p> }.into_any()
-                        }
-                        Ok(tags) => {
-                            view! {
-                                <p class="dim">{tags.len()}" tag(s)"</p>
-                                <div class="table-scroll">
-                                    <table class="files">
-                                        <thead><tr><th>"Tag"</th></tr></thead>
-                                        <tbody>
-                                            {tags
-                                                .into_iter()
-                                                .map(|tag| {
-                                                    let href = browse_oci_ref_url(&route, &repo, &tag);
-                                                    view! { <tr><td><a href=href>{tag}</a></td></tr> }
-                                                })
-                                                .collect_view()}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            }
-                                .into_any()
-                        }
-                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
-                    }
-                })
-            }}
-        </Suspense>
-    }
-}
-
-/// An OCI index (registry): the repositories it holds, each linking to its tags.
-#[component]
-pub(super) fn OciIndexView(route: String) -> impl IntoView {
-    let repos = Resource::new(
-        {
-            let route = route.clone();
-            move || route.clone()
-        },
-        load_oci_repositories,
-    );
-    let heading = route.clone();
-    view! {
-        <h1><code>{heading}</code></h1>
-        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-            {move || {
-                let route = route.clone();
-                Suspend::new(async move {
-                    match repos.await {
-                        Ok(repos) if repos.is_empty() => {
-                            view! { <p class="dim">"No repositories cached or pushed yet."</p> }.into_any()
-                        }
-                        Ok(repos) => {
-                            view! {
-                                <ul class="project-list">
-                                    {repos
-                                        .into_iter()
-                                        .map(|repo| {
-                                            let href = browse_project_url(&route, &repo);
-                                            view! { <li><a href=href>{repo}</a></li> }
-                                        })
-                                        .collect_view()}
-                                </ul>
-                            }
-                                .into_any()
-                        }
-                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
-                    }
-                })
-            }}
-        </Suspense>
-    }
-}
-
-/// One tag's manifest: the config and layer blobs of an image manifest, or the per-platform child
+/// One reference's manifest: the config and layer blobs of an image manifest, or the per-platform child
 /// manifests of an image index, each shown by digest and size.
 #[component]
-pub(super) fn OciManifestView(route: String, repo: String, reference: String) -> impl IntoView {
+pub(super) fn ManifestView(route: String, repo: String, reference: String) -> impl IntoView {
     let manifest = Resource::new(
         {
             let key = (route.clone(), repo.clone(), reference.clone());
             move || key.clone()
         },
-        |(route, repo, reference)| load_oci_manifest(route, repo, reference),
+        |(route, repo, reference)| load_manifest(route, repo, reference),
     );
     let crumb_route = route.clone();
     let crumb_repo = repo.clone();
@@ -144,7 +41,7 @@ pub(super) fn OciManifestView(route: String, repo: String, reference: String) ->
                 Suspend::new(async move {
                     match manifest.await {
                         Ok(Some(manifest)) => {
-                            view! { <OciManifestBody route repo reference manifest /> }.into_any()
+                            view! { <ManifestBody route repo reference manifest /> }.into_any()
                         }
                         Ok(None) => view! { <p class="dim">"Manifest not found for this reference."</p> }.into_any(),
                         Err(message) => view! { <ErrorMessage message /> }.into_any(),
@@ -155,14 +52,14 @@ pub(super) fn OciManifestView(route: String, repo: String, reference: String) ->
     }
 }
 
-/// Render a parsed OCI manifest: its media type and total size, then its config and layers (an image
+/// Render a manifest view: its media type and total size, then its config and layers (an image
 /// manifest) or its per-platform child manifests (an image index). Each browsable tar layer links to
 /// its contents.
 #[component]
-fn OciManifestBody(route: String, repo: String, reference: String, manifest: UiOciManifest) -> impl IntoView {
+fn ManifestBody(route: String, repo: String, reference: String, manifest: UiManifest) -> impl IntoView {
     let is_index = manifest.is_index;
     let entry_heading = if is_index { "Platform manifests" } else { "Layers" };
-    let pull = view! { <OciPullSnippet route=route.clone() repo=repo.clone() reference=reference.clone() /> };
+    let pull = view! { <PullSnippet route=route.clone() repo=repo.clone() reference=reference.clone() /> };
     let config = manifest.config.map(|config| {
         view! {
             <p><strong>"Config"</strong>": "<code>{config.digest}</code>" ("{human_size(config.size)}")"</p>
@@ -191,8 +88,8 @@ fn OciManifestBody(route: String, repo: String, reference: String, manifest: UiO
                         .entries
                         .into_iter()
                         .map(|entry| {
-                            let contents = (!is_index && is_browsable_layer(&entry.media_type)).then(|| {
-                                let href = browse_oci_layer_url(&route, &repo, &reference, &entry.digest);
+                            let contents = (!is_index && entry.browsable).then(|| {
+                                let href = browse_layer_url(&route, &repo, &reference, &entry.digest);
                                 view! { <a class="inspect" href=href>"contents"</a> }
                             });
                             view! {
@@ -213,17 +110,11 @@ fn OciManifestBody(route: String, repo: String, reference: String, manifest: UiO
     }
 }
 
-/// Whether a layer's media type is a tar the archive engine can list. Config blobs (JSON) and foreign
-/// or non-tar layers get no contents link.
-fn is_browsable_layer(media_type: &str) -> bool {
-    media_type.contains("tar")
-}
-
-/// The `docker pull` command for one tag. The registry host is unknown during server rendering, so the
-/// snippet ships a `<host>` placeholder that a client-side effect rewrites to the page's own host.
-/// Both sides render the placeholder first, so hydration matches.
+/// The `docker pull` command for one reference. The registry host is unknown during server rendering,
+/// so the snippet ships a `<host>` placeholder that a client-side effect rewrites to the page's own
+/// host. Both sides render the placeholder first, so hydration matches.
 #[component]
-fn OciPullSnippet(route: String, repo: String, reference: String) -> impl IntoView {
+fn PullSnippet(route: String, repo: String, reference: String) -> impl IntoView {
     let (host, set_host) = signal("<host>".to_owned());
     #[cfg(feature = "hydrate")]
     {
@@ -255,7 +146,7 @@ fn OciPullSnippet(route: String, repo: String, reference: String) -> impl IntoVi
 /// Browse one layer's contents: a flat member listing, or one text member previewed. A layer is a
 /// tar, so it drives the same neutral archive engine and member model the wheel browser uses.
 #[component]
-pub(super) fn OciLayerView(
+pub(super) fn LayerView(
     route: String,
     repo: String,
     reference: String,
@@ -263,7 +154,7 @@ pub(super) fn OciLayerView(
     member: Option<String>,
     offset: u64,
 ) -> impl IntoView {
-    let manifest = browse_oci_ref_url(&route, &repo, &reference);
+    let manifest = browse_ref_url(&route, &repo, &reference);
     view! {
         <p class="breadcrumb">
             <a href=browse_index_url(&route)>{route.clone()}</a>
@@ -275,20 +166,20 @@ pub(super) fn OciLayerView(
             <span><code>{digest.clone()}</code></span>
         </p>
         {match member {
-            Some(path) => view! { <OciLayerMemberView route repo reference digest member=path offset /> }.into_any(),
-            None => view! { <OciLayerMemberList route repo reference digest /> }.into_any(),
+            Some(path) => view! { <LayerMemberView route repo reference digest member=path offset /> }.into_any(),
+            None => view! { <LayerMemberList route repo reference digest /> }.into_any(),
         }}
     }
 }
 
 #[component]
-fn OciLayerMemberList(route: String, repo: String, reference: String, digest: String) -> impl IntoView {
+fn LayerMemberList(route: String, repo: String, reference: String, digest: String) -> impl IntoView {
     let members = Resource::new(
         {
             let key = (route.clone(), repo.clone(), digest.clone());
             move || key.clone()
         },
-        |(route, repo, digest)| load_oci_layer_members(route, repo, digest),
+        |(route, repo, digest)| load_layer_members(route, repo, digest),
     );
     view! {
         <h1>"Layer contents"</h1>
@@ -312,7 +203,7 @@ fn OciLayerMemberList(route: String, repo: String, reference: String, digest: St
                                             <span class="archive-meta">{human_size(entry.size)}" · "{entry.kind.clone()}</span>
                                         };
                                         if entry.previewable {
-                                            let href = browse_oci_layer_member_url(&route, &repo, &reference, &digest, &entry.path, 0);
+                                            let href = browse_layer_member_url(&route, &repo, &reference, &digest, &entry.path, 0);
                                             view! { <li><a class="archive-name" href=href>{entry.path}</a>" "{name}</li> }.into_any()
                                         } else {
                                             view! { <li><span class="archive-name">{entry.path}</span>" "{name}</li> }.into_any()
@@ -330,7 +221,7 @@ fn OciLayerMemberList(route: String, repo: String, reference: String, digest: St
 }
 
 #[component]
-fn OciLayerMemberView(
+fn LayerMemberView(
     route: String,
     repo: String,
     reference: String,
@@ -343,9 +234,9 @@ fn OciLayerMemberView(
             let key = (route.clone(), repo.clone(), digest.clone(), member.clone(), offset);
             move || key.clone()
         },
-        |(route, repo, digest, member, offset)| load_oci_layer_chunk(route, repo, digest, member, offset),
+        |(route, repo, digest, member, offset)| load_layer_chunk(route, repo, digest, member, offset),
     );
-    let back = browse_oci_layer_url(&route, &repo, &reference, &digest);
+    let back = browse_layer_url(&route, &repo, &reference, &digest);
     view! {
         <h1><code>{member.clone()}</code></h1>
         <p><a href=back>"back to layer"</a></p>
@@ -360,7 +251,7 @@ fn OciLayerMemberView(
                     match content.await {
                         Ok(chunk) => {
                             let next = chunk.next_offset.map(|offset| {
-                                browse_oci_layer_member_url(&route, &repo, &reference, &digest, &member, offset)
+                                browse_layer_member_url(&route, &repo, &reference, &digest, &member, offset)
                             });
                             let end = chunk
                                 .next_offset

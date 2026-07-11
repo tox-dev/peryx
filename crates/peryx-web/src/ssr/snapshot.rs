@@ -29,10 +29,15 @@ fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
                 .and_then(|summaries| summaries.get(&index.name))
                 .cloned()
                 .unwrap_or_default();
+            let endpoint = app.driver_for_name(index.ecosystem).map_or_else(
+                || format!("/{}/", index.route),
+                |driver| driver.client_endpoint(&index.route),
+            );
             UiIndex {
                 name: index.name,
                 route: index.route,
                 ecosystem: index.ecosystem.to_owned(),
+                endpoint,
                 kind: index.kind.to_owned(),
                 layers: index.layers,
                 uploads: index.uploads,

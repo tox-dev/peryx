@@ -26,6 +26,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/+search/", get(handlers::search))
         .route("/+status", get(handlers::status))
         .route("/+stats", get(handlers::stats))
+        .route("/+ui/projects", get(handlers::ui_projects))
+        .route("/+ui/project", get(handlers::ui_project))
+        .route("/+ui/manifest", get(handlers::ui_manifest))
+        .route("/+ui/members", get(handlers::ui_members))
+        .route("/+ui/member", get(handlers::ui_member))
         .route("/metrics", get(handlers::metrics));
     // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.

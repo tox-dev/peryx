@@ -227,6 +227,25 @@ impl EcosystemDriver for PypiServing {
         web::project_page(state, position, project).await
     }
 
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = String::with_capacity(route.len() + 9);
+        url.push('/');
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push_str("/simple/");
+        url
+    }
+
+    async fn browse_project(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+    ) -> Result<Option<peryx_core::UiProjectView>, String> {
+        Ok(web::project_page(state, position, project)
+            .await?
+            .map(|(project, meta)| peryx_core::UiProjectView::Files { project, meta }))
+    }
+
     async fn artifact_path(
         &self,
         state: Arc<ServingState>,

@@ -86,7 +86,7 @@ impl OciRegistry {
 
     /// Fetch a proxy member's tag names for aggregation, or `None` on any upstream failure so one
     /// unreachable member does not fail the whole list.
-    async fn fetch_tag_names(
+    pub(super) async fn fetch_tag_names(
         &self,
         state: &ServingState,
         index: &str,

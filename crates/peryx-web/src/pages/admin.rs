@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
 use crate::data::{load_admin_snapshot, load_stats};
 use crate::model::{UiCounters, UiIndex, UiRecentUpload, UiSnapshot, UiStats};
-use crate::url::{browse_index_url, index_endpoint, stats_index_url};
+use crate::url::{browse_index_url, stats_index_url};
 
 #[component]
 pub fn AdminStatus() -> impl IntoView {
@@ -94,7 +94,7 @@ fn AdminIndexTable(indexes: Vec<UiIndex>, all: Vec<UiIndex>) -> impl IntoView {
                         .into_iter()
                         .map(|index| {
                             let browse = browse_index_url(&index.route);
-                            let endpoint = index_endpoint(&index.route, &index.ecosystem);
+                            let endpoint = index.endpoint.clone();
                             let endpoint_href = endpoint.clone();
                             let endpoint_title = endpoint.clone();
                             view! {

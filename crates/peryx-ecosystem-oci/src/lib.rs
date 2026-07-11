@@ -34,6 +34,7 @@ pub(crate) mod registry;
 mod search_oci;
 mod store;
 mod upstream;
+mod web;
 
 #[cfg(test)]
 mod tests;

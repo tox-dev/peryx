@@ -136,7 +136,7 @@ fn valid_name_component(component: &str) -> bool {
 }
 
 /// A manifest reference: a digest if it carries an `algorithm:` prefix, otherwise a tag.
-fn parse_reference(reference: &str) -> Option<Reference> {
+pub fn parse_reference(reference: &str) -> Option<Reference> {
     if reference.contains(':') {
         parse_digest(reference).map(Reference::Digest)
     } else if valid_tag(reference) {

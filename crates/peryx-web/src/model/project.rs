@@ -1,26 +1,6 @@
-use serde::{Deserialize, Serialize};
-
-pub use peryx_core::{UiFile, UiProject};
+pub use peryx_core::{UiArtifactRef, UiFile, UiManifest, UiMember, UiMemberChunk, UiProject, UiProjectView};
 
 use super::string_at;
-
-/// One member of a distribution archive, as the archive browser lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiMember {
-    pub path: String,
-    pub size: u64,
-    pub kind: String,
-    pub previewable: bool,
-}
-
-/// One rendered chunk of an archive member.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct UiMemberChunk {
-    pub text: String,
-    pub size: Option<u64>,
-    pub offset: u64,
-    pub next_offset: Option<u64>,
-}
 
 /// Rebuild an archive listing from the inspect endpoint's JSON document.
 #[must_use]

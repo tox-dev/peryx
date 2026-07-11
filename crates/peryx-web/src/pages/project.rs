@@ -16,15 +16,15 @@ use peryx_core::{UiBlock, UiMeta};
 use regex::Regex;
 
 use super::{ErrorMessage, copy_to_clipboard, human_size};
-use crate::data::load_project;
+use crate::data::load_project_view;
 use crate::markdown::render_description;
-use crate::model::{UiFile, UiProject};
+use crate::model::{UiFile, UiProject, UiProjectView};
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_url, browse_index_url, browse_project_file_search_url,
-    simple_index_url,
+    browse_ref_url, simple_index_url,
 };
 
-type ProjectPage = Result<Option<(UiProject, UiMeta)>, String>;
+type ProjectPage = Result<Option<UiProjectView>, String>;
 type ProjectPageResource = Resource<ProjectPage>;
 
 #[component]
@@ -34,29 +34,37 @@ pub(super) fn ProjectView(route: String, project: String) -> impl IntoView {
             let key = (route.clone(), project.clone());
             move || key.clone()
         },
-        |(route, project)| load_project(route, project),
+        |(route, project)| load_project_view(route, project),
     );
     // Admin state lives here, outside the Suspend scope: signals created inside async-hydrated
     // suspense content are disposed once hydration completes, which would make them inert.
     let (token, set_token) = signal(String::new());
     let (outcome, set_outcome) = signal(String::new());
+    let crumb_project = project.clone();
     view! {
         <p class="breadcrumb">
             <a href=browse_index_url(&route)>{route.clone()}</a>
             " / "
-            <span>{project}</span>
+            <span>{crumb_project}</span>
         </p>
         <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
             {move || {
                 let route = route.clone();
+                let project = project.clone();
                 Suspend::new(async move {
                     match page.await {
-                        Ok(Some((ui, meta))) => {
+                        Ok(Some(UiProjectView::Files { project: ui, meta })) => {
                             view! { <ProjectBody route ui meta refresh=page token set_token set_outcome /> }
                                 .into_any()
                         }
+                        Ok(Some(UiProjectView::References { names })) => {
+                            view! { <ReferenceList route project names /> }.into_any()
+                        }
                         Ok(None) => view! { <p class="dim">"Project not found on this index."</p> }.into_any(),
                         Err(message) => view! { <ErrorMessage message /> }.into_any(),
+                        // `UiProjectView` is `#[non_exhaustive]`: a browse shape this renderer does not
+                        // yet know renders a notice rather than a blank page.
+                        _ => view! { <p class="dim">"Unsupported project view."</p> }.into_any(),
                     }
                 })
             }}
@@ -65,6 +73,34 @@ pub(super) fn ProjectView(route: String, project: String) -> impl IntoView {
             let text = outcome.get();
             (!text.is_empty()).then(|| view! { <p class="outcome">{text}</p> })
         }}
+    }
+}
+
+/// A registry repository's references (tags), each linking to the manifest it resolves to.
+#[component]
+fn ReferenceList(route: String, project: String, names: Vec<String>) -> impl IntoView {
+    let count = names.len();
+    let empty = names.is_empty();
+    let rows = names
+        .into_iter()
+        .map(|name| {
+            let href = browse_ref_url(&route, &project, &name);
+            view! { <tr><td><a href=href>{name}</a></td></tr> }
+        })
+        .collect_view();
+    view! {
+        <h1><code>{project}</code></h1>
+        {empty.then(|| view! { <p class="dim">"No tags for this repository yet."</p> })}
+        {(!empty)
+            .then(|| view! {
+                <p class="dim">{count}" tag(s)"</p>
+                <div class="table-scroll">
+                    <table class="files">
+                        <thead><tr><th>"Tag"</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                </div>
+            })}
     }
 }
 

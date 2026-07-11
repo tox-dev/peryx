@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
 use crate::data::{load_snapshot, load_stats};
 use crate::model::{UiCounters, UiIndex, UiSnapshot, UiStats};
-use crate::url::{browse_index_url, index_endpoint, stats_index_url};
+use crate::url::{browse_index_url, stats_index_url};
 
 /// The diving-peregrine silhouette, traced from a photo. Shared by the home hero (dives once on load)
 /// and the loading state (loops), each animated through its own `.falcon` class in the stylesheet.
@@ -148,7 +148,7 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
 fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) -> impl IntoView {
     let browse = browse_index_url(&index.route);
     let stats_href = stats_index_url(&index.route);
-    let simple = index_endpoint(&index.route, &index.ecosystem);
+    let simple = index.endpoint.clone();
     let upload_to = index.upload_to.clone();
     let layers = index
         .layers
@@ -157,7 +157,7 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
         .map(|(position, name)| {
             let member = all.iter().find(|candidate| candidate.name == *name);
             let kind = member.map_or_else(|| "?".to_owned(), |member| member.kind.clone());
-            let route = member.map(|member| index_endpoint(&member.route, &member.ecosystem));
+            let route = member.map(|member| member.endpoint.clone());
             let is_upload_target = upload_to.as_deref() == Some(name.as_str());
             view! {
                 <li class="layer">
@@ -201,7 +201,7 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
 fn IndexCard(index: UiIndex, counters: Option<UiCounters>) -> impl IntoView {
     let browse = browse_index_url(&index.route);
     let stats_href = stats_index_url(&index.route);
-    let simple = index_endpoint(&index.route, &index.ecosystem);
+    let simple = index.endpoint.clone();
     let layers = (!index.layers.is_empty()).then(|| {
         view! {
             <p class="layers">

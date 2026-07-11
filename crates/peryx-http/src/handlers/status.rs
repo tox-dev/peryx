@@ -26,10 +26,15 @@ pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<Stat
         .describe_indexes()
         .into_iter()
         .map(|index| {
+            let endpoint = state.driver_for_name(index.ecosystem).map_or_else(
+                || format!("/{}/", index.route),
+                |driver| driver.client_endpoint(&index.route),
+            );
             let mut object = serde_json::Map::from_iter([
                 ("name".to_owned(), serde_json::json!(index.name)),
                 ("route".to_owned(), serde_json::json!(index.route)),
                 ("ecosystem".to_owned(), serde_json::json!(index.ecosystem)),
+                ("endpoint".to_owned(), serde_json::json!(endpoint)),
                 ("kind".to_owned(), serde_json::json!(index.kind)),
                 ("layers".to_owned(), serde_json::json!(index.layers)),
                 ("uploads".to_owned(), serde_json::json!(index.uploads)),

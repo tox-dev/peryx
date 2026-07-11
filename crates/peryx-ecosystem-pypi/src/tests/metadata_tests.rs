@@ -1,4 +1,27 @@
-use crate::{file_matches_version, parse_metadata};
+use crate::{file_matches_version, parse_metadata, ui_project_from_detail};
+
+#[test]
+fn test_ui_project_from_detail_maps_files() {
+    let value = serde_json::json!({
+        "name": "veloxdemo",
+        "versions": ["1.0"],
+        "files": [{
+            "filename": "veloxdemo-1.0-py3-none-any.whl",
+            "url": "/hosted/files/aa/veloxdemo-1.0-py3-none-any.whl",
+            "hashes": {"sha256": "aa"},
+            "size": 10,
+            "upload-time": "2026-01-01T00:00:00Z",
+            "yanked": "broken",
+            "core-metadata": {"sha256": "bb"},
+        }],
+    });
+    let project = ui_project_from_detail(&value);
+    assert_eq!(project.name, "veloxdemo");
+    assert_eq!(project.files[0].sha256, "aa");
+    assert_eq!(project.files[0].upload_time.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert!(project.files[0].yanked, "a reason string counts as yanked");
+    assert!(project.files[0].has_metadata);
+}
 
 #[test]
 fn test_parse_metadata_headers_and_body() {

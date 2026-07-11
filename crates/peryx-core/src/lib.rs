@@ -19,4 +19,7 @@ pub mod view;
 pub use ecosystem::{Ecosystem, UnknownEcosystem};
 pub use lexicon::{Lexicon, LexiconRegistry};
 pub use role::Role;
-pub use view::{UiBlock, UiDescription, UiFile, UiMeta, UiProject};
+pub use view::{
+    UiArtifactRef, UiBlock, UiDescription, UiFile, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject,
+    UiProjectView,
+};

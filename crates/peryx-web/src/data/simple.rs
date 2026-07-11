@@ -3,9 +3,7 @@
     reason = "browser fetch futures are single-threaded by nature; callers wrap them in SendWrapper"
 )]
 
-use peryx_core::UiMeta;
-
-use peryx_core::UiProject;
+use peryx_core::UiProjectView;
 
 /// The project names of the index at `route`.
 ///
@@ -22,9 +20,8 @@ pub async fn load_projects(route: String) -> Result<Vec<String>, String> {
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            super::fetch_json_required(&crate::url::simple_index_url(&route))
-                .await
-                .map(|value| crate::model::projects_from_list(&value))
+            let value = super::fetch_json_required(&crate::url::ui_projects_url(&route)).await?;
+            serde_json::from_value(value).map_err(|err| format!("invalid project list for {route:?}: {err}"))
         })
         .await
     }
@@ -34,32 +31,25 @@ pub async fn load_projects(route: String) -> Result<Vec<String>, String> {
     }
 }
 
-/// One project's page data: its files, and the neutral metadata view of its newest artifact that
-/// carries a metadata sibling.
+/// One project's browse view: a file listing with metadata (a file ecosystem) or a list of references
+/// (a registry), chosen by the index's ecosystem driver. `None` when the project is absent.
 ///
 /// # Errors
-/// Returns a user-visible message when the project page or metadata sibling cannot be read.
-pub async fn load_project(route: String, project: String) -> Result<Option<(UiProject, UiMeta)>, String> {
+/// Returns a user-visible message when the project view cannot be read.
+pub async fn load_project_view(route: String, project: String) -> Result<Option<UiProjectView>, String> {
     #[cfg(feature = "ssr")]
     {
-        crate::ssr::project(&route, &project).await
+        crate::ssr::project_view(&route, &project).await
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            let Some(value) = super::fetch_json_optional(&crate::url::simple_project_url(&route, &project)).await?
-            else {
+            let Some(value) = super::fetch_json_optional(&crate::url::ui_project_url(&route, &project)).await? else {
                 return Ok(None);
             };
-            let ui = peryx_ecosystem_pypi::ui_project_from_detail(&value);
-            let meta = match ui.files.iter().rev().find(|file| file.has_metadata) {
-                Some(file) => {
-                    let text = super::fetch_text_required(&format!("{}.metadata", file.url)).await?;
-                    peryx_ecosystem_pypi::ui_meta(&text)
-                }
-                None => UiMeta::default(),
-            };
-            Ok(Some((ui, meta)))
+            serde_json::from_value(value)
+                .map(Some)
+                .map_err(|err| format!("invalid project view for {project:?} on {route:?}: {err}"))
         })
         .await
     }

@@ -29,23 +29,3 @@ pub fn search(query: &str, source_type: &str, page: usize, page_size: usize) -> 
     let value = serde_json::to_value(response).map_err(|err| format!("search result: {err}"))?;
     Ok(UiSearchPage::from_search(&value))
 }
-
-/// The repositories an OCI index holds, from the search index scoped to that route.
-///
-/// # Errors
-/// Returns a user-visible message when the search index cannot be read.
-pub fn repositories(route: &str) -> Result<Vec<String>, String> {
-    let app = expect_context::<Arc<AppState>>();
-    let params = SearchParams {
-        query: String::new(),
-        route: Some(route.to_owned()),
-        source: SourceFilter::All,
-        page: 1,
-        page_size: 100,
-    };
-    let response = app
-        .search
-        .search(&app.search_ctx(), params)
-        .map_err(|err| format!("repository list on index {route:?}: {err}"))?;
-    Ok(response.results.into_iter().map(|result| result.display_name).collect())
-}
