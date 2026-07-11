@@ -164,7 +164,12 @@ upload = "images"
 ```
 
 Startup rejects duplicate names, duplicate routes, invalid routes, `layers` entries that name no index, `layers` that
-mix ecosystems, and an `upload` target that is not a hosted index.
+mix ecosystems, an `upload` target that is not a hosted index, and an empty `upload_token = ""`. An empty token is a
+configuration error rather than a valid value: authorization compares `upload_token` against the Basic-auth password on
+each request, so a blank string would admit any request that presents an empty password and turn off write and delete
+authentication for the index. The empty value almost always comes from a config template whose environment variable
+never expanded, so peryx refuses it at load time instead of booting into that state. To configure no token, omit the key
+rather than setting it to `""`.
 
 ### `[index.policy]`
 
@@ -326,6 +331,13 @@ Each route class is a sub-table with `requests` and `window_secs`:
 | `[rate_limit.artifact]` | Artifact downloads and archive inspection       | `300` / `60s`  |
 | `[rate_limit.upload]`   | Upload, yank, restore, and delete requests      | `60` / `60s`   |
 | `[rate_limit.admin]`    | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
+
+A request's class follows its method and its path. `POST`, `PUT`, `PATCH`, and `DELETE` count against `upload`. `GET`,
+`HEAD`, and `OPTIONS` are reads, classed by the path they hit: a manifest or artifact `HEAD` shares the `artifact`
+budget, a project listing the `listing` budget, a `.metadata` sibling the `metadata` budget, and a status or discovery
+call the `admin` budget. That split matters for OCI, where a client sends a `HEAD` on every manifest and blob before it
+pulls; charging those reads against the strict `upload` budget would let a routine pull drain it and start drawing `429`
+rejections.
 
 Example:
 
