@@ -5,6 +5,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_storage::meta::MetaStore;
 use sha2::{Digest as _, Sha256};
 
@@ -175,15 +176,15 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
                 username: None,
                 password: None,
                 token: None,
-                upstream_concurrency: peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
+                upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                 offline: false,
                 prefetch: Box::default(),
             },
@@ -196,9 +197,9 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             name: "aggregate".to_owned(),
             route: "aggregate".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Virtual {
                 layers: Vec::new(),
                 upload: None,
@@ -242,9 +243,9 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             name: "images".to_owned(),
             route: "images".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {
                 upload_token: None,
                 volatile: true,
@@ -341,4 +342,30 @@ fn append_tar_file(archive: &mut tar::Builder<GzEncoder<Vec<u8>>>, path: &str, b
     header.set_mode(0o644);
     header.set_cksum();
     archive.append_data(&mut header, path, bytes).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn test_import_dir_skips_a_symlink_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let import = root.path().join("import");
+    std::fs::create_dir_all(&import).unwrap();
+    std::fs::write(
+        import.join("Flask-1.0-py3-none-any.whl"),
+        wheel("Flask", "1.0", ">=3.8"),
+    )
+    .unwrap();
+    // A symlink is neither a regular file nor a directory, so the directory walk skips it.
+    std::os::unix::fs::symlink("/nonexistent", import.join("dangling.whl")).unwrap();
+    let config = Config {
+        data_dir: root.path().join("data"),
+        ..Config::default()
+    };
+
+    let mut out = Vec::new();
+    operator::import_dir(&config, "root/pypi", &import, &mut out).unwrap();
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("imported=1"), "{text}");
+    assert!(!text.contains("dangling"), "{text}");
 }

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use peryx_ecosystem_pypi::cache;
-use peryx_http::AppState;
-use peryx_storage::blob::Digest;
+use peryx_driver::AppState;
+use peryx_storage::archive;
 
 use crate::model::{UiMember, UiMemberChunk};
 
@@ -17,28 +16,13 @@ pub async fn members(
     filename: &str,
     containers: &[String],
 ) -> Result<Vec<UiMember>, String> {
-    let app = expect_context::<Arc<AppState>>();
-    let Some(digest) = Digest::from_hex(sha256) else {
-        return Err(format!(
-            "archive listing on index {route:?} for file {filename:?}: invalid sha256 digest {sha256:?}"
-        ));
-    };
-    let path = cache::file_path(app, digest, route.to_owned(), filename.to_owned())
-        .await
-        .map_err(|err| {
-            format!(
-                "archive listing on index {route:?} for file {filename:?} with digest {sha256}: {}",
-                err.user_message()
-            )
-        })?;
+    let path = artifact_path(route, sha256, filename).await?;
     let archive = filename.to_owned();
     let containers = containers.to_vec();
-    let members = tokio::task::spawn_blocking(move || {
-        peryx_ecosystem_pypi::archive::list_members_nested_path(&archive, &path, &containers)
-    })
-    .await
-    .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?
-    .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?;
+    let members = tokio::task::spawn_blocking(move || archive::list_members_nested_path(&archive, &path, &containers))
+        .await
+        .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?
+        .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?;
     Ok(members
         .into_iter()
         .map(|member| UiMember {
@@ -62,31 +46,18 @@ pub async fn member_chunk(
     member: &str,
     offset: u64,
 ) -> Result<UiMemberChunk, String> {
-    let app = expect_context::<Arc<AppState>>();
-    let Some(digest) = Digest::from_hex(sha256) else {
-        return Err(format!(
-            "archive member on index {route:?} for file {filename:?}: invalid sha256 digest {sha256:?}"
-        ));
-    };
-    let path = cache::file_path(app, digest, route.to_owned(), filename.to_owned())
-        .await
-        .map_err(|err| {
-            format!(
-                "archive member on index {route:?} for file {filename:?} with digest {sha256}: {}",
-                err.user_message()
-            )
-        })?;
+    let path = artifact_path(route, sha256, filename).await?;
     let archive = filename.to_owned();
     let containers = containers.to_vec();
     let selected = member.to_owned();
     let chunk = tokio::task::spawn_blocking(move || {
-        peryx_ecosystem_pypi::archive::read_text_member_chunk_nested_path(
+        archive::read_text_member_chunk_nested_path(
             &archive,
             &path,
             &containers,
             &selected,
             offset,
-            peryx_ecosystem_pypi::archive::DEFAULT_MEMBER_CHUNK,
+            archive::DEFAULT_MEMBER_CHUNK,
         )
     })
     .await
@@ -100,4 +71,22 @@ pub async fn member_chunk(
         offset: chunk.offset,
         next_offset: chunk.next_offset,
     })
+}
+
+/// The local path of the artifact `sha256`/`filename` on the index at `route`, fetched through that
+/// index's ecosystem driver so this crate carries no format-specific fetch logic.
+async fn artifact_path(route: &str, sha256: &str, filename: &str) -> Result<std::path::PathBuf, String> {
+    let app = expect_context::<Arc<AppState>>();
+    let position = app
+        .indexes
+        .iter()
+        .position(|index| index.route == route)
+        .ok_or_else(|| format!("index {route:?} is not configured"))?;
+    let driver = app
+        .driver_for(app.index_at(position).ecosystem)
+        .ok_or_else(|| format!("index {route:?} has no ecosystem driver"))?
+        .clone();
+    driver
+        .artifact_path(app.serving.clone(), position, sha256.to_owned(), filename.to_owned())
+        .await
 }

@@ -1,0 +1,25 @@
+[package]
+name = "peryx-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ecosystem-neutral package search for peryx: the tantivy index, its schema and queries, and the per-ecosystem document seam."
+
+[dependencies]
+peryx-core.workspace = true
+peryx-index.workspace = true
+peryx-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tantivy.workspace = true
+url.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

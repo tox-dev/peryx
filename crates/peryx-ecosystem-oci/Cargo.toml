@@ -8,8 +8,11 @@ repository.workspace = true
 description = "The OCI/Docker registry driver for peryx: the distribution-spec /v2/ API over the content-addressed blob store."
 
 [dependencies]
-peryx-http.workspace = true
-peryx-format.workspace = true
+peryx-core.workspace = true
+peryx-driver.workspace = true
+peryx-events.workspace = true
+peryx-index.workspace = true
+peryx-search.workspace = true
 peryx-storage.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true
@@ -25,10 +28,12 @@ rustls.workspace = true
 serde = { workspace = true, features = ["derive"] }
 url.workspace = true
 serde_json.workspace = true
+utoipa.workspace = true
 tokio = { workspace = true, features = ["sync", "fs", "io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
 
 [dev-dependencies]
+peryx-http.workspace = true
 peryx-upstream.workspace = true
 base64.workspace = true
 flate2.workspace = true

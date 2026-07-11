@@ -102,11 +102,17 @@ pub struct Policy {
 impl Policy {
     /// Compile the neutral operator configuration once at startup. Format-specific rules are attached
     /// afterward with [`Policy::with_rules`].
+    ///
+    /// `normalize` folds a configured project key into the form the ecosystem checks against. `PyPI`
+    /// applies [PEP 503](https://peps.python.org/pep-0503/) normalization; `OCI` leaves a repository
+    /// name untouched. The same function must key the incoming name at check time, so the engine holds
+    /// no format assumption of its own. Pass the identity closure for a case-sensitive match.
     #[must_use]
-    pub fn compile(config: &PolicyConfig) -> Self {
+    pub fn compile(config: &PolicyConfig, normalize: impl Fn(&str) -> String) -> Self {
+        let normalize_all = |names: &[String]| names.iter().map(|name| normalize(name)).collect();
         let policy = Self {
-            allow_projects: normalize_projects(&config.allow_projects),
-            block_projects: normalize_projects(&config.block_projects),
+            allow_projects: normalize_all(&config.allow_projects),
+            block_projects: normalize_all(&config.block_projects),
             max_file_size_bytes: config.max_file_size_bytes,
             max_project_size_bytes: config.max_project_size_bytes,
             rules: Vec::new(),
@@ -296,30 +302,6 @@ impl fmt::Display for PolicyDenial {
 }
 
 impl std::error::Error for PolicyDenial {}
-
-/// Normalize a project name per PEP 503 (lowercase, collapse runs of `-`, `_`, `.` to a single `-`).
-/// Mirrors `peryx-ecosystem-pypi`'s `normalize_name`; kept local so the policy engine carries no
-/// format dependency. The rule is fixed by PEP 503, so the two cannot drift.
-fn normalize_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut in_separator = false;
-    for ch in name.chars() {
-        if matches!(ch, '-' | '_' | '.') {
-            if !in_separator {
-                out.push('-');
-                in_separator = true;
-            }
-        } else {
-            in_separator = false;
-            out.extend(ch.to_lowercase());
-        }
-    }
-    out
-}
-
-fn normalize_projects(projects: &[String]) -> HashSet<String> {
-    projects.iter().map(|project| normalize_name(project)).collect()
-}
 
 /// Retain from `versions` only those present in `keep`, appending any missing ones.
 ///

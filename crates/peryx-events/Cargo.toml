@@ -1,0 +1,30 @@
+[package]
+name = "peryx-events"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "What a peryx process reports about itself: usage counters, security event logging, and signed webhook delivery."
+
+[dependencies]
+peryx-core.workspace = true
+peryx-identity.workspace = true
+peryx-storage.workspace = true
+http.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true

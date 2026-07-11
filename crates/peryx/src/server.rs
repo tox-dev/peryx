@@ -1,12 +1,15 @@
 //! Assembling the HTTP server from configuration.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, bail};
 use axum::Router;
-use peryx_http::webhook::{WebhookRuntime, WebhookTargetConfig};
-use peryx_http::{AppState, Index, IndexKind, RuntimeOptions, path_safety, router, webhook};
+use peryx_core::path;
+use peryx_driver::state::RuntimeOptions;
+use peryx_driver::{AppState, DriverSet, Index, IndexKind};
+use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
+use peryx_http::router;
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -62,7 +65,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
     if !state.webhooks.is_empty() {
-        webhook::kick(state.clone());
+        peryx_events::webhook::kick(state.serving.clone());
     }
     Ok(state)
 }
@@ -74,13 +77,25 @@ pub fn router_for(state: Arc<AppState>) -> Router {
     peryx_web::ssr::ui_router(state.clone()).merge(router(state))
 }
 
+/// The ecosystem drivers this build of peryx ships, named once here at the composition root. The
+/// config-build and admin paths dispatch through it by an index's ecosystem, so no neutral code
+/// names an ecosystem.
+pub(crate) fn drivers() -> &'static DriverSet {
+    static DRIVERS: OnceLock<DriverSet> = OnceLock::new();
+    DRIVERS.get_or_init(|| {
+        DriverSet::default()
+            .with(Arc::new(peryx_ecosystem_pypi::PypiServing))
+            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::new()))
+    })
+}
+
 /// Resolve configured indexes into their runtime form, mapping virtual-index member names to positions and
 /// building each cached index's authenticated upstream client.
 pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::Result<Vec<Index>> {
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
-        path_safety::validate_route(&index.route).with_context(|| format!("invalid index route {}", index.route))?;
+        path::validate_route(&index.route).with_context(|| format!("invalid index route {}", index.route))?;
         if positions.insert(index.name.as_str(), pos).is_some() {
             bail!("duplicate index name {}", index.name);
         }
@@ -91,15 +106,18 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::R
     configs
         .iter()
         .map(|index| {
+            let driver = drivers()
+                .get(index.ecosystem)
+                .expect("every configured ecosystem has a registered driver");
+            let rules = driver
+                .compile_policy(&index.ecosystem_policy)
+                .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?;
             Ok(Index {
                 name: index.name.clone(),
                 route: index.route.clone(),
                 ecosystem: index.ecosystem,
                 kind: build_kind(index, configs, &positions, offline)?,
-                policy: Policy::compile(&index.policy).with_rules(
-                    peryx_ecosystem_pypi::policy::compile_rules(&index.pypi_policy)
-                        .with_context(|| format!("compile policy for {}", index.name))?,
-                ),
+                policy: Policy::compile(&index.policy, |name| driver.normalize_name(name)).with_rules(rules),
             })
         })
         .collect()

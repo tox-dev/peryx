@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use super::Output;
 use super::oci::{oci_images, oci_lookup, oci_mirror, oci_plan};
@@ -63,7 +63,7 @@ fn mirror_driver(state: &Arc<AppState>, name: &str) -> &'static dyn IndexMirror 
     let is_oci = state
         .indexes
         .iter()
-        .any(|index| (index.name == name || index.route == name) && index.ecosystem == peryx_format::Ecosystem::Oci);
+        .any(|index| (index.name == name || index.route == name) && index.ecosystem == peryx_core::Ecosystem::Oci);
     if is_oci { &OCI_MIRROR } else { &PYPI_MIRROR }
 }
 

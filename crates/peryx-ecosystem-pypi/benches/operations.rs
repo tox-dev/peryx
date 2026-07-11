@@ -13,17 +13,21 @@ use axum::body::Body;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::Request;
 use http_body_util::BodyExt as _;
+use peryx_driver::AppState;
+use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
+use peryx_ecosystem_pypi::store::CachedIndex;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_ecosystem_pypi::{
     CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked, normalize_name,
     parse_detail, parse_detail_html, parse_distribution_filename, parse_index, parse_index_html, parse_metadata,
     parse_version, parse_version_specifiers, render_detail_html, render_index_html, render_legacy_json, sorted_desc,
     to_json,
 };
-use peryx_http::rate_limit::{RateLimitConfig, RouteLimit};
-use peryx_http::{AppState, Index, IndexKind, router};
+use peryx_http::router;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
-use peryx_storage::meta::{CachedIndex, MetaStore};
+use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
 use tokio::runtime::Runtime;
 use tower::ServiceExt as _;
@@ -131,7 +135,7 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,

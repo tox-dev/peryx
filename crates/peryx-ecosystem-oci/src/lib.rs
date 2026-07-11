@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use peryx_format::{Ecosystem, Lexicon};
-use peryx_http::AppState;
+use peryx_core::{Ecosystem, Lexicon};
+use peryx_driver::AppState;
 
 /// The container ecosystem's user-facing words for peryx's neutral concepts.
 pub const OCI_LEXICON: Lexicon = Lexicon {
@@ -29,10 +29,12 @@ mod discovery;
 mod error;
 mod mirror;
 mod name;
+pub mod openapi;
 pub(crate) mod registry;
 mod search_oci;
 mod store;
 mod upstream;
+mod web;
 
 #[cfg(test)]
 mod tests;
@@ -49,8 +51,7 @@ pub use store::referenced_blob_digests;
 /// driver and the `/v2/` namespace stays inert, so a deployment without OCI indexes carries no OCI cost.
 pub fn install(state: &mut AppState) {
     if state.indexes.iter().any(|index| index.ecosystem == Ecosystem::Oci) {
-        state.register_namespace(Arc::new(OciRegistry::new()));
-        state.add_search_indexer(Arc::new(OciIndexer));
+        state.register_ecosystem(Arc::new(OciRegistry::new()), Arc::new(OciIndexer));
         state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
     }
 }

@@ -4,9 +4,9 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context as _, bail};
+use peryx_driver::IndexDescription;
+use peryx_driver::discovery::BaseUrl;
 use peryx_ecosystem_pypi::discovery::{SnippetKind, snippet_text};
-use peryx_http::IndexDescription;
-use peryx_http::discovery::BaseUrl;
 
 use crate::cli::{EcosystemArg, IndexCommand};
 use crate::config::Config;

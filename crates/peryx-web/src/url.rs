@@ -1,20 +1,6 @@
-use peryx_format::url_encoding::{push_component, push_path};
+use peryx_core::url_encoding::{push_component, push_path};
 
-/// The client-facing API endpoint an index is served at: the Simple index for a `PyPI` index, the
-/// `/v2/` registry namespace for an `OCI` one. The status card shows this so a client knows where to
-/// point, and it must not be a `PyPI` `/simple/` URL for a registry that answers `/v2/`.
-#[must_use]
-pub(crate) fn index_endpoint(route: &str, ecosystem: &str) -> String {
-    if ecosystem == "oci" {
-        let mut url = "/v2/".to_owned();
-        push_path(&mut url, route);
-        url.push('/');
-        url
-    } else {
-        simple_index_url(route)
-    }
-}
-
+/// The Simple index URL for one route, shown in the `PyPI` project page's install snippet.
 #[must_use]
 pub(crate) fn simple_index_url(route: &str) -> String {
     let mut url = String::with_capacity(route.len() + 9);
@@ -24,35 +10,61 @@ pub(crate) fn simple_index_url(route: &str) -> String {
     url
 }
 
+/// The neutral browse-data endpoint for one index's project names: `/+ui/projects?index=<route>`.
 #[must_use]
 #[cfg(any(feature = "hydrate", test))]
-pub(crate) fn simple_project_url(route: &str, project: &str) -> String {
-    let mut url = simple_index_url(route);
-    push_component(&mut url, project);
-    url.push('/');
+pub(crate) fn ui_projects_url(route: &str) -> String {
+    let mut url = "/+ui/projects".to_owned();
+    QueryAppender::new(&mut url).push("index", route);
     url
 }
 
-/// The OCI tag-list endpoint for one repository under an index route: `/v2/<route>/<repo>/tags/list`.
+/// The neutral browse-data endpoint for one project's view: `/+ui/project?index&project`.
 #[must_use]
-pub(crate) fn oci_tags_url(route: &str, repo: &str) -> String {
-    let mut url = "/v2/".to_owned();
-    push_path(&mut url, route);
-    url.push('/');
-    push_path(&mut url, repo);
-    url.push_str("/tags/list");
+#[cfg(any(feature = "hydrate", test))]
+pub(crate) fn ui_project_url(route: &str, project: &str) -> String {
+    let mut url = "/+ui/project".to_owned();
+    let mut query = QueryAppender::new(&mut url);
+    query.push("index", route);
+    query.push("project", project);
     url
 }
 
-/// The OCI manifest endpoint for one reference: `/v2/<route>/<repo>/manifests/<reference>`.
+/// The neutral browse-data endpoint for one manifest view: `/+ui/manifest?index&project&ref`.
 #[must_use]
-pub(crate) fn oci_manifest_url(route: &str, repo: &str, reference: &str) -> String {
-    let mut url = "/v2/".to_owned();
-    push_path(&mut url, route);
-    url.push('/');
-    push_path(&mut url, repo);
-    url.push_str("/manifests/");
-    push_component(&mut url, reference);
+#[cfg(any(feature = "hydrate", test))]
+pub(crate) fn ui_manifest_url(route: &str, repo: &str, reference: &str) -> String {
+    let mut url = "/+ui/manifest".to_owned();
+    let mut query = QueryAppender::new(&mut url);
+    query.push("index", route);
+    query.push("project", repo);
+    query.push("ref", reference);
+    url
+}
+
+/// The neutral browse-data endpoint listing a nested item's members: `/+ui/members?index&project&digest`.
+#[must_use]
+#[cfg(any(feature = "hydrate", test))]
+pub(crate) fn ui_members_url(route: &str, repo: &str, digest: &str) -> String {
+    let mut url = "/+ui/members".to_owned();
+    let mut query = QueryAppender::new(&mut url);
+    query.push("index", route);
+    query.push("project", repo);
+    query.push("digest", digest);
+    url
+}
+
+/// The neutral browse-data endpoint for one member chunk: `/+ui/member?index&project&digest&member&offset`.
+#[must_use]
+#[cfg(any(feature = "hydrate", test))]
+pub(crate) fn ui_member_url(route: &str, repo: &str, digest: &str, member: &str, offset: u64) -> String {
+    let mut url = "/+ui/member".to_owned();
+    let mut query = QueryAppender::new(&mut url);
+    query.push("index", route);
+    query.push("project", repo);
+    query.push("digest", digest);
+    query.push("member", member);
+    query.push("offset", &offset.to_string());
     url
 }
 
@@ -70,25 +82,25 @@ pub(crate) fn browse_project_url(route: &str, project: &str) -> String {
     url
 }
 
-/// The browse URL for one tag's manifest under an OCI repository (`?index&project&ref`).
+/// The browse URL for one reference's manifest under a repository (`?index&project&ref`).
 #[must_use]
-pub(crate) fn browse_oci_ref_url(route: &str, repo: &str, reference: &str) -> String {
+pub(crate) fn browse_ref_url(route: &str, repo: &str, reference: &str) -> String {
     let mut url = browse_project_url(route, repo);
     push_query(&mut url, "ref", reference);
     url
 }
 
-/// The browse URL for one layer's contents under an OCI manifest (`?index&project&ref&layer`).
+/// The browse URL for one layer's contents under a manifest (`?index&project&ref&layer`).
 #[must_use]
-pub(crate) fn browse_oci_layer_url(route: &str, repo: &str, reference: &str, digest: &str) -> String {
-    let mut url = browse_oci_ref_url(route, repo, reference);
+pub(crate) fn browse_layer_url(route: &str, repo: &str, reference: &str, digest: &str) -> String {
+    let mut url = browse_ref_url(route, repo, reference);
     push_query(&mut url, "layer", digest);
     url
 }
 
 /// The browse URL for one member inside a layer, carrying the paging offset when past the first chunk.
 #[must_use]
-pub(crate) fn browse_oci_layer_member_url(
+pub(crate) fn browse_layer_member_url(
     route: &str,
     repo: &str,
     reference: &str,
@@ -96,37 +108,10 @@ pub(crate) fn browse_oci_layer_member_url(
     member: &str,
     offset: u64,
 ) -> String {
-    let mut url = browse_oci_layer_url(route, repo, reference, digest);
+    let mut url = browse_layer_url(route, repo, reference, digest);
     let mut query = QueryAppender::continuing(&mut url);
     query.push("member", member);
     if offset > 0 {
-        query.push("offset", &offset.to_string());
-    }
-    url
-}
-
-/// The peryx layer-browser endpoint: `/v2/<route>/<repo>/blobs/<digest>/contents`, listing the
-/// layer's members or (with `member`) previewing one.
-#[must_use]
-pub(crate) fn oci_layer_inspect_url(
-    route: &str,
-    repo: &str,
-    digest: &str,
-    member: Option<&str>,
-    offset: u64,
-) -> String {
-    let mut url = "/v2/".to_owned();
-    push_path(&mut url, route);
-    url.push('/');
-    push_path(&mut url, repo);
-    url.push_str("/blobs/");
-    // A digest is `algorithm:hex`, all URL-path-safe, and the `/v2/` route parser matches the literal
-    // colon, so it must not be percent-encoded the way an arbitrary path component would be.
-    url.push_str(digest);
-    url.push_str("/contents");
-    if let Some(member) = member {
-        let mut query = QueryAppender::new(&mut url);
-        query.push("member", member);
         query.push("offset", &offset.to_string());
     }
     url
@@ -346,17 +331,13 @@ mod tests {
     use super::{
         admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url,
         browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_url, inspect_url,
-        search_api_url, search_page_url, simple_index_url, simple_project_url, stats_api_url, stats_index_url,
-        stats_project_url,
+        search_api_url, search_page_url, simple_index_url, stats_api_url, stats_index_url, stats_project_url,
+        ui_manifest_url, ui_member_url, ui_members_url, ui_project_url, ui_projects_url,
     };
 
     #[test]
     fn test_package_urls_encode_paths_and_queries() {
         assert_eq!(simple_index_url("root/pypi"), "/root/pypi/simple/");
-        assert_eq!(
-            simple_project_url("root/pypi", "pkg name"),
-            "/root/pypi/simple/pkg%20name/"
-        );
         assert_eq!(browse_index_url("root/pypi"), "/browse?index=root%2Fpypi");
         assert_eq!(
             browse_project_url("root/pypi", "pkg name"),
@@ -369,6 +350,27 @@ mod tests {
         assert_eq!(
             browse_project_file_search_url("root/pypi", "pkg name", "cp313.*\\.whl", true),
             "/browse?index=root%2Fpypi&project=pkg%20name&filename=cp313.%2A%5C.whl&filename_match=regex"
+        );
+    }
+
+    #[test]
+    fn test_ui_endpoint_urls_encode_arguments() {
+        assert_eq!(ui_projects_url("root/oci"), "/+ui/projects?index=root%2Foci");
+        assert_eq!(
+            ui_project_url("root/oci", "team/app"),
+            "/+ui/project?index=root%2Foci&project=team%2Fapp"
+        );
+        assert_eq!(
+            ui_manifest_url("root/oci", "team/app", "1.0"),
+            "/+ui/manifest?index=root%2Foci&project=team%2Fapp&ref=1.0"
+        );
+        assert_eq!(
+            ui_members_url("root/oci", "team/app", "sha256:aa"),
+            "/+ui/members?index=root%2Foci&project=team%2Fapp&digest=sha256%3Aaa"
+        );
+        assert_eq!(
+            ui_member_url("root/oci", "team/app", "sha256:aa", "etc/os #1", 1024),
+            "/+ui/member?index=root%2Foci&project=team%2Fapp&digest=sha256%3Aaa&member=etc%2Fos%20%231&offset=1024"
         );
     }
 

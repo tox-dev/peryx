@@ -3,9 +3,7 @@ use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
-use super::http_tests::{
-    fixture_sdist, fixture_wheel, get, harness, multipart_body, post_upload_response, upload_auth,
-};
+use super::http::{fixture_sdist, fixture_wheel, get, harness, multipart_body, post_upload_response, upload_auth};
 
 #[tokio::test]
 async fn test_upload_conformance_accepts_wheel_and_sdist_with_metadata() {

@@ -5,25 +5,28 @@
 
 pub const CSS: &str = r"
 :root {
-  --bg: #f7f4ef; --bg-soft: #fffdf9; --bg-sink: #efeae1; --text: #1a1a1a; --text-soft: #3f3d3b;
-  --text-faint: #6b6862; --accent: #c53d00; --accent-strong: #b23800; --brand-a: #f74c00; --brand-b: #ffb600;
+  --bg: #f7f4ef; --bg-soft: #fffdf9; --bg-sink: #efeae1; --text: #1a1a1a; --heading: #111111; --text-strong: #111111; --text-soft: #3f3d3b;
+  --text-faint: #6b6862; --accent: #a83600; --accent-strong: #8a2c00; --brand-a: #f74c00; --brand-b: #ffb600;
+  --gold-fg: #8a6200;
   --border: #e6dfd2; --border-strong: #d8cfbe; --code-bg: #efeae1;
   --terminal-bg: #17140f; --terminal-text: #e7ddcf; --terminal-dim: #8a8175;
-  --ok: #0ca30c; --warn: #d98a00; --bad: #d03b3b;
+  --ok: #0a7d0a; --warn: #8f5a00; --bad: #c62222;
   color-scheme: light;
 }
 :root[data-theme='dark'] { color-scheme: dark; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) { color-scheme: dark; } }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg: #131110; --bg-soft: #1b1815; --bg-sink: #100e0c; --text: #e7e7e9; --text-soft: #bcbcbe;
-    --text-faint: #6f665a; --accent: #ff8a3d; --accent-strong: #ffb600;
+    --bg: #131110; --bg-soft: #1b1815; --bg-sink: #100e0c; --text: #e5e5e5; --heading: #fafafa; --text-strong: #f0f0f0; --text-soft: #bcbcbe;
+    --text-faint: #8f867a; --accent: #d9682f; --accent-strong: #e07838; --gold-fg: #ffb600;
+    --ok: #2f9d2f; --warn: #c48a2c; --bad: #df5b5b;
     --border: #2c2822; --border-strong: #3a352d; --code-bg: #1c1915;
   }
 }
 :root[data-theme='dark'] {
-  --bg: #131110; --bg-soft: #1b1815; --bg-sink: #100e0c; --text: #e7e7e9; --text-soft: #bcbcbe;
-  --text-faint: #6f665a; --accent: #ff8a3d; --accent-strong: #ffb600;
+  --bg: #131110; --bg-soft: #1b1815; --bg-sink: #100e0c; --text: #e5e5e5; --heading: #fafafa; --text-strong: #f0f0f0; --text-soft: #bcbcbe;
+  --text-faint: #8f867a; --accent: #d9682f; --accent-strong: #e07838; --gold-fg: #ffb600;
+  --ok: #2f9d2f; --warn: #c48a2c; --bad: #df5b5b;
   --border: #2c2822; --border-strong: #3a352d; --code-bg: #1c1915;
 }
 * { box-sizing: border-box; }
@@ -31,6 +34,9 @@ body {
   margin: 0; font-size: 16px; line-height: 1.6; color: var(--text); background: var(--bg);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 }
+h1, h2, h3, h4, h5, h6 { color: var(--heading); }
+strong, b { color: var(--text-strong); }
+a strong, a b { color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-strong); text-decoration: underline; }
 code {

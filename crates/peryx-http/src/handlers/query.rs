@@ -6,8 +6,8 @@ use axum::extract::{OriginalUri, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use crate::search::{SearchError, SearchParams};
-use crate::state::AppState;
+use peryx_driver::state::AppState;
+use peryx_search::{SearchError, SearchParams};
 
 /// `GET /{route}/+search`: search cached packages scoped to one index.
 pub(super) async fn index_search(state: Arc<AppState>, position: usize, uri: &axum::http::Uri) -> Response {
@@ -30,7 +30,7 @@ pub async fn search(State(state): State<Arc<AppState>>, OriginalUri(uri): Origin
 /// Run a search over cached package documents and render the result document.
 #[must_use]
 pub fn search_response(state: &AppState, params: SearchParams) -> Response {
-    match state.search.search(state, params) {
+    match state.search.search(&state.search_ctx(), params) {
         Ok(results) => axum::Json(results).into_response(),
         Err(err) => search_error_response(&err),
     }
@@ -51,17 +51,10 @@ pub async fn search_response_offloaded(state: Arc<AppState>, params: SearchParam
 /// Map a [`SearchError`] to a JSON error response.
 #[must_use]
 pub fn search_error_response(err: &SearchError) -> Response {
-    let status = match err {
-        SearchError::InvalidSource(_) | SearchError::Tantivy(tantivy::TantivyError::InvalidArgument(_)) => {
-            StatusCode::BAD_REQUEST
-        }
-        SearchError::Tantivy(_)
-        | SearchError::Directory(_)
-        | SearchError::Io(_)
-        | SearchError::Meta(_)
-        | SearchError::Blob(_)
-        | SearchError::Json(_)
-        | SearchError::Indexer(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    let status = if err.is_bad_request() {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
     };
     (status, axum::Json(serde_json::json!({ "error": err.to_string() }))).into_response()
 }

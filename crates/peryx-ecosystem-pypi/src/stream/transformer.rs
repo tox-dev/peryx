@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use peryx_http::path_safety::local_file_url;
+use peryx_core::path::local_file_url;
 use peryx_policy::PolicyAction;
 
 use super::{PageContext, PageSummary, Registration, TransformError};

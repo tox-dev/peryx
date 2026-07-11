@@ -7,7 +7,7 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 
 use super::usage::{ecosystem_summaries, family_descriptors};
-use crate::state::AppState;
+use peryx_driver::state::AppState;
 
 /// The `/+status` detail selector.
 #[derive(Debug, serde::Deserialize)]
@@ -21,21 +21,20 @@ const STATUS_RECENT_UPLOADS: usize = 5;
 /// dashboard refreshes from this document.
 pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<StatusQuery>) -> Response {
     let serial = state.meta.current_serial().unwrap_or(0);
-    let summaries = (query.details.as_deref() == Some("admin")).then(|| {
-        let index_names = state.indexes.iter().map(|index| index.name.clone()).collect::<Vec<_>>();
-        state
-            .meta
-            .summarize_indexes(&index_names, STATUS_RECENT_UPLOADS)
-            .unwrap_or_default()
-    });
+    let summaries = (query.details.as_deref() == Some("admin")).then(|| state.index_summaries(STATUS_RECENT_UPLOADS));
     let indexes: Vec<serde_json::Value> = state
         .describe_indexes()
         .into_iter()
         .map(|index| {
+            let endpoint = state.driver_for_name(index.ecosystem).map_or_else(
+                || format!("/{}/", index.route),
+                |driver| driver.client_endpoint(&index.route),
+            );
             let mut object = serde_json::Map::from_iter([
                 ("name".to_owned(), serde_json::json!(index.name)),
                 ("route".to_owned(), serde_json::json!(index.route)),
                 ("ecosystem".to_owned(), serde_json::json!(index.ecosystem)),
+                ("endpoint".to_owned(), serde_json::json!(endpoint)),
                 ("kind".to_owned(), serde_json::json!(index.kind)),
                 ("layers".to_owned(), serde_json::json!(index.layers)),
                 ("uploads".to_owned(), serde_json::json!(index.uploads)),

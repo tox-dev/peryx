@@ -1,38 +1,38 @@
 //! The `PyPI` search-document mapping: how cached/hosted/virtual `PyPI` project metadata becomes the
-//! neutral [`PackageDocument`]s the [`PackageSearch`](peryx_http::search::PackageSearch) index stores.
+//! neutral [`PackageDocument`]s the search index stores.
 //!
-//! The tantivy index, its schema, and querying are ecosystem-neutral and live in
-//! [`peryx_http::search`]; only the walk from an index's stored records to a project's searchable
-//! text is PyPI-shaped, so it sits behind the [`PackageIndexer`] seam here. A future ecosystem
-//! supplies its own indexer.
+//! The tantivy index, its schema, and querying are ecosystem-neutral and live in `peryx-search`; only
+//! the walk from an index's stored records to a project's searchable text is PyPI-shaped, so it sits
+//! behind the [`PackageIndexer`] seam here. A future ecosystem supplies its own indexer.
 
 use std::collections::{BTreeSet, HashSet};
 
 use crate::policy::PypiPolicy;
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use crate::{CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::CachedIndex;
 
 use crate::upload::Uploaded;
-use peryx_http::path_safety::local_file_url;
-use peryx_http::search::{
-    INDEXED_TEXT_BYTES, PackageDocument, PackageIndexer, PackageSource, SearchError, truncate_to_chars,
+use peryx_core::path::local_file_url;
+use peryx_index::{Index, IndexKind};
+use peryx_search::{
+    INDEXED_TEXT_BYTES, IndexerCtx, PackageDocument, PackageIndexer, PackageSource, SearchError, truncate_to_chars,
 };
-use peryx_http::state::{AppState, Index, IndexKind};
 
 /// Produces `PyPI` search documents for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PypiIndexer;
 
 impl PackageIndexer for PypiIndexer {
-    fn documents(&self, state: &AppState) -> Result<Vec<PackageDocument>, SearchError> {
+    fn documents(&self, ctx: &IndexerCtx<'_>) -> Result<Vec<PackageDocument>, SearchError> {
         let mut documents = Vec::new();
-        for index in &state.indexes {
+        for index in ctx.indexes {
             let mut projects = BTreeSet::new();
-            collect_projects(state, index, &mut projects)?;
+            collect_projects(ctx, index, &mut projects)?;
             for normalized in projects {
-                if let Some(package) = package_document(state, index, &normalized)? {
+                if let Some(package) = package_document(ctx, index, &normalized)? {
                     documents.push(package);
                 }
             }
@@ -41,10 +41,10 @@ impl PackageIndexer for PypiIndexer {
     }
 }
 
-fn collect_projects(state: &AppState, index: &Index, projects: &mut BTreeSet<String>) -> Result<(), SearchError> {
+fn collect_projects(ctx: &IndexerCtx<'_>, index: &Index, projects: &mut BTreeSet<String>) -> Result<(), SearchError> {
     match &index.kind {
         IndexKind::Cached { .. } => {
-            state.meta.scan_index_records(|key, _value| {
+            ctx.meta.scan_index_records(|key, _value| {
                 if let Some(project) = project_key(key, &index.name) {
                     projects.insert(project.to_owned());
                 }
@@ -52,7 +52,7 @@ fn collect_projects(state: &AppState, index: &Index, projects: &mut BTreeSet<Str
             })?;
         }
         IndexKind::Hosted { .. } => {
-            state.meta.scan_upload_records(|key, _value| {
+            ctx.meta.scan_upload_records(|key, _value| {
                 if let Some((project, _filename)) = upload_key(key, &index.name) {
                     projects.insert(project.to_owned());
                 }
@@ -61,20 +61,24 @@ fn collect_projects(state: &AppState, index: &Index, projects: &mut BTreeSet<Str
         }
         IndexKind::Virtual { layers, .. } => {
             for &position in layers {
-                collect_projects(state, state.index_at(position), projects)?;
+                collect_projects(ctx, ctx.index_at(position), projects)?;
             }
         }
     }
     Ok(())
 }
 
-fn package_document(state: &AppState, index: &Index, normalized: &str) -> Result<Option<PackageDocument>, SearchError> {
-    let detail = cached_detail(state, index, normalized, &index.route)?;
+fn package_document(
+    ctx: &IndexerCtx<'_>,
+    index: &Index,
+    normalized: &str,
+) -> Result<Option<PackageDocument>, SearchError> {
+    let detail = cached_detail(ctx, index, normalized, &index.route)?;
     if detail.files.is_empty() {
         return Ok(None);
     }
-    let source = package_source(state, index, normalized)?;
-    let metadata = metadata_doc(state, &detail)?;
+    let source = package_source(ctx, index, normalized)?;
+    let metadata = metadata_doc(ctx, &detail)?;
     let display_name = metadata
         .as_ref()
         .map(|doc| doc.name.as_str())
@@ -99,15 +103,15 @@ fn package_document(state: &AppState, index: &Index, normalized: &str) -> Result
 }
 
 fn cached_detail(
-    state: &AppState,
+    ctx: &IndexerCtx<'_>,
     index: &Index,
     normalized: &str,
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
     let detail = match &index.kind {
-        IndexKind::Cached { .. } => mirror_detail(state, index, normalized, serve_route),
-        IndexKind::Hosted { .. } => local_detail(state, &index.name, normalized, serve_route),
-        IndexKind::Virtual { layers, upload } => virtual_detail(state, layers, *upload, normalized, serve_route),
+        IndexKind::Cached { .. } => mirror_detail(ctx, index, normalized, serve_route),
+        IndexKind::Hosted { .. } => local_detail(ctx, &index.name, normalized, serve_route),
+        IndexKind::Virtual { layers, upload } => virtual_detail(ctx, layers, *upload, normalized, serve_route),
     }?;
     Ok(index
         .policy
@@ -116,12 +120,12 @@ fn cached_detail(
 }
 
 fn mirror_detail(
-    state: &AppState,
+    ctx: &IndexerCtx<'_>,
     index: &Index,
     normalized: &str,
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
-    let Some(record) = state.meta.get_index(&format!("{}/{normalized}", index.name))? else {
+    let Some(record) = ctx.meta.get_index(&format!("{}/{normalized}", index.name))? else {
         return Ok(empty_detail(normalized));
     };
     detail_from_record(serve_route, &record)
@@ -155,12 +159,12 @@ fn present_file(mut file: File, route: &str) -> File {
 }
 
 fn local_detail(
-    state: &AppState,
+    ctx: &IndexerCtx<'_>,
     name: &str,
     normalized: &str,
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
-    let entries = state.meta.list_upload_entries(name, normalized)?;
+    let entries = ctx.meta.list_upload_entries(name, normalized)?;
     if entries.is_empty() {
         return Ok(empty_detail(normalized));
     }
@@ -184,8 +188,11 @@ fn local_detail(
     Ok(detail)
 }
 
+/// Merge a virtual index's layers for the search document, resolving cached layers last so an
+/// indexed project describes the hosted file that shadows upstream rather than the file it shadows.
+/// The served page merges by the same precedence.
 fn virtual_detail(
-    state: &AppState,
+    ctx: &IndexerCtx<'_>,
     layers: &[usize],
     upload: Option<usize>,
     normalized: &str,
@@ -195,8 +202,8 @@ fn virtual_detail(
     let mut seen = HashSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
-    for &position in layers {
-        let detail = cached_detail(state, state.index_at(position), normalized, serve_route)?;
+    for position in peryx_index::shadow_order(ctx.indexes, layers) {
+        let detail = cached_detail(ctx, ctx.index_at(position), normalized, serve_route)?;
         if detail.files.is_empty() {
             continue;
         }
@@ -212,7 +219,7 @@ fn virtual_detail(
         }
     }
     if let Some(position) = upload {
-        apply_overrides(state, &state.index_at(position).name, normalized, &mut files)?;
+        apply_overrides(ctx, &ctx.index_at(position).name, normalized, &mut files)?;
     }
     let mut detail = ProjectDetail {
         meta,
@@ -233,9 +240,14 @@ fn empty_detail(normalized: &str) -> ProjectDetail {
     }
 }
 
-fn apply_overrides(state: &AppState, hosted: &str, normalized: &str, files: &mut Vec<File>) -> Result<(), SearchError> {
+fn apply_overrides(
+    ctx: &IndexerCtx<'_>,
+    hosted: &str,
+    normalized: &str,
+    files: &mut Vec<File>,
+) -> Result<(), SearchError> {
     let overrides: std::collections::HashMap<String, String> =
-        state.meta.list_overrides(hosted, normalized)?.into_iter().collect();
+        ctx.meta.list_overrides(hosted, normalized)?.into_iter().collect();
     if overrides.is_empty() {
         return Ok(());
     }
@@ -261,7 +273,7 @@ fn apply_project_status(detail: &mut ProjectDetail) {
     }
 }
 
-fn package_source(state: &AppState, index: &Index, normalized: &str) -> Result<PackageSource, SearchError> {
+fn package_source(ctx: &IndexerCtx<'_>, index: &Index, normalized: &str) -> Result<PackageSource, SearchError> {
     Ok(match &index.kind {
         IndexKind::Hosted { .. } => PackageSource::Uploaded,
         IndexKind::Cached { .. } => PackageSource::Cached,
@@ -269,9 +281,9 @@ fn package_source(state: &AppState, index: &Index, normalized: &str) -> Result<P
             let Some(upload) = upload else {
                 return Ok(PackageSource::Cached);
             };
-            let upload = state.index_at(*upload);
-            if !state.meta.list_upload_entries(&upload.name, normalized)?.is_empty()
-                || !state.meta.list_overrides(&upload.name, normalized)?.is_empty()
+            let upload = ctx.index_at(*upload);
+            if !ctx.meta.list_upload_entries(&upload.name, normalized)?.is_empty()
+                || !ctx.meta.list_overrides(&upload.name, normalized)?.is_empty()
             {
                 PackageSource::Override
             } else {
@@ -281,21 +293,21 @@ fn package_source(state: &AppState, index: &Index, normalized: &str) -> Result<P
     })
 }
 
-fn metadata_doc(state: &AppState, detail: &ProjectDetail) -> Result<Option<CoreMetadataDoc>, SearchError> {
+fn metadata_doc(ctx: &IndexerCtx<'_>, detail: &ProjectDetail) -> Result<Option<CoreMetadataDoc>, SearchError> {
     for file in detail.files.iter().rev() {
         let Some(artifact_sha256) = file.hashes.get("sha256") else {
             continue;
         };
-        let Some((_url, metadata_sha256, _source)) = state.meta.get_metadata(artifact_sha256)? else {
+        let Some((_url, metadata_sha256, _source)) = ctx.meta.get_metadata(artifact_sha256)? else {
             continue;
         };
         let Some(digest) = Digest::from_hex(&metadata_sha256) else {
             continue;
         };
-        if !state.blobs.exists(&digest) {
+        if !ctx.blobs.exists(&digest) {
             continue;
         }
-        let bytes = state.blobs.read(&digest)?;
+        let bytes = ctx.blobs.read(&digest)?;
         let Ok(text) = std::str::from_utf8(&bytes) else {
             continue;
         };

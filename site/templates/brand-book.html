@@ -3,24 +3,26 @@
 <style>
   :root{
     --bg:#f7f4ef;--bg-panel:#fffdf9;--bg-sink:#efeae1;
-    --text:#1a1a1a;--text-soft:#3f3d3b;--text-faint:#6b6862;
+    --text:#1a1a1a;--text-strong:#111111;--text-soft:#3f3d3b;--text-faint:#6b6862;
     --border:#e6dfd2;--border-strong:#d8cfbe;
-    --brand-a:#f74c00;--brand-b:#ffb600;--accent:#c53d00;--accent-strong:#b23800;
+    --brand-a:#f74c00;--brand-b:#ffb600;--accent:#a83600;--accent-strong:#8a2c00;
     --chip:#1e2226;--tile-dark:#16130e;--tile-light:#fbfaf6;
     --term-bg:#17140f;--term-text:#e7ddcf;--term-dim:#8a8175;
-    --ok:#0ca30c;--warn:#d98a00;--bad:#d03b3b;
+    --ok:#0a7d0a;--warn:#8f5a00;--bad:#c62222;
     --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
   }
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --bg:#131110;--bg-panel:#1b1815;--bg-sink:#100e0c;
-    --text:#e7e7e9;--text-soft:#bcbcbe;--text-faint:#6f665a;
-    --border:#2c2822;--border-strong:#3a352d;--accent:#ff8a3d;--accent-strong:#ffb600;
+    --text:#e5e5e5;--text-strong:#f0f0f0;--text-soft:#bcbcbe;--text-faint:#8f867a;
+    --border:#2c2822;--border-strong:#3a352d;--accent:#d9682f;--accent-strong:#e07838;
+    --ok:#2f9d2f;--warn:#c48a2c;--bad:#df5b5b;
     --tile-light:#f3efe8;--tile-dark:#100d0a;}}
   :root[data-theme=dark]{
     --bg:#131110;--bg-panel:#1b1815;--bg-sink:#100e0c;
-    --text:#e7e7e9;--text-soft:#bcbcbe;--text-faint:#6f665a;
-    --border:#2c2822;--border-strong:#3a352d;--accent:#ff8a3d;--accent-strong:#ffb600;
+    --text:#e5e5e5;--text-strong:#f0f0f0;--text-soft:#bcbcbe;--text-faint:#8f867a;
+    --border:#2c2822;--border-strong:#3a352d;--accent:#d9682f;--accent-strong:#e07838;
+    --ok:#2f9d2f;--warn:#c48a2c;--bad:#df5b5b;
     --tile-light:#f3efe8;--tile-dark:#100d0a;}
 
   *{box-sizing:border-box}
@@ -561,15 +563,16 @@
 
     <section class="sec" id="s12">
       <div class="head"><span class="num">12</span><h2>Accessibility</h2></div>
-      <p class="lead">Built to pass WCAG&nbsp;2.1&nbsp;AA. Contrast, focus, motion, and language are part of the system, not an afterthought.</p>
+      <p class="lead">Built to pass WCAG&nbsp;2.1&nbsp;AA in both themes. Every role is tuned to the <b>same</b> contrast on the light and dark page, so an element reads with equal emphasis whichever theme is active. Body text stays off-white on dark, never pure white, to avoid the <b>halation</b> glow that white-on-black creates for readers with astigmatism; status and gold foregrounds are theme-scoped, darkened on the light page and lifted on the dark one, so they clear AA on both.</p>
       <div class="a11y">
-        <div class="box"><h4>Colour contrast (measured)</h4>
+        <div class="box"><h4>Colour contrast (measured, light / dark)</h4>
           <table class="crtable">
-            <tr><td>Body text · light</td><td class="pass">9.9 : 1</td></tr>
-            <tr><td>Body text · dark</td><td class="pass">9.9 : 1</td></tr>
-            <tr><td>Headings · both</td><td class="pass">15 : 1</td></tr>
-            <tr><td>Secondary labels</td><td class="pass">≥ 5 : 1</td></tr>
-            <tr><td>Accent / links · light</td><td class="pass">4.7 : 1</td></tr>
+            <tr><td>Body text</td><td class="pass">15.9 / 14.9 : 1</td></tr>
+            <tr><td>Headings</td><td class="pass">17 / 18 : 1</td></tr>
+            <tr><td>Secondary text</td><td class="pass">9.9 / 9.9 : 1</td></tr>
+            <tr><td>Faint labels</td><td class="pass">5.1 / 5.3 : 1</td></tr>
+            <tr><td>Accent / links</td><td class="pass">6.0 / 5.4 : 1</td></tr>
+            <tr><td>Status (ok · warn · bad)</td><td class="pass">≥ 4.8 : 1</td></tr>
           </table>
         </div>
         <div class="box"><h4>Beyond contrast</h4>
@@ -628,8 +631,8 @@
   document.querySelectorAll('[data-motion]').forEach(e=>e.innerHTML=`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block"><g class="falcon"><path fill="url(#gW)" d="${FAL}"/></g></svg>`);
   document.querySelectorAll('[data-loop]').forEach(e=>e.innerHTML=`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block"><g class="falcon-loop"><path fill="url(#gW)" d="${FAL}"/></g></svg>`);
 
-  const PALETTE=[['Brand A','#f74c00','--brand-a'],['Brand B','#ffb600','--brand-b'],['Accent','#d94400','--accent'],['Accent strong','#b23800','--accent-strong'],['Ink','#1c2026','--text (light)'],['Paper','#ffffff','--bg (light)'],['Ink soft','#555d68','--text-soft'],['Border','#e7e4df','--border'],['Chip','#1e2226','icon container'],['Graphite','#4b5058','neutral'],['Night','#12151a','--bg (dark)'],['Mist','#9aa4b0','--text-soft (dark)']];
-  const SEM=[['Faster / OK','#0ca30c'],['Warn','#d98a00'],['Slow','#ec835a'],['Critical','#d03b3b']];
+  const PALETTE=[['Brand A','#f74c00','--brand-a'],['Brand B','#ffb600','--brand-b'],['Accent','#a83600','--accent (light)'],['Accent strong','#b23800','--accent-strong'],['Ink','#1a1a1a','--text (light)'],['Paper','#f7f4ef','--bg (light)'],['Ink soft','#3f3d3b','--text-soft'],['Border','#e6dfd2','--border'],['Chip','#1e2226','icon container'],['Graphite','#4b5058','neutral'],['Night','#131110','--bg (dark)'],['Mist','#bcbcbe','--text-soft (dark)']];
+  const SEM=[['Faster / OK','#0a7d0a'],['Warn','#8f5a00'],['Slow','#b34700'],['Critical','#c62222']];
   const rgb=h=>{const n=parseInt(h.slice(1),16);return `rgb(${n>>16} ${n>>8&255} ${n&255})`;};
   document.getElementById('swatches').innerHTML=PALETTE.map(([n,h,t])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div><div class="t">${t}</div></div></div>`).join('');
   document.getElementById('semantic').innerHTML=SEM.map(([n,h])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div></div></div>`).join('');

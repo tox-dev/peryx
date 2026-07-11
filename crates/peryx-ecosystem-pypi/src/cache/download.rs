@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::project_of_filename;
+use crate::store::PypiStore as _;
 use bytes::Bytes;
-use peryx_http::download::{DownloadHandle, DownloadProgress};
-use peryx_http::metrics::Event;
-use peryx_http::rate_limit::UpstreamPermit;
-use peryx_http::state::AppState;
+use peryx_driver::download::{DownloadHandle, DownloadProgress};
+use peryx_driver::rate_limit::UpstreamPermit;
+use peryx_driver::state::ServingState;
+use peryx_events::metrics::Event;
 use peryx_storage::blob::Digest;
 
 use super::{CacheError, flight_gate, release_flight, source_mirror, upstream_permit};
@@ -27,7 +28,7 @@ use super::{CacheError, flight_gate, release_flight, source_mirror, upstream_per
     reason = "the connect gate stays held across start_download so racing inspectors attach instead of double-fetching"
 )]
 pub async fn file_path(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     digest: Digest,
     route: String,
     filename: String,
@@ -83,7 +84,7 @@ pub enum FileOutcome {
     reason = "the connect gate stays held across start_download so racing clients attach instead of double-fetching"
 )]
 pub async fn stream_file(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     digest: Digest,
     route: String,
     filename: String,
@@ -116,7 +117,7 @@ pub async fn stream_file(
 
 /// Connect upstream and spawn the detached pump feeding a new blob transfer.
 async fn start_download(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     digest: &Digest,
     route: String,
     filename: String,
@@ -152,7 +153,7 @@ async fn start_download(
 }
 
 /// The in-flight download for `digest`, if one is pumping right now.
-fn existing_download(state: &AppState, digest: &Digest) -> Option<DownloadHandle> {
+fn existing_download(state: &ServingState, digest: &Digest) -> Option<DownloadHandle> {
     state
         .downloads
         .lock()
@@ -183,7 +184,7 @@ const FLUSH_EVERY: u64 = 256 * 1024;
 /// the blob persists only when the digest verifies (clients check their own hashes regardless).
 /// Runs detached from any client, so the cache fills even when every requester disconnects.
 async fn pump_download(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     digest: Digest,
     body: impl futures_util::Stream<Item = Result<Bytes, peryx_upstream::UpstreamError>> + Send + 'static,
     mut pending: peryx_storage::blob::PendingBlob,
@@ -251,7 +252,7 @@ async fn drain_to_blob(
 
 /// One client's view of a live download while it tails the pump's temp file.
 struct Tail {
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     digest: Digest,
     handle: DownloadHandle,
     file: Option<tokio::fs::File>,
@@ -263,7 +264,7 @@ struct Tail {
 
 /// Stream a live download to one client by tailing the temp file as the pump flushes it.
 pub fn tail_download(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     digest: Digest,
     handle: DownloadHandle,
     route: String,
@@ -345,7 +346,7 @@ pub fn tail_download(
 /// The commit renames the temp file before the verdict broadcasts, so a missing file with no
 /// verdict yet is a normal in-between state: wait for the next progress change and look again.
 async fn tail_file(
-    state: &AppState,
+    state: &ServingState,
     handle: &mut DownloadHandle,
     digest: &Digest,
 ) -> Result<tokio::fs::File, std::io::Error> {

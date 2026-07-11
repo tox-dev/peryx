@@ -9,10 +9,12 @@ mod discover;
 mod dispatch;
 mod query;
 mod status;
+mod ui;
 mod usage;
 
 pub use discover::{api, openapi_spec};
 pub use dispatch::{dispatch_delete, dispatch_get, dispatch_post, dispatch_put, not_found};
 pub use query::{search, search_error_response, search_response, search_response_offloaded};
 pub use status::{StatusQuery, status};
+pub use ui::{ui_manifest, ui_member, ui_members, ui_project, ui_projects};
 pub use usage::{StatsQuery, ecosystem_summaries, family_descriptors, metrics, stats};

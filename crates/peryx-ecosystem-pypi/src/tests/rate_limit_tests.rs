@@ -13,13 +13,14 @@ use tower::ServiceExt as _;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http_tests::detail_json;
+use super::http::detail_json;
 use super::{LogCapture, field};
-use peryx_http::rate_limit::{
+use peryx_driver::rate_limit::{
     DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimited, UpstreamLimits,
 };
+use peryx_driver::state::AppState;
 use peryx_http::router;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
 struct Harness {
@@ -42,7 +43,7 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -346,7 +347,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
                     client: upstream,
                     offline: false,
@@ -356,7 +357,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
             Index {
                 name: "root".to_owned(),
                 route: "root".to_owned(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -406,7 +407,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -452,8 +453,8 @@ async fn test_upstream_limits_allow_unknown_and_uncapped_mirrors() {
 
 #[test]
 fn test_pypi_classify_route_distinguishes_metadata_artifact_listing() {
-    use peryx_http::rate_limit::RouteClass;
-    use peryx_http::serving::EcosystemServing as _;
+    use peryx_driver::rate_limit::RouteClass;
+    use peryx_driver::serving::EcosystemDriver as _;
 
     let driver = crate::PypiServing;
     assert_eq!(driver.classify_route("/pypi/simple/flask/"), RouteClass::Listing);

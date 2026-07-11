@@ -1,9 +1,9 @@
 //! The OCI indexer turns stored repositories and their tags into neutral search documents.
 
-use peryx_format::Ecosystem;
-use peryx_http::search::{PackageIndexer as _, PackageSource};
-use peryx_http::{Index, IndexKind};
+use peryx_core::Ecosystem;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
+use peryx_search::{PackageIndexer as _, PackageSource};
 
 use super::{app_with_indexes, hosted_writable, oci_index, virtual_stack};
 use crate::OciIndexer;
@@ -20,7 +20,7 @@ async fn test_oci_indexer_surfaces_repositories_and_tags() {
     store::put_tag(&state.meta, "store", "library/app", "2.0", DIGEST).unwrap();
     store::put_tag(&state.meta, "store", "team/api", "latest", DIGEST).unwrap();
 
-    let documents = OciIndexer.documents(&state).unwrap();
+    let documents = OciIndexer.documents(&state.indexer_ctx()).unwrap();
     let names: Vec<&str> = documents.iter().map(|doc| doc.display_name.as_str()).collect();
     assert!(names.contains(&"library/app"));
     assert!(names.contains(&"team/api"));
@@ -40,7 +40,7 @@ async fn test_oci_indexer_surfaces_repositories_and_tags() {
 async fn test_oci_indexer_is_empty_without_tags() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = hosted_writable(&dir, TOKEN);
-    assert!(OciIndexer.documents(&state).unwrap().is_empty());
+    assert!(OciIndexer.documents(&state.indexer_ctx()).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -50,7 +50,7 @@ async fn test_oci_indexer_walks_a_virtual_index() {
     // Seed a tag on the hosted member `images`; the virtual `reg` unions its members.
     store::put_tag(&state.meta, "images", "team/app", "1.0", DIGEST).unwrap();
 
-    let documents = OciIndexer.documents(&state).unwrap();
+    let documents = OciIndexer.documents(&state.indexer_ctx()).unwrap();
     // The hosted member surfaces it as uploaded, the virtual index as a cached aggregation.
     let hosted = documents.iter().find(|doc| doc.index == "images").unwrap();
     assert_eq!(hosted.source, PackageSource::Uploaded);
@@ -85,7 +85,7 @@ async fn test_oci_indexer_skips_non_oci_indexes() {
     let (state, _app) = app_with_indexes(&dir, vec![pypi, oci]);
     store::put_tag(&state.meta, "store", "library/app", "1.0", DIGEST).unwrap();
 
-    let documents = OciIndexer.documents(&state).unwrap();
+    let documents = OciIndexer.documents(&state.indexer_ctx()).unwrap();
     // Only the OCI index yields documents; the PyPI index is skipped, not misread.
     assert!(documents.iter().all(|doc| doc.index == "store"));
     assert!(documents.iter().any(|doc| doc.display_name == "library/app"));

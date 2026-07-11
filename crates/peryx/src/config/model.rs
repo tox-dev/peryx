@@ -2,15 +2,15 @@
 
 use std::path::PathBuf;
 
-use peryx_ecosystem_pypi::policy::PypiPolicyConfig;
-use peryx_format::Ecosystem;
-use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
+use peryx_core::Ecosystem;
+use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_policy::PolicyConfig;
 use serde::Deserialize;
+use toml::Table;
 
 /// A fully resolved configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub host: String,
     pub port: u16,
@@ -36,7 +36,7 @@ pub struct Config {
 }
 
 /// One configured index, addressed at `route`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexConfig {
     /// Identifier other indexes reference in their `layers`.
     pub name: String,
@@ -46,9 +46,9 @@ pub struct IndexConfig {
     pub ecosystem: Ecosystem,
     pub kind: IndexKind,
     pub policy: PolicyConfig,
-    /// The `PyPI`-specific policy keys, compiled into format rules for a `PyPI` index and ignored for
-    /// any other ecosystem. Empty for a non-`PyPI` index.
-    pub pypi_policy: PypiPolicyConfig,
+    /// The `[policy]` keys the neutral engine did not claim, left raw for this index's ecosystem
+    /// driver to compile into artifact rules. Empty when an operator set no ecosystem-specific policy.
+    pub ecosystem_policy: Table,
     pub webhooks: Vec<WebhookConfig>,
 }
 
@@ -191,7 +191,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "pypi".to_owned(),
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
-            pypi_policy: PypiPolicyConfig::default(),
+            ecosystem_policy: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
@@ -208,7 +208,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "hosted".to_owned(),
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
-            pypi_policy: PypiPolicyConfig::default(),
+            ecosystem_policy: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Hosted {
                 upload_token: None,
@@ -220,7 +220,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "root/pypi".to_owned(),
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
-            pypi_policy: PypiPolicyConfig::default(),
+            ecosystem_policy: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Virtual {
                 layers: vec!["hosted".to_owned(), "pypi".to_owned()],
@@ -232,7 +232,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "dockerhub".to_owned(),
             ecosystem: Ecosystem::Oci,
             policy: PolicyConfig::default(),
-            pypi_policy: PypiPolicyConfig::default(),
+            ecosystem_policy: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: "https://registry-1.docker.io".to_owned(),
@@ -249,7 +249,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "images".to_owned(),
             ecosystem: Ecosystem::Oci,
             policy: PolicyConfig::default(),
-            pypi_policy: PypiPolicyConfig::default(),
+            ecosystem_policy: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Hosted {
                 upload_token: None,
@@ -261,7 +261,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             route: "root/oci".to_owned(),
             ecosystem: Ecosystem::Oci,
             policy: PolicyConfig::default(),
-            pypi_policy: PypiPolicyConfig::default(),
+            ecosystem_policy: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Virtual {
                 layers: vec!["images".to_owned(), "dockerhub".to_owned()],

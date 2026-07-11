@@ -2,9 +2,9 @@
 //! archive-inspection downloads, the multipart upload API, and yank/restore/promote mutations.
 //!
 //! peryx-http routes a request to a configured index and hands it to that index's
-//! [`EcosystemServing`] driver. This module is the `PyPI` implementation; it composes the neutral
-//! peryx-http surfaces (state, path safety, metrics, webhooks, security events, search) with this
-//! crate's cache, upload, and archive logic.
+//! [`EcosystemDriver`]. This module is the `PyPI` implementation; it composes the neutral
+//! surfaces peryx offers a driver (state, path safety, metrics, webhooks, security events, search)
+//! with this crate's cache, upload, and archive logic.
 #![allow(
     clippy::result_large_err,
     reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
@@ -16,14 +16,17 @@ use async_trait::async_trait;
 use axum::extract::Multipart;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use peryx_format::Ecosystem;
-use peryx_http::discovery::BaseUrl;
-use peryx_http::handlers::not_found;
-use peryx_http::metrics::MetricFamily;
-use peryx_http::path_safety::{self, PathSafetyError};
-use peryx_http::rate_limit::RouteClass;
-use peryx_http::serving::{EcosystemServing, RefreshSweep};
-use peryx_http::state::{AppState, Index, IndexDescription, IndexKind, Role};
+use peryx_core::Ecosystem;
+use peryx_core::Role;
+use peryx_core::path::{self, PathSafetyError};
+use peryx_driver::discovery::BaseUrl;
+use peryx_driver::not_found;
+use peryx_driver::rate_limit::RouteClass;
+use peryx_driver::serving::{EcosystemDriver, RefreshSweep};
+use peryx_driver::state::{IndexDescription, ServingState};
+use peryx_events::metrics::MetricFamily;
+use peryx_index::{Index, IndexKind};
+use peryx_storage::blob::Digest;
 
 use crate::cache::{self};
 use crate::discovery;
@@ -34,6 +37,7 @@ mod mutate;
 mod post;
 mod response;
 mod upload_form;
+mod web;
 
 use get::pypi_dispatch_get;
 use mutate::{pypi_dispatch_delete, pypi_dispatch_put};
@@ -86,24 +90,31 @@ const METADATA_FAMILY: MetricFamily = MetricFamily {
 const PYPI_FAMILIES: &[MetricFamily] = &[METADATA_FAMILY];
 
 #[async_trait]
-impl EcosystemServing for PypiServing {
+impl EcosystemDriver for PypiServing {
     fn ecosystem(&self) -> Ecosystem {
         Ecosystem::Pypi
     }
 
-    async fn get(&self, state: Arc<AppState>, position: usize, rest: String, uri: Uri, headers: HeaderMap) -> Response {
+    async fn get(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        rest: String,
+        uri: Uri,
+        headers: HeaderMap,
+    ) -> Response {
         pypi_dispatch_get(state, position, &rest, uri, headers).await
     }
 
-    async fn post(&self, state: Arc<AppState>, path: String, headers: HeaderMap, multipart: Multipart) -> Response {
+    async fn post(&self, state: Arc<ServingState>, path: String, headers: HeaderMap, multipart: Multipart) -> Response {
         pypi_dispatch_post(state, path, headers, multipart).await
     }
 
-    async fn put(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
+    async fn put(&self, state: Arc<ServingState>, uri: Uri, headers: HeaderMap) -> Response {
         pypi_dispatch_put(state, uri, headers).await
     }
 
-    async fn delete(&self, state: Arc<AppState>, uri: Uri, headers: HeaderMap) -> Response {
+    async fn delete(&self, state: Arc<ServingState>, uri: Uri, headers: HeaderMap) -> Response {
         pypi_dispatch_delete(state, uri, headers).await
     }
 
@@ -128,7 +139,136 @@ impl EcosystemServing for PypiServing {
         PYPI_FAMILIES
     }
 
-    async fn refresh_stale(&self, state: Arc<AppState>) -> Result<RefreshSweep, String> {
+    fn compile_policy(&self, policy: &toml::Table) -> Result<Vec<Arc<dyn peryx_policy::ArtifactRule>>, String> {
+        if let Some(key) = policy
+            .keys()
+            .find(|key| !crate::policy::PypiPolicyConfig::KEYS.contains(&key.as_str()))
+        {
+            return Err(format!("unknown field `{key}` in `[index.policy]`"));
+        }
+        let config = toml::Value::Table(policy.clone())
+            .try_into()
+            .map_err(crate::error_message)?;
+        crate::policy::compile_rules(&config).map_err(crate::error_message)
+    }
+
+    fn normalize_name(&self, name: &str) -> String {
+        crate::normalize_name(name)
+    }
+
+    fn referenced_blob_digests(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        crate::admin::referenced_blob_digests(meta)
+    }
+
+    fn fsck_metadata(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        blobs: &peryx_storage::blob::BlobStore,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        crate::admin::fsck_metadata(meta, blobs, out)
+    }
+
+    fn policy_dry_run(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        indexes: &[Index],
+        index_filter: Option<&str>,
+        project_filter: Option<&str>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), String> {
+        crate::admin::policy_dry_run(meta, indexes, index_filter, project_filter, out)
+    }
+
+    fn purge_project(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index: &str,
+        project: &str,
+        apply: bool,
+    ) -> Result<peryx_driver::serving::PurgeReport, String> {
+        crate::admin::purge_project(meta, index, project, apply)
+    }
+
+    fn summarize_indexes(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index_names: &[String],
+        recent_limit: usize,
+    ) -> Result<std::collections::HashMap<String, peryx_driver::serving::IndexSummary>, String> {
+        crate::store::summarize_indexes(meta, index_names, recent_limit).map_err(crate::error_message)
+    }
+
+    fn cache_pages(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index_names: &[&str],
+    ) -> Result<Vec<peryx_driver::serving::CachePage>, String> {
+        crate::admin::cache_pages(meta, index_names)
+    }
+
+    fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
+        crate::admin::cache_record_counts(meta)
+    }
+
+    fn import_dir(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        blobs: &peryx_storage::blob::BlobStore,
+        target_name: &str,
+        target_route: &str,
+        dir: &std::path::Path,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), String> {
+        crate::import::import_dir(meta, blobs, target_name, target_route, dir, out)
+    }
+
+    fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
+        web::project_names(state, position)
+    }
+
+    async fn project_page(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+    ) -> Result<Option<(peryx_core::UiProject, peryx_core::UiMeta)>, String> {
+        web::project_page(state, position, project).await
+    }
+
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = String::with_capacity(route.len() + 9);
+        url.push('/');
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push_str("/simple/");
+        url
+    }
+
+    async fn browse_project(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+    ) -> Result<Option<peryx_core::UiProjectView>, String> {
+        Ok(web::project_page(state, position, project)
+            .await?
+            .map(|(project, meta)| peryx_core::UiProjectView::Files { project, meta }))
+    }
+
+    async fn artifact_path(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        digest_hex: String,
+        filename: String,
+    ) -> Result<std::path::PathBuf, String> {
+        web::artifact_path(state, position, digest_hex, filename).await
+    }
+
+    async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String> {
         cache::refresh_stale_pages(&state)
             .await
             .map(|summary| RefreshSweep {
@@ -140,8 +280,8 @@ impl EcosystemServing for PypiServing {
 }
 
 fn safe_filename(raw: &str) -> Result<String, PathSafetyError> {
-    let filename = path_safety::decode_path_segment(raw)?;
-    path_safety::validate_filename(&filename)?;
+    let filename = path::decode_path_segment(raw)?;
+    path::validate_filename(&filename)?;
     Ok(filename.into_owned())
 }
 
@@ -149,8 +289,17 @@ fn path_error_response(err: &PathSafetyError) -> Response {
     (StatusCode::BAD_REQUEST, err.to_string()).into_response()
 }
 
+/// Parse a sha256 digest out of a route parameter. `PyPI` addresses a stored artifact by its digest,
+/// so a bad one is a client error, not a missing file.
+///
+/// # Errors
+/// Returns [`PathSafetyError::InvalidDigest`] unless `hex` is exactly 64 lowercase hex characters.
+pub(crate) fn parse_digest(hex: &str) -> Result<Digest, PathSafetyError> {
+    Digest::from_hex(hex).ok_or_else(|| PathSafetyError::InvalidDigest(hex.to_owned()))
+}
+
 /// The writable hosted index behind `index`: itself if hosted, its upload layer if a virtual index.
-fn upload_target<'a>(state: &'a AppState, index: &'a Index) -> Option<&'a Index> {
+fn upload_target<'a>(state: &'a ServingState, index: &'a Index) -> Option<&'a Index> {
     match &index.kind {
         IndexKind::Hosted { .. } => Some(index),
         IndexKind::Virtual { upload: Some(pos), .. } => Some(state.index_at(*pos)),
@@ -163,7 +312,7 @@ fn authorize(hosted: &Index, headers: &HeaderMap) -> Result<(), Response> {
     let IndexKind::Hosted { upload_token, .. } = &hosted.kind else {
         return Err(not_found());
     };
-    let actor = peryx_http::security::actor(headers);
+    let actor = peryx_events::security::actor(headers);
     let Some(token) = upload_token.as_deref() else {
         security_token_event(
             headers,
@@ -203,7 +352,7 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn security_token_event(headers: &HeaderMap, actor: Option<&str>, route: &str, result: &'static str, reason: &str) {
-    let event = peryx_http::security::Event::new("token_use", result)
+    let event = peryx_events::security::Event::new("token_use", result)
         .actor(actor)
         .index(route)
         .request(headers);

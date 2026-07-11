@@ -6,19 +6,21 @@ mod conformance_tests;
 mod fanout_tests;
 mod filename_tests;
 mod html_tests;
-mod http_tests;
+mod http;
 mod metadata_tests;
 mod metrics_tests;
 mod name_tests;
 mod policy_tests;
 mod rate_limit_tests;
 mod refresh_tests;
-mod search_tests;
-mod serve_tests;
+mod search;
+mod serve;
 mod simple;
+mod simple_client;
 mod stream;
-mod upload_tests;
+mod upload;
 mod version_tests;
+mod virtual_tests;
 mod webhooks_tests;
 
 thread_local! {
@@ -48,7 +50,7 @@ fn install_global_subscriber() {
 }
 
 #[derive(Clone, Default)]
-struct LogCapture {
+pub struct LogCapture {
     bytes: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -107,15 +109,15 @@ impl std::io::Write for LogWriter {
     }
 }
 
-fn field<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+pub fn field<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
     event["fields"][name].as_str()
 }
 
-/// Wrap a freshly built [`AppState`](peryx_http::AppState) in an `Arc` with the `PyPI` serving
+/// Wrap a freshly built [`AppState`](peryx_driver::AppState) in an `Arc` with the `PyPI` serving
 /// driver and search indexer installed, exactly as the binary wires it at startup. Serving tests
 /// build their state through this so requests dispatch through the real driver instead of the neutral
-/// no-op defaults an unwired [`AppState`](peryx_http::AppState) carries.
-fn wired(mut state: peryx_http::AppState) -> Arc<peryx_http::AppState> {
+/// no-op defaults an unwired [`AppState`](peryx_driver::AppState) carries.
+fn wired(mut state: peryx_driver::AppState) -> Arc<peryx_driver::AppState> {
     crate::install(&mut state);
     Arc::new(state)
 }

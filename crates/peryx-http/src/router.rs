@@ -9,8 +9,8 @@ use axum::routing::{any, get};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
-use crate::rate_limit;
-use crate::state::AppState;
+use peryx_driver::rate_limit;
+use peryx_driver::state::AppState;
 
 /// Build the peryx HTTP router.
 ///
@@ -26,21 +26,23 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/+search/", get(handlers::search))
         .route("/+status", get(handlers::status))
         .route("/+stats", get(handlers::stats))
+        .route("/+ui/projects", get(handlers::ui_projects))
+        .route("/+ui/project", get(handlers::ui_project))
+        .route("/+ui/manifest", get(handlers::ui_manifest))
+        .route("/+ui/members", get(handlers::ui_members))
+        .route("/+ui/member", get(handlers::ui_member))
         .route("/metrics", get(handlers::metrics));
-    // A namespace ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under each,
-    // bound to that driver, so the router reaches it without naming the ecosystem.
-    for driver in &state.namespaces {
-        let prefixes = driver.prefixes();
+    // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
+    // each, bound to that driver, so the router reaches it without naming the ecosystem.
+    for (prefix, driver) in state.absolute_mounts() {
         let driver = driver.clone();
         let serve = move |State(state): State<Arc<AppState>>, request: Request| {
             let driver = driver.clone();
-            async move { driver.serve(state, request).await }
+            async move { driver.serve(state.serving.clone(), request).await }
         };
-        for prefix in prefixes {
-            router = router
-                .route(prefix, any(serve.clone()))
-                .route(&format!("{prefix}{{*rest}}"), any(serve.clone()));
-        }
+        router = router
+            .route(prefix, any(serve.clone()))
+            .route(&format!("{prefix}{{*rest}}"), any(serve));
     }
     let router = router
         .route(

@@ -157,5 +157,43 @@ fn test_policy_dry_run_reports_upload_write_errors() {
     )
     .unwrap_err();
 
-    assert!(err.to_string().contains("scan upload records"));
+    assert!(err.to_string().contains("preview pypi policy"), "{err}");
+}
+
+#[test]
+fn test_policy_dry_run_skips_a_record_for_an_unconfigured_index() {
+    use peryx_ecosystem_pypi::store::CachedIndex;
+
+    let (_dir, config, _digest) = cache_fixture();
+    // A cached page for an index no longer in the config: its key matches no configured index name,
+    // so the page-key split falls back to a plain slash split and the scan skips the record.
+    let store = MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
+    let ghost = CachedIndex {
+        etag: None,
+        last_serial: None,
+        fetched_at_unix: 0,
+        content_type: None,
+        fresh_secs: None,
+        body: Vec::new(),
+    };
+    // One key with a slash (the fallback still splits it) and one without (the fallback keeps it
+    // whole), so both arms of the page-key split run.
+    store.put_index("ghost/flask", &ghost).unwrap();
+    store.put_index("ghostnoslash", &ghost).unwrap();
+    drop(store);
+    let mut out = Vec::new();
+    app::policy(
+        &config,
+        &PolicyCommand::DryRun(PolicyDryRunArgs {
+            runtime: runtime_args(),
+            index: None,
+            project: None,
+        }),
+        &mut out,
+    )
+    .unwrap();
+    assert!(
+        !String::from_utf8(out).unwrap().contains("ghost"),
+        "the ghost record must not appear"
+    );
 }

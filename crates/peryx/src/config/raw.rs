@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use peryx_ecosystem_pypi::policy::PypiPolicyConfig;
 use peryx_policy::PolicyConfig;
 use serde::Deserialize;
+use toml::Table;
 
 use super::model::{LogFormat, LogSink, PrefetchConfig, PrefetchMode};
 
@@ -43,7 +43,7 @@ impl RawPrefetchConfig {
 }
 
 /// A configuration source with every field optional, used for the file and CLI overlays.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PartialConfig {
     pub host: Option<String>,
@@ -86,16 +86,16 @@ pub struct RawAcme {
     pub staging: bool,
 }
 
-/// One index's `[index.policy]` table, split into the ecosystem-neutral keys and the `PyPI`-specific
-/// keys.
+/// One index's `[index.policy]` table, split into the ecosystem-neutral keys and the raw remainder
+/// left for the index's ecosystem driver to compile.
 ///
-/// An operator writes one flat policy block; the neutral engine and the ecosystem each claim their
-/// own keys, and a key claimed by neither is rejected (a flattened `deny_unknown_fields` cannot do
-/// this, so the deserializer validates the key set explicitly).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// An operator writes one flat policy block; the neutral engine claims its keys here, and every other
+/// key is carried through untouched. Whether an unclaimed key is valid depends on the ecosystem, so
+/// that verdict is the driver's at compile time, not this layer's.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct RawPolicy {
     pub neutral: PolicyConfig,
-    pub pypi: PypiPolicyConfig,
+    pub ecosystem: Table,
 }
 
 impl<'de> serde::Deserialize<'de> for RawPolicy {
@@ -105,21 +105,21 @@ impl<'de> serde::Deserialize<'de> for RawPolicy {
         let table = value
             .as_table()
             .ok_or_else(|| D::Error::custom("[index.policy] must be a table"))?;
-        for key in table.keys() {
-            if !PolicyConfig::KEYS.contains(&key.as_str()) && !PypiPolicyConfig::KEYS.contains(&key.as_str()) {
-                return Err(D::Error::custom(format!("unknown field `{key}` in `[index.policy]`")));
-            }
-        }
+        let ecosystem = table
+            .iter()
+            .filter(|(key, _)| !PolicyConfig::KEYS.contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         Ok(Self {
-            neutral: value.clone().try_into().map_err(D::Error::custom)?,
-            pypi: value.try_into().map_err(D::Error::custom)?,
+            neutral: value.try_into().map_err(D::Error::custom)?,
+            ecosystem,
         })
     }
 }
 
 /// A raw `[[index]]` table before classification. Exactly one of `cached`, `hosted`, or `layers`
 /// selects the kind; [`classify_index`](super::classify_index) enforces that.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawIndex {
     pub name: String,

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use reqwest::StatusCode;
 use url::Url;
 
-pub(super) const MAX_RETRIES: u32 = 2;
+pub const MAX_RETRIES: u32 = 2;
 const RETRY_BASE_MILLIS: u64 = 100;
 const RETRY_CAP_MILLIS: u64 = 2_000;
 
@@ -13,11 +13,12 @@ pub(super) fn should_retry_status(status: StatusCode) -> bool {
     status.is_server_error() || matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS)
 }
 
-pub(super) fn should_retry_error(err: &reqwest::Error) -> bool {
+#[must_use]
+pub fn should_retry_error(err: &reqwest::Error) -> bool {
     err.is_timeout() || err.is_connect() || err.is_body() || err.is_decode()
 }
 
-pub(super) async fn sleep_before_retry(url: &Url, attempt: u32, err: &reqwest::Error) {
+pub async fn sleep_before_retry(url: &Url, attempt: u32, err: &reqwest::Error) {
     sleep_before_retry_str(url.as_str(), attempt, err).await;
 }
 

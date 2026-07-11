@@ -4,12 +4,13 @@
 
 use std::sync::Arc;
 
-use peryx_http::{AppState, Index};
+use peryx_driver::ServingState;
+use peryx_index::Index;
 use peryx_storage::blob::Digest;
 use peryx_upstream::Auth;
 use serde::Serialize;
 
-use crate::registry::{download_blob, proxy_client, serving_members};
+use crate::registry::{download_blob, serving_members};
 use crate::store::{self, Manifest};
 use crate::upstream::Upstream;
 
@@ -105,7 +106,7 @@ fn parse_ref(raw: &str) -> Option<ImageRef> {
 
 /// The read-only context for one mirror run: the stores, the upstream client, and where to pull from.
 struct Mirror<'a> {
-    state: &'a Arc<AppState>,
+    state: &'a Arc<ServingState>,
     upstream: &'a Upstream,
     base: String,
     auth: Auth,
@@ -120,14 +121,16 @@ struct Mirror<'a> {
 /// Returns an error only on a store fault (metadata or blob io); a missing image, unreachable
 /// upstream, or bad blob is a reported row, not an error, so one bad reference never aborts the run.
 pub async fn mirror(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     refs: &[String],
     mode: MirrorMode,
 ) -> anyhow::Result<Vec<MirrorRow>> {
     let mut rows = Vec::new();
     let Some((base, auth)) = serving_members(state, index).into_iter().find_map(|member| {
-        proxy_client(&member.kind).map(|client| (client.base_url().to_owned(), client.auth().clone()))
+        member
+            .proxy_client()
+            .map(|client| (client.base_url().to_owned(), client.auth().clone()))
     }) else {
         rows.push(MirrorRow::error(
             "summary",
@@ -339,9 +342,8 @@ impl Mirror<'_> {
     }
 }
 
-/// The child manifest digests and blob digests a manifest names. An image index carries `manifests`;
-/// an image manifest carries `config` and `layers`.
-fn blob_size(state: &AppState, storage: &Digest) -> u64 {
+/// The on-disk size of a stored blob, or `0` when its file cannot be stat'd.
+fn blob_size(state: &ServingState, storage: &Digest) -> u64 {
     state
         .blobs
         .path_for(storage)

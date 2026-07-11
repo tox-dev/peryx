@@ -1,78 +1,94 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use peryx_ecosystem_pypi::cache;
-use peryx_ecosystem_pypi::{CoreMetadataDoc, normalize_name, parse_metadata, to_json};
-use peryx_http::AppState;
-use peryx_storage::blob::Digest;
+use peryx_core::{UiManifest, UiMember, UiMemberChunk, UiProjectView};
+use peryx_driver::AppState;
 
-use crate::model::UiProject;
-
-/// The project names of the index at `route`.
+/// The project names of the index at `route`, produced by the index's ecosystem driver.
 ///
 /// # Errors
-/// Returns a user-visible message when the index is unknown or its project list cannot be read.
+/// Returns a user-visible message when the index is unknown, its ecosystem is not wired in, or its
+/// project list cannot be read.
 pub fn projects(route: &str) -> Result<Vec<String>, String> {
     let app = expect_context::<Arc<AppState>>();
-    let Some(index) = find_index(&app, route) else {
-        return Err(format!("index {route:?} is not configured"));
-    };
-    cache::resolve_list(&app, index)
-        .map(|list| list.projects.into_iter().map(|entry| entry.name).collect())
-        .map_err(|err| format!("project list on index {route:?}: {}", err.user_message()))
+    let (position, driver) = resolve(&app, route)?;
+    driver.project_names(&app.serving, position)
 }
 
-/// One project's page data: files plus the parsed core metadata of its newest wheel with a PEP 658
-/// sibling.
+/// One project's browse view: a file listing with metadata or a list of references, produced by the
+/// index's ecosystem driver so this crate carries no format-specific logic.
 ///
 /// # Errors
-/// Returns a user-visible message when project detail or metadata cannot be read.
-pub async fn project(route: &str, project: &str) -> Result<Option<(UiProject, Option<CoreMetadataDoc>)>, String> {
+/// Returns a user-visible message when the index is unknown or the project data cannot be read.
+pub async fn project_view(route: &str, project: &str) -> Result<Option<UiProjectView>, String> {
     let app = expect_context::<Arc<AppState>>();
-    let Some(index) = find_index(&app, route) else {
-        return Err(format!("index {route:?} is not configured"));
-    };
-    let normalized = normalize_name(project);
-    let Some(detail) = cache::resolve_detail(&app, index, &normalized, route)
+    let (position, driver) = resolve(&app, route)?;
+    driver
+        .browse_project(app.serving.clone(), position, project.to_owned())
         .await
-        .map_err(|err| {
-            format!(
-                "project detail on index {route:?} for project {normalized:?}: {}",
-                err.user_message()
-            )
-        })?
-    else {
-        return Ok(None);
-    };
-    let value = serde_json::from_str(&to_json(&detail))
-        .map_err(|err| format!("project detail on index {route:?} for project {normalized:?}: {err}"))?;
-    let ui = UiProject::from_detail(&value);
-    let doc = match ui.files.iter().rev().find(|file| file.has_metadata) {
-        Some(file) => {
-            let Some(digest) = Digest::from_hex(&file.sha256) else {
-                return Err(format!(
-                    "metadata fetch on index {route:?} for file {:?}: invalid sha256 digest {:?}",
-                    file.filename, file.sha256
-                ));
-            };
-            let metadata_filename = format!("{}.metadata", file.filename);
-            let bytes = cache::metadata_bytes(&app, &digest, route, &metadata_filename)
-                .await
-                .map_err(|err| {
-                    format!(
-                        "metadata fetch on index {route:?} for file {:?} with digest {}: {}",
-                        file.filename,
-                        digest.as_str(),
-                        err.user_message()
-                    )
-                })?;
-            Some(parse_metadata(&String::from_utf8_lossy(&bytes)))
-        }
-        None => None,
-    };
-    Ok(Some((ui, doc)))
 }
 
-fn find_index<'a>(app: &'a AppState, route: &str) -> Option<&'a peryx_http::Index> {
-    app.indexes.iter().find(|index| index.route == route)
+/// One reference's manifest view under a repository, produced by the index's ecosystem driver.
+///
+/// # Errors
+/// Returns a user-visible message when the index is unknown or the manifest cannot be read.
+pub async fn manifest(route: &str, repo: &str, reference: &str) -> Result<Option<UiManifest>, String> {
+    let app = expect_context::<Arc<AppState>>();
+    let (position, driver) = resolve(&app, route)?;
+    driver
+        .manifest_view(app.serving.clone(), position, repo.to_owned(), reference.to_owned())
+        .await
+}
+
+/// The member listing of one stored layer, produced by the index's ecosystem driver.
+///
+/// # Errors
+/// Returns a user-visible message when the index is unknown or the layer cannot be listed.
+pub async fn layer_members(route: &str, repo: &str, digest: &str) -> Result<Vec<UiMember>, String> {
+    let app = expect_context::<Arc<AppState>>();
+    let (position, driver) = resolve(&app, route)?;
+    driver
+        .artifact_members(app.serving.clone(), position, repo.to_owned(), digest.to_owned())
+        .await
+}
+
+/// One text member chunk of a stored layer, produced by the index's ecosystem driver.
+///
+/// # Errors
+/// Returns a user-visible message when the index is unknown or the member cannot be read.
+pub async fn layer_chunk(
+    route: &str,
+    repo: &str,
+    digest: &str,
+    member: &str,
+    offset: u64,
+) -> Result<UiMemberChunk, String> {
+    let app = expect_context::<Arc<AppState>>();
+    let (position, driver) = resolve(&app, route)?;
+    driver
+        .artifact_member_chunk(
+            app.serving.clone(),
+            position,
+            repo.to_owned(),
+            digest.to_owned(),
+            member.to_owned(),
+            offset,
+        )
+        .await
+}
+
+/// The position of the index at `route` and the driver serving its ecosystem.
+fn resolve<'a>(
+    app: &'a AppState,
+    route: &str,
+) -> Result<(usize, &'a Arc<dyn peryx_driver::serving::EcosystemDriver>), String> {
+    let position = app
+        .indexes
+        .iter()
+        .position(|index| index.route == route)
+        .ok_or_else(|| format!("index {route:?} is not configured"))?;
+    let driver = app
+        .driver_for(app.index_at(position).ecosystem)
+        .ok_or_else(|| format!("index {route:?} has no ecosystem driver"))?;
+    Ok((position, driver))
 }

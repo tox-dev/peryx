@@ -1,15 +1,15 @@
 //! The OCI search-document mapping: how stored image repositories and their tags become the neutral
-//! [`PackageDocument`]s the [`PackageSearch`](peryx_http::search::PackageSearch) index stores.
+//! [`PackageDocument`]s the [`PackageSearch`](peryx_search::PackageSearch) index stores.
 //!
-//! The tantivy index, schema, and querying are ecosystem-neutral and live in [`peryx_http::search`];
+//! The tantivy index, schema, and querying are ecosystem-neutral and live in `peryx-search`;
 //! only the walk from an OCI index's stored tags to a repository's searchable text is format-specific,
 //! so it sits behind the [`PackageIndexer`] seam here, as each ecosystem driver supplies its own.
 
 use std::collections::BTreeSet;
 
-use peryx_format::Ecosystem;
-use peryx_http::search::{PackageDocument, PackageIndexer, PackageSource, SearchError};
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_core::Ecosystem;
+use peryx_index::{Index, IndexKind};
+use peryx_search::{IndexerCtx, PackageDocument, PackageIndexer, PackageSource, SearchError};
 
 use crate::store;
 
@@ -18,14 +18,14 @@ use crate::store;
 pub struct OciIndexer;
 
 impl PackageIndexer for OciIndexer {
-    fn documents(&self, state: &AppState) -> Result<Vec<PackageDocument>, SearchError> {
+    fn documents(&self, ctx: &IndexerCtx<'_>) -> Result<Vec<PackageDocument>, SearchError> {
         let mut documents = Vec::new();
-        for index in &state.indexes {
+        for index in ctx.indexes {
             if index.ecosystem != Ecosystem::Oci {
                 continue;
             }
-            for repo in repositories(state, index)? {
-                documents.push(document(state, index, &repo)?);
+            for repo in repositories(ctx, index)? {
+                documents.push(document(ctx, index, &repo)?);
             }
         }
         Ok(documents)
@@ -34,20 +34,20 @@ impl PackageIndexer for OciIndexer {
 
 /// The distinct repositories an index serves: a cached or hosted index reads its own store; a virtual
 /// index unions its members' repositories.
-fn repositories(state: &AppState, index: &Index) -> Result<BTreeSet<String>, SearchError> {
+fn repositories(ctx: &IndexerCtx<'_>, index: &Index) -> Result<BTreeSet<String>, SearchError> {
     let mut repos = BTreeSet::new();
-    collect(state, index, &mut repos)?;
+    collect(ctx, index, &mut repos)?;
     Ok(repos)
 }
 
-fn collect(state: &AppState, index: &Index, repos: &mut BTreeSet<String>) -> Result<(), SearchError> {
+fn collect(ctx: &IndexerCtx<'_>, index: &Index, repos: &mut BTreeSet<String>) -> Result<(), SearchError> {
     match &index.kind {
         IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
-            repos.extend(store::list_repositories(&state.meta, &index.name)?);
+            repos.extend(store::list_repositories(ctx.meta, &index.name)?);
         }
         IndexKind::Virtual { layers, .. } => {
             for &position in layers {
-                collect(state, state.index_at(position), repos)?;
+                collect(ctx, ctx.index_at(position), repos)?;
             }
         }
     }
@@ -56,8 +56,8 @@ fn collect(state: &AppState, index: &Index, repos: &mut BTreeSet<String>) -> Res
 
 /// One repository's search document: its name is the display and search text, its tags widen the text,
 /// and its source follows the index role.
-fn document(state: &AppState, index: &Index, repo: &str) -> Result<PackageDocument, SearchError> {
-    let tags = tags(state, index, repo)?;
+fn document(ctx: &IndexerCtx<'_>, index: &Index, repo: &str) -> Result<PackageDocument, SearchError> {
+    let tags = tags(ctx, index, repo)?;
     let mut text = repo.to_owned();
     for tag in &tags {
         text.push(' ');
@@ -76,20 +76,25 @@ fn document(state: &AppState, index: &Index, repo: &str) -> Result<PackageDocume
 }
 
 /// Every tag a repository has across an index's stores, sorted and distinct.
-fn tags(state: &AppState, index: &Index, repo: &str) -> Result<Vec<String>, SearchError> {
+fn tags(ctx: &IndexerCtx<'_>, index: &Index, repo: &str) -> Result<Vec<String>, SearchError> {
     let mut tags = BTreeSet::new();
-    collect_tags(state, index, repo, &mut tags)?;
+    collect_tags(ctx, index, repo, &mut tags)?;
     Ok(tags.into_iter().collect())
 }
 
-fn collect_tags(state: &AppState, index: &Index, repo: &str, tags: &mut BTreeSet<String>) -> Result<(), SearchError> {
+fn collect_tags(
+    ctx: &IndexerCtx<'_>,
+    index: &Index,
+    repo: &str,
+    tags: &mut BTreeSet<String>,
+) -> Result<(), SearchError> {
     match &index.kind {
         IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
-            tags.extend(store::list_tags(&state.meta, &index.name, repo)?);
+            tags.extend(store::list_tags(ctx.meta, &index.name, repo)?);
         }
         IndexKind::Virtual { layers, .. } => {
             for &position in layers {
-                collect_tags(state, state.index_at(position), repo, tags)?;
+                collect_tags(ctx, ctx.index_at(position), repo, tags)?;
             }
         }
     }

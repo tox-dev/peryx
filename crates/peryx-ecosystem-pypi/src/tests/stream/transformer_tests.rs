@@ -43,7 +43,7 @@ fn plain_context() -> PageContext {
 fn policy(configure: impl FnOnce(&mut PypiPolicyConfig)) -> Policy {
     let mut config = PypiPolicyConfig::default();
     configure(&mut config);
-    Policy::compile(&PolicyConfig::default()).with_rules(compile_rules(&config).unwrap())
+    Policy::compile(&PolicyConfig::default(), crate::normalize_name).with_rules(compile_rules(&config).unwrap())
 }
 
 fn local_wheel(filename: &str) -> File {

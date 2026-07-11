@@ -1,7 +1,7 @@
-use peryx_ecosystem_pypi::parse_metadata;
+use peryx_core::UiDescription;
 
 use crate::markdown::render_description;
-use crate::model::{UiProject, UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};
+use crate::model::{UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};
 
 #[test]
 fn test_snapshot_from_status_roundtrip() {
@@ -47,29 +47,6 @@ fn test_snapshot_from_status_roundtrip() {
 }
 
 #[test]
-fn test_project_from_detail_maps_files() {
-    let value = serde_json::json!({
-        "name": "veloxdemo",
-        "versions": ["1.0"],
-        "files": [{
-            "filename": "veloxdemo-1.0-py3-none-any.whl",
-            "url": "/hosted/files/aa/veloxdemo-1.0-py3-none-any.whl",
-            "hashes": {"sha256": "aa"},
-            "size": 10,
-            "upload-time": "2026-01-01T00:00:00Z",
-            "yanked": "broken",
-            "core-metadata": {"sha256": "bb"},
-        }],
-    });
-    let project = UiProject::from_detail(&value);
-    assert_eq!(project.name, "veloxdemo");
-    assert_eq!(project.files[0].sha256, "aa");
-    assert_eq!(project.files[0].upload_time.as_deref(), Some("2026-01-01T00:00:00Z"));
-    assert!(project.files[0].yanked, "a reason string counts as yanked");
-    assert!(project.files[0].has_metadata);
-}
-
-#[test]
 fn test_projects_and_members_from_json() {
     let list = serde_json::json!({"projects": [{"name": "a"}, {"name": "b"}]});
     assert_eq!(projects_from_list(&list), ["a", "b"]);
@@ -107,10 +84,10 @@ fn test_search_page_from_json() {
 
 #[test]
 fn test_render_description_markdown_escapes_inline_html() {
-    let doc = parse_metadata(
-        "Name: x\nVersion: 1\nDescription-Content-Type: text/markdown\n\n# Hi\n\n<script>alert(1)</script>\n\n**bold**",
-    );
-    let html = render_description(&doc);
+    let html = render_description(&UiDescription {
+        text: "# Hi\n\n<script>alert(1)</script>\n\n**bold**".to_owned(),
+        content_type: Some("text/markdown".to_owned()),
+    });
     assert!(html.contains("<h1>Hi</h1>"));
     assert!(html.contains("<strong>bold</strong>"));
     assert!(!html.contains("<script>"), "inline HTML must be escaped, not executed");
@@ -119,8 +96,10 @@ fn test_render_description_markdown_escapes_inline_html() {
 
 #[test]
 fn test_render_description_plain_text_preformatted() {
-    let doc = parse_metadata("Name: x\nVersion: 1\nDescription-Content-Type: text/x-rst\n\nplain <text>");
-    let html = render_description(&doc);
+    let html = render_description(&UiDescription {
+        text: "plain <text>".to_owned(),
+        content_type: Some("text/x-rst".to_owned()),
+    });
     assert!(html.starts_with("<pre class=\"description-plain\">"));
     assert!(html.contains("plain &lt;text&gt;"));
 }

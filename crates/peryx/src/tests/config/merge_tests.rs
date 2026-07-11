@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use peryx_http::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 use rstest::rstest;
 
 use super::toml_config;
@@ -258,9 +258,9 @@ fn test_index_webhook_rejects(#[case] text: &str, #[case] expected: &str) {
 #[test]
 fn test_index_ecosystem_parses_and_defaults() {
     let c = toml_config("[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\necosystem = \"pypi\"\n");
-    assert_eq!(c.indexes[0].ecosystem, peryx_format::Ecosystem::Pypi);
+    assert_eq!(c.indexes[0].ecosystem, peryx_core::Ecosystem::Pypi);
     let d = toml_config("[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n");
-    assert_eq!(d.indexes[0].ecosystem, peryx_format::Ecosystem::Pypi);
+    assert_eq!(d.indexes[0].ecosystem, peryx_core::Ecosystem::Pypi);
 }
 
 #[test]

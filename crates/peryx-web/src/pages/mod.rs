@@ -16,7 +16,7 @@ mod admin;
 mod archive;
 mod browse;
 mod dashboard;
-mod oci;
+mod manifest;
 mod project;
 mod search;
 mod stats;

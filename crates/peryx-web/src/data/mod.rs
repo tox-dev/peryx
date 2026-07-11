@@ -8,7 +8,7 @@
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 mod admin;
 mod archive;
-mod oci;
+mod manifest;
 mod search;
 mod simple;
 mod stats;
@@ -17,9 +17,9 @@ mod status;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub use admin::admin_request;
 pub use archive::{load_member_chunk, load_members};
-pub use oci::{load_oci_layer_chunk, load_oci_layer_members, load_oci_manifest, load_oci_repositories, load_oci_tags};
+pub use manifest::{load_layer_chunk, load_layer_members, load_manifest};
 pub use search::load_search;
-pub use simple::{load_project, load_projects};
+pub use simple::{load_project_view, load_projects};
 pub use stats::load_stats;
 pub use status::{load_admin_snapshot, load_snapshot};
 
@@ -39,7 +39,7 @@ async fn fetch_json_required(url: &str) -> Result<serde_json::Value, String> {
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 async fn fetch_json_optional(url: &str) -> Result<Option<serde_json::Value>, String> {
     let response = gloo_net::http::Request::get(url)
-        .header("accept", "application/vnd.pypi.simple.v1+json, application/json")
+        .header("accept", "application/json")
         .send()
         .await
         .map_err(|err| format!("request failed for {url}: {err}"))?;
@@ -54,21 +54,6 @@ async fn fetch_json_optional(url: &str) -> Result<Option<serde_json::Value>, Str
         .await
         .map(Some)
         .map_err(|err| format!("invalid JSON from {url}: {err}"))
-}
-
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-async fn fetch_text_required(url: &str) -> Result<String, String> {
-    let response = gloo_net::http::Request::get(url)
-        .send()
-        .await
-        .map_err(|err| format!("request failed for {url}: {err}"))?;
-    if !response.ok() {
-        return Err(response_error(response, url).await);
-    }
-    response
-        .text()
-        .await
-        .map_err(|err| format!("response body from {url} could not be read: {err}"))
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]

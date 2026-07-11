@@ -1,10 +1,10 @@
 use axum::http::StatusCode;
-use peryx_http::metrics::{Event, Metrics};
+use peryx_events::metrics::{Event, Metrics};
 use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
-use super::http_tests::{get, harness};
+use super::http::{get, harness};
 
 fn settle(metrics: &Metrics, done: impl Fn(&Metrics) -> bool) {
     // The aggregator runs on its own thread; poll until the last event lands.

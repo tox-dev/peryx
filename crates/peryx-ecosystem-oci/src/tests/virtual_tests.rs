@@ -201,7 +201,7 @@ async fn test_virtual_tags_tolerate_an_unreachable_proxy() {
 
 #[tokio::test]
 async fn test_push_to_virtual_with_no_upload_target_is_read_only() {
-    use peryx_http::IndexKind;
+    use peryx_index::IndexKind;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = app_with_indexes(
         &dir,
@@ -238,7 +238,7 @@ async fn test_push_to_virtual_with_no_upload_target_is_read_only() {
 
 #[tokio::test]
 async fn test_push_to_virtual_whose_upload_target_is_a_proxy_is_denied() {
-    use peryx_http::IndexKind;
+    use peryx_index::IndexKind;
     use peryx_upstream::UpstreamClient;
     // A misconfiguration the config layer would reject, but the resolver must still decline safely.
     let dir = tempfile::tempdir().unwrap();

@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use peryx_http::handlers::not_found;
-use peryx_http::metrics::Event;
-use peryx_http::path_safety::{self};
-use peryx_http::state::{AppState, Index};
+use peryx_core::path::{self};
+use peryx_driver::not_found;
+use peryx_driver::state::ServingState;
+use peryx_events::metrics::Event;
+use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
 
@@ -30,7 +31,7 @@ use super::{Format, METADATA_FAMILY, MIME_JSON, negotiate, path_error_response, 
 /// index the neutral router already resolved to `position`. The peryx-owned `+api`/`+search` routes run
 /// before this, and the router routes only this ecosystem's indexes here, so only its paths arrive.
 pub async fn pypi_dispatch_get(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     position: usize,
     rest: &str,
     uri: axum::http::Uri,
@@ -42,7 +43,7 @@ pub async fn pypi_dispatch_get(
 /// `PyPI` GET routing within an index: the Simple index and project detail (HTML, PEP 691 JSON, legacy
 /// JSON), release files, and archive inspection.
 async fn pypi_get(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     position: usize,
     rest: &str,
     headers: &HeaderMap,
@@ -136,12 +137,12 @@ async fn pypi_get(
     not_found()
 }
 
-async fn file_route(state: &Arc<AppState>, index: &Index, file: &str) -> Response {
+async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str) -> Response {
     let route = index.route.clone();
     let Some((sha256, raw_filename)) = file.split_once('/') else {
         return not_found();
     };
-    let digest = match path_safety::parse_digest(sha256) {
+    let digest = match super::parse_digest(sha256) {
         Ok(digest) => digest,
         Err(err) => return path_error_response(&err),
     };
@@ -183,7 +184,7 @@ async fn file_route(state: &Arc<AppState>, index: &Index, file: &str) -> Respons
     serve_blob(state, route, &filename, digest).await
 }
 
-fn download_policy_response(state: &AppState, index: &Index, filename: &str, digest: &Digest) -> Option<Response> {
+fn download_policy_response(state: &ServingState, index: &Index, filename: &str, digest: &Digest) -> Option<Response> {
     // No configured policy can deny a download, so skip the two blocking stats it would take to
     // learn the file size. This is the zero-config default and keeps the warm wheel path off the
     // filesystem until the byte stream itself opens the file.
@@ -215,17 +216,17 @@ fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> 
         return Ok(None);
     };
     let Some((project, version)) = spec.split_once('/') else {
-        let project = path_safety::decode_path_segment(spec).map_err(|err| path_error_response(&err))?;
-        path_safety::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
+        let project = path::decode_path_segment(spec).map_err(|err| path_error_response(&err))?;
+        path::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
         return Ok(Some(LegacyJsonTarget {
             project: normalize_name(&project),
             version: None,
         }));
     };
-    let project = path_safety::decode_path_segment(project).map_err(|err| path_error_response(&err))?;
-    let version = path_safety::decode_path(version).map_err(|err| path_error_response(&err))?;
-    path_safety::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
-    path_safety::validate_path_segment("version", &version).map_err(|err| path_error_response(&err))?;
+    let project = path::decode_path_segment(project).map_err(|err| path_error_response(&err))?;
+    let version = path::decode_path(version).map_err(|err| path_error_response(&err))?;
+    path::validate_path_segment("project", &project).map_err(|err| path_error_response(&err))?;
+    path::validate_path_segment("version", &version).map_err(|err| path_error_response(&err))?;
     Ok(Some(LegacyJsonTarget {
         project: normalize_name(&project),
         version: Some(version.into_owned()),
@@ -233,7 +234,7 @@ fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> 
 }
 
 /// Stream a blob to the client: from disk when cached, teed from the upstream cache otherwise.
-async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest: Digest) -> Response {
+async fn serve_blob(state: &Arc<ServingState>, route: String, filename: &str, digest: Digest) -> Response {
     let digest_hex = digest.as_str().to_owned();
     let blob_headers = [
         (header::CONTENT_TYPE, "application/octet-stream"),
@@ -257,7 +258,7 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
             });
             // Pipeline the disk read ahead of the socket write: a pull-driven ReaderStream awaits each
             // read before writing it, serializing two independent I/O waits per chunk.
-            let body = peryx_http::body::pipelined_file(file.into_std().await, 0, bytes);
+            let body = peryx_driver::body::pipelined_file(file.into_std().await, 0, bytes);
             (blob_headers, body).into_response()
         }
         // A live stream records its download event at EOF, when the byte count exists.
@@ -277,9 +278,9 @@ async fn serve_blob(state: &Arc<AppState>, route: String, filename: &str, digest
 /// Resolving a cold page fetches it from upstream and persists it, and persisting bumps the epoch. A
 /// key captured before that carries the old epoch, so the entry it writes is one no later reader can
 /// compute: the cache would fill and never hit.
-fn remember_rendered(state: &AppState, index: &Index, project: &str, variant: &str, body: &bytes::Bytes) {
+fn remember_rendered(state: &ServingState, index: &Index, project: &str, variant: &str, body: &bytes::Bytes) {
     if let Ok(Some(expires_at)) = cache::rendered_expiry(state, index, project) {
         let key = state.hot_key(&index.route, project, variant);
-        state.hot.insert(key, (expires_at, body.clone()));
+        state.cache.store_hot(key, body.clone(), expires_at);
     }
 }

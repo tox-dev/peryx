@@ -43,6 +43,8 @@ pub struct UiIndex {
     pub route: String,
     /// The package ecosystem, for example `pypi`.
     pub ecosystem: String,
+    /// The client-facing API endpoint this index is served at, produced by its ecosystem driver.
+    pub endpoint: String,
     /// The role: `cached`, `hosted`, or `virtual`.
     pub kind: String,
     /// Member names for a virtual index; empty otherwise.
@@ -97,6 +99,7 @@ impl UiSnapshot {
                 name: string_at(index, "name"),
                 route: string_at(index, "route"),
                 ecosystem: string_at(index, "ecosystem"),
+                endpoint: string_at(index, "endpoint"),
                 kind: string_at(index, "kind"),
                 layers: index["layers"]
                     .as_array()

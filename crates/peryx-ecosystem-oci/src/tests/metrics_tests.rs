@@ -2,7 +2,7 @@
 //! download, and a pushed manifest an upload, so an OCI index reports the same metrics a pypi one does.
 
 use axum::http::{Method, StatusCode};
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use super::{auth, hosted_writable, oci_digest, send, send_body};
 
@@ -10,7 +10,7 @@ const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 
 /// The aggregator runs on its own thread; poll the store's counters until the events land.
-fn settle(state: &AppState, done: impl Fn(&peryx_http::metrics::Counters) -> bool) {
+fn settle(state: &AppState, done: impl Fn(&peryx_events::metrics::Counters) -> bool) {
     for _ in 0..500 {
         if let Some(counters) = state.metrics.index_totals().get("store")
             && done(counters)

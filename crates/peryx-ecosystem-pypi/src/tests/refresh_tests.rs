@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::CachedIndex;
 use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http_tests::{detail_json, get, harness, harness_with_policies};
+use super::http::{detail_json, get, harness, harness_with_policies};
 use super::{LogCapture, field};
 use crate::cache::refresh_stale_pages;
 use peryx_policy::{Policy, PolicyConfig};
@@ -19,7 +20,7 @@ async fn mount_page(server: &MockServer, body: String, template: ResponseTemplat
         .await;
 }
 
-fn drilled(state: &Arc<peryx_http::state::AppState>, field: &str) -> u64 {
+fn drilled(state: &Arc<peryx_driver::state::AppState>, field: &str) -> u64 {
     let totals = state.metrics.drill(Some("pypi"), None);
     ["base", "cached", "hosted", "ecosystem"]
         .into_iter()
@@ -27,7 +28,7 @@ fn drilled(state: &Arc<peryx_http::state::AppState>, field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn settle(state: &Arc<peryx_http::state::AppState>, field: &str, want: u64) {
+fn settle(state: &Arc<peryx_driver::state::AppState>, field: &str, want: u64) {
     for _ in 0..500 {
         if drilled(state, field) >= want {
             return;
@@ -40,7 +41,7 @@ fn settle(state: &Arc<peryx_http::state::AppState>, field: &str, want: u64) {
 fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
     let mut config = PolicyConfig::default();
     configure(&mut config);
-    Policy::compile(&config)
+    Policy::compile(&config, crate::normalize_name)
 }
 
 #[tokio::test]
@@ -68,7 +69,7 @@ async fn test_upstream_max_age_cannot_outlive_the_configured_ttl() {
 
     // The upstream granted a year. The configured ttl is 60s, and it is the ceiling: the sweep must
     // still find this page stale and revalidate it.
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 1));
 }
 
@@ -95,7 +96,7 @@ async fn test_refresh_sweep_detects_changed_page() {
     .await;
     h.clock.fetch_add(61, Ordering::Relaxed);
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 1));
     settle(&h.state, "changed", 1);
     assert!(drilled(&h.state, "refreshes") >= 1);
@@ -108,7 +109,7 @@ async fn test_refresh_sweep_detects_changed_page() {
 
 #[tokio::test]
 async fn test_serving_refresh_stale_reports_the_sweep() {
-    use peryx_http::serving::EcosystemServing as _;
+    use peryx_driver::serving::EcosystemDriver as _;
 
     let h = harness().await;
     let digest = Digest::of(b"wheel-v1");
@@ -132,7 +133,7 @@ async fn test_serving_refresh_stale_reports_the_sweep() {
     h.clock.fetch_add(61, Ordering::Relaxed);
 
     let sweep = crate::serving::PypiServing
-        .refresh_stale(h.state.clone())
+        .refresh_stale(h.state.serving.clone())
         .await
         .unwrap();
     assert_eq!((sweep.checked, sweep.changed), (1, 1));
@@ -140,7 +141,7 @@ async fn test_serving_refresh_stale_reports_the_sweep() {
 
 #[tokio::test]
 async fn test_serving_refresh_stale_surfaces_errors_as_strings() {
-    use peryx_http::serving::EcosystemServing as _;
+    use peryx_driver::serving::EcosystemDriver as _;
 
     let h = harness().await;
     let digest = Digest::of(b"wheel");
@@ -158,7 +159,7 @@ async fn test_serving_refresh_stale_surfaces_errors_as_strings() {
     h.clock.fetch_add(61, Ordering::Relaxed);
 
     let err = crate::serving::PypiServing
-        .refresh_stale(h.state.clone())
+        .refresh_stale(h.state.serving.clone())
         .await
         .unwrap_err();
     assert!(err.contains("simple API document could not be parsed"));
@@ -189,7 +190,7 @@ async fn test_refresh_sweep_skips_policy_denied_project() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
 
     drop(guard);
     assert_eq!(summary, crate::cache::RefreshSummary::default());
@@ -228,7 +229,7 @@ async fn test_refresh_sweep_logs_mirror_sync_event() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    assert_eq!(refresh_stale_pages(&h.state).await.unwrap().changed, 1);
+    assert_eq!(refresh_stale_pages(&h.state.serving).await.unwrap().changed, 1);
 
     drop(guard);
     let events = logs.security_events();
@@ -261,7 +262,7 @@ async fn test_refresh_sweep_logs_mirror_sync_not_found() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    assert_eq!(refresh_stale_pages(&h.state).await.unwrap().checked, 1);
+    assert_eq!(refresh_stale_pages(&h.state.serving).await.unwrap().checked, 1);
 
     drop(guard);
     let events = logs.security_events();
@@ -294,7 +295,7 @@ async fn test_refresh_sweep_logs_mirror_sync_failure() {
     let logs = LogCapture::default();
     let guard = logs.install();
 
-    let err = refresh_stale_pages(&h.state).await.unwrap_err();
+    let err = refresh_stale_pages(&h.state.serving).await.unwrap_err();
 
     drop(guard);
     assert!(
@@ -330,7 +331,7 @@ async fn test_refresh_sweep_revalidates_unchanged_via_etag() {
         .await;
     h.clock.fetch_add(61, Ordering::Relaxed);
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 0));
     settle(&h.state, "refreshes", 1);
     assert_eq!(drilled(&h.state, "changed"), 0);
@@ -349,7 +350,7 @@ async fn test_refresh_sweep_skips_fresh_pages() {
     .await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!(summary.checked, 0);
 }
 
@@ -427,7 +428,7 @@ async fn test_stale_serve_records_metric() {
 #[tokio::test]
 async fn test_refresh_skips_keys_without_a_mirror() {
     let h = harness().await;
-    let record = peryx_storage::meta::CachedIndex {
+    let record = CachedIndex {
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,
@@ -437,7 +438,7 @@ async fn test_refresh_skips_keys_without_a_mirror() {
     };
     h.state.meta.put_index("ghost/thing", &record).unwrap();
     h.clock.fetch_add(3600, Ordering::Relaxed);
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!(summary.checked, 0);
 }
 
@@ -455,6 +456,6 @@ async fn test_refresh_sweep_full_fetch_with_identical_body_is_unchanged() {
     .await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     h.clock.fetch_add(61, Ordering::Relaxed);
-    let summary = refresh_stale_pages(&h.state).await.unwrap();
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 0));
 }

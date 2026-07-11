@@ -1,8 +1,9 @@
 //! The upstream HTTP client.
 
 mod error;
+pub mod retry;
+
 mod response;
-mod retry;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -15,18 +16,14 @@ use reqwest::header::{
 };
 use url::Url;
 
-use self::response::{header_str, simple_head};
+use self::response::header_str;
 use self::retry::{
-    MAX_RETRIES, should_retry_error, should_retry_status, sleep_before_retry, sleep_before_retry_status,
-    sleep_before_retry_str,
+    MAX_RETRIES, should_retry_error, should_retry_status, sleep_before_retry_status, sleep_before_retry_str,
 };
 
 pub use self::error::{RangeError, UpstreamError};
-pub use self::response::{FileHead, SimpleHead, SimpleResponse};
+pub use self::response::FileHead;
 
-/// The `Accept` header peryx sends upstream: PEP 691 JSON first, then PEP 503 HTML.
-const ACCEPT_SIMPLE: &str =
-    "application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html;q=0.2, text/html;q=0.01";
 const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -141,63 +138,10 @@ impl UpstreamClient {
         }
     }
 
-    /// Fetch a project's simple page, optionally revalidating with `If-None-Match`.
-    ///
-    /// # Errors
-    /// Returns [`UpstreamError`] if the URL cannot be formed or the request fails.
-    pub async fn fetch_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-        let url = self.base.join(&format!("{project}/"))?;
-        self.fetch_simple(url, etag).await
-    }
-
-    /// Fetch the upstream root project list.
-    ///
-    /// # Errors
-    /// Returns [`UpstreamError`] if the request fails.
-    pub async fn fetch_index(&self) -> Result<SimpleResponse, UpstreamError> {
-        self.fetch_simple(self.base.clone(), None).await
-    }
-
-    async fn fetch_simple(&self, url: Url, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-        let mut attempt = 0;
-        loop {
-            let response = self.send_simple(&url, etag).await?;
-            let head = simple_head(response)?;
-            match head.response.bytes().await {
-                Ok(body) => {
-                    return Ok(SimpleResponse {
-                        status: head.status,
-                        url: head.url,
-                        content_type: head.content_type,
-                        etag: head.etag,
-                        last_serial: head.last_serial,
-                        max_age: head.max_age,
-                        body,
-                    });
-                }
-                Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                    sleep_before_retry(&head.url, attempt, &err).await;
-                    attempt += 1;
-                }
-                Err(err) => return Err(err.into()),
-            }
-        }
-    }
-
     /// Open a connection to the upstream host ahead of traffic, so the first real request skips
     /// the TCP and TLS handshakes. Failures are the first real request's problem to report.
     pub async fn warm(&self) {
         let _ = self.http.head(self.base.clone()).send().await;
-    }
-
-    /// Start fetching a project's simple page, returning its headers and the open body, so callers
-    /// can stream the bytes as they arrive instead of buffering the page.
-    ///
-    /// # Errors
-    /// Returns [`UpstreamError`] if the URL cannot be formed or the request fails.
-    pub async fn head_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
-        let url = self.base.join(&format!("{project}/"))?;
-        simple_head(self.send_simple(&url, etag).await?)
     }
 
     /// Start fetching a file's bytes from an absolute URL, for streaming.
@@ -350,6 +294,14 @@ impl UpstreamClient {
         self.base.as_str()
     }
 
+    /// The configured upstream base URL as a [`Url`], for an ecosystem layer that joins ecosystem
+    /// paths onto it (the `PyPI` Simple client builds `{base}/{project}/`). Carries credential
+    /// material if the configured URL did, so anything user-facing must redact first.
+    #[must_use]
+    pub const fn base(&self) -> &Url {
+        &self.base
+    }
+
     /// The authentication scheme without credential material.
     #[must_use]
     pub const fn auth_status(&self) -> AuthStatus {
@@ -368,11 +320,21 @@ impl UpstreamClient {
         &self.auth
     }
 
-    async fn send_simple(&self, url: &Url, etag: Option<&str>) -> Result<reqwest::Response, UpstreamError> {
+    /// Send a conditional `GET` to `url` with the caller's `Accept` and optional `If-None-Match`,
+    /// run through the shared retry engine, and hand back the open response for the caller to read or
+    /// stream. This is the neutral primitive an ecosystem's index-fetch layer (the `PyPI` Simple
+    /// client) builds its document requests on; `304`/`404` are surfaced, not raised.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::Http`] if the request fails after exhausting retries.
+    pub async fn send_conditional(
+        &self,
+        url: Url,
+        accept: &str,
+        etag: Option<&str>,
+    ) -> Result<reqwest::Response, UpstreamError> {
         self.send_with_retry(|| {
-            let mut request = self
-                .authenticate(self.http.get(url.clone()))
-                .header(ACCEPT, ACCEPT_SIMPLE);
+            let mut request = self.authenticate(self.http.get(url.clone())).header(ACCEPT, accept);
             if let Some(etag) = etag {
                 request = request.header(IF_NONE_MATCH, etag);
             }
@@ -449,49 +411,5 @@ fn validate_content_range(headers: &HeaderMap, start: u64, end: u64) -> Result<(
         Err(RangeError::Invalid(format!(
             "expected Content-Range bytes {start}-{end}, got {value:?}"
         )))
-    }
-}
-
-/// The upstream fetch protocol a proxy index speaks.
-///
-/// A proxy revalidates and caches an upstream's index documents and files. This trait is the seam
-/// that logic plugs into: [`UpstreamClient`] implements the `PyPI` PEP 503/691 simple API, and an OCI
-/// registry (`/v2/`) or an npm registry are future implementations. It is dispatched **statically**:
-/// one concrete client today, an enum per proxy once a second protocol exists, never a boxed object,
-/// so proxying costs nothing over calling the client directly. Parsing the returned document is the
-/// ecosystem driver's job; this trait only fetches.
-///
-/// Returns are written as `impl Future + Send` rather than `async fn` so callers can spawn the futures
-/// on a multi-threaded runtime without the trait dictating auto-trait bounds.
-pub trait UpstreamProtocol {
-    /// Fetch a project's index document, conditional on `etag`.
-    fn fetch_project(
-        &self,
-        project: &str,
-        etag: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
-
-    /// Fetch the full project list.
-    fn fetch_index(&self) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
-
-    /// Fetch a file's bytes by URL.
-    fn fetch_bytes(&self, url: &str) -> impl std::future::Future<Output = Result<Bytes, UpstreamError>> + Send;
-}
-
-impl UpstreamProtocol for UpstreamClient {
-    fn fetch_project(
-        &self,
-        project: &str,
-        etag: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send {
-        Self::fetch_project(self, project, etag)
-    }
-
-    fn fetch_index(&self) -> impl std::future::Future<Output = Result<SimpleResponse, UpstreamError>> + Send {
-        Self::fetch_index(self)
-    }
-
-    fn fetch_bytes(&self, url: &str) -> impl std::future::Future<Output = Result<Bytes, UpstreamError>> + Send {
-        Self::fetch_bytes(self, url)
     }
 }

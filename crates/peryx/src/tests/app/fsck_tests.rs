@@ -139,7 +139,7 @@ fn test_cache_fsck_reports_corrupt_index_record() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("peryx.redb");
     MetaStore::open(&db_path).unwrap();
-    raw_insert_bytes(&db_path, "index_document", "pypi/corrupt", b"not json");
+    raw_insert_bytes(&db_path, "driver_kv", "pypi\u{0}i\u{0}pypi/corrupt", b"not json");
     let config = config_at(&dir);
     let mut out = Vec::new();
     app::cache(&config, &fsck_command(), &mut out).unwrap();

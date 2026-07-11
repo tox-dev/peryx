@@ -1,98 +1,20 @@
-//! Cache consistency checks: metadata records and content-addressed blobs.
+//! Cache consistency checks: each ecosystem's metadata records, then the content-addressed blobs.
 
 use std::io::Write;
 
 use anyhow::Context as _;
-use peryx_ecosystem_pypi::parse_detail;
-use peryx_storage::blob::{BlobEntry, Digest};
-use peryx_storage::meta::CachedIndex;
+use peryx_storage::blob::BlobEntry;
 
-use super::{CacheStores, split_pair, split_triple, upload_digests};
+use super::CacheStores;
 
 pub(super) fn fsck_cache(stores: &CacheStores, out: &mut dyn Write) -> anyhow::Result<()> {
     let mut problems = 0_u64;
-    stores
-        .meta
-        .scan_index_records(|key, bytes| {
-            match CachedIndex::decode(bytes) {
-                Ok(record) if parse_detail(&record.body).is_ok() => {}
-                Ok(_) => {
-                    problems += 1;
-                    writeln!(out, "metadata\tindex\t{key}\tinvalid project detail")?;
-                }
-                Err(err) => {
-                    problems += 1;
-                    writeln!(out, "metadata\tindex\t{key}\t{err}")?;
-                }
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .context("scan index metadata")?;
-    stores
-        .meta
-        .scan_file_urls(|digest, value| {
-            if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
-                problems += 1;
-                writeln!(out, "metadata\tfile-url\t{digest}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .context("scan file URL metadata")?;
-    stores
-        .meta
-        .scan_metadata_records(|digest, value| {
-            let valid = Digest::from_hex(digest).is_some()
-                && split_triple(value)
-                    .is_some_and(|(_url, metadata_digest, _source)| Digest::from_hex(metadata_digest).is_some());
-            if !valid {
-                problems += 1;
-                writeln!(out, "metadata\tpep658\t{digest}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .context("scan PEP 658 metadata")?;
-    stores
-        .meta
-        .scan_project_records(|key, display| {
-            if !valid_project_key(key) || display.is_empty() {
-                problems += 1;
-                writeln!(out, "metadata\tproject\t{key}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .context("scan project metadata")?;
-    stores
-        .meta
-        .scan_upload_records(|key, bytes| {
-            let Some(digests) = upload_digests(bytes) else {
-                problems += 1;
-                writeln!(out, "metadata\tupload\t{key}\tinvalid record")?;
-                return Ok(());
-            };
-            if !valid_upload_key(key) {
-                problems += 1;
-                writeln!(out, "metadata\tupload\t{key}\tinvalid key")?;
-                return Ok(());
-            }
-            for digest in digests {
-                if !stores.blobs.exists(&digest) {
-                    problems += 1;
-                    writeln!(out, "metadata\tupload\t{key}\tmissing blob {}", digest.as_str())?;
-                }
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .context("scan upload metadata")?;
-    stores
-        .meta
-        .scan_override_records(|key, kind| {
-            if !valid_upload_key(key) || !matches!(kind, "hidden" | "yanked") {
-                problems += 1;
-                writeln!(out, "metadata\toverride\t{key}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .context("scan override metadata")?;
+    for driver in crate::server::drivers().present() {
+        problems += driver
+            .fsck_metadata(&stores.meta, &stores.blobs, out)
+            .map_err(anyhow::Error::msg)
+            .context(format!("fsck {} metadata", driver.ecosystem().as_str()))?;
+    }
     stores
         .blobs
         .scan(|entry| {
@@ -128,16 +50,4 @@ fn check_blob(stores: &CacheStores, entry: &BlobEntry, out: &mut dyn Write) -> s
             Ok(1)
         }
     }
-}
-
-fn valid_project_key(key: &str) -> bool {
-    key.split_once('/')
-        .is_some_and(|(index, project)| !index.is_empty() && !project.is_empty())
-}
-
-fn valid_upload_key(key: &str) -> bool {
-    let mut parts = key.splitn(3, '/');
-    parts.next().is_some_and(|part| !part.is_empty())
-        && parts.next().is_some_and(|part| !part.is_empty())
-        && parts.next().is_some_and(|part| !part.is_empty())
 }

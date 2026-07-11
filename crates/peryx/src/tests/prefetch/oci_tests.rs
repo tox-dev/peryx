@@ -18,9 +18,9 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
             name: "oci".to_owned(),
             route: "oci".to_owned(),
             policy: PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,

@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;
-use peryx_http::IndexKind as RuntimeKind;
+use peryx_driver::IndexKind as RuntimeKind;
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
@@ -22,15 +22,15 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
-        pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+        ecosystem_policy: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
             upstream: upstream.to_owned(),
             username: None,
             password: None,
             token: None,
-            upstream_concurrency: peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
+            upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
             offline: false,
             prefetch: Box::default(),
         },
@@ -42,9 +42,9 @@ fn hosted(name: &str) -> IndexConfig {
         name: name.to_owned(),
         route: name.to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
-        pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+        ecosystem_policy: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
             upload_token: None,
             volatile: true,
@@ -57,9 +57,9 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         name: "team".to_owned(),
         route: "team/dev".to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
-        pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+        ecosystem_policy: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_format::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
             layers: layers.iter().map(|&name| name.to_owned()).collect(),
             upload: upload.map(str::to_owned),
@@ -238,10 +238,20 @@ fn test_build_router_data_dir_error() {
 #[case::invalid_policy(
     || {
         let mut index = cached("pypi", "https://pypi.org/simple/");
-        index.pypi_policy.allow_versions = Some("not a specifier".to_owned());
+        index
+            .ecosystem_policy
+            .insert("allow_versions".to_owned(), "not a specifier".into());
         vec![index]
     },
     &["compile policy for pypi"][..]
+)]
+#[case::unknown_policy_key(
+    || {
+        let mut index = cached("pypi", "https://pypi.org/simple/");
+        index.ecosystem_policy.insert("bogus".to_owned(), 1.into());
+        vec![index]
+    },
+    &["compile policy for pypi", "unknown field `bogus`"][..]
 )]
 #[case::duplicate_name(|| vec![hosted("a"), hosted("a")], &["duplicate index name"][..])]
 #[case::duplicate_route(

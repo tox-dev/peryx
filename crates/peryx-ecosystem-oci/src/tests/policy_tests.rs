@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
-use peryx_format::Ecosystem;
-use peryx_http::{AppState, Index, IndexKind, router};
+use peryx_core::Ecosystem;
+use peryx_driver::AppState;
+use peryx_http::router;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -20,10 +22,13 @@ const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let policy = Policy::compile(&PolicyConfig {
-        block_projects: vec!["blocked/app".to_owned()],
-        ..PolicyConfig::default()
-    });
+    let policy = Policy::compile(
+        &PolicyConfig {
+            block_projects: vec!["blocked/app".to_owned()],
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
     let mut state = AppState::with_clock(
         meta,
         blobs,
@@ -137,10 +142,13 @@ async fn test_policy_hides_a_blocked_blob_on_serve() {
 fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let policy = Policy::compile(&PolicyConfig {
-        max_file_size_bytes: Some(limit),
-        ..PolicyConfig::default()
-    });
+    let policy = Policy::compile(
+        &PolicyConfig {
+            max_file_size_bytes: Some(limit),
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
     let mut state = AppState::with_clock(
         meta,
         blobs,

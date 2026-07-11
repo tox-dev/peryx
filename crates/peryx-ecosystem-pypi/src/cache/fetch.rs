@@ -3,12 +3,16 @@
 use std::sync::Arc;
 
 use crate::policy::PypiPolicy as _;
+use crate::store::CachedIndex;
+use crate::store::PypiStore as _;
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
-use peryx_http::metrics::Event;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_driver::state::ServingState;
+use peryx_events::metrics::Event;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
-use peryx_storage::meta::CachedIndex;
-use peryx_upstream::{SimpleResponse, UpstreamClient};
+use peryx_upstream::UpstreamClient;
+
+use crate::simple_client::{SimpleClientExt as _, SimpleResponse};
 
 use super::{CacheError, NEGATIVE_TTL_SECS, is_json, mirror_route, project_negative_key, upstream_permit};
 
@@ -18,7 +22,7 @@ use super::{CacheError, NEGATIVE_TTL_SECS, is_json, mirror_route, project_negati
 /// Every outcome that a log line describes also lands in the metrics tree: revalidations (and
 /// whether upstream actually changed), stale fallbacks, and hard upstream failures.
 pub(super) async fn fetch_and_store(
-    state: &AppState,
+    state: &ServingState,
     key: &str,
     name: &str,
     project: &str,
@@ -115,7 +119,7 @@ pub(super) async fn fetch_and_store(
     }
 }
 
-fn mirror_policy<'a>(state: &'a AppState, name: &str) -> &'a peryx_policy::Policy {
+fn mirror_policy<'a>(state: &'a ServingState, name: &str) -> &'a peryx_policy::Policy {
     &state
         .indexes
         .iter()
@@ -143,7 +147,7 @@ pub struct RefreshSummary {
 /// # Errors
 /// Returns [`CacheError`] when the hosted store fails; upstream failures do not error (a page with
 /// a cached copy serves stale and is retried next sweep).
-pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary, CacheError> {
+pub async fn refresh_stale_pages(state: &Arc<ServingState>) -> Result<RefreshSummary, CacheError> {
     let now = (state.clock)();
     let mut summary = RefreshSummary::default();
     for (key, fetched_at, fresh_secs) in state.meta.list_index_pages()? {
@@ -189,7 +193,7 @@ pub async fn refresh_stale_pages(state: &Arc<AppState>) -> Result<RefreshSummary
 }
 
 fn log_cache_sync(index: &str, project: &str, result: &'static str, changed: bool, reason: Option<&str>) {
-    peryx_http::security::Event::new("mirror_sync", result)
+    peryx_events::security::Event::new("mirror_sync", result)
         .index(index)
         .project(Some(project))
         .changed(changed)
@@ -200,7 +204,7 @@ fn log_cache_sync(index: &str, project: &str, result: &'static str, changed: boo
 
 /// Map a cache key (`{cached index name}/{project}`) back to its cached index and client; the longest matching
 /// name wins when one cached's name prefixes another's.
-fn mirror_for_key<'a>(state: &'a AppState, key: &str) -> Option<(&'a Index, &'a UpstreamClient, bool, String)> {
+fn mirror_for_key<'a>(state: &'a ServingState, key: &str) -> Option<(&'a Index, &'a UpstreamClient, bool, String)> {
     state
         .indexes
         .iter()
@@ -232,7 +236,7 @@ pub(super) fn canonical_raw(project: &str, response: &SimpleResponse) -> Result<
 }
 
 pub fn persist_page(
-    state: &AppState,
+    state: &ServingState,
     key: &str,
     name: &str,
     project: &str,

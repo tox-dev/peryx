@@ -1,4 +1,27 @@
-use crate::{file_matches_version, parse_metadata};
+use crate::{file_matches_version, parse_metadata, ui_project_from_detail};
+
+#[test]
+fn test_ui_project_from_detail_maps_files() {
+    let value = serde_json::json!({
+        "name": "veloxdemo",
+        "versions": ["1.0"],
+        "files": [{
+            "filename": "veloxdemo-1.0-py3-none-any.whl",
+            "url": "/hosted/files/aa/veloxdemo-1.0-py3-none-any.whl",
+            "hashes": {"sha256": "aa"},
+            "size": 10,
+            "upload-time": "2026-01-01T00:00:00Z",
+            "yanked": "broken",
+            "core-metadata": {"sha256": "bb"},
+        }],
+    });
+    let project = ui_project_from_detail(&value);
+    assert_eq!(project.name, "veloxdemo");
+    assert_eq!(project.files[0].sha256, "aa");
+    assert_eq!(project.files[0].upload_time.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert!(project.files[0].yanked, "a reason string counts as yanked");
+    assert!(project.files[0].has_metadata);
+}
 
 #[test]
 fn test_parse_metadata_headers_and_body() {
@@ -90,4 +113,43 @@ fn test_parse_metadata_ignores_unknown_headers() {
     let doc = parse_metadata("Name: x\nX-Internal: ignored\nVersion: 1\n");
     assert_eq!(doc.name, "x");
     assert_eq!(doc.version, "1");
+}
+
+#[test]
+fn test_ui_meta_groups_classifiers_and_omits_the_block_when_none() {
+    use peryx_core::UiBlock;
+
+    // Two classifiers share the "Programming Language" category, so the second appends to the first
+    // group; a third opens its own. Classifier-less metadata emits no Classifiers block at all.
+    let text = "Metadata-Version: 2.1\nName: p\nVersion: 1.0\n\
+                Classifier: Programming Language :: Python :: 3.8\n\
+                Classifier: Programming Language :: Python :: 3.9\n\
+                Classifier: License :: OSI Approved\n\n";
+    let meta = crate::ui_meta(text);
+    let groups = meta
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            UiBlock::Groups { label, groups } if label == "Classifiers" => Some(groups),
+            _ => None,
+        })
+        .expect("a Classifiers block");
+    assert_eq!(
+        groups,
+        &vec![
+            (
+                "Programming Language".to_owned(),
+                vec!["Python :: 3.8".to_owned(), "Python :: 3.9".to_owned()],
+            ),
+            ("License".to_owned(), vec!["OSI Approved".to_owned()]),
+        ]
+    );
+
+    let bare = crate::ui_meta("Metadata-Version: 2.1\nName: p\nVersion: 1.0\n\n");
+    assert!(
+        !bare
+            .blocks
+            .iter()
+            .any(|block| matches!(block, UiBlock::Groups { label, .. } if label == "Classifiers"))
+    );
 }

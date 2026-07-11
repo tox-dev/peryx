@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use peryx_ecosystem_pypi::policy::PackageType;
 use rstest::rstest;
 
 use super::toml_config;
@@ -55,30 +54,32 @@ allow_wheel_pythons = [\"py3\"]\nblock_wheel_pythons = [\"py2\"]\n\
 allow_wheel_platforms = [\"any\"]\nblock_wheel_platforms = [\"win_amd64\"]\n\
 max_file_size_bytes = 1048576\nmax_project_size_bytes = 10485760\n";
     let config = toml_config(text);
-    // The one flat policy table splits: neutral keys land on `policy`, PyPI keys on `pypi_policy`.
+    // The one flat policy table splits: neutral keys land on `policy`, every other key is carried
+    // through on `ecosystem_policy` for the index's driver to compile.
     let policy = &config.indexes[0].policy;
     assert_eq!(policy.allow_projects, ["Flask"]);
     assert_eq!(policy.block_projects, ["bad-pkg"]);
     assert_eq!(policy.max_file_size_bytes, Some(1_048_576));
     assert_eq!(policy.max_project_size_bytes, Some(10_485_760));
-    let pypi = &config.indexes[0].pypi_policy;
-    assert_eq!(pypi.allow_versions.as_deref(), Some(">=1,<2"));
-    assert_eq!(pypi.allow_package_types, [PackageType::Wheel]);
-    assert_eq!(pypi.block_package_types, [PackageType::Sdist]);
-    assert_eq!(pypi.allow_wheel_pythons, ["py3"]);
-    assert_eq!(pypi.block_wheel_pythons, ["py2"]);
-    assert_eq!(pypi.allow_wheel_platforms, ["any"]);
-    assert_eq!(pypi.block_wheel_platforms, ["win_amd64"]);
+    let ecosystem = &config.indexes[0].ecosystem_policy;
+    assert_eq!(ecosystem["allow_versions"].as_str(), Some(">=1,<2"));
+    assert_eq!(ecosystem["allow_package_types"].as_array(), Some(&vec!["wheel".into()]));
+    assert_eq!(ecosystem["block_package_types"].as_array(), Some(&vec!["sdist".into()]));
+    assert_eq!(ecosystem["allow_wheel_pythons"].as_array(), Some(&vec!["py3".into()]));
+    assert_eq!(ecosystem["block_wheel_pythons"].as_array(), Some(&vec!["py2".into()]));
+    assert_eq!(ecosystem["allow_wheel_platforms"].as_array(), Some(&vec!["any".into()]));
+    assert_eq!(
+        ecosystem["block_wheel_platforms"].as_array(),
+        Some(&vec!["win_amd64".into()])
+    );
+    // The neutral keys the engine claimed did not leak into the ecosystem remainder.
+    assert!(!ecosystem.contains_key("allow_projects"));
+    assert!(!ecosystem.contains_key("max_file_size_bytes"));
 }
 
 #[rstest]
 #[case::unknown_key("bad.toml", "bogus = 1", Some("bad.toml"))]
 #[case::unknown_index_key("x.toml", "[[index]]\nname = \"a\"\nbogus = 1\n", None)]
-#[case::unknown_policy_key(
-    "x.toml",
-    "[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n[index.policy]\nbogus = 1\n",
-    Some("bogus")
-)]
 #[case::non_table_policy(
     "x.toml",
     "[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\npolicy = 5\n",

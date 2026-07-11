@@ -8,8 +8,9 @@ mod mirror_tests;
 mod policy_tests;
 mod push_tests;
 mod search_tests;
-mod serve_tests;
+mod serve;
 mod virtual_tests;
+mod web_tests;
 mod webhooks_tests;
 
 use std::sync::Arc;
@@ -18,8 +19,10 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
-use peryx_format::Ecosystem;
-use peryx_http::{AppState, Index, IndexKind, router};
+use peryx_core::Ecosystem;
+use peryx_driver::AppState;
+use peryx_http::router;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
@@ -75,7 +78,7 @@ fn proxy_with_clock(
     upstream: &str,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 ) -> (Arc<AppState>, axum::Router) {
-    proxy_with_stale(dir, upstream, clock, peryx_http::DEFAULT_MAX_STALE_SECS)
+    proxy_with_stale(dir, upstream, clock, peryx_driver::DEFAULT_MAX_STALE_SECS)
 }
 
 /// A caching proxy whose stale-on-error bound the caller chooses; `0` serves stale without limit.
@@ -310,7 +313,7 @@ async fn test_v2_reads_are_rate_limited_through_the_oci_classifier() {
     // With the limiter on, the OCI driver classifies a manifest read as a listing, so a second read
     // from the same client is denied. This proves `/v2/` traffic is classed by the registered namespace
     // driver, not the neutral fallback.
-    use peryx_http::rate_limit::{RateLimitConfig, RouteLimit};
+    use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();

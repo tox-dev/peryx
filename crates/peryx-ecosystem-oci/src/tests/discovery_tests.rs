@@ -31,7 +31,7 @@ async fn test_root_discovery_renders_every_oci_index_with_docker_setup() {
 
 #[tokio::test]
 async fn test_per_index_discovery_serves_oci_without_a_pypi_driver() {
-    // This harness wires only the OCI driver, so `state.serving` is the unconfigured PyPI stub. The
+    // This harness wires only the OCI driver, so no route-mounted driver is registered at all. The
     // neutral router still serves `/{route}/+api`, proving the discovery route is not tied to PyPI.
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, "http://127.0.0.1:1/");

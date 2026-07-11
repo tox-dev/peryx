@@ -12,10 +12,13 @@ use crate::{
     parse_version_specifiers, to_json,
 };
 use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
-use peryx_storage::meta::{MetaError, MetaStore, MetadataSibling, PublishedFile};
+use peryx_storage::meta::{MetaError, MetaStore};
+
+use crate::store::PypiStore as _;
+use crate::store::{MetadataSibling, PublishedFile};
 use serde::{Deserialize, Serialize};
 
-use peryx_http::path_safety::{local_file_url, validate_filename};
+use peryx_core::path::{local_file_url, validate_filename};
 
 /// An uploaded file plus the version it belongs to, stored per file on a private index and
 /// reassembled into the project's detail page.
@@ -241,7 +244,7 @@ pub fn store_prepared(
         digest: content_digest,
         content,
         metadata,
-        record,
+        mut record,
     } = prepared;
     if let Some(existing) = meta.get_upload(name, &normalized, &filename)? {
         let uploaded: Uploaded = serde_json::from_slice(&existing)?;
@@ -257,7 +260,6 @@ pub fn store_prepared(
         return Err(UploadStoreError::FileExists(filename));
     }
     blobs.commit_staged(content)?;
-    let mut record = record;
     let metadata_digest = blobs.write(&metadata)?;
     let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
     record.file.set_metadata(CoreMetadata::Hashes(hashes));

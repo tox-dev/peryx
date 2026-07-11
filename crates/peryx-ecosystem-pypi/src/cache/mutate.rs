@@ -3,10 +3,12 @@
 use std::collections::HashSet;
 
 use crate::file_matches_version;
+use crate::store::PypiStore as _;
 use crate::upload::{self, PreparedUpload, Uploaded};
 use crate::{ProjectStatus, Yanked, parse_distribution_filename, to_json};
-use peryx_http::path_safety::local_file_url;
-use peryx_http::state::{AppState, Index, IndexKind};
+use peryx_core::path::local_file_url;
+use peryx_driver::state::ServingState;
+use peryx_index::{Index, IndexKind};
 
 use super::CacheError;
 use super::resolve::resolve_detail;
@@ -16,7 +18,7 @@ use super::resolve::resolve_detail;
 ///
 /// # Errors
 /// Returns [`CacheError`] if a blob write, store write, or encode fails.
-pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
+pub fn store_upload(state: &ServingState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
     let stored = upload::store_prepared(&state.meta, &state.blobs, name, prepared)?;
     if stored {
         state.bump_epoch();
@@ -31,7 +33,7 @@ pub fn store_upload(state: &AppState, name: &str, prepared: PreparedUpload) -> R
 /// [`CacheError::FileExists`] when a target filename exists with different bytes, or another
 /// [`CacheError`] on metadata-store or decode failures.
 pub fn promote_release(
-    state: &AppState,
+    state: &ServingState,
     source: &str,
     target: &str,
     target_route: &str,
@@ -94,7 +96,7 @@ const HIDDEN: &str = "hidden";
 /// # Errors
 /// Returns [`CacheError`] on a store, decode, or resolution failure.
 pub async fn set_yanked(
-    state: &AppState,
+    state: &ServingState,
     index: &Index,
     hosted: &str,
     normalized: &str,
@@ -140,7 +142,7 @@ fn yank_override_value(yanked: &Yanked) -> Result<Option<String>, CacheError> {
 /// Returns [`CacheError::NotVolatile`] when uploaded files match but the hosted store is not
 /// volatile, or another [`CacheError`] on a store or resolution failure.
 pub async fn remove_files(
-    state: &AppState,
+    state: &ServingState,
     index: &Index,
     hosted: &str,
     volatile: bool,
@@ -182,7 +184,7 @@ pub async fn remove_files(
 /// # Errors
 /// Returns [`CacheError`] on a store failure.
 pub fn restore_files(
-    state: &AppState,
+    state: &ServingState,
     hosted: &str,
     normalized: &str,
     version: Option<&str>,
@@ -209,7 +211,11 @@ pub fn restore_files(
 ///
 /// # Errors
 /// Returns [`CacheError`] on a store, parse, or upstream failure.
-pub async fn project_status(state: &AppState, index: &Index, normalized: &str) -> Result<ProjectStatus, CacheError> {
+pub async fn project_status(
+    state: &ServingState,
+    index: &Index,
+    normalized: &str,
+) -> Result<ProjectStatus, CacheError> {
     if matches!(index.kind, IndexKind::Hosted { .. }) {
         return Ok(ProjectStatus::Active);
     }
@@ -223,7 +229,7 @@ pub async fn project_status(state: &AppState, index: &Index, normalized: &str) -
 ///
 /// # Errors
 /// Returns [`CacheError`] when the store cannot be read.
-pub fn download_status(state: &AppState, index: &Index, filename: &str) -> Result<ProjectStatus, CacheError> {
+pub fn download_status(state: &ServingState, index: &Index, filename: &str) -> Result<ProjectStatus, CacheError> {
     let artifact = filename.strip_suffix(".metadata").unwrap_or(filename);
     let Ok(parsed) = parse_distribution_filename(artifact) else {
         return Ok(ProjectStatus::Active);
@@ -231,7 +237,7 @@ pub fn download_status(state: &AppState, index: &Index, filename: &str) -> Resul
     stored_project_status(state, index, &parsed.normalized_name)
 }
 
-fn stored_project_status(state: &AppState, index: &Index, normalized: &str) -> Result<ProjectStatus, CacheError> {
+fn stored_project_status(state: &ServingState, index: &Index, normalized: &str) -> Result<ProjectStatus, CacheError> {
     match &index.kind {
         IndexKind::Cached { .. } => status_for_index(state, &index.name, normalized),
         IndexKind::Hosted { .. } => Ok(ProjectStatus::Active),
@@ -247,7 +253,7 @@ fn stored_project_status(state: &AppState, index: &Index, normalized: &str) -> R
     }
 }
 
-fn status_for_index(state: &AppState, index: &str, normalized: &str) -> Result<ProjectStatus, CacheError> {
+fn status_for_index(state: &ServingState, index: &str, normalized: &str) -> Result<ProjectStatus, CacheError> {
     Ok(state
         .meta
         .get_project_status(index, normalized)?
@@ -261,7 +267,7 @@ fn status_for_index(state: &AppState, index: &str, normalized: &str) -> Result<P
 /// given. Hidden files are resolved too (the page-level filter does not apply here), so a delete
 /// followed by a delete stays idempotent rather than erroring.
 async fn served_filenames(
-    state: &AppState,
+    state: &ServingState,
     index: &Index,
     normalized: &str,
     version: Option<&str>,
@@ -277,7 +283,7 @@ async fn served_filenames(
         .collect())
 }
 
-fn upload_filenames(state: &AppState, hosted: &str, normalized: &str) -> Result<HashSet<String>, CacheError> {
+fn upload_filenames(state: &ServingState, hosted: &str, normalized: &str) -> Result<HashSet<String>, CacheError> {
     Ok(state
         .meta
         .list_upload_entries(hosted, normalized)?
@@ -288,7 +294,7 @@ fn upload_filenames(state: &AppState, hosted: &str, normalized: &str) -> Result<
 
 /// Delete the uploaded file records whose stored version matches. Returns how many were removed.
 fn delete_uploads_of_version(
-    state: &AppState,
+    state: &ServingState,
     name: &str,
     normalized: &str,
     version: &str,
@@ -306,7 +312,7 @@ fn delete_uploads_of_version(
 /// Set the yank state of uploaded files, optionally limited to one version. Returns how many
 /// changed.
 fn yank_uploads(
-    state: &AppState,
+    state: &ServingState,
     name: &str,
     normalized: &str,
     version: Option<&str>,

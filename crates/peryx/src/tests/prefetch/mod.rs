@@ -1,7 +1,7 @@
 use std::path::Path;
 
+use peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY;
 use peryx_ecosystem_pypi::to_json;
-use peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY;
 use peryx_policy::PolicyConfig;
 use wiremock::MockServer;
 
@@ -19,9 +19,9 @@ pub(super) fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
             policy: PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Pypi,
+            ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
                 upstream: upstream.to_owned(),
                 username: None,
@@ -44,9 +44,9 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
                 policy: PolicyConfig::default(),
-                pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
                     upload_token: None,
                     volatile: true,
@@ -56,9 +56,9 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
                 policy: PolicyConfig::default(),
-                pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
                     upstream: upstream.to_owned(),
                     username: None,
@@ -73,9 +73,9 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 name: "root/pypi".to_owned(),
                 route: "root/pypi".to_owned(),
                 policy: PolicyConfig::default(),
-                pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec!["hosted".to_owned(), "pypi".to_owned()],
                     upload: Some("hosted".to_owned()),

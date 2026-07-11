@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
-use blake2::Blake2bVar;
-use blake2::digest::VariableOutput as _;
 use peryx_storage::blob::Digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -160,14 +158,6 @@ fn is_empty_dir(path: &Path) -> anyhow::Result<bool> {
         .context(format!("read directory {}", path.display()))?
         .next()
         .is_none())
-}
-
-fn finalize_blake2(blake2: Blake2bVar) -> String {
-    let mut digest = [0; 32];
-    blake2
-        .finalize_variable(&mut digest)
-        .expect("blake2b-256 output buffer has the requested size");
-    hex(&digest)
 }
 
 fn hex(bytes: &[u8]) -> String {

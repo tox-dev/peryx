@@ -4,7 +4,7 @@ use axum::Router;
 use axum::extract::FromRef;
 use leptos::prelude::*;
 use leptos_axum::{LeptosRoutes as _, generate_route_list};
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use crate::{App, shell};
 

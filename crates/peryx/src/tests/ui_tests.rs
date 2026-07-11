@@ -6,9 +6,10 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
+use peryx_core::path::local_file_url;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_ecosystem_pypi::upload::Uploaded;
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
-use peryx_http::path_safety::local_file_url;
 use peryx_storage::blob::Digest;
 use rstest::{fixture, rstest};
 use sha2::{Digest as _, Sha256};
@@ -40,15 +41,15 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
-                pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
                     upstream: "http://127.0.0.1:9/simple/".to_owned(),
                     username: None,
                     password: None,
                     token: None,
-                    upstream_concurrency: peryx_http::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
+                    upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                     offline: false,
                     prefetch: Box::default(),
                 },
@@ -57,9 +58,9 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
-                pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
                     upload_token: Some("s3cret".to_owned()),
                     volatile: true,
@@ -69,9 +70,9 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 name: "root/pypi".to_owned(),
                 route: "root/pypi".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
-                pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_format::Ecosystem::Pypi,
+                ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
                     layers: vec!["hosted".to_owned(), "pypi".to_owned()],
                     upload: Some("hosted".to_owned()),
@@ -97,9 +98,9 @@ fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
             name: "images".to_owned(),
             route: "images".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
-            pypi_policy: peryx_ecosystem_pypi::policy::PypiPolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_format::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {
                 upload_token: Some("s3cret".to_owned()),
                 volatile: true,
@@ -358,7 +359,7 @@ async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-fn put_legacy_file(state: &peryx_http::AppState, filename: &str, content: &[u8]) -> Digest {
+fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8]) -> Digest {
     let digest = Digest::of(content);
     state.blobs.write_verified(content, &digest).unwrap();
     let uploaded = Uploaded {
@@ -385,7 +386,7 @@ fn put_legacy_file(state: &peryx_http::AppState, filename: &str, content: &[u8])
     digest
 }
 
-fn put_filter_files(state: &peryx_http::AppState) {
+fn put_filter_files(state: &peryx_driver::AppState) {
     put_legacy_file(state, "veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", b"wheel 1");
     put_legacy_file(state, "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl", b"wheel 2");
     put_legacy_file(state, "veloxdemo-1.0.0.tar.gz", b"sdist");

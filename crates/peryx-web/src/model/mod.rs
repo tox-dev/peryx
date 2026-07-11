@@ -3,14 +3,15 @@
 //! The server builds them from `AppState`; the browser rebuilds them from peryx's own JSON API
 //! (`/+status` and the PEP 691 simple endpoints), so both sides render identical pages.
 
-mod oci;
 mod project;
 mod search;
 mod snapshot;
 mod stats;
 
-pub use oci::{UiOciBlob, UiOciManifest};
-pub use project::{UiFile, UiMember, UiMemberChunk, UiProject, members_from_listing, projects_from_list};
+pub use project::{
+    UiArtifactRef, UiFile, UiManifest, UiMember, UiMemberChunk, UiProject, UiProjectView, members_from_listing,
+    projects_from_list,
+};
 pub use search::{UiSearchPage, UiSearchResult, source_label};
 pub use snapshot::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentUpload, UiSnapshot, UiUpstream};
 pub use stats::{UiCounters, UiStats, stats_index, stats_project, stats_routes};

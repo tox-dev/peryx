@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use peryx_http::AppState;
+use peryx_driver::AppState;
 
 use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentUpload, UiSnapshot, UiUpstream};
 
@@ -19,10 +19,7 @@ pub fn admin_snapshot() -> UiSnapshot {
 
 fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
     let app = expect_context::<Arc<AppState>>();
-    let summaries = recent_limit.map(|limit| {
-        let index_names = app.indexes.iter().map(|index| index.name.clone()).collect::<Vec<_>>();
-        app.meta.summarize_indexes(&index_names, limit).unwrap_or_default()
-    });
+    let summaries = recent_limit.map(|limit| app.index_summaries(limit));
     let indexes = app
         .describe_indexes()
         .into_iter()
@@ -32,10 +29,15 @@ fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
                 .and_then(|summaries| summaries.get(&index.name))
                 .cloned()
                 .unwrap_or_default();
+            let endpoint = app.driver_for_name(index.ecosystem).map_or_else(
+                || format!("/{}/", index.route),
+                |driver| driver.client_endpoint(&index.route),
+            );
             UiIndex {
                 name: index.name,
                 route: index.route,
                 ecosystem: index.ecosystem.to_owned(),
+                endpoint,
                 kind: index.kind.to_owned(),
                 layers: index.layers,
                 uploads: index.uploads,

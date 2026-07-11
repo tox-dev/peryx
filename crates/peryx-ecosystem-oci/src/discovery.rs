@@ -7,8 +7,8 @@
 
 use std::fmt::Write as _;
 
-use peryx_http::discovery::{BaseUrl, browse_path, link, stats_path};
-use peryx_http::state::IndexDescription;
+use peryx_driver::discovery::{BaseUrl, browse_path, link, stats_path};
+use peryx_driver::state::IndexDescription;
 use serde_json::{Value, json};
 
 const IMAGE_PLACEHOLDER: &str = "<image>";
@@ -78,8 +78,8 @@ fn docker_snippet(base: Option<&BaseUrl>, route: &str, uploads: bool) -> String 
 
 #[cfg(test)]
 mod tests {
-    use peryx_http::discovery::BaseUrl;
-    use peryx_http::state::IndexDescription;
+    use peryx_driver::discovery::BaseUrl;
+    use peryx_driver::state::IndexDescription;
 
     use super::index_entry;
 

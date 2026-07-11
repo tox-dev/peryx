@@ -10,10 +10,11 @@ use std::sync::atomic::Ordering;
 use axum::extract::Multipart;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use peryx_http::handlers::not_found;
-use peryx_http::metrics::Event;
-use peryx_http::state::{AppState, Index};
-use peryx_http::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_driver::not_found;
+use peryx_driver::state::ServingState;
+use peryx_events::metrics::Event;
+use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_index::Index;
 use peryx_policy::PolicyAction;
 
 use crate::cache::{self, CacheError};
@@ -27,13 +28,13 @@ use super::{authorize, request_id, upload_target};
 
 /// `POST /{route}/`, the legacy multipart upload API, used unchanged by twine and `uv publish`.
 pub async fn pypi_dispatch_post(
-    state: Arc<AppState>,
+    state: Arc<ServingState>,
     path: String,
     headers: HeaderMap,
     multipart: Multipart,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let actor = peryx_http::security::actor(&headers);
+    let actor = peryx_events::security::actor(&headers);
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
     };
@@ -56,7 +57,7 @@ pub async fn pypi_dispatch_post(
 }
 
 async fn accept_upload(
-    state: &Arc<AppState>,
+    state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
     headers: &HeaderMap,
@@ -176,7 +177,11 @@ struct UploadAudit<'a> {
     digest: &'a str,
 }
 
-fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result: Result<bool, CacheError>) -> Response {
+fn upload_store_response(
+    state: &Arc<ServingState>,
+    audit: &UploadAudit<'_>,
+    result: Result<bool, CacheError>,
+) -> Response {
     match result {
         Ok(stored) => {
             if stored {
@@ -184,7 +189,7 @@ fn upload_store_response(state: &Arc<AppState>, audit: &UploadAudit<'_>, result:
                     route: audit.route.to_owned(),
                     project: audit.project.to_owned(),
                 });
-                peryx_http::webhook::emit(
+                peryx_events::webhook::emit(
                     state.clone(),
                     &WebhookEvent {
                         kind: WebhookEventKind::Upload,
@@ -313,8 +318,8 @@ fn security_upload_event<'a>(
     route: &'a str,
     hosted_index: Option<&'a str>,
     result: &'static str,
-) -> peryx_http::security::Event<'a> {
-    let event = peryx_http::security::Event::new("upload", result)
+) -> peryx_events::security::Event<'a> {
+    let event = peryx_events::security::Event::new("upload", result)
         .actor(actor)
         .index(route)
         .request(headers);

@@ -1,0 +1,19 @@
+[package]
+name = "peryx-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The index model and role engine for peryx: what a cached, hosted, or virtual index is, and how a request resolves against one."
+
+[dependencies]
+peryx-core.workspace = true
+peryx-policy.workspace = true
+peryx-upstream.workspace = true
+bytes.workspace = true
+moka = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[lints]
+workspace = true

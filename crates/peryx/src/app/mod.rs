@@ -1,9 +1,7 @@
 //! Command actions that do not touch global state.
 
 use anyhow::Context as _;
-use peryx_ecosystem_pypi::CoreMetadata;
-use peryx_ecosystem_pypi::upload::Uploaded;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
 use crate::config::Config;
@@ -34,28 +32,6 @@ impl CacheStores {
     }
 }
 
-fn upload_digests(bytes: &[u8]) -> Option<Vec<Digest>> {
-    let upload: Uploaded = serde_json::from_slice(bytes).ok()?;
-    let mut digests = Vec::new();
-    let content_digest = upload.file.hashes.get("sha256")?;
-    digests.push(Digest::from_hex(content_digest)?);
-    if let CoreMetadata::Hashes(hashes) = upload.file.core_metadata
-        && let Some(metadata_digest) = hashes.get("sha256")
-    {
-        digests.push(Digest::from_hex(metadata_digest)?);
-    }
-    Some(digests)
-}
-
-fn split_pair(value: &str) -> Option<(&str, &str)> {
-    value.split_once('\n')
-}
-
-fn split_triple(value: &str) -> Option<(&str, &str, &str)> {
-    let mut parts = value.splitn(3, '\n');
-    Some((parts.next()?, parts.next()?, parts.next()?))
-}
-
 fn index_names(config: &Config) -> Vec<&str> {
     let mut names = config
         .indexes
@@ -64,16 +40,4 @@ fn index_names(config: &Config) -> Vec<&str> {
         .collect::<Vec<_>>();
     names.sort_by_key(|name| std::cmp::Reverse(name.len()));
     names
-}
-
-fn split_page_key(key: &str, index_names: &[&str]) -> (String, String) {
-    for name in index_names {
-        if let Some(project) = key.strip_prefix(name).and_then(|rest| rest.strip_prefix('/')) {
-            return ((*name).to_owned(), project.to_owned());
-        }
-    }
-    key.split_once('/').map_or_else(
-        || (key.to_owned(), String::new()),
-        |(index, project)| (index.to_owned(), project.to_owned()),
-    )
 }

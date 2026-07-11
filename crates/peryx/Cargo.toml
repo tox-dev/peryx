@@ -32,7 +32,10 @@ self-update = ["dep:axoupdater"]
 
 [dependencies]
 axoupdater = { version = "0.10", default-features = false, features = ["github_releases", "blocking"], optional = true }
-peryx-format.workspace = true
+peryx-core.workspace = true
+peryx-driver.workspace = true
+peryx-events.workspace = true
+peryx-index.workspace = true
 peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }
 peryx-ecosystem-oci.workspace = true
 async-trait.workspace = true
@@ -54,7 +57,6 @@ serde_json.workspace = true
 toml.workspace = true
 utoipa.workspace = true
 sha2.workspace = true
-blake2.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
