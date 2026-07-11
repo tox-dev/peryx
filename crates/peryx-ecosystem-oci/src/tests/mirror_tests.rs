@@ -7,7 +7,21 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{oci_digest, proxy, send};
-use crate::mirror::{MirrorMode, mirror};
+use crate::mirror::{MirrorMode, MirrorRow, mirror as mirror_with};
+use crate::settings::IndexSettings;
+use peryx_driver::ServingState;
+use peryx_index::Index;
+use std::sync::Arc;
+
+/// Mirror under the default settings, which is what every case but the `library_prefix` one uses.
+async fn mirror(
+    state: &Arc<ServingState>,
+    index: &Index,
+    refs: &[String],
+    mode: MirrorMode,
+) -> anyhow::Result<Vec<MirrorRow>> {
+    mirror_with(state, index, IndexSettings::default(), refs, mode).await
+}
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
@@ -430,4 +444,37 @@ async fn test_mirror_tolerates_a_non_json_manifest() {
     // The manifest stores, but naming no blobs there is nothing else to fetch.
     assert!(rows.iter().any(|row| row.kind == "manifest" && row.status == "synced"));
     assert!(!rows.iter().any(|row| row.kind == "blob"));
+}
+
+#[tokio::test]
+async fn test_mirror_pulls_a_single_segment_name_under_the_library_prefix() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let layer = b"a-layer-of-bytes";
+    let manifest = image_manifest(config, layer);
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", config).await;
+    mount_blob(&server, "library/app", layer).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let settings = IndexSettings {
+        library_prefix: crate::LibraryPrefix::Always,
+    };
+    let rows = mirror_with(
+        &state.serving,
+        &state.indexes[0],
+        settings,
+        &["app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows.last().unwrap().status, "synced");
+    // Upstream was asked for `library/app`; what landed in the store is the `app` the operator named,
+    // so it serves under that name.
+    let (status, _, got) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, manifest);
 }

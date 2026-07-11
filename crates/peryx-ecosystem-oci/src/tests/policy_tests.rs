@@ -45,7 +45,7 @@ fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
         }],
         Arc::new(|| 1000),
     );
-    crate::install(&mut state);
+    crate::install(&mut state, std::collections::HashMap::new());
     let state = Arc::new(state);
     (state.clone(), router(state))
 }
@@ -227,7 +227,7 @@ fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, ax
         }],
         Arc::new(|| 1000),
     );
-    crate::install(&mut state);
+    crate::install(&mut state, std::collections::HashMap::new());
     let state = Arc::new(state);
     (state.clone(), router(state))
 }

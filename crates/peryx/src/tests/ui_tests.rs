@@ -42,6 +42,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 route: "pypi".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
@@ -59,6 +60,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 route: "hosted".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
@@ -71,6 +73,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 route: "root/pypi".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {
@@ -99,6 +102,7 @@ fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
             route: "images".to_owned(),
             policy: peryx_policy::PolicyConfig::default(),
             ecosystem_policy: toml::Table::new(),
+            ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Hosted {

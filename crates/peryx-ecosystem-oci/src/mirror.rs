@@ -11,6 +11,7 @@ use peryx_upstream::Auth;
 use serde::Serialize;
 
 use crate::registry::{download_blob, serving_members};
+use crate::settings::{IndexSettings, upstream_repo};
 use crate::store::{self, Manifest};
 use crate::upstream::Upstream;
 
@@ -111,11 +112,14 @@ struct Mirror<'a> {
     base: String,
     auth: Auth,
     index: &'a str,
+    settings: IndexSettings,
     mode: MirrorMode,
 }
 
-/// Mirror every reference in `refs` through `index` (a cached index, or a virtual index with a cached
-/// member) in `mode`, returning one report row per manifest, per blob, and a trailing summary.
+/// Mirror every reference in `refs` through `index` in `mode`, under that index's `settings`.
+///
+/// `index` is a cached index, or a virtual index with a cached member. Returns one report row per
+/// manifest, per blob, and a trailing summary.
 ///
 /// # Errors
 /// Returns an error only on a store fault (metadata or blob io); a missing image, unreachable
@@ -123,6 +127,7 @@ struct Mirror<'a> {
 pub async fn mirror(
     state: &Arc<ServingState>,
     index: &Index,
+    settings: IndexSettings,
     refs: &[String],
     mode: MirrorMode,
 ) -> anyhow::Result<Vec<MirrorRow>> {
@@ -148,6 +153,7 @@ pub async fn mirror(
         base,
         auth,
         index: &index.name,
+        settings,
         mode,
     };
     for raw in refs {
@@ -182,6 +188,12 @@ pub async fn mirror(
 }
 
 impl Mirror<'_> {
+    /// The name `repo` is spelled with upstream. What lands in the store keeps the operator's spelling,
+    /// so a mirrored image serves under the name it was asked for.
+    fn upstream_repo<'a>(&self, repo: &'a str) -> std::borrow::Cow<'a, str> {
+        upstream_repo(self.settings.library_prefix, &self.base, repo)
+    }
+
     /// Mirror one image reference: its manifest, any per-platform child manifests, and every blob.
     async fn one_ref(&self, image: &ImageRef, rows: &mut Vec<MirrorRow>) -> anyhow::Result<()> {
         let tag = (!image.by_digest).then_some(image.reference.as_str());
@@ -202,7 +214,11 @@ impl Mirror<'_> {
         if self.mode == MirrorMode::Verify {
             return self.verify_manifest(repo, reference, tag, rows);
         }
-        let response = match self.upstream.manifest(&self.base, &self.auth, repo, reference).await {
+        let response = match self
+            .upstream
+            .manifest(&self.base, &self.auth, &self.upstream_repo(repo), reference)
+            .await
+        {
             Ok(response) => response,
             Err(err) => {
                 rows.push(MirrorRow::error("manifest", repo, reference, "", err.to_string()));
@@ -331,7 +347,11 @@ impl Mirror<'_> {
             ));
             return;
         }
-        match self.upstream.blob(&self.base, &self.auth, repo, digest).await {
+        match self
+            .upstream
+            .blob(&self.base, &self.auth, &self.upstream_repo(repo), digest)
+            .await
+        {
             Ok(response) => {
                 if download_blob(&self.state.blobs, &storage, response).await.is_ok() {
                     rows.push(MirrorRow::synced(

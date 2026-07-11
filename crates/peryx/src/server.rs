@@ -5,9 +5,10 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, bail};
 use axum::Router;
-use peryx_core::path;
+use peryx_core::{Ecosystem, path};
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, DriverSet, Index, IndexKind};
+use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
 use peryx_policy::Policy;
@@ -43,6 +44,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let indexes = build_indexes(&config.indexes, config.offline)?;
+    let oci_settings = build_index_settings(&config.indexes)?;
     let webhooks = build_webhooks(&config.indexes)?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
@@ -61,7 +63,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     )
     .context(format!("open search index {}", search_path.display()))?;
     peryx_ecosystem_pypi::install(&mut state);
-    peryx_ecosystem_oci::install(&mut state);
+    peryx_ecosystem_oci::install(&mut state, oci_settings);
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
     if !state.webhooks.is_empty() {
@@ -85,7 +87,7 @@ pub(crate) fn drivers() -> &'static DriverSet {
     DRIVERS.get_or_init(|| {
         DriverSet::default()
             .with(Arc::new(peryx_ecosystem_pypi::PypiServing))
-            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::new()))
+            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::default()))
     })
 }
 
@@ -121,6 +123,34 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], offline: bool) -> anyhow::R
             })
         })
         .collect()
+}
+
+/// Compile each index's `[index.settings]` table against the ecosystem it serves, keyed by index name.
+///
+/// The settings vocabulary is a format's own — an OCI cache's `library_prefix` means nothing to a
+/// `PyPI` index — so the table travels raw through the neutral config and is compiled here, in the one
+/// crate that names ecosystems. An ecosystem with no settings of its own claims no key, so a key on
+/// one of its indexes is configuration that would otherwise be silently ignored.
+pub(crate) fn build_index_settings(configs: &[IndexConfig]) -> anyhow::Result<HashMap<String, IndexSettings>> {
+    let mut settings = HashMap::new();
+    for index in configs {
+        match index.ecosystem {
+            Ecosystem::Oci => {
+                let compiled = IndexSettings::compile(&index.ecosystem_settings)
+                    .map_err(|reason| anyhow::anyhow!("compile settings for {}: {reason}", index.name))?;
+                settings.insert(index.name.clone(), compiled);
+            }
+            Ecosystem::Pypi => {
+                if let Some(key) = index.ecosystem_settings.keys().next() {
+                    bail!(
+                        "compile settings for {}: unknown field `{key}` in `[index.settings]`",
+                        index.name
+                    );
+                }
+            }
+        }
+    }
+    Ok(settings)
 }
 
 fn build_webhooks(configs: &[IndexConfig]) -> anyhow::Result<WebhookRuntime> {

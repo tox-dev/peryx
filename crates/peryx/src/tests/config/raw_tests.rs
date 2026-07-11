@@ -44,6 +44,21 @@ max_file_size_bytes = 1048576
     assert!(prefetch.metadata_only);
 }
 
+#[rstest]
+#[case::auto("[index.settings]\nlibrary_prefix = \"auto\"\n", Some(toml::Value::from("auto")))]
+#[case::always("[index.settings]\nlibrary_prefix = true\n", Some(toml::Value::from(true)))]
+#[case::never("[index.settings]\nlibrary_prefix = false\n", Some(toml::Value::from(false)))]
+#[case::absent("", None)]
+fn test_index_settings_pass_through_to_the_ecosystem(#[case] settings: &str, #[case] expected: Option<toml::Value>) {
+    // The neutral config claims no key of `[index.settings]`: the table reaches the index's ecosystem
+    // as the operator wrote it, and only there is a value known to be valid.
+    let text = format!(
+        "[[index]]\nname = \"hub\"\necosystem = \"oci\"\ncached = \"https://registry-1.docker.io/\"\n{settings}"
+    );
+    let settings = &toml_config(&text).indexes[0].ecosystem_settings;
+    assert_eq!(settings.get("library_prefix").cloned(), expected);
+}
+
 #[test]
 fn test_index_policy_from_toml() {
     let text = "\

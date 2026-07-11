@@ -89,7 +89,12 @@ impl OciRegistry {
             };
             match self
                 .upstream
-                .blob_head(client.base_url(), client.auth(), repo, digest)
+                .blob_head(
+                    client.base_url(),
+                    client.auth(),
+                    &self.upstream_repo(&member.name, client, repo),
+                    digest,
+                )
                 .await
             {
                 Ok(size) => return Ok(blob_head_response(digest, size, range)),
@@ -176,7 +181,16 @@ impl OciRegistry {
             let Some(client) = member.proxy_client() else {
                 continue;
             };
-            match self.upstream.blob(client.base_url(), client.auth(), repo, digest).await {
+            match self
+                .upstream
+                .blob(
+                    client.base_url(),
+                    client.auth(),
+                    &self.upstream_repo(&member.name, client, repo),
+                    digest,
+                )
+                .await
+            {
                 Ok(response) => {
                     if let Err(response) = download_blob(&state.blobs, storage, response).await {
                         return Ok(BlobFetch::Gateway(response));

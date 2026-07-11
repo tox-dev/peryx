@@ -121,11 +121,10 @@ async fn test_unchanged_tag_refetches_when_the_cached_manifest_is_missing() {
     assert_eq!(body, manifest.to_vec());
 }
 #[tokio::test]
-async fn test_manifest_upstream_401_is_treated_as_absent() {
+async fn test_manifest_upstream_401_reports_the_auth_failure() {
     let server = MockServer::start().await;
-    // A registry answers 401 for a repository that does not exist or is not anonymously visible; the
-    // proxy reports the manifest unknown rather than a gateway fault, so a client (or a virtual index)
-    // treats it as absent.
+    // The upstream refused peryx's credentials. With nothing cached to fall back on, that is what the
+    // client is told: reporting the manifest unknown would name the wrong cause.
     Mock::given(method("GET"))
         .and(path("/v2/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(401))
@@ -134,8 +133,8 @@ async fn test_manifest_upstream_401_is_treated_as_absent() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body_has_code(&body, "MANIFEST_UNKNOWN"), "{body:?}");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body_has_code(&body, "UNAUTHORIZED"), "{body:?}");
 }
 #[tokio::test]
 async fn test_manifest_token_endpoint_failure_is_a_gateway_error() {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use peryx_driver::AppState;
 
 use super::Output;
-use super::oci::{oci_images, oci_lookup, oci_mirror, oci_plan};
+use super::oci::{oci_images, oci_lookup, oci_mirror, oci_plan, oci_settings};
 use super::pypi::{pypi_plan, pypi_sync, pypi_verify};
 use crate::cli::{PrefetchCommand, PrefetchOptions};
 use crate::config::Config;
@@ -123,6 +123,7 @@ impl IndexMirror for OciMirror {
         oci_mirror(
             state,
             oci_lookup(state, &options.index),
+            oci_settings(config, &options.index),
             &images,
             peryx_ecosystem_oci::MirrorMode::Sync,
             out,
@@ -140,6 +141,7 @@ impl IndexMirror for OciMirror {
         oci_mirror(
             state,
             oci_lookup(state, &options.index),
+            oci_settings(config, &options.index),
             &images,
             peryx_ecosystem_oci::MirrorMode::Verify,
             out,

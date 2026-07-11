@@ -47,10 +47,22 @@ fn write_mirror_row(out: &mut Output, row: &peryx_ecosystem_oci::MirrorRow) -> s
     )
 }
 
+/// The compiled OCI settings of the index a mirror run pulls through. The server compiled the same
+/// table when it built the state this runs against, so an invalid value cannot reach here.
+pub(super) fn oci_settings(config: &Config, name: &str) -> peryx_ecosystem_oci::IndexSettings {
+    config
+        .indexes
+        .iter()
+        .find(|index| index.name == name || index.route == name)
+        .and_then(|index| peryx_ecosystem_oci::IndexSettings::compile(&index.ecosystem_settings).ok())
+        .unwrap_or_default()
+}
+
 /// Mirror an OCI index's `--image` references into the store, or verify they are already present.
 pub(super) async fn oci_mirror(
     state: &Arc<AppState>,
     index: &Index,
+    settings: peryx_ecosystem_oci::IndexSettings,
     images: &[String],
     mode: peryx_ecosystem_oci::MirrorMode,
     out: &mut Output,
@@ -58,7 +70,7 @@ pub(super) async fn oci_mirror(
     if images.is_empty() {
         bail!("mirroring an OCI index needs at least one image (--image or [index.prefetch] packages)");
     }
-    let rows = peryx_ecosystem_oci::mirror(&state.serving, index, images, mode).await?;
+    let rows = peryx_ecosystem_oci::mirror(&state.serving, index, settings, images, mode).await?;
     out.write_all(HEADER.as_bytes())?;
     let mut errors = 0_u64;
     for row in &rows {

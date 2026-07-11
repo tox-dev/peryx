@@ -188,6 +188,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         route: "cached-two".to_owned(),
         policy: PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
+        ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
@@ -205,6 +206,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         route: "double".to_owned(),
         policy: PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
+        ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
@@ -217,6 +219,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         route: "root-virtual".to_owned(),
         policy: PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
+        ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {

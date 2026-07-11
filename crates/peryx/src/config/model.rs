@@ -49,6 +49,10 @@ pub struct IndexConfig {
     /// The `[policy]` keys the neutral engine did not claim, left raw for this index's ecosystem
     /// driver to compile into artifact rules. Empty when an operator set no ecosystem-specific policy.
     pub ecosystem_policy: Table,
+    /// The `[index.settings]` table: this index's ecosystem-specific settings (an OCI cache's
+    /// `library_prefix`), left raw for the composition root to compile against its ecosystem. Empty
+    /// when an operator set none.
+    pub ecosystem_settings: Table,
     pub webhooks: Vec<WebhookConfig>,
 }
 
@@ -192,6 +196,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
             ecosystem_policy: Table::new(),
+            ecosystem_settings: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: "https://pypi.org/simple/".to_owned(),
@@ -209,6 +214,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
             ecosystem_policy: Table::new(),
+            ecosystem_settings: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Hosted {
                 upload_token: None,
@@ -221,6 +227,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Pypi,
             policy: PolicyConfig::default(),
             ecosystem_policy: Table::new(),
+            ecosystem_settings: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Virtual {
                 layers: vec!["hosted".to_owned(), "pypi".to_owned()],
@@ -233,6 +240,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Oci,
             policy: PolicyConfig::default(),
             ecosystem_policy: Table::new(),
+            ecosystem_settings: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Cached {
                 upstream: "https://registry-1.docker.io".to_owned(),
@@ -250,6 +258,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Oci,
             policy: PolicyConfig::default(),
             ecosystem_policy: Table::new(),
+            ecosystem_settings: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Hosted {
                 upload_token: None,
@@ -262,6 +271,7 @@ fn default_indexes() -> Vec<IndexConfig> {
             ecosystem: Ecosystem::Oci,
             policy: PolicyConfig::default(),
             ecosystem_policy: Table::new(),
+            ecosystem_settings: Table::new(),
             webhooks: Vec::new(),
             kind: IndexKind::Virtual {
                 layers: vec!["images".to_owned(), "dockerhub".to_owned()],

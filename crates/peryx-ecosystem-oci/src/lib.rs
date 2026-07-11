@@ -32,6 +32,7 @@ mod name;
 pub mod openapi;
 pub(crate) mod registry;
 mod search_oci;
+mod settings;
 mod store;
 mod upstream;
 mod web;
@@ -43,15 +44,17 @@ pub use error::{ErrorCode, error_response, gateway_error};
 pub use mirror::{MirrorMode, MirrorRow, mirror};
 pub use registry::OciRegistry;
 pub use search_oci::OciIndexer;
+pub use settings::{IndexSettings, LibraryPrefix};
 pub use store::referenced_blob_digests;
 
-/// Wire the OCI registry driver into a freshly built [`AppState`].
+/// Wire the OCI registry driver into a freshly built [`AppState`], with each OCI index's compiled
+/// [`IndexSettings`] keyed by index name. An index absent from `settings` takes the defaults.
 ///
 /// Installs only when an `oci`-ecosystem index is configured: with none, the state keeps its no-op
 /// driver and the `/v2/` namespace stays inert, so a deployment without OCI indexes carries no OCI cost.
-pub fn install(state: &mut AppState) {
+pub fn install(state: &mut AppState, settings: impl IntoIterator<Item = (String, IndexSettings)>) {
     if state.indexes.iter().any(|index| index.ecosystem == Ecosystem::Oci) {
-        state.register_ecosystem(Arc::new(OciRegistry::new()), Arc::new(OciIndexer));
+        state.register_ecosystem(Arc::new(OciRegistry::new(settings)), Arc::new(OciIndexer));
         state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
     }
 }

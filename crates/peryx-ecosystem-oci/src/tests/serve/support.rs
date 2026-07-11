@@ -10,7 +10,8 @@ pub(super) use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub(super) use crate::store::{self, Manifest};
 pub(super) use crate::tests::{
-    app_with_indexes, body_has_code, hosted, oci_digest, oci_index, proxy, proxy_with_auth, send, send_with,
+    app_with_indexes, body_has_code, hosted, oci_digest, oci_index, proxy, proxy_with_auth, proxy_with_settings, send,
+    send_with,
 };
 
 pub(super) const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";

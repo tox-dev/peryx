@@ -6,8 +6,10 @@ use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
 
+use peryx_ecosystem_oci::LibraryPrefix;
+
 use crate::config::{Config, IndexConfig, IndexKind, WebhookConfig, WebhookSecret};
-use crate::server::{build_indexes, build_router, build_state, upstream_auth};
+use crate::server::{build_index_settings, build_indexes, build_router, build_state, upstream_auth};
 
 fn config_with(dir: &tempfile::TempDir, indexes: Vec<IndexConfig>) -> Config {
     Config {
@@ -23,6 +25,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         route: name.to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
+        ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Cached {
@@ -43,6 +46,7 @@ fn hosted(name: &str) -> IndexConfig {
         route: name.to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
+        ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Hosted {
@@ -58,6 +62,7 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         route: "team/dev".to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
+        ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
         ecosystem: peryx_core::Ecosystem::Pypi,
         kind: IndexKind::Virtual {
@@ -289,6 +294,62 @@ fn test_build_router_data_dir_error() {
 fn test_build_indexes_rejects(#[case] indexes: fn() -> Vec<IndexConfig>, #[case] expected: &[&str]) {
     let err = build_indexes(&indexes(), false).unwrap_err();
     let message = err.to_string();
+    for substr in expected {
+        assert!(message.contains(substr), "{message}");
+    }
+}
+
+#[rstest]
+#[case::absent(None, LibraryPrefix::Auto)]
+#[case::auto(Some("auto".into()), LibraryPrefix::Auto)]
+#[case::always(Some(true.into()), LibraryPrefix::Always)]
+#[case::never(Some(false.into()), LibraryPrefix::Never)]
+fn test_build_index_settings_compiles_an_oci_library_prefix(
+    #[case] value: Option<toml::Value>,
+    #[case] expected: LibraryPrefix,
+) {
+    let mut index = IndexConfig {
+        ecosystem: peryx_core::Ecosystem::Oci,
+        ..cached("hub", "https://registry-1.docker.io/")
+    };
+    if let Some(value) = value {
+        index.ecosystem_settings.insert("library_prefix".to_owned(), value);
+    }
+    let settings = build_index_settings(&[index]).unwrap();
+    assert_eq!(settings["hub"].library_prefix, expected);
+}
+
+#[rstest]
+#[case::invalid_oci_value(
+    peryx_core::Ecosystem::Oci,
+    "library_prefix",
+    "always".into(),
+    &["compile settings for hub", "must be true, false, or \"auto\""][..]
+)]
+#[case::unknown_oci_key(
+    peryx_core::Ecosystem::Oci,
+    "libary_prefix",
+    true.into(),
+    &["compile settings for hub", "unknown field `libary_prefix`"][..]
+)]
+#[case::settings_on_an_ecosystem_without_any(
+    peryx_core::Ecosystem::Pypi,
+    "library_prefix",
+    "auto".into(),
+    &["compile settings for hub", "unknown field `library_prefix`"][..]
+)]
+fn test_build_index_settings_rejects(
+    #[case] ecosystem: peryx_core::Ecosystem,
+    #[case] key: &str,
+    #[case] value: toml::Value,
+    #[case] expected: &[&str],
+) {
+    let mut index = IndexConfig {
+        ecosystem,
+        ..cached("hub", "https://registry-1.docker.io/")
+    };
+    index.ecosystem_settings.insert(key.to_owned(), value);
+    let message = build_index_settings(&[index]).unwrap_err().to_string();
     for substr in expected {
         assert!(message.contains(substr), "{message}");
     }

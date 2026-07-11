@@ -168,7 +168,12 @@ impl OciRegistry {
     ) -> Result<Option<Response>, ServeError> {
         let response = match self
             .upstream
-            .manifest(client.base_url(), client.auth(), repo, digest)
+            .manifest(
+                client.base_url(),
+                client.auth(),
+                &self.upstream_repo(index, client, repo),
+                digest,
+            )
             .await
         {
             Ok(response) => response,
@@ -235,7 +240,12 @@ impl OciRegistry {
         }
         match self
             .upstream
-            .manifest(client.base_url(), client.auth(), repo, tag)
+            .manifest(
+                client.base_url(),
+                client.auth(),
+                &self.upstream_repo(index, client, repo),
+                tag,
+            )
             .await
         {
             Ok(response) => {
@@ -243,9 +253,9 @@ impl OciRegistry {
                 Ok(Some(manifest_response(manifest, &canonical, head)))
             }
             // A `404` is upstream saying the tag is gone, which is an answer. Everything else is a
-            // failure to get one, and a failure to confirm a tag is not a reason to forget it: Docker
-            // Hub answers `401` for any repository it will not discuss with the credentials at hand,
-            // so an expired token would otherwise turn a cached image into `manifest unknown`.
+            // failure to get one, and a failure to confirm a tag is not a reason to forget it: an
+            // expired token draws a `401` from Docker Hub, which must serve the cached image rather
+            // than report it unknown — and, with nothing cached, report the auth failure itself.
             Err(UpstreamError::Status(StatusCode::NOT_FOUND)) => Ok(None),
             Err(UpstreamError::Status(status)) if absent_upstream(status) => stale_tag(state, index, repo, tag, head),
             Err(err) => Ok(Some(
@@ -273,7 +283,12 @@ impl OciRegistry {
         };
         let Ok(Some(upstream)) = self
             .upstream
-            .manifest_digest(client.base_url(), client.auth(), repo, tag)
+            .manifest_digest(
+                client.base_url(),
+                client.auth(),
+                &self.upstream_repo(index, client, repo),
+                tag,
+            )
             .await
         else {
             return Ok(None);

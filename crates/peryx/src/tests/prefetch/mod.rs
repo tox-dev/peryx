@@ -20,6 +20,7 @@ pub(super) fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             route: "pypi".to_owned(),
             policy: PolicyConfig::default(),
             ecosystem_policy: toml::Table::new(),
+            ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Pypi,
             kind: IndexKind::Cached {
@@ -45,6 +46,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 route: "hosted".to_owned(),
                 policy: PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Hosted {
@@ -57,6 +59,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 route: "pypi".to_owned(),
                 policy: PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Cached {
@@ -74,6 +77,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 route: "root/pypi".to_owned(),
                 policy: PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
                 ecosystem: peryx_core::Ecosystem::Pypi,
                 kind: IndexKind::Virtual {

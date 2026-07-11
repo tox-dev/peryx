@@ -59,7 +59,7 @@ fn seeded(runtime: &Runtime) -> (Router, String, String) {
         policy: Policy::default(),
     };
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], Arc::new(|| 1000));
-    peryx_ecosystem_oci::install(&mut state);
+    peryx_ecosystem_oci::install(&mut state, std::collections::HashMap::new());
     let state = Arc::new(state);
     let blob = vec![0x7fu8; 4096];
     let blob_digest = format!("sha256:{}", state.blobs.write(&blob).unwrap().as_str());

@@ -127,6 +127,10 @@ pub struct RawIndex {
     pub ecosystem: Option<String>,
     #[serde(default)]
     pub policy: RawPolicy,
+    /// The `[index.settings]` table: this index's ecosystem-specific settings, carried raw for its
+    /// driver to compile. Which keys are valid depends on the ecosystem, so this layer claims none.
+    #[serde(default)]
+    pub settings: Table,
     pub cached: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,

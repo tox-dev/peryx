@@ -118,6 +118,7 @@ the role. peryx rejects unknown keys.
 | `layers`               | virtual | Ordered index names to compose; first match per filename wins         |                    |
 | `upload`               | virtual | Hosted layer that receives uploads                                    | first hosted layer |
 | `policy`               | all     | Nested index policy table                                             | empty              |
+| `settings`             | all     | Nested table of the index ecosystem's own settings                    | empty              |
 | `webhook`              | all     | Signed delivery targets for upload and index-change events            | none               |
 
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
@@ -212,6 +213,35 @@ and wheel tags. These are Python-specific
 ([PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) versions, wheel/sdist types, wheel
 tags) and have no OCI counterpart, so they are implemented in the PyPI ecosystem crate and apply only to a PyPI index.
 Each ecosystem contributes its own matchers to the same neutral `[index.policy]` engine through a rule trait.
+
+### `[index.settings]`
+
+Settings the index's ecosystem defines for itself. peryx carries the table to that ecosystem and rejects a key the
+ecosystem does not know, so a PyPI index accepts no key here today.
+
+An OCI index reads one: `library_prefix`, which decides whether a single-segment repository (`ubuntu`) is asked of the
+upstream as `library/ubuntu`. Docker Hub keeps its official images under `library/` — `docker pull ubuntu` pulls
+`library/ubuntu` — and a client pulling through a routed proxy index sends the name it typed, so peryx adds the
+namespace before it asks Hub.
+
+```toml
+[[index]]
+name = "dockerhub"
+ecosystem = "oci"
+cached = "https://registry-1.docker.io"
+
+[index.settings]
+library_prefix = "auto"
+```
+
+| Value    | Meaning                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| `"auto"` | Prefix only when the upstream host is `docker.io`, `index.docker.io`, or `registry-1.docker.io` (the default) |
+| `true`   | Prefix whatever the upstream, for a Hub-compatible mirror on another host                                     |
+| `false`  | Never rewrite; ask the upstream for the name the client typed                                                 |
+
+A name that already carries a namespace (`acme/app`) is never rewritten, and the rewrite reaches the upstream request
+only: what peryx caches, tags, and serves keeps the spelling the client used.
 
 ### `[index.prefetch]`
 

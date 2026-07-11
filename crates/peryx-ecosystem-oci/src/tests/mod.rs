@@ -14,6 +14,7 @@ mod virtual_tests;
 mod web_tests;
 mod webhooks_tests;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -31,6 +32,8 @@ use peryx_upstream::UpstreamClient;
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
+use crate::IndexSettings;
+
 /// Build an app over a single OCI index at route `route`, wiring the real driver.
 fn app_with(dir: &TempDir, index: Index) -> (Arc<AppState>, axum::Router) {
     app_with_indexes(dir, vec![index])
@@ -41,7 +44,7 @@ fn app_with_indexes(dir: &TempDir, indexes: Vec<Index>) -> (Arc<AppState>, axum:
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 1000));
-    crate::install(&mut state);
+    crate::install(&mut state, HashMap::new());
     let state = Arc::new(state);
     (state.clone(), router(state))
 }
@@ -61,6 +64,18 @@ fn oci_index(name: &str, route: &str, kind: IndexKind) -> Index {
 fn proxy(dir: &TempDir, upstream: &str, offline: bool) -> (Arc<AppState>, axum::Router) {
     let client = UpstreamClient::new(upstream).unwrap();
     app_with(dir, oci_index("hub", "hub", IndexKind::Cached { client, offline }))
+}
+
+/// A caching proxy of `upstream` at route `hub`, under the OCI settings an operator configured for it.
+fn proxy_with_settings(dir: &TempDir, upstream: &str, settings: IndexSettings) -> (Arc<AppState>, axum::Router) {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let client = UpstreamClient::new(upstream).unwrap();
+    let index = oci_index("hub", "hub", IndexKind::Cached { client, offline: false });
+    let mut state = AppState::with_clock(meta, blobs, 60, vec![index], Arc::new(|| 1000));
+    crate::install(&mut state, HashMap::from([("hub".to_owned(), settings)]));
+    let state = Arc::new(state);
+    (state.clone(), router(state))
 }
 
 /// A caching proxy of `upstream` at route `hub` that authenticates with `auth` at the token realm.
@@ -101,7 +116,7 @@ fn proxy_with_stale(
     );
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], clock);
     state.max_stale_secs = max_stale_secs;
-    crate::install(&mut state);
+    crate::install(&mut state, HashMap::new());
     let state = Arc::new(state);
     (state.clone(), router(state))
 }
@@ -153,7 +168,7 @@ fn hosted_with_clock(
         },
     );
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], clock);
-    crate::install(&mut state);
+    crate::install(&mut state, HashMap::new());
     let state = Arc::new(state);
     (state.clone(), router(state))
 }
@@ -340,7 +355,7 @@ async fn test_v2_reads_are_rate_limited_through_the_oci_classifier() {
         rate_limit,
         Vec::<(String, usize)>::new(),
     );
-    crate::install(&mut state);
+    crate::install(&mut state, HashMap::new());
     let app = router(Arc::new(state));
     let headers = [("x-forwarded-for", "192.0.2.9")];
 

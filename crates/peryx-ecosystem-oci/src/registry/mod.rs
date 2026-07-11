@@ -18,6 +18,7 @@
 
 use crate::error::{ErrorCode, error_response, gateway_error};
 use crate::name::{OciRoute, classify};
+use crate::settings::IndexSettings;
 use crate::upstream::{Upstream, UpstreamError};
 use async_trait::async_trait;
 use axum::body::Body;
@@ -33,6 +34,8 @@ use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::PendingBlob;
 use peryx_storage::meta::MetaError;
+use peryx_upstream::UpstreamClient;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 mod blobs;
@@ -110,11 +113,15 @@ impl From<ServeError> for String {
         err.message()
     }
 }
-/// The OCI/Docker registry driver: one shared upstream fetcher over the process's stores, plus the
-/// in-progress blob uploads a hosted push accumulates across its `POST`/`PATCH`/`PUT` requests.
+/// The OCI/Docker registry driver.
+///
+/// Holds one shared upstream fetcher over the process's stores, the per-index settings the
+/// composition root compiled, and the in-progress blob uploads a hosted push accumulates across its
+/// `POST`/`PATCH`/`PUT` requests.
 #[derive(Default)]
 pub struct OciRegistry {
     upstream: Upstream,
+    settings: std::collections::HashMap<String, IndexSettings>,
     uploads: tokio::sync::Mutex<std::collections::HashMap<String, UploadSession>>,
     next_upload: std::sync::atomic::AtomicU64,
 }
@@ -136,10 +143,22 @@ struct UploadSession {
 /// their file descriptors and temp files forever; dropping the session deletes its staged temp file.
 const UPLOAD_SESSION_TTL_SECS: i64 = 3600;
 impl OciRegistry {
-    /// Build the driver with its shared upstream client.
+    /// Build the driver with its shared upstream client and each OCI index's settings, keyed by index
+    /// name.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(settings: impl IntoIterator<Item = (String, IndexSettings)>) -> Self {
+        Self {
+            settings: settings.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The name `repo` is spelled with upstream on the cached index `index`, which is what the request
+    /// path and the token scope must both carry. Everything peryx stores or shows keeps the client's
+    /// spelling.
+    fn upstream_repo<'a>(&self, index: &str, client: &UpstreamClient, repo: &'a str) -> Cow<'a, str> {
+        let prefix = self.settings.get(index).copied().unwrap_or_default().library_prefix;
+        crate::settings::upstream_repo(prefix, client.base_url(), repo)
     }
 
     /// A fresh, process-unique upload-session id. Sessions are ephemeral, so a counter suffices.
@@ -609,30 +628,35 @@ async fn bounded_body(response: reqwest::Response, max: usize) -> Result<bytes::
     Ok(bytes::Bytes::from(body))
 }
 /// Turn an upstream fetch failure into a client response. A rate limit becomes a `429` carrying the
-/// upstream's `Retry-After`, so the client backs off instead of hammering; anything else is a `502`,
-/// a fault between peryx and its upstream.
+/// upstream's `Retry-After`, so the client backs off instead of hammering; a `401` says the upstream
+/// refused peryx's credentials, which is the client's real cause, not a missing artifact; anything
+/// else is a `502`, a fault between peryx and its upstream.
 fn upstream_error_response(err: &UpstreamError, what: &str) -> Response {
-    let UpstreamError::RateLimited(retry_after) = err else {
-        return gateway_error(&format!("upstream {what} fetch failed: {err}"));
-    };
-    let mut response = error_response(ErrorCode::TooManyRequests, "upstream rate limit reached; retry later");
-    if let Some(value) = retry_after
-        .as_deref()
-        .and_then(|value| HeaderValue::from_str(value).ok())
-    {
-        response.headers_mut().insert(header::RETRY_AFTER, value);
+    match err {
+        UpstreamError::RateLimited(retry_after) => {
+            let mut response = error_response(ErrorCode::TooManyRequests, "upstream rate limit reached; retry later");
+            if let Some(value) = retry_after
+                .as_deref()
+                .and_then(|value| HeaderValue::from_str(value).ok())
+            {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            response
+        }
+        UpstreamError::Status(StatusCode::UNAUTHORIZED) => error_response(
+            ErrorCode::Unauthorized,
+            &format!("upstream registry refused authentication for this {what}"),
+        ),
+        _ => gateway_error(&format!("upstream {what} fetch failed: {err}")),
     }
-    response
 }
 /// Whether an upstream status means "this member does not have it" rather than a fault: `404`, and
-/// also `401`/`403` because a registry (Docker Hub) answers those for a repository that does not
-/// exist or is not anonymously visible, either way the member cannot serve it, so a virtual index
-/// walks on and a lone proxy reports the artifact unknown.
+/// also `403` because a registry answers that for a repository it will not show anonymously; either
+/// way the member cannot serve it, so a virtual index walks on and a lone proxy reports the artifact
+/// unknown. A `401` is not absence: it is the upstream refusing peryx, and folding it in here would
+/// report a legible auth failure as `manifest unknown`.
 fn absent_upstream(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-    )
+    matches!(status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN)
 }
 #[cfg(test)]
 mod tests {

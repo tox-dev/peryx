@@ -19,6 +19,7 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
             route: "oci".to_owned(),
             policy: PolicyConfig::default(),
             ecosystem_policy: toml::Table::new(),
+            ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
             ecosystem: peryx_core::Ecosystem::Oci,
             kind: IndexKind::Cached {

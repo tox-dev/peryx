@@ -103,6 +103,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
         kind,
         policy: raw.policy.neutral,
         ecosystem_policy: raw.policy.ecosystem,
+        ecosystem_settings: raw.settings,
         webhooks: raw
             .webhooks
             .into_iter()

@@ -68,7 +68,16 @@ impl OciRegistry {
         {
             return Ok(tag_page_response(name, link.as_deref(), body.clone()));
         }
-        match self.upstream.tags(client.base_url(), client.auth(), repo, query).await {
+        match self
+            .upstream
+            .tags(
+                client.base_url(),
+                client.auth(),
+                &self.upstream_repo(index, client, repo),
+                query,
+            )
+            .await
+        {
             Ok(response) => {
                 let link = response
                     .headers()
@@ -125,10 +134,21 @@ impl OciRegistry {
 
     /// The referrer descriptors upstream records for `repo`/`digest`, or empty on any failure (a
     /// registry predating the referrers API answers `404`, which must not fail the whole response).
-    async fn upstream_referrers(&self, client: &UpstreamClient, repo: &str, digest: &str) -> Vec<serde_json::Value> {
+    async fn upstream_referrers(
+        &self,
+        index: &str,
+        client: &UpstreamClient,
+        repo: &str,
+        digest: &str,
+    ) -> Vec<serde_json::Value> {
         let Ok(response) = self
             .upstream
-            .referrers(client.base_url(), client.auth(), repo, digest)
+            .referrers(
+                client.base_url(),
+                client.auth(),
+                &self.upstream_repo(index, client, repo),
+                digest,
+            )
             .await
         else {
             return Vec::new();
@@ -175,7 +195,7 @@ impl OciRegistry {
                 }
             }
             if let Some(client) = member.proxy_client() {
-                for descriptor in self.upstream_referrers(client, repo, digest).await {
+                for descriptor in self.upstream_referrers(&member.name, client, repo, digest).await {
                     add(descriptor);
                 }
             }
