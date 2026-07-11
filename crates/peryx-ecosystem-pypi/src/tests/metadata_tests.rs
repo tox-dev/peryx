@@ -116,6 +116,16 @@ fn test_parse_metadata_ignores_unknown_headers() {
 }
 
 #[test]
+fn test_parse_metadata_splits_headers_from_body_on_a_crlf_blank_line() {
+    // A CRLF document's header/body boundary is `\r\n\r\n`; matching only `\n\n` would read the body
+    // as headers, so a `Version:` line in the description would overwrite the real version.
+    let doc = parse_metadata("Name: x\r\nVersion: 1\r\n\r\nDescription body.\r\nVersion: 2 in prose.\r\n");
+    assert_eq!(doc.name, "x");
+    assert_eq!(doc.version, "1");
+    assert_eq!(doc.description, "Description body.\r\nVersion: 2 in prose.");
+}
+
+#[test]
 fn test_ui_meta_groups_classifiers_and_omits_the_block_when_none() {
     use peryx_core::UiBlock;
 

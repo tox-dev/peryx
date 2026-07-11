@@ -31,7 +31,12 @@ pub struct CoreMetadataDoc {
 #[must_use]
 pub fn parse_metadata(text: &str) -> CoreMetadataDoc {
     let mut doc = CoreMetadataDoc::default();
-    let (headers, body) = text.split_once("\n\n").unwrap_or((text, ""));
+    // The header/body boundary is a blank line, which is `\r\n\r\n` in a CRLF document; matching only
+    // `\n\n` would read the whole CRLF document as headers and mis-parse body lines as fields.
+    let (headers, body) = text
+        .split_once("\r\n\r\n")
+        .or_else(|| text.split_once("\n\n"))
+        .unwrap_or((text, ""));
     for line in unfold(headers) {
         let Some((key, value)) = line.split_once(':') else {
             continue;

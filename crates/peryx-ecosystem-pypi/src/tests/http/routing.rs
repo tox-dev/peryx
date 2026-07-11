@@ -110,3 +110,47 @@ async fn test_project_list_html() {
     assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
     assert!(body.contains("peryxpkg"));
 }
+#[rstest]
+#[case::html("text/html", "text/html; charset=utf-8")]
+#[case::pep691_json("application/json", "application/vnd.pypi.simple.v1+json")]
+#[tokio::test]
+async fn test_simple_detail_for_project_named_json_is_not_claimed_by_legacy_json(
+    #[case] accept: &str,
+    #[case] expected_content_type: &str,
+) {
+    let h = harness().await;
+    // PEP 503 reserves `/simple/{project}/` for the detail page, so `/simple/json/` must reach the
+    // project `json`, not the legacy-JSON view of a project `simple`. Only `/simple/json/` is mocked;
+    // the shadowing bug would fetch `/simple/simple/` and 404.
+    let body = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"json\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"json-1.0-py3-none-any.whl\",\"url\":\"{}/files/json.whl\",\
+         \"hashes\":{{\"sha256\":\"{}\"}}}}]}}",
+        h.server.uri(),
+        Digest::of(b"json-wheel").as_str(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/json/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&h.server)
+        .await;
+
+    let (status, headers, body) = get(&h.state, "/pypi/simple/json/", Some(accept)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], expected_content_type);
+    assert!(body.contains("json-1.0-py3-none-any.whl"), "{body}");
+}
+#[tokio::test]
+async fn test_legacy_json_still_serves_a_normal_project() {
+    let h = harness().await;
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, Digest::of(b"wheel").as_str(), &file_url, None).await;
+
+    let (status, headers, body) = get(&h.state, "/pypi/flask/json", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+    let legacy: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(legacy["info"]["name"], "flask");
+}

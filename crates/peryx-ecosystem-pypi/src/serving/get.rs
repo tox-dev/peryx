@@ -211,6 +211,14 @@ struct LegacyJsonTarget {
 }
 
 fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> {
+    // The Simple API and the file/inspect routes own their namespaces; a project normalized to `json`
+    // must reach `GET .../simple/json/`, not be claimed here as the legacy JSON view of `simple`.
+    if ["simple/", "files/", "inspect/"]
+        .iter()
+        .any(|prefix| rest.starts_with(prefix))
+    {
+        return Ok(None);
+    }
     let trimmed = rest.trim_end_matches('/');
     let Some(spec) = trimmed.strip_suffix("/json") else {
         return Ok(None);
