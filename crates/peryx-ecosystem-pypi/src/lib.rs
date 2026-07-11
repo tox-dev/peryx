@@ -28,6 +28,8 @@ pub mod search_pypi;
 pub mod serving;
 mod simple;
 #[cfg(feature = "serving")]
+pub mod store;
+#[cfg(feature = "serving")]
 pub mod stream;
 #[cfg(feature = "serving")]
 pub mod upload;
