@@ -237,8 +237,10 @@ async fn test_resolution_skips_a_non_oci_index() {
     let (state, app) = app_with_indexes(&dir, vec![pypi, store]);
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
-    store::put_manifest(
+    store::record_manifest(
         &state.meta,
+        "store",
+        "app",
         &digest,
         &Manifest {
             media_type: MANIFEST_TYPE.to_owned(),
@@ -265,8 +267,10 @@ async fn test_root_route_resolves_the_whole_name_as_the_repository() {
     let (state, app) = app_with_indexes(&dir, vec![root]);
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
-    store::put_manifest(
+    store::record_manifest(
         &state.meta,
+        "root",
+        "library/nginx",
         &digest,
         &Manifest {
             media_type: MANIFEST_TYPE.to_owned(),
@@ -300,8 +304,10 @@ async fn test_longest_route_wins_among_overlapping_oci_indexes() {
     );
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
-    store::put_manifest(
+    store::record_manifest(
         &state.meta,
+        "abc",
+        "app",
         &digest,
         &Manifest {
             media_type: MANIFEST_TYPE.to_owned(),

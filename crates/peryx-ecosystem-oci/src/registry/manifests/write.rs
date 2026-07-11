@@ -73,7 +73,7 @@ pub(in crate::registry) async fn put_manifest(
         media_type: media_type.clone(),
         bytes: bytes.to_vec(),
     };
-    store::put_manifest(&state.meta, &canonical, &manifest)?;
+    store::record_manifest(&state.meta, &index.name, &repo, &canonical, &manifest)?;
     if let Reference::Tag(tag) = reference {
         store::put_tag(&state.meta, &index.name, &repo, tag, &canonical)?;
     }
@@ -165,15 +165,17 @@ pub(in crate::registry) fn delete_manifest(
     })
 }
 /// Delete a manifest by digest, mirroring blob retention. Manifests are one global content-addressed
-/// pool shared across indexes, so clean this repo's own tags and referrers to the digest, then unlink
-/// the global record only when nothing else still references it. Reports whether anything changed, so
-/// an untouched absent digest still answers `404 MANIFEST_UNKNOWN`.
+/// pool shared across indexes, so clean this repo's own tags and referrers to the digest, drop its
+/// record that this repo serves the digest, then unlink the global record only when nothing else still
+/// references it. Reports whether anything changed, so an untouched absent digest still answers
+/// `404 MANIFEST_UNKNOWN`.
 fn delete_manifest_by_digest(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, ServeError> {
     let present = store::get_manifest(meta, digest)?.is_some();
     let cleaned = store::delete_repo_tags_to(meta, index, repo, digest)?;
     if present && !store::referenced_manifest_digests(meta)?.contains(digest) {
         store::delete_manifest(meta, digest)?;
     }
+    store::prune_manifest_membership(meta, index, repo, digest)?;
     Ok(present || cleaned > 0)
 }
 /// A `201 Created` for a stored manifest, echoing `OCI-Subject` when the manifest declared a subject.

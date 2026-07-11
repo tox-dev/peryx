@@ -180,8 +180,11 @@ async fn test_manifest_by_digest_served_from_cache_without_upstream() {
     let (state, app) = proxy(&dir, "http://127.0.0.1:1/", false);
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
-    store::put_manifest(
+    // Recorded as one `hub/app` serves, so the cached bytes answer without an upstream round trip.
+    store::record_manifest(
         &state.meta,
+        "hub",
+        "app",
         &digest,
         &Manifest {
             media_type: MANIFEST_TYPE.to_owned(),

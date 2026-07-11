@@ -16,6 +16,7 @@ pub use descriptors::{blob_digest, linux_amd64_child, manifest_descriptors, refe
 const MANIFEST_PREFIX: &str = "oci\u{0}m\u{0}";
 const TAG_PREFIX: &str = "oci\u{0}t\u{0}";
 const REFERRER_PREFIX: &str = "oci\u{0}r\u{0}";
+const MEMBERSHIP_PREFIX: &str = "oci\u{0}mm\u{0}";
 
 /// A stored manifest: its media type and the exact bytes whose digest addresses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,44 @@ pub fn put_manifest(meta: &MetaStore, digest: &str, manifest: &Manifest) -> Resu
     meta.put_driver_value(&manifest_key(digest), &manifest.encode())
 }
 
+/// Store a manifest and record it as one `(index, repo)` serves: its own digest, and — for an image
+/// index or manifest list — each child it names. A by-digest read authorizes against this per-repository
+/// membership, not the digest's presence in the global content store the bytes dedupe into, so a
+/// manifest one repository cached is not readable by digest under another.
+///
+/// # Errors
+/// Returns a store error if a write fails.
+pub fn record_manifest(
+    meta: &MetaStore,
+    index: &str,
+    repo: &str,
+    digest: &str,
+    manifest: &Manifest,
+) -> Result<(), MetaError> {
+    put_manifest(meta, digest, manifest)?;
+    record_membership(meta, index, repo, digest)?;
+    for child in manifest_descriptors(&manifest.bytes).0 {
+        record_membership(meta, index, repo, &child)?;
+    }
+    Ok(())
+}
+
+/// Record that `(index, repo)` serves `digest`. The value is empty: the key's presence is the
+/// authorization a by-digest read checks.
+fn record_membership(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<(), MetaError> {
+    meta.put_driver_value(&membership_key(index, repo, digest), &[])
+}
+
+/// The driver-KV key marking that `(index, repo)` serves `digest`.
+fn membership_key(index: &str, repo: &str, digest: &str) -> String {
+    format!("{MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}{digest}")
+}
+
+/// The prefix enumerating every digest `(index, repo)` records as one it serves.
+fn membership_prefix(index: &str, repo: &str) -> String {
+    format!("{MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}")
+}
+
 /// Fetch a manifest by digest.
 ///
 /// # Errors
@@ -79,6 +118,14 @@ pub fn get_manifest(meta: &MetaStore, digest: &str) -> Result<Option<Manifest>, 
     Ok(meta
         .get_driver_value(&manifest_key(digest))?
         .and_then(|raw| Manifest::decode(&raw)))
+}
+
+/// Whether `(index, repo)` records `digest` as one it serves — the authorization for a by-digest read.
+///
+/// # Errors
+/// Returns a store error if the read fails.
+pub fn manifest_is_member(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, MetaError> {
+    Ok(meta.get_driver_value(&membership_key(index, repo, digest))?.is_some())
 }
 
 /// Point a tag at a manifest digest.
@@ -137,6 +184,39 @@ pub fn list_tags(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec<String
 /// Returns a store error if the write fails.
 pub fn delete_manifest(meta: &MetaStore, digest: &str) -> Result<bool, MetaError> {
     meta.delete_driver_value(&manifest_key(digest))
+}
+
+/// Drop `(index, repo)`'s record that it serves `digest`, unless the digest is still a child of an
+/// image index or manifest list this repository serves — a child stays reachable, and readable by
+/// digest, for as long as an index that names it does. Called on a by-digest manifest delete, after its
+/// tags and referrer records are unlinked, so a deleted digest cannot later be read by digest under a
+/// repository that no longer holds it (which a re-push elsewhere would otherwise leak).
+///
+/// # Errors
+/// Returns a store error if a scan, read, or write fails.
+pub fn prune_manifest_membership(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<(), MetaError> {
+    if !reachable_as_child(meta, index, repo, digest)? {
+        meta.delete_driver_value(&membership_key(index, repo, digest))?;
+    }
+    Ok(())
+}
+
+/// Whether some other manifest `(index, repo)` serves names `digest` among its children.
+fn reachable_as_child(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, MetaError> {
+    let prefix = membership_prefix(index, repo);
+    for key in meta.driver_prefix_keys(&prefix)? {
+        let member = &key[prefix.len()..];
+        if member != digest
+            && let Some(manifest) = get_manifest(meta, member)?
+            && manifest_descriptors(&manifest.bytes)
+                .0
+                .iter()
+                .any(|child| child == digest)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Remove a tag, reporting whether it was present. Its proxy freshness record goes with it.
@@ -545,6 +625,53 @@ mod tests {
         assert_eq!(list_referrers(&meta, "store", "app", "sha256:z").unwrap().len(), 1);
         // Nothing left to clear on a repeat.
         assert_eq!(delete_repo_tags_to(&meta, "store", "app", "sha256:x").unwrap(), 0);
+    }
+
+    fn index_of(child: &str) -> Manifest {
+        Manifest {
+            media_type: "application/vnd.oci.image.index.v1+json".to_owned(),
+            bytes: format!(r#"{{"manifests":[{{"digest":"{child}"}}]}}"#).into_bytes(),
+        }
+    }
+
+    #[test]
+    fn test_record_manifest_marks_the_manifest_and_its_index_children() {
+        let (_dir, meta) = store();
+        let child = format!("sha256:{}", "c".repeat(64));
+        record_manifest(&meta, "store", "app", "sha256:idx", &index_of(&child)).unwrap();
+        // The index and the child it names are both ones this repo serves; another repo and an
+        // unrecorded digest are not.
+        assert!(manifest_is_member(&meta, "store", "app", "sha256:idx").unwrap());
+        assert!(manifest_is_member(&meta, "store", "app", &child).unwrap());
+        assert!(!manifest_is_member(&meta, "store", "other", "sha256:idx").unwrap());
+        assert!(!manifest_is_member(&meta, "store", "app", "sha256:absent").unwrap());
+    }
+
+    #[test]
+    fn test_prune_membership_keeps_an_index_child_and_drops_the_unreferenced() {
+        let (_dir, meta) = store();
+        let child = format!("sha256:{}", "c".repeat(64));
+        let plain = format!("sha256:{}", "d".repeat(64));
+        // The index names `child` but the child's own bytes are never stored, so its membership marker
+        // has no manifest behind it; `plain` is a stored manifest nothing names.
+        record_manifest(&meta, "store", "app", "sha256:idx", &index_of(&child)).unwrap();
+        record_manifest(
+            &meta,
+            "store",
+            "app",
+            &plain,
+            &Manifest {
+                media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+                bytes: b"{\"schemaVersion\":2}".to_vec(),
+            },
+        )
+        .unwrap();
+
+        prune_manifest_membership(&meta, "store", "app", &child).unwrap();
+        prune_manifest_membership(&meta, "store", "app", &plain).unwrap();
+        // The child stays reachable through the index that names it; the plain manifest is dropped.
+        assert!(manifest_is_member(&meta, "store", "app", &child).unwrap());
+        assert!(!manifest_is_member(&meta, "store", "app", &plain).unwrap());
     }
 
     #[test]

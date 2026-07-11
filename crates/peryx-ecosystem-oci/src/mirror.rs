@@ -250,7 +250,7 @@ impl Mirror<'_> {
             media_type,
             bytes: bytes.to_vec(),
         };
-        store::put_manifest(&self.state.meta, &digest, &manifest)?;
+        store::record_manifest(&self.state.meta, self.index, repo, &digest, &manifest)?;
         if let Some(tag) = tag {
             store::put_tag(&self.state.meta, self.index, repo, tag, &digest)?;
             store::set_tag_freshness(&self.state.meta, self.index, repo, tag, &digest, (self.state.clock)())?;

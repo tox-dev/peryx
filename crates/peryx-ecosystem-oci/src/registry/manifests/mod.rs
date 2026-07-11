@@ -38,10 +38,14 @@ impl OciRegistry {
         }
         let response = match reference {
             Reference::Digest(digest) => {
-                let mut served =
-                    store::get_manifest(&state.meta, digest)?.map(|manifest| manifest_response(manifest, digest, head));
+                let members = serving_members(state, index);
+                let mut served = if manifest_authorized(state, &members, repo, digest)? {
+                    store::get_manifest(&state.meta, digest)?.map(|manifest| manifest_response(manifest, digest, head))
+                } else {
+                    None
+                };
                 if served.is_none() {
-                    for member in serving_members(state, index) {
+                    for member in &members {
                         if let Some(client) = member.proxy_client() {
                             served = self
                                 .pull_manifest_by_digest(state, client, &member.name, repo, digest, head)
@@ -304,6 +308,21 @@ impl OciRegistry {
     }
 }
 
+/// Whether any member the resolved index serves from records this digest as one it holds. A manifest
+/// lives once in the global content store, shared across every index for dedup, so its presence there is
+/// not authority to serve it by digest under an arbitrary repository name: the read authorizes only when
+/// a member tagged it, pushed or pulled it, mirrored it, recorded it as a referrer, or serves an index
+/// that names it as a child. A proxy member still pulls an unauthorized miss through — its upstream,
+/// scoped to this repository, is the authority there — so this only gates answering from the cache.
+fn manifest_authorized(state: &ServingState, members: &[&Index], repo: &str, digest: &str) -> Result<bool, ServeError> {
+    for member in members {
+        if store::manifest_is_member(&state.meta, &member.name, repo, digest)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Serve a proxy tag past its freshness window while the upstream cannot confirm it, bounded by
 /// `max_stale_secs` exactly as a cached `PyPI` page is. `0` removes the bound.
 ///
@@ -359,7 +378,7 @@ pub async fn store_manifest(
         media_type,
         bytes: bytes.to_vec(),
     };
-    store::put_manifest(&state.meta, &canonical, &manifest)?;
+    store::record_manifest(&state.meta, index, repo, &canonical, &manifest)?;
     if let Some(tag) = tag {
         store::put_tag(&state.meta, index, repo, tag, &canonical)?;
         store::set_tag_freshness(&state.meta, index, repo, tag, &canonical, (state.clock)())?;
