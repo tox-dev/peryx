@@ -24,7 +24,10 @@ pub struct BasicCredentials {
 /// Basic, not valid base64/UTF-8, or has no `user:password` separator.
 #[must_use]
 pub fn parse_basic(header_value: &str) -> Option<BasicCredentials> {
-    let encoded = header_value.strip_prefix("Basic ")?;
+    let (scheme, encoded) = header_value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
     let decoded = STANDARD.decode(encoded.trim()).ok()?;
     let credentials = String::from_utf8(decoded).ok()?;
     let (user, password) = credentials.split_once(':')?;
