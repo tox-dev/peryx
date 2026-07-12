@@ -11,7 +11,7 @@ fn test_commit_driver_txn_journaled_writes_rows_and_advances_the_serial() {
     let value = store
         .commit_driver_txn(|txn| {
             txn.put("k", b"v")?;
-            Ok::<_, MetaError>((7_u8, Some(b"{\"action\":\"add\"}".to_vec())))
+            Ok::<_, MetaError>((7_u8, vec![b"{\"action\":\"add\"}".to_vec()]))
         })
         .unwrap();
 
@@ -25,6 +25,27 @@ fn test_commit_driver_txn_journaled_writes_rows_and_advances_the_serial() {
 }
 
 #[test]
+fn test_commit_driver_txn_allocates_a_serial_for_each_journal_entry() {
+    let (_dir, store) = super::store();
+
+    store
+        .commit_driver_txn(|txn| {
+            txn.put("k", b"v")?;
+            Ok::<_, MetaError>((
+                (),
+                vec![b"{\"action\":\"yank\"}".to_vec(), b"{\"action\":\"yank\"}".to_vec()],
+            ))
+        })
+        .unwrap();
+
+    assert_eq!(
+        store.current_serial().unwrap(),
+        2,
+        "a batch records one serial per journal entry, in order"
+    );
+}
+
+#[test]
 fn test_commit_driver_txn_without_a_journal_leaves_the_serial_untouched() {
     let (_dir, store) = super::store();
     store.put_driver_value("k", b"old").unwrap();
@@ -32,7 +53,7 @@ fn test_commit_driver_txn_without_a_journal_leaves_the_serial_untouched() {
     store
         .commit_driver_txn(|txn| {
             txn.put("k", b"new")?;
-            Ok::<_, MetaError>(((), None))
+            Ok::<_, MetaError>(((), Vec::new()))
         })
         .unwrap();
 
@@ -50,7 +71,7 @@ fn test_commit_driver_txn_rolls_back_when_the_body_errors() {
 
     let result = store.commit_driver_txn(|txn| {
         txn.put("k", b"v")?;
-        Err::<((), Option<Vec<u8>>), _>(decode_error())
+        Err::<((), Vec<Vec<u8>>), _>(decode_error())
     });
 
     assert!(result.is_err(), "the body's error propagates");
@@ -69,7 +90,7 @@ fn test_driver_txn_get_sees_committed_and_absent_keys() {
         .commit_driver_txn(|txn| {
             assert_eq!(txn.get("present").unwrap().as_deref(), Some(b"x".as_slice()));
             assert!(txn.get("absent").unwrap().is_none());
-            Ok::<_, MetaError>(((), None))
+            Ok::<_, MetaError>(((), Vec::new()))
         })
         .unwrap();
 }
@@ -89,7 +110,7 @@ fn test_driver_txn_prefix_stops_at_the_first_key_outside_the_prefix() {
                 vec![("app/a".to_owned(), b"1".to_vec()), ("app/b".to_owned(), b"2".to_vec())],
                 "the scan excludes the lexicographically later key that lacks the prefix"
             );
-            Ok::<_, MetaError>((txn.remove("app/a")?, None))
+            Ok::<_, MetaError>((txn.remove("app/a")?, Vec::new()))
         })
         .unwrap();
 

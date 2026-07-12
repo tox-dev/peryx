@@ -317,8 +317,8 @@ pub trait PypiStore {
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E>;
 
-    /// Apply a per-file mutation to every uploaded record of `normalized` on `index`, listing and
-    /// writing in one transaction. Returns how many records changed.
+    /// Apply a per-file mutation to every uploaded record of `normalized` on `index`, journaling
+    /// `action` for each record it changes, all in one transaction. Returns how many records changed.
     ///
     /// # Errors
     /// Returns the closure's error, or a store error mapped into it, if the transaction fails.
@@ -326,6 +326,7 @@ pub trait PypiStore {
         &self,
         index: &str,
         normalized: &str,
+        action: &str,
         mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
     ) -> Result<usize, E>;
 
@@ -598,9 +599,10 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         &self,
         index: &str,
         normalized: &str,
+        action: &str,
         mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
     ) -> Result<usize, E> {
-        uploads::mutate_uploads(self, index, normalized, mutate)
+        uploads::mutate_uploads(self, index, normalized, action, mutate)
     }
 
     fn list_upload_entries(

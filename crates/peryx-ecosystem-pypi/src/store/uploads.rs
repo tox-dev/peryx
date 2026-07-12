@@ -73,7 +73,7 @@ pub fn publish_file_if<E: From<MetaError>>(
 ) -> Result<bool, E> {
     let upload = upload_key(file.index, file.normalized, file.filename);
     meta.commit_driver_txn(|txn| match guard(txn.get(&upload)?.as_deref())? {
-        Guard::Skip => Ok((false, None)),
+        Guard::Skip => Ok((false, Vec::new())),
         Guard::Commit => {
             if let Some(sibling) = &file.metadata {
                 let value = metadata_value(sibling.url, sibling.metadata_sha256, sibling.source);
@@ -82,7 +82,7 @@ pub fn publish_file_if<E: From<MetaError>>(
             txn.put(&upload, file.record)?;
             txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
             let journal = journal_bytes("add-file", file.normalized, Some(file.version), Some(file.filename));
-            Ok((true, Some(journal)))
+            Ok((true, vec![journal]))
         }
     })
 }
@@ -140,23 +140,24 @@ pub fn promote_files_checked<E: From<MetaError>>(
             }
         }
         if written == 0 {
-            return Ok((0, None));
+            return Ok((0, Vec::new()));
         }
         txn.put(&project_key(index, normalized), display.as_bytes())?;
-        Ok((written, Some(journal_bytes("promote", normalized, None, None))))
+        Ok((written, vec![journal_bytes("promote", normalized, None, None)]))
     })
 }
 
-/// Apply a per-file mutation to every uploaded record of `normalized` on `index`.
+/// Apply a per-file mutation to every uploaded record of `normalized` on `index`, journaling
+/// `action` for each record it changes.
 ///
-/// The listing and the writes share one transaction, so a concurrent upload cannot land between them
-/// and be missed or resurrected. `mutate` sees each `(filename, record)` and returns
-/// [`UploadMutation::Keep`] to leave it,
-/// [`UploadMutation::Replace`] to rewrite it, or [`UploadMutation::Delete`] to remove it; an error
-/// aborts the whole transaction unchanged. Returns how many records were rewritten or removed. It
-/// stages the row changes without a journal entry: the per-file `yank`/`unyank`/`delete-file` a
-/// replica must observe cannot be inferred from these opaque record bytes, so recording it belongs
-/// to the caller that knows which mutation it applied.
+/// The listing, the writes, and the journal entries share one transaction, so a concurrent upload
+/// cannot land between them and be missed or resurrected, and a crash cannot keep a row while losing
+/// its entry. `mutate` sees each `(filename, record)` and returns [`UploadMutation::Keep`] to leave
+/// it, [`UploadMutation::Replace`] to rewrite it, or [`UploadMutation::Delete`] to remove it; an
+/// error aborts the whole transaction unchanged. Every rewritten or removed record records one
+/// `action` entry against its filename — `yank`, `unyank`, or `delete-file`, the mutation the caller
+/// knows it applied but the opaque record bytes cannot reveal — so a replica replays exactly the
+/// files that changed. Returns how many records were rewritten or removed.
 ///
 /// # Errors
 /// Returns the closure's error, or a store error mapped into it, if the transaction fails.
@@ -167,28 +168,26 @@ pub fn mutate_uploads<E: From<MetaError>>(
     meta: &MetaStore,
     index: &str,
     normalized: &str,
+    action: &str,
     mut mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
 ) -> Result<usize, E> {
     let prefix = format!("{UPLOAD_PREFIX}{index}/{normalized}/");
     meta.commit_driver_txn(|txn| {
-        let mut changed = 0;
+        let mut journal = Vec::new();
         for (key, record) in txn.prefix(&prefix)? {
             let filename = key
                 .strip_prefix(&prefix)
                 .expect("a key from the prefix scan carries the prefix");
             match mutate(filename, &record)? {
-                UploadMutation::Keep => {}
-                UploadMutation::Replace(bytes) => {
-                    txn.put(&key, &bytes)?;
-                    changed += 1;
-                }
+                UploadMutation::Keep => continue,
+                UploadMutation::Replace(bytes) => txn.put(&key, &bytes)?,
                 UploadMutation::Delete => {
                     txn.remove(&key)?;
-                    changed += 1;
                 }
             }
+            journal.push(journal_bytes(action, normalized, None, Some(filename)));
         }
-        Ok((changed, None))
+        Ok((journal.len(), journal))
     })
 }
 
@@ -225,10 +224,10 @@ pub fn delete_upload(meta: &MetaStore, index: &str, normalized: &str, filename: 
         if txn.remove(&upload_key(index, normalized, filename))? {
             Ok((
                 true,
-                Some(journal_bytes("delete-file", normalized, None, Some(filename))),
+                vec![journal_bytes("delete-file", normalized, None, Some(filename))],
             ))
         } else {
-            Ok((false, None))
+            Ok((false, Vec::new()))
         }
     })
 }
@@ -273,11 +272,11 @@ pub fn put_override(
     let key = override_key(index, normalized, filename);
     meta.commit_driver_txn(|txn| {
         if txn.get(&key)?.as_deref() == Some(kind.as_bytes()) {
-            return Ok(((), None));
+            return Ok(((), Vec::new()));
         }
         txn.put(&key, kind.as_bytes())?;
         let action = if kind == "hidden" { "hide" } else { "yank" };
-        Ok(((), Some(journal_bytes(action, normalized, None, Some(filename)))))
+        Ok(((), vec![journal_bytes(action, normalized, None, Some(filename))]))
     })
 }
 
@@ -293,11 +292,11 @@ pub fn delete_override(meta: &MetaStore, index: &str, normalized: &str, filename
     let key = override_key(index, normalized, filename);
     meta.commit_driver_txn(|txn| {
         let Some(prior) = txn.get(&key)? else {
-            return Ok((false, None));
+            return Ok((false, Vec::new()));
         };
         txn.remove(&key)?;
         let action = if prior == b"hidden" { "restore" } else { "unyank" };
-        Ok((true, Some(journal_bytes(action, normalized, None, Some(filename)))))
+        Ok((true, vec![journal_bytes(action, normalized, None, Some(filename))]))
     })
 }
 
@@ -350,7 +349,9 @@ fn journal_bytes(action: &str, project: &str, version: Option<&str>, filename: O
 
 #[cfg(test)]
 mod tests {
-    use super::{Guard, MetaError, MetaStore, MetadataSibling, PublishedFile, override_key, upload_key};
+    use super::{
+        Guard, MetaError, MetaStore, MetadataSibling, PublishedFile, UploadMutation, override_key, upload_key,
+    };
     use crate::store::PypiStore as _;
 
     fn store() -> (tempfile::TempDir, MetaStore) {
@@ -496,6 +497,70 @@ mod tests {
             seen,
             vec![("hosted/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
         );
+    }
+
+    #[test]
+    fn test_mutate_uploads_journals_the_action_for_each_rewritten_record() {
+        let (_dir, meta) = store();
+        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
+        meta.put_upload("hosted", "flask", "flask-2.0.whl", b"b").unwrap();
+
+        let changed = meta
+            .mutate_uploads("hosted", "flask", "yank", |_filename, _record| {
+                Ok::<_, MetaError>(UploadMutation::Replace(b"yanked".to_vec()))
+            })
+            .unwrap();
+
+        assert_eq!(changed, 2);
+        assert_eq!(
+            meta.current_serial().unwrap(),
+            2,
+            "each rewritten record allocates its own serial"
+        );
+    }
+
+    #[test]
+    fn test_mutate_uploads_journals_only_the_removed_record_and_keeps_the_rest() {
+        let (_dir, meta) = store();
+        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
+        meta.put_upload("hosted", "flask", "flask-2.0.whl", b"b").unwrap();
+
+        let changed = meta
+            .mutate_uploads("hosted", "flask", "delete-file", |filename, _record| {
+                Ok::<_, MetaError>(if filename == "flask-1.0.whl" {
+                    UploadMutation::Delete
+                } else {
+                    UploadMutation::Keep
+                })
+            })
+            .unwrap();
+
+        assert_eq!(changed, 1);
+        assert!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            meta.current_serial().unwrap(),
+            1,
+            "only the removed record is journaled"
+        );
+    }
+
+    #[test]
+    fn test_mutate_uploads_that_keeps_every_record_journals_nothing() {
+        let (_dir, meta) = store();
+        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
+
+        let changed = meta
+            .mutate_uploads("hosted", "flask", "yank", |_filename, _record| {
+                Ok::<_, MetaError>(UploadMutation::Keep)
+            })
+            .unwrap();
+
+        assert_eq!(changed, 0);
+        assert_eq!(meta.current_serial().unwrap(), 0, "an all-keep batch records no serial");
     }
 
     #[test]

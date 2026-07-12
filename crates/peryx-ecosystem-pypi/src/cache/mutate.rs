@@ -312,16 +312,18 @@ fn delete_uploads_of_version(
     normalized: &str,
     version: &str,
 ) -> Result<usize, CacheError> {
-    state.meta.mutate_uploads(name, normalized, |_filename, bytes| {
-        let uploaded: Uploaded = serde_json::from_slice(bytes)?;
-        if !versions_match(&uploaded.version, version) {
-            return Ok(UploadMutation::Keep);
-        }
-        if !volatile {
-            return Err(CacheError::NotVolatile);
-        }
-        Ok(UploadMutation::Delete)
-    })
+    state
+        .meta
+        .mutate_uploads(name, normalized, "delete-file", |_filename, bytes| {
+            let uploaded: Uploaded = serde_json::from_slice(bytes)?;
+            if !versions_match(&uploaded.version, version) {
+                return Ok(UploadMutation::Keep);
+            }
+            if !volatile {
+                return Err(CacheError::NotVolatile);
+            }
+            Ok(UploadMutation::Delete)
+        })
 }
 
 /// Set the yank state of uploaded files, optionally limited to one version. Returns how many
@@ -333,7 +335,8 @@ fn yank_uploads(
     version: Option<&str>,
     yanked: &Yanked,
 ) -> Result<usize, CacheError> {
-    state.meta.mutate_uploads(name, normalized, |_filename, bytes| {
+    let action = if matches!(yanked, Yanked::No) { "unyank" } else { "yank" };
+    state.meta.mutate_uploads(name, normalized, action, |_filename, bytes| {
         let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
         if version.is_some_and(|version| !versions_match(&uploaded.version, version)) || uploaded.file.yanked == *yanked
         {

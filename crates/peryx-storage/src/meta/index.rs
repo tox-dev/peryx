@@ -93,18 +93,19 @@ impl MetaStore {
     /// Run a driver-owned read-modify-write over the neutral table in one write transaction.
     ///
     /// A check and the writes it gates commit together, so neither can interleave with another
-    /// writer. `body` reads current rows through the [`DriverTxn`], stages its puts and deletes, and returns
-    /// the value to hand back paired with an optional journal entry: `Some` allocates the next serial
-    /// and records the entry in the same transaction — a publish or promotion a replica must observe —
-    /// while `None` commits the rows alone, for a yank or delete no replica reconciles. Returning an
-    /// error from `body` drops the transaction, so a rejected precondition leaves the store untouched.
+    /// writer. `body` reads current rows through the [`DriverTxn`], stages its puts and deletes, and
+    /// returns the value to hand back paired with the journal entries to record: each allocates the
+    /// next serial and is written in the same transaction, in order, so a batch that changes many
+    /// files records one entry per file and a replica observes every one. An empty list commits the
+    /// rows alone, for a change no replica reconciles. Returning an error from `body` drops the
+    /// transaction, so a rejected precondition leaves the store untouched.
     ///
     /// # Errors
     /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
     /// read, write, or commit.
     pub fn commit_driver_txn<T, E: From<MetaError>>(
         &self,
-        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Option<Vec<u8>>), E>,
+        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
         let txn = self.db.begin_write().map_err(MetaError::from)?;
         let (value, journal) = {
@@ -113,18 +114,18 @@ impl MetaStore {
             };
             body(&mut driver)?
         };
-        if let Some(journal) = journal {
+        if !journal.is_empty() {
             let mut serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
-            let next = serials
+            let mut journal_table = txn.open_table(JOURNAL).map_err(MetaError::from)?;
+            let mut next = serials
                 .get(SERIAL_KEY)
                 .map_err(MetaError::from)?
-                .map_or(0, |value| value.value())
-                + 1;
+                .map_or(0, |value| value.value());
+            for entry in &journal {
+                next += 1;
+                journal_table.insert(next, entry.as_slice()).map_err(MetaError::from)?;
+            }
             serials.insert(SERIAL_KEY, next).map_err(MetaError::from)?;
-            let mut journal_table = txn.open_table(JOURNAL).map_err(MetaError::from)?;
-            journal_table
-                .insert(next, journal.as_slice())
-                .map_err(MetaError::from)?;
         }
         txn.commit().map_err(MetaError::from)?;
         Ok(value)
