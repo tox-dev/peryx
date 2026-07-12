@@ -429,7 +429,7 @@ async fn test_upload_form_validation_errors_include_actionable_body() {
             ],
             Some(("peryxpkg-1.0-py3-none-any.whl", b"x".as_slice())),
             StatusCode::BAD_REQUEST,
-            "md5_digest is not accepted without a sha256_digest or blake2_256_digest",
+            "md5_digest mismatch",
         ),
     ] {
         assert_upload_response(&h, &fields, content, expected_status, expected_body).await;

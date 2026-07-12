@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use md5::{Digest as _, Md5};
+
 use crate::{
     CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
     is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
@@ -83,8 +85,6 @@ pub enum UploadError {
     FilenameVersionMismatch { filename: String, form: String },
     /// The client's declared digest did not match the content.
     DigestMismatch(&'static str),
-    /// The upload only supplied a legacy md5 digest.
-    Md5Only,
     /// A declared digest was malformed.
     InvalidDigest { field: &'static str, value: String },
     /// `Requires-Python` was not a valid version specifier set.
@@ -184,6 +184,7 @@ pub fn prepare(
         form.md5_digest.as_deref(),
         staged.blob.digest(),
         &staged.blake2_256,
+        staged.blob.path(),
     )?;
     let metadata = metadata_bytes(&parsed, &filename, staged.blob.path())?;
     let metadata_text = std::str::from_utf8(&metadata).map_err(|_| UploadError::InvalidMetadataUtf8)?;
@@ -298,11 +299,14 @@ fn verify_declared_hashes(
     md5_digest: Option<&str>,
     sha256: &Digest,
     blake2_256: &str,
+    content_path: &std::path::Path,
 ) -> Result<(), UploadError> {
     let has_sha256 = verify_declared_hash("sha256_digest", sha256_digest, sha256.as_str())?;
     let has_blake2 = verify_declared_hash("blake2_256_digest", blake2_256_digest, blake2_256)?;
-    if !has_sha256 && !has_blake2 && md5_digest.is_some_and(|digest| !digest.is_empty()) {
-        return Err(UploadError::Md5Only);
+    // Legacy tooling sends md5_digest alone; peryx verifies it like Warehouse rather than rejecting.
+    // Skip the extra content read when a stronger declared digest already covers the bytes.
+    if let Some(md5_digest) = md5_digest.filter(|digest| !has_sha256 && !has_blake2 && !digest.is_empty()) {
+        verify_declared_hash("md5_digest", Some(md5_digest), &content_md5(content_path)?)?;
     }
     Ok(())
 }
@@ -321,6 +325,21 @@ fn verify_declared_hash(field: &'static str, declared: Option<&str>, actual: &st
         return Err(UploadError::DigestMismatch(field));
     }
     Ok(true)
+}
+
+fn content_md5(path: &std::path::Path) -> Result<String, UploadError> {
+    let bytes = std::fs::read(path).map_err(|err| UploadError::InvalidContent(err.to_string()))?;
+    Ok(to_hex(Md5::digest(&bytes).as_slice()))
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn is_lower_hex(value: &str) -> bool {

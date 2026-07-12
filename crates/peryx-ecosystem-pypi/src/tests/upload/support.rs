@@ -8,9 +8,10 @@ pub(super) use crate::DistributionFilenameError;
 pub(super) use base64::Engine as _;
 pub(super) use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 pub(super) use blake2::Blake2bVar;
-pub(super) use blake2::digest::{Update as _, VariableOutput as _};
+pub(super) use blake2::digest::{FixedOutput as _, Update as _, VariableOutput as _};
 pub(super) use flate2::Compression;
 pub(super) use flate2::write::GzEncoder;
+pub(super) use md5::Md5;
 pub(super) use peryx_storage::blob::{BlobStore, Digest};
 pub(super) use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
@@ -53,6 +54,12 @@ pub(super) fn staged_upload(bytes: &[u8]) -> (tempfile::TempDir, StagedUpload) {
             blake2_256: hex(&digest),
         },
     )
+}
+
+pub(super) fn md5_hex(bytes: &[u8]) -> String {
+    let mut hasher = Md5::default();
+    hasher.update(bytes);
+    hex(hasher.finalize_fixed().as_slice())
 }
 
 pub(super) fn wheel_metadata(name: &str, version: &str) -> Vec<u8> {

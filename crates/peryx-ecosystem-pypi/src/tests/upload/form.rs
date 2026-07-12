@@ -13,6 +13,30 @@ fn test_prepare_accepts_matching_declared_digests() {
     assert!(prepare(form, staged, "root/hosted", 1000).is_ok());
 }
 #[test]
+fn test_prepare_accepts_only_md5_declared_digest() {
+    let wheel = wheel_metadata("Flask", "1.0");
+    let (_dir, staged) = staged_upload(&wheel);
+    let mut form = staged_form(&wheel);
+    form.sha256_digest = None;
+    form.md5_digest = Some(md5_hex(&wheel));
+
+    assert!(prepare(form, staged, "root/hosted", 1000).is_ok());
+}
+#[test]
+fn test_prepare_rejects_unreadable_content_for_declared_md5() {
+    let wheel = wheel_metadata("Flask", "1.0");
+    let (_dir, staged) = staged_upload(&wheel);
+    std::fs::remove_file(staged.blob.path()).unwrap();
+    let mut form = staged_form(&wheel);
+    form.sha256_digest = None;
+    form.md5_digest = Some(md5_hex(&wheel));
+
+    assert!(matches!(
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidContent(_)
+    ));
+}
+#[test]
 fn test_prepare_rejects_wrong_action() {
     let wheel = wheel_metadata("Flask", "1.0");
     let (_dir, staged) = staged_upload(&wheel);
@@ -61,9 +85,19 @@ fn test_prepare_rejects_digest_problems() {
         (
             |form| {
                 form.sha256_digest = None;
-                form.md5_digest = Some("d41d8cd98f00b204e9800998ecf8427e".to_owned());
+                form.md5_digest = Some("00".repeat(16));
             },
-            UploadError::Md5Only,
+            UploadError::DigestMismatch("md5_digest"),
+        ),
+        (
+            |form| {
+                form.sha256_digest = None;
+                form.md5_digest = Some("nothex".to_owned());
+            },
+            UploadError::InvalidDigest {
+                field: "md5_digest",
+                value: "nothex".to_owned(),
+            },
         ),
     ] {
         let wheel = wheel_metadata("Flask", "1.0");
