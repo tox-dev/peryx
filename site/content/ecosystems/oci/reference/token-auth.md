@@ -55,7 +55,8 @@ Authentication:
 - No `Authorization` header: the request is anonymous.
 - `Basic` credentials: peryx checks the password against every OCI index's tokens. A password that authenticates nowhere
   gets `401`; this is what makes `docker login` reject a wrong password. A password that authenticates names its
-  subject.
+  subject. A scope on another index is granted only when the same header authenticates as that subject there, so equal
+  token names with different secrets remain isolated.
 
 The response is always `200` on a recognized (or absent) credential, carrying a JWT:
 
