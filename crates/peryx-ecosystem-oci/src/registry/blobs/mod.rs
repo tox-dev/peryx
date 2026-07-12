@@ -249,12 +249,11 @@ impl OciRegistry {
         };
         let membership = store::blob_membership_key(&index.name, &repo, digest);
         let deleted = {
-            let _guard = self
-                .blob_membership_gate
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.blob_memberships.invalidate(&membership);
-            store::delete_blob_membership(&state.meta, &index.name, &repo, digest)?
+            let mut memberships = self.blob_memberships.write();
+            memberships.remove(&membership);
+            let deleted = store::delete_blob_membership(&state.meta, &index.name, &repo, digest)?;
+            drop(memberships);
+            deleted
         };
         if !deleted {
             return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown"));
@@ -282,10 +281,6 @@ impl OciRegistry {
         repo: &str,
         digest: &str,
     ) -> Result<bool, ServeError> {
-        let _guard = self
-            .blob_membership_gate
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !matches!(index.kind, IndexKind::Virtual { .. }) {
             return self.blob_is_member(state, &index.name, repo, digest);
         }
@@ -299,13 +294,16 @@ impl OciRegistry {
 
     fn blob_is_member(&self, state: &ServingState, index: &str, repo: &str, digest: &str) -> Result<bool, ServeError> {
         let key = store::blob_membership_key(index, repo, digest);
-        if self.blob_memberships.get(&key).is_some() {
+        if self.blob_memberships.read().contains(&key) {
             return Ok(true);
         }
-        let present = store::blob_is_member(&state.meta, index, repo, digest)?;
-        if present {
-            self.blob_memberships.insert(key, ());
+        let mut memberships = self.blob_memberships.write();
+        let cached = memberships.contains(&key);
+        let present = cached || store::blob_is_member(&state.meta, index, repo, digest)?;
+        if present && !cached {
+            memberships.insert(key);
         }
+        drop(memberships);
         Ok(present)
     }
 }

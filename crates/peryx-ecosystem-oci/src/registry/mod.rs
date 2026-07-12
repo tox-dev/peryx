@@ -26,7 +26,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
-use moka::sync::Cache;
+use parking_lot::RwLock;
 use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::serving::{EcosystemDriver, RouteMount};
@@ -38,7 +38,8 @@ use peryx_storage::blob::PendingBlob;
 use peryx_storage::meta::MetaError;
 use peryx_upstream::UpstreamClient;
 use std::borrow::Cow;
-use std::sync::{Arc, RwLock};
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 
 mod auth;
 mod blobs;
@@ -62,6 +63,7 @@ pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 /// The largest tag-list body read from an upstream. Tag lists are text; this bounds a hostile or
 /// broken upstream that would otherwise stream an unbounded body into memory.
 const MAX_TAGS_BYTES: usize = 4 * 1024 * 1024;
+const BLOB_MEMBERSHIP_CACHE_BYTES: usize = 8 << 20;
 /// The most upstream tag-list pages followed when aggregating, so a broken or hostile upstream whose
 /// `Link` chain never ends cannot loop forever. Far more than any real repository paginates into.
 const MAX_TAG_PAGES: usize = 100;
@@ -120,26 +122,44 @@ impl From<ServeError> for String {
 ///
 /// Holds one shared upstream fetcher over the process's stores, the per-index settings the
 /// composition root compiled, the in-progress blob uploads a hosted push accumulates across its
-/// `POST`/`PATCH`/`PUT` requests, and a bounded cache of verified repository blob links.
+/// `POST`/`PATCH`/`PUT` requests.
+#[derive(Default)]
 pub struct OciRegistry {
     upstream: Upstream,
     settings: std::collections::HashMap<String, IndexSettings>,
     uploads: tokio::sync::Mutex<std::collections::HashMap<String, UploadSession>>,
-    blob_memberships: Cache<String, ()>,
-    // Prevent a completed deletion from leaving a positive authorization cached.
-    blob_membership_gate: RwLock<()>,
+    blob_memberships: RwLock<BlobMembershipCache>,
 }
-impl Default for OciRegistry {
-    fn default() -> Self {
-        Self {
-            upstream: Upstream::default(),
-            settings: std::collections::HashMap::new(),
-            uploads: tokio::sync::Mutex::default(),
-            blob_memberships: Cache::builder()
-                .weigher(|key: &String, &()| u32::try_from(key.len()).unwrap_or(u32::MAX))
-                .max_capacity(8 << 20)
-                .build(),
-            blob_membership_gate: RwLock::default(),
+#[derive(Default)]
+struct BlobMembershipCache {
+    entries: HashSet<Arc<str>>,
+    insertion_order: VecDeque<Arc<str>>,
+    key_bytes: usize,
+}
+impl BlobMembershipCache {
+    fn remove(&mut self, key: &str) {
+        if self.entries.remove(key) {
+            self.key_bytes -= key.len();
+            self.insertion_order.retain(|entry| entry.as_ref() != key);
+        }
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.entries.contains(key)
+    }
+
+    fn insert(&mut self, key: String) {
+        let key: Arc<str> = key.into();
+        self.entries.insert(Arc::clone(&key));
+        self.key_bytes += key.len();
+        self.insertion_order.push_back(key);
+        while self.key_bytes > BLOB_MEMBERSHIP_CACHE_BYTES {
+            let oldest = self
+                .insertion_order
+                .pop_front()
+                .expect("nonzero cache weight has an entry");
+            self.entries.remove(&oldest);
+            self.key_bytes -= oldest.len();
         }
     }
 }
@@ -199,72 +219,11 @@ impl EcosystemDriver for OciRegistry {
     }
 
     async fn serve(&self, state: Arc<ServingState>, request: Request) -> Response {
-        let method = request.method().clone();
-        let (parts, body) = request.into_parts();
-        let path = parts.uri.path();
-        let read = matches!(method, Method::GET | Method::HEAD);
-        if method == Method::GET && (path == "/v2/token" || path == "/v2/token/") {
-            return auth::issue_token(&state, &parts.headers, parts.uri.query().unwrap_or_default());
+        let path = request.uri().path();
+        if matches!(request.method(), &Method::GET | &Method::HEAD) && (path == "/v2/" || path == "/v2") {
+            return auth::negotiate_version(&state, request.headers());
         }
-        if read && (path == "/v2/" || path == "/v2") {
-            return auth::negotiate_version(&state, &parts.headers);
-        }
-        let Some(route) = classify(path) else {
-            return error_response(ErrorCode::NameUnknown, "repository name unknown");
-        };
-        if read
-            && let Err(response) = match &route {
-                OciRoute::Catalog => auth::authorize_catalog(&state, &parts.headers),
-                route => read_name(route).map_or(Ok(()), |name| auth::authorize_read(&state, &parts.headers, name)),
-            }
-        {
-            return response;
-        }
-        let headers = &parts.headers;
-        let query = parts.uri.query().unwrap_or_default();
-        let head = method == Method::HEAD;
-        let result = match route {
-            OciRoute::Manifest { name, reference } if read => {
-                let accept = headers.get(header::ACCEPT).and_then(|value| value.to_str().ok());
-                self.serve_manifest(&state, &name, &reference, head, accept).await
-            }
-            OciRoute::Manifest { name, reference } if method == Method::PUT => {
-                put_manifest(&state, headers, body, &name, &reference).await
-            }
-            OciRoute::Manifest { name, reference } if method == Method::DELETE => {
-                delete_manifest(&state, headers, &name, &reference)
-            }
-            OciRoute::Blob { name, digest } if read => {
-                let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok());
-                self.serve_blob(&state, &name, &digest, head, range).await
-            }
-            OciRoute::Blob { name, digest } if method == Method::DELETE => {
-                self.delete_blob(&state, headers, &name, &digest)
-            }
-            OciRoute::BlobContents { name, digest } if method == Method::GET => {
-                self.serve_layer_contents(&state, &name, &digest, query).await
-            }
-            OciRoute::Catalog if method == Method::GET => serve_catalog(&state, query),
-            OciRoute::TagsList { name } if method == Method::GET => self.serve_tags(&state, &name, query).await,
-            OciRoute::Referrers { name, digest } if read => self.serve_referrers(&state, &name, &digest, query).await,
-            OciRoute::UploadStart { name } if method == Method::POST => {
-                self.start_upload(&state, headers, query, &name, body).await
-            }
-            OciRoute::UploadSession { name, session } if method == Method::GET => {
-                self.upload_status(&state, headers, &name, &session).await
-            }
-            OciRoute::UploadSession { name, session } if method == Method::PATCH => {
-                self.patch_upload(&state, headers, &name, &session, body).await
-            }
-            OciRoute::UploadSession { name, session } if method == Method::PUT => {
-                self.finish_upload(&state, headers, query, &name, &session, body).await
-            }
-            OciRoute::UploadSession { name, session } if method == Method::DELETE => {
-                self.cancel_upload(&state, headers, &name, &session).await
-            }
-            _ => Ok(error_response(ErrorCode::Unsupported, "operation not supported")),
-        };
-        result.unwrap_or_else(ServeError::into_response)
+        self.serve_request(state, request).await
     }
 
     fn classify_route(&self, path: &str) -> peryx_driver::rate_limit::RouteClass {
@@ -387,6 +346,72 @@ impl EcosystemDriver for OciRegistry {
 }
 
 impl OciRegistry {
+    async fn serve_request(&self, state: Arc<ServingState>, request: Request) -> Response {
+        let method = request.method().clone();
+        let (parts, body) = request.into_parts();
+        let path = parts.uri.path();
+        let read = matches!(method, Method::GET | Method::HEAD);
+        if method == Method::GET && (path == "/v2/token" || path == "/v2/token/") {
+            return auth::issue_token(&state, &parts.headers, parts.uri.query().unwrap_or_default());
+        }
+        let Some(route) = classify(path) else {
+            return error_response(ErrorCode::NameUnknown, "repository name unknown");
+        };
+        if read
+            && let Err(response) = match &route {
+                OciRoute::Catalog => auth::authorize_catalog(&state, &parts.headers),
+                route => read_name(route).map_or(Ok(()), |name| auth::authorize_read(&state, &parts.headers, name)),
+            }
+        {
+            return response;
+        }
+        let headers = &parts.headers;
+        let query = parts.uri.query().unwrap_or_default();
+        let head = method == Method::HEAD;
+        let result = match route {
+            OciRoute::Manifest { name, reference } if read => {
+                let accept = headers.get(header::ACCEPT).and_then(|value| value.to_str().ok());
+                self.serve_manifest(&state, &name, &reference, head, accept).await
+            }
+            OciRoute::Manifest { name, reference } if method == Method::PUT => {
+                put_manifest(&state, headers, body, &name, &reference).await
+            }
+            OciRoute::Manifest { name, reference } if method == Method::DELETE => {
+                delete_manifest(&state, headers, &name, &reference)
+            }
+            OciRoute::Blob { name, digest } if read => {
+                let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok());
+                self.serve_blob(&state, &name, &digest, head, range).await
+            }
+            OciRoute::Blob { name, digest } if method == Method::DELETE => {
+                self.delete_blob(&state, headers, &name, &digest)
+            }
+            OciRoute::BlobContents { name, digest } if method == Method::GET => {
+                self.serve_layer_contents(&state, &name, &digest, query).await
+            }
+            OciRoute::Catalog if method == Method::GET => serve_catalog(&state, query),
+            OciRoute::TagsList { name } if method == Method::GET => self.serve_tags(&state, &name, query).await,
+            OciRoute::Referrers { name, digest } if read => self.serve_referrers(&state, &name, &digest, query).await,
+            OciRoute::UploadStart { name } if method == Method::POST => {
+                self.start_upload(&state, headers, query, &name, body).await
+            }
+            OciRoute::UploadSession { name, session } if method == Method::GET => {
+                self.upload_status(&state, headers, &name, &session).await
+            }
+            OciRoute::UploadSession { name, session } if method == Method::PATCH => {
+                self.patch_upload(&state, headers, &name, &session, body).await
+            }
+            OciRoute::UploadSession { name, session } if method == Method::PUT => {
+                self.finish_upload(&state, headers, query, &name, &session, body).await
+            }
+            OciRoute::UploadSession { name, session } if method == Method::DELETE => {
+                self.cancel_upload(&state, headers, &name, &session).await
+            }
+            _ => Ok(error_response(ErrorCode::Unsupported, "operation not supported")),
+        };
+        result.unwrap_or_else(ServeError::into_response)
+    }
+
     /// Every tag of `repo` on `index`, unioned across a virtual index's members and each proxy
     /// member's upstream, sorted and distinct — the same union [`Self::serve_tags`] paginates.
     async fn repository_tags(
