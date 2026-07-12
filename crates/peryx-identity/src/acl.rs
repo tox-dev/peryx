@@ -28,12 +28,23 @@ pub fn authorize(principal: &Principal, acl: &IndexAcl, project: Option<&str>, a
     match principal {
         Principal::Named { subject } => acl
             .token(subject)
-            .filter(|token| token.grants.iter().any(|grant| grant.allows(project, action)))
-            .map(|_| ())
-            .ok_or(Denial::Forbidden),
+            .ok_or(Denial::Forbidden)
+            .and_then(|token| authorize_grants(&token.grants, project, action)),
         Principal::Anonymous if acl.grants_to_anyone(action) => Err(Denial::Unauthenticated),
         Principal::Anonymous => Err(Denial::Unavailable),
     }
+}
+
+/// Apply the grants recovered from a verified token without resolving its subject through an index ACL.
+///
+/// # Errors
+/// Returns `Denial::Forbidden` when no grant covers the project and action.
+pub fn authorize_grants(grants: &[Grant], project: Option<&str>, action: Action) -> Result<(), Denial> {
+    grants
+        .iter()
+        .any(|grant| grant.allows(project, action))
+        .then_some(())
+        .ok_or(Denial::Forbidden)
 }
 
 /// Who a request speaks as, once its credential was checked. A credential that matched nothing leaves

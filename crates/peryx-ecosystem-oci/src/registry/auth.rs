@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
-use peryx_identity::{Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, Signer, authorize};
+use peryx_identity::{Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, Signer, authorize, authorize_grants};
 use serde_json::json;
 use std::collections::BTreeSet;
 
@@ -192,31 +192,72 @@ pub(super) fn authorize_read(state: &ServingState, headers: &HeaderMap, name: &s
     let Some((index, repo)) = super::resolve(&state.indexes, name) else {
         return Ok(());
     };
-    let (identity, bad_token) = identify(state, &index.acl, headers);
-    authorize(&identity.principal, &index.acl, Some(repo), Action::Read)
-        .map_err(|denial| resource_challenge(state, headers, name, Action::Read, denial, bad_token))
+    let presented = identify(state, &index.acl, headers);
+    presented
+        .authorize(&index.acl, repo, name, Action::Read)
+        .map_err(|denial| resource_challenge(state, headers, name, Action::Read, denial, presented.bad_token()))
 }
 
-/// The principal a resource request presents, and whether it presented a bearer this realm could not
-/// verify. A verifiable bearer names its subject; a Basic credential is matched against the index's
-/// tokens; anything else, including a bearer that fails verification, leaves the request anonymous.
-pub(super) fn identify(state: &ServingState, acl: &IndexAcl, headers: &HeaderMap) -> (Identity, bool) {
+/// Resolve a resource credential, retaining a verified bearer's embedded grants for authorization.
+pub(super) fn identify(state: &ServingState, acl: &IndexAcl, headers: &HeaderMap) -> PresentedIdentity {
     let header = authorization(headers);
     if let Some(token) = header.and_then(|header| header.strip_prefix("Bearer "))
         && let Some(signer) = &state.signer
     {
         return match signer.verify(token) {
-            Ok((principal, _)) => (Identity { principal, user: None }, false),
-            Err(_) => (
-                Identity {
+            Ok((principal, grants)) => PresentedIdentity {
+                identity: Identity { principal, user: None },
+                authorization: PresentedAuthorization::Bearer(grants),
+            },
+            Err(_) => PresentedIdentity {
+                identity: Identity {
                     principal: Principal::Anonymous,
                     user: None,
                 },
-                true,
-            ),
+                authorization: PresentedAuthorization::InvalidBearer,
+            },
         };
     }
-    (acl.identify(header, (state.clock)()), false)
+    PresentedIdentity {
+        identity: acl.identify(header, (state.clock)()),
+        authorization: PresentedAuthorization::Acl,
+    }
+}
+
+pub(super) struct PresentedIdentity {
+    identity: Identity,
+    authorization: PresentedAuthorization,
+}
+
+enum PresentedAuthorization {
+    Acl,
+    Bearer(Vec<Grant>),
+    InvalidBearer,
+}
+
+impl PresentedIdentity {
+    pub(super) fn authorize(
+        &self,
+        acl: &IndexAcl,
+        repository: &str,
+        resource: &str,
+        action: Action,
+    ) -> Result<(), Denial> {
+        match &self.authorization {
+            PresentedAuthorization::Bearer(grants) => authorize_grants(grants, Some(resource), action),
+            PresentedAuthorization::Acl | PresentedAuthorization::InvalidBearer => {
+                authorize(&self.identity.principal, acl, Some(repository), action)
+            }
+        }
+    }
+
+    pub(super) fn into_identity(self) -> Identity {
+        self.identity
+    }
+
+    pub(super) const fn bad_token(&self) -> bool {
+        matches!(self.authorization, PresentedAuthorization::InvalidBearer)
+    }
 }
 
 /// The response for a refused resource request: with a realm configured, a `401` Bearer challenge

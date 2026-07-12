@@ -472,12 +472,17 @@ fn resolve_writable<'a>(
     if !matches!(target.kind, IndexKind::Hosted { .. }) {
         return Err(error_response(ErrorCode::Denied, "index is read-only"));
     }
-    let (identity, bad_token) = auth::identify(state, &target.acl, headers);
-    match peryx_identity::authorize(&identity.principal, &target.acl, Some(repo), action) {
-        Ok(()) => Ok((target, repo.to_owned(), identity)),
+    let presented = auth::identify(state, &target.acl, headers);
+    match presented.authorize(&target.acl, repo, name, action) {
+        Ok(()) => Ok((target, repo.to_owned(), presented.into_identity())),
         Err(Denial::Unavailable) => Err(error_response(ErrorCode::Denied, "uploads are disabled")),
         Err(denial) => Err(auth::resource_challenge(
-            state, headers, name, action, denial, bad_token,
+            state,
+            headers,
+            name,
+            action,
+            denial,
+            presented.bad_token(),
         )),
     }
 }

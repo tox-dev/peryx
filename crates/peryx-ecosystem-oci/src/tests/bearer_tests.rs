@@ -138,6 +138,40 @@ async fn test_named_token_pushes_within_its_glob_and_is_refused_outside_it() {
     );
 }
 
+#[rstest]
+#[case::repository("repository:store/team/app:pull,push", "store/team/other")]
+#[case::action("repository:store/team/app:pull", "store/team/app")]
+#[tokio::test]
+async fn test_bearer_token_may_not_push_beyond_scope(#[case] requested_scope: &str, #[case] target: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = team_registry(&dir);
+    let (_, token) = request_token(
+        &app,
+        &format!("service=peryx&scope={requested_scope}"),
+        Some(&auth(SECRET)),
+    )
+    .await;
+    let body = br#"{"schemaVersion":2}"#;
+    let (status, headers, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/{target}/manifests/{}", oci_digest(body)),
+        &[
+            ("authorization", &format!("Bearer {token}")),
+            ("content-type", MANIFEST_TYPE),
+        ],
+        body.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers[header::WWW_AUTHENTICATE],
+        format!(
+            r#"Bearer realm="/v2/token",service="peryx",scope="repository:{target}:pull,push",error="insufficient_scope""#
+        )
+    );
+}
+
 #[tokio::test]
 async fn test_docker_login_flow_validates_and_then_pushes() {
     let dir = tempfile::tempdir().unwrap();
