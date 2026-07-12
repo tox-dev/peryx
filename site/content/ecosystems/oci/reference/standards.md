@@ -46,7 +46,7 @@ Every manifest and blob is addressed by `sha256:<hex>` over its exact bytes. per
 the `Docker-Content-Digest` a client verifies always matches what it pushed or pulled, and a blob shared by ten images
 is stored once. A blob digest in any other algorithm is rejected with `400 DIGEST_INVALID` rather than served
 unverified; a manifest an upstream advertises under another algorithm is re-addressed under peryx's own sha256, covered
-in [content digest algorithms](@/ecosystems/oci/reference/content-digests.md).
+in [content digest algorithms](@/ecosystems/oci/reference/registry-behavior.md#content-digest-algorithms).
 
 ## Graceful degradation
 

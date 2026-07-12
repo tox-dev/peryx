@@ -152,7 +152,7 @@ the index's members. Each descriptor carries `mediaType`, `digest`, `size`, and 
 `artifactType` and `annotations`. A `<digest>` that is not a syntactically valid content digest is `400 DIGEST_INVALID`;
 the registered `sha256`/`sha512` algorithms have their fixed hex length enforced, while an unregistered algorithm is
 held only to the general grammar. A well-formed but unknown subject is `200` with an empty `manifests`
-([digest validation reference](@/ecosystems/oci/reference/upload-sessions.md#referrers-subject-digest-validation)).
+([digest validation reference](@/ecosystems/oci/reference/registry-behavior.md#referrers-subject-digest-validation)).
 peryx does not apply an `artifactType` filter or emit `OCI-Filters-Applied`.
 
 ## Discovery

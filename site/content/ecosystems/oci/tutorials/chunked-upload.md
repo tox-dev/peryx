@@ -1,14 +1,16 @@
 +++
 title = "Push a blob chunk by chunk"
-description = "Drive an OCI chunked blob upload by hand with curl: start a session, PATCH chunks with Content-Range, recover from a 416, cancel with DELETE, and finish with PUT."
+description = "Drive an OCI chunked blob upload by hand with curl: start a session, PATCH chunks with Content-Range, recover from a 416, cancel with DELETE, and finish with PUT, then pull a manifest an upstream advertises under sha512."
 weight = 5
+aliases = ["/ecosystems/oci/tutorials/non-sha256-digest/"]
 +++
 
 `docker push` and `crane push` upload a blob for you in one call, so you never see the steps underneath. This tutorial
 runs those steps by hand with `curl` against a hosted index, so the chunked-upload state machine the
 [distribution spec](https://github.com/opencontainers/distribution-spec) defines becomes something you can watch: you
 start a session, append the blob one chunk at a time, deliberately send a chunk out of order to trigger a `416` and
-recover from it, cancel a session, and finish a real upload with a digest check. It takes about ten minutes and builds
+recover from it, cancel a session, and finish a real upload with a digest check. Then, on the same `/v2/` surface, you
+proxy an upstream that content-addresses with sha512 and watch peryx accept it. It takes about twenty minutes and builds
 on [getting started](@/ecosystems/oci/tutorials/getting-started.md).
 
 ## Configure a hosted index
@@ -152,10 +154,102 @@ curl -sS -i -u _:demo-secret -X DELETE "http://127.0.0.1:4433$loc"
 # 404 Not Found (BLOB_UPLOAD_UNKNOWN): the session is already gone
 ```
 
+## Pull a manifest addressed by sha512
+
+The upload side keys everything on sha256, but a manifest peryx *reads* through a proxy may be advertised in another
+algorithm. Most registries content-address with sha256, but the
+[image-spec digest grammar](https://github.com/opencontainers/image-spec/blob/main/descriptor.md#digests) allows others,
+and a registry may advertise its `Docker-Content-Digest` in sha512. This last part makes that case concrete: you run a
+tiny stand-in upstream that serves a manifest under a sha512 digest, proxy it through a cached peryx index, and watch
+peryx accept it, where it once returned `502`.
+
+A real registry keys on sha256, so to see the sha512 path you serve a manifest yourself. This stub answers the `/v2/`
+version check and serves one manifest, advertising its sha512 digest in the header a client verifies. Save it as
+`upstream.py`:
+
+```python
+import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+MANIFEST = b'{"schemaVersion":2,"config":{}}'
+MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+SHA512 = "sha512:" + hashlib.sha512(MANIFEST).hexdigest()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v2/":
+            self.send_response(200)
+            self.end_headers()
+        elif self.path.startswith("/v2/demo/manifests/"):
+            self.send_response(200)
+            self.send_header("Content-Type", MEDIA_TYPE)
+            self.send_header("Docker-Content-Digest", SHA512)
+            self.end_headers()
+            self.wfile.write(MANIFEST)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+
+HTTPServer(("127.0.0.1", 5000), Handler).serve_forever()
+```
+
+Run it and leave it going:
+
+```shell
+python3 upstream.py   # serving http://127.0.0.1:5000
+```
+
+Point a cached index at the stub. There is nothing to configure for the digest algorithm; it is the default behavior.
+Save this as `sha512.toml` and start a second peryx (stop the hosted one first, or give this one its own port):
+
+```toml
+# sha512.toml
+[[index]]
+name = "reg"
+route = "reg"
+ecosystem = "oci"
+cached = "http://127.0.0.1:5000"
+```
+
+```shell
+peryx serve --config sha512.toml   # listening on 127.0.0.1:4433
+```
+
+Pull the manifest through the `reg` route. The stub advertises sha512; peryx fetches the bytes, hashes them under its
+own sha256, and serves them:
+
+```shell
+curl -si http://127.0.0.1:4433/v2/reg/demo/manifests/latest
+```
+
+The response is `200 OK`, and its `Docker-Content-Digest` is peryx's canonical sha256, not the sha512 the stub sent:
+
+```text
+HTTP/1.1 200 OK
+content-type: application/vnd.oci.image.manifest.v1+json
+docker-content-digest: sha256:fc6b27d31f093fca2791259bc5f1f885b0616677300f02a729ff7a782d4325fc
+```
+
+That sha256 is the digest to pin an image by, and the one a client verifies the bytes against. Before peryx accepted a
+non-sha256 advertisement, this same pull compared the sha512 header to the computed sha256, read the inequality as a
+corrupted download, and returned `502` with nothing cached.
+
+A client that already holds the upstream's sha512 digest can pull by it directly. peryx serves the bytes under the
+digest you asked for and echoes it back:
+
+```shell
+curl -si http://127.0.0.1:4433/v2/reg/demo/manifests/sha512:$(printf '%s' '{"schemaVersion":2,"config":{}}' | sha512sum | cut -d' ' -f1)
+```
+
+The `docker-content-digest` on that response is the `sha512:` value from the request, while the cache still keys the
+bytes on sha256 underneath. peryx verifies the sha256 it computes and trusts the algorithm it cannot recompute, so a
+registry that content-addresses with sha512 works through peryx without any special configuration.
+
 ## Where next
 
-- [Cancel and resume an OCI push](@/ecosystems/oci/guides/cancel-and-resume-push.md): the same two moves as a recipe you
-  reach for when a real push stalls.
-- [Upload sessions and referrers validation](@/ecosystems/oci/reference/upload-sessions.md): the exact statuses,
-  headers, and digest rules.
+- [Work with registry behavior](@/ecosystems/oci/guides/registry-behavior.md): the cancel, resume, and non-sha256 moves
+  as recipes you reach for when a real push stalls or an upstream uses another algorithm.
+- [Registry behavior](@/ecosystems/oci/reference/registry-behavior.md): the exact statuses, headers, and digest rules.
 - [HTTP endpoints](@/ecosystems/oci/reference/endpoints.md): every `/v2/` route peryx serves.
