@@ -5,11 +5,13 @@ weight = 2
 +++
 
 peryx serves the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` pull-and-push API.
-Every route is `/v2/<name>/…`, and `<name>` carries the index route as a prefix: peryx matches the longest configured
+Most routes are `/v2/<name>/…`, where `<name>` carries the index route as a prefix: peryx matches the longest configured
 OCI index route that segment-aligns with `<name>`, and the remainder is the upstream repository. An index at route
 `dockerhub` serves [Docker Hub](https://hub.docker.com/)'s `library/alpine` as `/v2/dockerhub/library/alpine/…`. A
-request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. For the concept map, see
-[OCI](@/ecosystems/oci/_index.md); for the wire standards, see [standards](@/ecosystems/oci/reference/standards.md).
+request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. The version check `/v2/`, the token
+endpoint `/v2/token`, and the repository catalog `/v2/_catalog` are the routes not scoped to a `<name>`. For the concept
+map, see [OCI](@/ecosystems/oci/_index.md); for the wire standards, see
+[standards](@/ecosystems/oci/reference/standards.md).
 
 `<name>` is one or more lowercase path components (`[a-z0-9._-]`, no bare `.`/`..`, ≤ 255 chars). A manifest
 `<reference>` is a tag (`[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`) or a digest (`algorithm:encoded`). Blob digests must be
@@ -21,6 +23,7 @@ request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. Fo
 | ------------ | ------------------------------------ | -------------------------------------- | ------------- |
 | `GET`        | `/v2/`                               | API version check                      | `200` / `401` |
 | `GET`        | `/v2/token`                          | Mint a scoped Bearer token             | `200`         |
+| `GET`        | `/v2/_catalog`                       | List every repository, paginated       | `200`         |
 | `GET` `HEAD` | `/v2/<name>/manifests/<reference>`   | Pull a manifest by tag or digest       | `200`         |
 | `PUT`        | `/v2/<name>/manifests/<reference>`   | Push a manifest                        | `201`         |
 | `DELETE`     | `/v2/<name>/manifests/<reference>`   | Delete a manifest or untag             | `202`         |
@@ -73,11 +76,13 @@ containerd, and oras send full `Accept` lists that name the index types, so they
 `<reference>` is a tag, points that tag at the digest. The `Content-Type` header is recorded as the manifest's media
 type (defaulting to `application/vnd.oci.image.manifest.v1+json`); peryx ignores any `Content-Type` parameters, so
 `application/vnd.oci.image.manifest.v1+json; charset=utf-8` matches and stores as the bare base type rather than failing
-with `400 MANIFEST_INVALID`. A body over 4 MiB is rejected with `413 Payload Too Large`, distinct from the `502` a
-broken transfer returns. When `<reference>` is a digest, the body must hash to it or the response is
-`400 DIGEST_INVALID`. Success is `201` with `Location`, `Docker-Content-Digest`, and (when the manifest declares a
-`subject`) an `OCI-Subject` header echoing that subject's digest. A declared subject is also recorded for the referrers
-API.
+with `400 MANIFEST_INVALID`. A media type peryx does not accept as a manifest is `400 MANIFEST_INVALID`. A body over 4
+MiB is rejected with `413 Payload Too Large`, distinct from the `502` a broken transfer returns. When `<reference>` is a
+digest, the body must hash to it or the response is `400 DIGEST_INVALID`. A manifest whose body references a config
+blob, layer blob, or child manifest the store does not hold is `400 MANIFEST_BLOB_UNKNOWN`; peryx rejects it up front
+rather than store a manifest that would `404` on the missing piece when a client later resolves it. Success is `201`
+with `Location`, `Docker-Content-Digest`, and (when the manifest declares a `subject`) an `OCI-Subject` header echoing
+that subject's digest. A declared subject is also recorded for the referrers API.
 
 `DELETE /v2/<name>/manifests/<reference>` removes the manifest by digest, or drops the tag mapping when `<reference>` is
 a tag. Success is `202`; a reference that was not present is `404 MANIFEST_UNKNOWN`.
@@ -144,6 +149,14 @@ index or a virtual index) unions its members' tags under the requested name, sor
 `?n=<count>` caps the page and `?last=<tag>` resumes after a tag. When `n` truncates the set, the response adds a
 `Link: </v2/<name>/tags/list?n=<n>&last=<marker>>; rel="next"` header pointing at the next page.
 
+## Catalog
+
+`GET /v2/_catalog` answers `200` with `application/json` `{"repositories": [...]}`, the union of every OCI index's
+repositories as clients address them: each entry is the index route joined to the upstream repository, so the names a
+`crane catalog` lists are the same ones a client pulls. The set is sorted, then paginated like `tags/list`: `?n=<count>`
+caps the page and `?last=<repo>` resumes after a repository, and a truncated page adds a
+`Link: </v2/_catalog?n=<n>&last=<marker>>; rel="next"` header. A serve-policy rule omits the repositories it blocks.
+
 ## Referrers
 
 `GET /v2/<name>/referrers/<digest>` returns an OCI image index (`application/vnd.oci.image.index.v1+json`) whose
@@ -152,8 +165,9 @@ the index's members. Each descriptor carries `mediaType`, `digest`, `size`, and 
 `artifactType` and `annotations`. A `<digest>` that is not a syntactically valid content digest is `400 DIGEST_INVALID`;
 the registered `sha256`/`sha512` algorithms have their fixed hex length enforced, while an unregistered algorithm is
 held only to the general grammar. A well-formed but unknown subject is `200` with an empty `manifests`
-([digest validation reference](@/ecosystems/oci/reference/registry-behavior.md#referrers-subject-digest-validation)).
-peryx does not apply an `artifactType` filter or emit `OCI-Filters-Applied`.
+([digest validation reference](@/ecosystems/oci/reference/registry-behavior.md#referrers-subject-digest-validation)). A
+`?artifactType=<type>` query filters the result to the descriptors whose `artifactType` matches, and the response then
+carries `OCI-Filters-Applied: artifactType` so a client knows the filter was honored.
 
 ## Discovery
 
@@ -164,10 +178,13 @@ returns the single index's entry. The web UI reads the same data to show a copya
 
 ## Authentication
 
-Pull requests (the version check and every `GET`/`HEAD` on manifests, blobs, tags, and referrers) take no
-authentication. The `401` + `WWW-Authenticate: Bearer` token handshake belongs to the pull-through path: peryx runs it
-as a *client* against an upstream registry that demands it (fetching a bearer token from the challenge realm and caching
-it per scope), never as a challenge to its own callers.
+Pull requests (the version check and every `GET`/`HEAD` on manifests, blobs, tags, and referrers) take no authentication
+when no OCI index restricts access. When an index sets `anonymous_read = false` or configures tokens, peryx challenges
+its own pull callers too: the version check and every read route answer `401` with `WWW-Authenticate: Bearer` pointing
+at `/v2/token`, the restricted-access handshake the [version check](#version-check) describes and
+[token authentication](@/ecosystems/oci/reference/token-auth.md) covers in full. Separately, on the pull-through path
+peryx runs the same `401` + `WWW-Authenticate: Bearer` handshake as a *client* against an upstream registry that demands
+it, fetching a bearer token from the challenge realm and caching it per scope.
 
 Writes (`PUT`/`DELETE` on manifests, `DELETE` on blobs, every blob upload verb, and the upload-status `GET`) require
 `Authorization: Basic` where the password is the target hosted index's `upload_token`; the username is ignored. A
@@ -185,20 +202,24 @@ virtual index routes the write to its configured upload-target member. Responses
 Errors use the distribution-spec shape `{"errors": [{"code": "<CODE>", "message": "..."}]}` with
 `Content-Type: application/json`, each code paired with its canonical status:
 
-| Code                  | Status | Meaning                                                                       |
-| --------------------- | ------ | ----------------------------------------------------------------------------- |
-| `NAME_UNKNOWN`        | `404`  | `<name>` matches no OCI index route                                           |
-| `MANIFEST_UNKNOWN`    | `404`  | No member can serve the reference                                             |
-| `BLOB_UNKNOWN`        | `404`  | The blob is neither stored nor upstream                                       |
-| `BLOB_UPLOAD_UNKNOWN` | `404`  | No such upload session                                                        |
-| `DIGEST_INVALID`      | `400`  | Non-`sha256` digest, bytes that do not match, or a malformed referrers digest |
-| `MANIFEST_INVALID`    | `400`  | An upstream manifest's digest disagreed with the request                      |
-| `DENIED`              | `403`  | Read-only index, or uploads disabled                                          |
-| `UNAUTHORIZED`        | `401`  | Missing or wrong upload credentials                                           |
-| `UNSUPPORTED`         | `405`  | The method is not defined for that route                                      |
+| Code                    | Status | Meaning                                                                        |
+| ----------------------- | ------ | ------------------------------------------------------------------------------ |
+| `NAME_UNKNOWN`          | `404`  | `<name>` matches no OCI index route                                            |
+| `MANIFEST_UNKNOWN`      | `404`  | No member can serve the reference                                              |
+| `BLOB_UNKNOWN`          | `404`  | The blob is neither stored nor upstream                                        |
+| `BLOB_UPLOAD_UNKNOWN`   | `404`  | No such upload session                                                         |
+| `DIGEST_INVALID`        | `400`  | Non-`sha256` digest, bytes that do not match, or a malformed referrers digest  |
+| `MANIFEST_BLOB_UNKNOWN` | `400`  | A pushed manifest references a blob or child manifest not in the store         |
+| `MANIFEST_INVALID`      | `400`  | An unsupported manifest media type on push, or an upstream digest disagreement |
+| `DENIED`                | `403`  | Read-only index, or uploads disabled                                           |
+| `TOOMANYREQUESTS`       | `429`  | An upstream rate-limited a pull-through (carries `Retry-After`)                |
+| `UNAUTHORIZED`          | `401`  | Missing or wrong upload credentials                                            |
+| `UNSUPPORTED`           | `405`  | The method is not defined for that route                                       |
 
 An upstream that fails or answers unexpectedly during a pull-through returns `502` with code `UNKNOWN`, so the puller
-does not mistake a gateway fault for a client error it would not retry.
+does not mistake a gateway fault for a client error it would not retry. An upstream that rate-limits the pull-through
+instead returns `429` with code `TOOMANYREQUESTS`, forwarding the upstream's `Retry-After` so the client backs off
+rather than hammering.
 
 A manifest push whose body exceeds the 4 MiB cap answers `413 Payload Too Large` with code `SIZE_INVALID`. The
 distribution spec defines no size-specific code, so peryx reuses `SIZE_INVALID` under the overridden status rather than
