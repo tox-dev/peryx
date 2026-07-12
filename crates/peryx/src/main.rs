@@ -105,20 +105,25 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
                 tokio::spawn(async move { client.warm().await });
             }
         }
-        let refresher = state.clone();
+        let maintainer = state.clone();
         tokio::spawn(async move {
-            // Frequent ticks keep detection latency low; each sweep only touches pages whose own
-            // freshness window (upstream Cache-Control, or the configured fallback) has lapsed.
+            // Reuse one process-wide tick to avoid a task and timer for each cached page or upload.
             let mut ticker = tokio::time::interval(std::time::Duration::from_mins(1));
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                // Every registered driver sweeps its own cached pages; one whose ecosystem has no
-                // read-through cache sweeps nothing.
-                let servings: Vec<_> = refresher.drivers().cloned().collect();
+                let servings: Vec<_> = maintainer.drivers().cloned().collect();
+                // Reclaim first so an upstream stall cannot extend idle-resource deadlines.
+                for serving in &servings {
+                    let ecosystem = serving.ecosystem();
+                    let reclaimed = serving.reclaim_idle(maintainer.serving.clone()).await;
+                    if reclaimed > 0 {
+                        tracing::info!(ecosystem = %ecosystem, reclaimed, "idle resources reclaimed");
+                    }
+                }
                 for serving in servings {
                     let ecosystem = serving.ecosystem();
-                    match serving.refresh_stale(refresher.serving.clone()).await {
+                    match serving.refresh_stale(maintainer.serving.clone()).await {
                         Ok(sweep) if sweep.checked > 0 => {
                             tracing::info!(
                                 ecosystem = %ecosystem,

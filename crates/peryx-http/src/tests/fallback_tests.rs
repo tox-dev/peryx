@@ -207,6 +207,19 @@ async fn test_a_driver_sweeps_nothing_by_default() {
     );
 }
 
+#[tokio::test]
+async fn test_a_driver_reclaims_no_idle_resources_by_default() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let (_dir, state) = unwired_state();
+    assert_eq!(
+        StubServing(peryx_core::Ecosystem::Pypi)
+            .reclaim_idle(state.serving.clone())
+            .await,
+        0
+    );
+}
+
 #[test]
 fn test_an_unwired_state_holds_no_driver_for_any_ecosystem() {
     let (_dir, state) = unwired_state();

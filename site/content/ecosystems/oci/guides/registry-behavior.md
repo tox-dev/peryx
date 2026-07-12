@@ -84,9 +84,9 @@ chunk arrives out of order and peryx answers `416`. Both cleanups act on an
 [upload session](@/ecosystems/oci/reference/registry-behavior.md#upload-sessions), so both need the hosted index's
 `upload_token` as the Basic-auth password (`-u _:<token>`).
 
-An open session holds a staged temp file on the server. If you abandon the push, that file sits until the session's
-one-hour idle timeout reaps it. To release it now, `DELETE` the session URL, the `Location` peryx returned when the
-session opened:
+An open session holds a staged temp file on the server. After one hour without a status request or `PATCH` attempt,
+peryx removes that file during the next maintenance pass; the pass runs once per minute. To release it before the
+timeout, `DELETE` the session URL, the `Location` peryx returned when the session opened:
 
 ```shell
 curl -sS -i -u _:<token> -X DELETE \

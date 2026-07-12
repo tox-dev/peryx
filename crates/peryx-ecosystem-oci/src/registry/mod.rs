@@ -357,6 +357,10 @@ impl EcosystemDriver for OciRegistry {
             next_offset,
         })
     }
+
+    async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
+        uploads::reclaim_expired(&mut *self.uploads.lock().await, (state.clock)())
+    }
 }
 
 impl OciRegistry {

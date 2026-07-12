@@ -969,13 +969,50 @@ async fn test_abandoned_upload_sessions_expire() {
 }
 
 #[tokio::test]
+async fn test_background_sweep_removes_an_abandoned_upload_file() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = now.clone();
+    let (state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let staged = std::fs::read_dir(dir.path().join("blobs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(staged.is_file());
+
+    now.store(1000 + 3600, Ordering::Relaxed);
+    let reclaimed = state
+        .driver_for(peryx_core::Ecosystem::Oci)
+        .unwrap()
+        .reclaim_idle(state.serving.clone())
+        .await;
+
+    assert_eq!(reclaimed, 1);
+    assert!(!staged.exists());
+}
+
+#[tokio::test]
 async fn test_active_upload_session_survives_eviction() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
     let dir = tempfile::tempdir().unwrap();
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
-    let (_state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
+    let (state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
 
     let (status, headers, _) = send_body(
         &app,
@@ -1000,20 +1037,14 @@ async fn test_active_upload_session_survives_eviction() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
 
-    // Now older than the TTL measured from creation, but not from that chunk: another client's upload
-    // runs an eviction pass that would have reclaimed the session under a creation-age bound.
     now.store(3000 + 3599, Ordering::Relaxed);
-    let (status, _, _) = send_body(
-        &app,
-        Method::POST,
-        "/v2/store/app/blobs/uploads/",
-        &[("authorization", &auth(TOKEN))],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
+    let reclaimed = state
+        .driver_for(peryx_core::Ecosystem::Oci)
+        .unwrap()
+        .reclaim_idle(state.serving.clone())
+        .await;
+    assert_eq!(reclaimed, 0);
 
-    // The active session is still open and accepts its next chunk.
     let (status, _, _) = send_body(
         &app,
         Method::PATCH,
@@ -1032,7 +1063,7 @@ async fn test_upload_status_read_refreshes_the_session_ttl() {
     let dir = tempfile::tempdir().unwrap();
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
-    let (_state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
+    let (state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
 
     let (status, headers, _) = send_body(
         &app,
@@ -1058,17 +1089,13 @@ async fn test_upload_status_read_refreshes_the_session_ttl() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     now.store(3000 + 3599, Ordering::Relaxed);
-    let (status, _, _) = send_body(
-        &app,
-        Method::POST,
-        "/v2/store/app/blobs/uploads/",
-        &[("authorization", &auth(TOKEN))],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
+    let reclaimed = state
+        .driver_for(peryx_core::Ecosystem::Oci)
+        .unwrap()
+        .reclaim_idle(state.serving.clone())
+        .await;
+    assert_eq!(reclaimed, 0);
 
-    // The polled session survived the eviction pass and still accepts a chunk.
     let (status, _, _) = send_body(
         &app,
         Method::PATCH,

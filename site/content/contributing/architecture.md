@@ -170,6 +170,11 @@ Handlers still read the serving state directly through the application state.
 binary's config-build and admin commands never construct the full serving state, so they dispatch through this registry
 to compile an index's policy or run a per-ecosystem admin scan without naming a format.
 
+**Background maintenance.** The binary runs one process-wide minute ticker. It calls the cached-page refresh hook and
+the idle-resource reclamation hook for each driver. PyPI refreshes stale upstream pages through the first hook; OCI
+drops expired upload sessions and their staged files through the second. Use this scheduler to avoid per-resource tasks
+and timers; keep resource state and cleanup rules in the ecosystem driver.
+
 **Lexicon.** Each ecosystem's user-facing vocabulary, which its driver registers at install time. A surface localizes a
 label from an index's ecosystem without the neutral core naming any format's words. PyPI calls a stored unit a
 *project*; OCI calls it a *repository*; the lexicon holds that mapping so shared code stays neutral.

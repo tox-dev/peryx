@@ -284,6 +284,12 @@ pub trait EcosystemDriver: Send + Sync {
         Ok(RefreshSweep::default())
     }
 
+    /// Drop expired process-local resources once per server maintenance tick. A driver without idle
+    /// resources returns zero, so the default has no work.
+    async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
+        0
+    }
+
     /// The project names of the index at `position`, for the web index listing. The web crate renders
     /// these without knowing the wire protocol they came from. Default: none.
     ///

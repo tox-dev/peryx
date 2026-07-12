@@ -87,8 +87,9 @@ open session and a subsequent request against it is `404`.
 | Missing or wrong `upload_token`                            | `401 UNAUTHORIZED`        |
 | The resolved index is read-only or has uploads disabled    | `403 DENIED`              |
 
-A `204` drops the session and unlinks its staged temp file. An open session that is neither finished nor cancelled is
-reaped on its own after one hour of inactivity.
+A `204` drops the session and unlinks its staged temp file. peryx expires an unfinished session after one hour without a
+status `GET` or `PATCH` attempt. The once-per-minute sweep removes expired sessions within the next minute; starting
+another session runs the same expiry pass.
 
 ### The 416 resume response
 

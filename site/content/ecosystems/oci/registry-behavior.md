@@ -83,6 +83,11 @@ path for the one that is still present and knows it is finished. Answering `404`
 operation honest: a `DELETE` of a session that never existed, or was already committed or cancelled, is not silently
 accepted as if it did something.
 
+peryx handles upload expiry from one process-wide minute tick, avoiding a timer task for each upload. On each tick, the
+OCI driver takes the session-map lock once and removes entries whose last status check or `PATCH` attempt occurred at
+least one hour ago. The process keeps an abandoned session and its open temp file for less than one minute past the idle
+deadline.
+
 ### Why a 416 carries the session coordinates
 
 A chunked upload is a contract about order: each chunk must begin exactly where the last one ended. When a chunk breaks

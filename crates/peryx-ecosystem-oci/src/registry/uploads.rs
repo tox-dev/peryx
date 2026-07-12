@@ -51,7 +51,7 @@ impl OciRegistry {
             last_active_at: now,
         };
         let mut uploads = self.uploads.lock().await;
-        uploads.retain(|_, session| now - session.last_active_at < UPLOAD_SESSION_TTL_SECS);
+        reclaim_expired(&mut uploads, now);
         uploads.insert(session.clone(), entry);
         drop(uploads);
         Ok(upload_accepted(name, &session, 0))
@@ -203,6 +203,12 @@ impl OciRegistry {
         }
         Ok(commit_blob(&state.blobs, entry.pending, name, &digest))
     }
+}
+
+pub(super) fn reclaim_expired(uploads: &mut std::collections::HashMap<String, UploadSession>, now: i64) -> usize {
+    let before = uploads.len();
+    uploads.retain(|_, session| now.saturating_sub(session.last_active_at) < UPLOAD_SESSION_TTL_SECS);
+    before - uploads.len()
 }
 
 /// Append a request body to a session's staged blob, advancing `offset` as each chunk lands.
