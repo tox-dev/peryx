@@ -19,11 +19,13 @@ pub fn page_context<S: std::hash::BuildHasher>(
     overrides: &HashMap<String, String, S>,
 ) -> PageContext {
     let mut skip: HashSet<String> = local_files.iter().map(|file| file.filename.clone()).collect();
+    let mut hidden = HashSet::new();
     let mut yanked = HashMap::new();
     for (filename, kind) in overrides {
         match kind.as_str() {
             "hidden" => {
                 skip.insert(filename.clone());
+                hidden.insert(filename.clone());
             }
             _ if let Some(marker) = yanked_override(kind) => {
                 yanked.insert(filename.clone(), marker);
@@ -39,6 +41,7 @@ pub fn page_context<S: std::hash::BuildHasher>(
         local_files,
         local_versions,
         skip,
+        hidden,
         yanked,
         known_metadata: HashMap::new(),
     }

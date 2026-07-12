@@ -180,6 +180,10 @@ impl PageTransformer {
             }
             return;
         }
+        // Anything but whitespace once the root has closed is trailing garbage, whatever its kind.
+        if self.closed && !byte.is_ascii_whitespace() {
+            self.trailing = true;
+        }
         match byte {
             b'"' => {
                 self.in_string = true;
@@ -197,6 +201,8 @@ impl PageTransformer {
                 out.push(byte);
             }
             b'{' | b'[' => {
+                // A non-string `name` value (object, array, ...) still closes the name slot.
+                self.expect_name_value = false;
                 self.depth += 1;
                 // `"files": [` or `"versions": [` at the top level switches modes; the bracket is
                 // emitted (files) or captured (versions merges into one emission).
@@ -241,8 +247,9 @@ impl PageTransformer {
                 out.push(byte);
             }
             _ => {
-                if self.closed && !byte.is_ascii_whitespace() {
-                    self.trailing = true;
+                // A non-string, non-container `name` value (null, number, ...) closes the name slot.
+                if !byte.is_ascii_whitespace() {
+                    self.expect_name_value = false;
                 }
                 out.push(byte);
             }
@@ -375,6 +382,12 @@ impl PageTransformer {
             return;
         }
         for file in &self.context.local_files {
+            // Overrides recorded against a filename that was later uploaded locally apply to the
+            // local file too, matching the buffered path; the local file otherwise seeds `skip` only
+            // to shadow its upstream duplicate, so `hidden`/`yanked` must be consulted here directly.
+            if self.context.hidden.contains(&file.filename) {
+                continue;
+            }
             if self
                 .context
                 .policy
@@ -383,10 +396,18 @@ impl PageTransformer {
             {
                 continue;
             }
+            let json = self.context.yanked.get(&file.filename).map_or_else(
+                || to_json(file),
+                |yanked| {
+                    let mut file = file.clone();
+                    file.yanked = yanked.clone();
+                    to_json(&file)
+                },
+            );
             if self.emitted_in_array {
                 out.push(b',');
             }
-            out.extend_from_slice(to_json(file).as_bytes());
+            out.extend_from_slice(json.as_bytes());
             self.emitted_in_array = true;
         }
     }
@@ -430,7 +451,7 @@ impl PageTransformer {
                 match file.metadata() {
                     CoreMetadata::Hashes(hashes) => hashes
                         .get("sha256")
-                        .map(|digest| (format!("{}.metadata", file.url), digest.clone())),
+                        .map(|digest| (metadata_sibling(&file.url), digest.clone())),
                     CoreMetadata::Absent | CoreMetadata::Available => None,
                 }
             } else {
@@ -494,6 +515,14 @@ impl PageTransformer {
     fn project_is_quarantined(&self) -> bool {
         self.project_status.as_deref() == Some("quarantined")
     }
+}
+
+/// The PEP 658 metadata sibling of a file URL: `.metadata` appended to the path, ahead of any query
+/// or fragment. A signed upstream URL like `pkg.whl?token=abc` must yield `pkg.whl.metadata?token=abc`,
+/// not `pkg.whl?token=abc.metadata`.
+fn metadata_sibling(url: &str) -> String {
+    let cut = url.find(['?', '#']).unwrap_or(url.len());
+    format!("{}.metadata{}", &url[..cut], &url[cut..])
 }
 
 fn supports_metadata_sibling(filename: &str) -> bool {

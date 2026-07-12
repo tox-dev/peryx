@@ -25,6 +25,9 @@ pub struct PageContext {
     pub local_versions: Vec<String>,
     /// Filenames to drop: shadowed by a local file or hidden by an override.
     pub skip: HashSet<String>,
+    /// Filenames hidden by an override, a subset of `skip`; unlike `skip` it excludes plain local
+    /// shadows, so a locally uploaded file carrying a hidden override can still be dropped.
+    pub hidden: HashSet<String>,
     /// Filenames forced to the yanked state by an override.
     pub yanked: HashMap<String, Yanked>,
     /// Generated metadata already cached by artifact sha256.

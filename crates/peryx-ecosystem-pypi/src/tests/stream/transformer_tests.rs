@@ -593,3 +593,87 @@ fn test_trailing_bytes_after_the_root_are_an_error() {
     transformer.push(br#"{"name":"demo","files":[]}garbage"#).unwrap();
     assert!(transformer.finish().is_err());
 }
+
+#[test]
+fn test_trailing_bracket_after_the_root_is_an_error() {
+    for suffix in ["}", "]", "}]", "}}"] {
+        let mut transformer = PageTransformer::new(plain_context());
+        transformer
+            .push(format!(r#"{{"name":"demo","files":[]}}{suffix}"#).as_bytes())
+            .unwrap();
+        assert!(transformer.finish().is_err(), "suffix {suffix:?}");
+    }
+}
+
+#[test]
+fn test_trailing_whitespace_after_the_root_is_clean() {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.push(b"{\"name\":\"demo\",\"files\":[]}\n \t").unwrap();
+    assert!(transformer.finish().is_ok());
+}
+
+#[test]
+fn test_non_string_top_level_name_keeps_rewriting_files() {
+    // A null, numeric, or object `name` must not derail key tracking and disable rewriting.
+    for name in ["null", "42", r#"{"nested":true}"#] {
+        let page = format!(
+            r#"{{"name":{name},"files":[
+                {{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+                 "hashes":{{"sha256":"aa11"}}}}]}}"#
+        );
+        for chunk in [1, 5, 4096] {
+            let (out, registrations) = transform(&page, plain_context(), chunk);
+            assert!(
+                out.contains("/root/pypi/files/aa11/demo-1.0-py3-none-any.whl"),
+                "name {name} chunk {chunk}"
+            );
+            assert_eq!(registrations.len(), 1, "name {name} chunk {chunk}");
+        }
+    }
+}
+
+#[test]
+fn test_metadata_sibling_lands_on_the_path_not_the_query() {
+    let page = r#"{"name":"demo","files":[{"filename":"demo-1.0-py3-none-any.whl",
+        "url":"https://files.test/demo-1.0-py3-none-any.whl?token=abc",
+        "hashes":{"sha256":"aa11"},"core-metadata":{"sha256":"bb22"}}]}"#;
+    let (_, registrations) = transform(page, plain_context(), 6);
+    assert_eq!(
+        registrations[0].metadata,
+        Some((
+            "https://files.test/demo-1.0-py3-none-any.whl.metadata?token=abc".to_owned(),
+            "bb22".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn test_local_file_hidden_override_is_dropped_like_the_buffered_path() {
+    let overrides = HashMap::from([("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned())]);
+    let context = page_context(
+        "root/pypi",
+        vec![local_wheel("demo-1.0-py3-none-any.whl")],
+        Vec::new(),
+        &overrides,
+    );
+    let (out, _) = transform(r#"{"name":"demo","files":[]}"#, context, 4096);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert!(detail.files.is_empty());
+}
+
+#[test]
+fn test_local_file_yank_override_is_applied_like_the_buffered_path() {
+    let overrides = HashMap::from([(
+        "demo-1.0-py3-none-any.whl".to_owned(),
+        r#"{"kind":"yanked","reason":"bad build"}"#.to_owned(),
+    )]);
+    let context = page_context(
+        "root/pypi",
+        vec![local_wheel("demo-1.0-py3-none-any.whl")],
+        Vec::new(),
+        &overrides,
+    );
+    let (out, _) = transform(r#"{"name":"demo","files":[]}"#, context, 4096);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!(detail.files[0].yanked, Yanked::Reason("bad build".to_owned()));
+}
