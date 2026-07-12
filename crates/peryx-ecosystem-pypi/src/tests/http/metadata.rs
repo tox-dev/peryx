@@ -64,6 +64,38 @@ async fn test_metadata_served_verified_and_counted() {
     );
 }
 #[tokio::test]
+async fn test_buffered_persist_inserts_metadata_before_url_query() {
+    let h = harness().await;
+    let wheel_digest = Digest::of(b"wheel-bytes");
+    let meta_digest = Digest::of(b"meta-bytes");
+    // A signed file URL: `.metadata` must land on the path, ahead of the token query, not after it.
+    let wheel_url = format!("{}/files/flask.whl?token=abc", h.server.uri());
+    let json = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0.whl\",\"url\":\"{wheel_url}\",\"size\":10,\
+         \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}}}]}}",
+        wheel_digest.as_str(),
+        meta_digest.as_str(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(json.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&h.server)
+        .await;
+
+    // An HTML request resolves through the buffered persist path, not the streaming transformer.
+    let (status, ..) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (url, ..) = h
+        .state
+        .meta
+        .get_metadata(wheel_digest.as_str())
+        .unwrap()
+        .expect("metadata sibling registered");
+    assert_eq!(url, format!("{}/files/flask.whl.metadata?token=abc", h.server.uri()));
+}
+#[tokio::test]
 async fn test_metadata_not_found_when_unregistered() {
     let h = harness().await;
     let uri = format!("/pypi/files/{}/x.whl.metadata", "a".repeat(64));

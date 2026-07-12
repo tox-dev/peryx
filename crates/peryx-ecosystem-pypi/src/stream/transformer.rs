@@ -520,7 +520,7 @@ impl PageTransformer {
 /// The PEP 658 metadata sibling of a file URL: `.metadata` appended to the path, ahead of any query
 /// or fragment. A signed upstream URL like `pkg.whl?token=abc` must yield `pkg.whl.metadata?token=abc`,
 /// not `pkg.whl?token=abc.metadata`.
-fn metadata_sibling(url: &str) -> String {
+pub fn metadata_sibling(url: &str) -> String {
     let cut = url.find(['?', '#']).unwrap_or(url.len());
     format!("{}.metadata{}", &url[..cut], &url[cut..])
 }

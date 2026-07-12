@@ -284,7 +284,11 @@ pub fn persist_page(
         if let CoreMetadata::Hashes(hashes) = file.metadata()
             && let Some(digest) = hashes.get("sha256")
         {
-            metadata.push((sha256.clone(), format!("{}.metadata", file.url), digest.clone()));
+            metadata.push((
+                sha256.clone(),
+                crate::stream::metadata_sibling(&file.url),
+                digest.clone(),
+            ));
         }
     }
     let display = if parsed.name.is_empty() { project } else { &parsed.name };
