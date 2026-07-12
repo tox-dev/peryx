@@ -31,6 +31,7 @@ request whose `<name>` matches no OCI index route answers `404 NAME_UNKNOWN`. Fo
 | `GET`        | `/v2/<name>/blobs/uploads/<session>` | Report upload progress                 | `204`         |
 | `PATCH`      | `/v2/<name>/blobs/uploads/<session>` | Append a chunk                         | `202`         |
 | `PUT`        | `/v2/<name>/blobs/uploads/<session>` | Finish an upload                       | `201`         |
+| `DELETE`     | `/v2/<name>/blobs/uploads/<session>` | Cancel an upload session               | `204`         |
 | `GET`        | `/v2/<name>/tags/list`               | List tags, paginated                   | `200`         |
 | `GET`        | `/v2/<name>/referrers/<digest>`      | List manifests referring to `<digest>` | `200`         |
 
@@ -120,8 +121,12 @@ A push writes blobs through an upload session started with `POST /v2/<name>/blob
   `PATCH` requests, then finishes with `PUT …/uploads/<session>?digest=<digest>`.
 
 `PATCH /v2/<name>/blobs/uploads/<session>` appends a chunk and answers `202` with the updated `Range` and
-`Docker-Upload-UUID`. A chunk whose `Content-Range` does not begin where the last one ended is
-`416 Range Not Satisfiable` and the session keeps its bytes so the client can resend.
+`Docker-Upload-UUID`. A chunk whose `Content-Range` does not begin where the last one ended (or cannot be parsed) is
+`416 Range Not Satisfiable`; the session keeps its bytes, and the response carries `Location`, `Docker-Upload-UUID`, and
+`Range: 0-<n>` so the client can resume from those coordinates rather than restart.
+
+`DELETE /v2/<name>/blobs/uploads/<session>` cancels an open session (spec end-14), dropping it and its staged temp file
+and answering `204`. An unknown session (including one already committed or cancelled) is `404 BLOB_UPLOAD_UNKNOWN`.
 
 `PUT /v2/<name>/blobs/uploads/<session>?digest=<digest>` appends any trailing body, then verifies and commits under
 `<digest>`, answering `201` with `Location` and `Docker-Content-Digest`. A digest mismatch on commit is
@@ -144,8 +149,11 @@ index or a virtual index) unions its members' tags under the requested name, sor
 `GET /v2/<name>/referrers/<digest>` returns an OCI image index (`application/vnd.oci.image.index.v1+json`) whose
 `manifests` are the descriptors of every pushed manifest that declared `<digest>` as its `subject`, aggregated across
 the index's members. Each descriptor carries `mediaType`, `digest`, `size`, and (when the source manifest had them)
-`artifactType` and `annotations`. When nothing refers to `<digest>`, `manifests` is empty. peryx does not apply an
-`artifactType` filter or emit `OCI-Filters-Applied`.
+`artifactType` and `annotations`. A `<digest>` that is not a syntactically valid content digest is `400 DIGEST_INVALID`;
+the registered `sha256`/`sha512` algorithms have their fixed hex length enforced, while an unregistered algorithm is
+held only to the general grammar. A well-formed but unknown subject is `200` with an empty `manifests`
+([digest validation reference](@/ecosystems/oci/reference/upload-sessions.md#referrers-subject-digest-validation)).
+peryx does not apply an `artifactType` filter or emit `OCI-Filters-Applied`.
 
 ## Discovery
 
@@ -177,17 +185,17 @@ virtual index routes the write to its configured upload-target member. Responses
 Errors use the distribution-spec shape `{"errors": [{"code": "<CODE>", "message": "..."}]}` with
 `Content-Type: application/json`, each code paired with its canonical status:
 
-| Code                  | Status | Meaning                                                    |
-| --------------------- | ------ | ---------------------------------------------------------- |
-| `NAME_UNKNOWN`        | `404`  | `<name>` matches no OCI index route                        |
-| `MANIFEST_UNKNOWN`    | `404`  | No member can serve the reference                          |
-| `BLOB_UNKNOWN`        | `404`  | The blob is neither stored nor upstream                    |
-| `BLOB_UPLOAD_UNKNOWN` | `404`  | No such upload session                                     |
-| `DIGEST_INVALID`      | `400`  | Non-`sha256` digest, or bytes that do not match the digest |
-| `MANIFEST_INVALID`    | `400`  | An upstream manifest's digest disagreed with the request   |
-| `DENIED`              | `403`  | Read-only index, or uploads disabled                       |
-| `UNAUTHORIZED`        | `401`  | Missing or wrong upload credentials                        |
-| `UNSUPPORTED`         | `405`  | The method is not defined for that route                   |
+| Code                  | Status | Meaning                                                                       |
+| --------------------- | ------ | ----------------------------------------------------------------------------- |
+| `NAME_UNKNOWN`        | `404`  | `<name>` matches no OCI index route                                           |
+| `MANIFEST_UNKNOWN`    | `404`  | No member can serve the reference                                             |
+| `BLOB_UNKNOWN`        | `404`  | The blob is neither stored nor upstream                                       |
+| `BLOB_UPLOAD_UNKNOWN` | `404`  | No such upload session                                                        |
+| `DIGEST_INVALID`      | `400`  | Non-`sha256` digest, bytes that do not match, or a malformed referrers digest |
+| `MANIFEST_INVALID`    | `400`  | An upstream manifest's digest disagreed with the request                      |
+| `DENIED`              | `403`  | Read-only index, or uploads disabled                                          |
+| `UNAUTHORIZED`        | `401`  | Missing or wrong upload credentials                                           |
+| `UNSUPPORTED`         | `405`  | The method is not defined for that route                                      |
 
 An upstream that fails or answers unexpectedly during a pull-through returns `502` with code `UNKNOWN`, so the puller
 does not mistake a gateway fault for a client error it would not retry.
