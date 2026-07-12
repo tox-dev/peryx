@@ -15,7 +15,7 @@ use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, Signer, authorize, authorize_grants};
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::error::{ErrorCode, error_response};
 
@@ -55,7 +55,7 @@ fn presents_valid_credential(signer: &Signer, state: &ServingState, headers: &He
         return signer.verify(token).is_ok();
     }
     if header.starts_with("Basic ") {
-        return named_principal(state, header).is_some();
+        return named_requester(state, header).is_some();
     }
     false
 }
@@ -70,13 +70,13 @@ pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str
     let Some(scopes) = parse_token_request(query, signer.audience()) else {
         return error_response(ErrorCode::Denied, "requested service is not available");
     };
-    let principal = match resolve_principal(state, authorization(headers)) {
-        Ok(principal) => principal,
+    let requester = match resolve_requester(state, authorization(headers)) {
+        Ok(requester) => requester,
         Err(response) => return response,
     };
-    let grants = approved_grants(state, &principal, &scopes);
+    let grants = approved_grants(state, &requester, &scopes);
     let now = (state.clock)();
-    let token = signer.mint(&principal, &grants, now, state.token_ttl_secs);
+    let token = signer.mint(&requester.principal, &grants, now, state.token_ttl_secs);
     let body = json!({
         "token": token,
         "access_token": token,
@@ -86,47 +86,77 @@ pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// The principal a token request speaks as: anonymous with no credential, the named subject a Basic
-/// password authenticates, or a `401` when a Basic password authenticates nowhere — the check that
-/// makes `docker login` reject a wrong password instead of silently issuing an anonymous token.
-fn resolve_principal(state: &ServingState, header: Option<&str>) -> Result<Principal, Response> {
+/// The identity and source credential a token request speaks as: anonymous with no credential, the
+/// named subject a Basic password authenticates, or a `401` when Basic authenticates nowhere.
+fn resolve_requester<'a>(state: &'a ServingState, header: Option<&'a str>) -> Result<TokenRequester<'a>, Response> {
     match header {
         Some(header) if header.starts_with("Basic ") => {
-            named_principal(state, header).ok_or_else(|| error_response(ErrorCode::Unauthorized, "invalid credentials"))
+            named_requester(state, header).ok_or_else(|| error_response(ErrorCode::Unauthorized, "invalid credentials"))
         }
-        _ => Ok(Principal::Anonymous),
+        _ => Ok(TokenRequester {
+            principal: Principal::Anonymous,
+            basic: None,
+        }),
     }
 }
 
-/// The named subject a Basic password authenticates on any OCI index, so a token issued for one index's
-/// credential is validated wherever that credential is configured.
-fn named_principal(state: &ServingState, header: &str) -> Option<Principal> {
+/// The named subject and first OCI index a Basic password authenticates against.
+fn named_requester<'a>(state: &'a ServingState, header: &'a str) -> Option<TokenRequester<'a>> {
     let now = (state.clock)();
     state
         .indexes
         .iter()
         .filter(|index| index.ecosystem == Ecosystem::Oci)
         .find_map(|index| match index.acl.identify(Some(header), now).principal {
-            Principal::Named { subject } => Some(Principal::Named { subject }),
+            Principal::Named { subject } => Some(TokenRequester {
+                principal: Principal::Named { subject },
+                basic: Some(BasicAuthentication {
+                    header,
+                    index: &index.name,
+                    now,
+                }),
+            }),
             Principal::Anonymous => None,
         })
 }
 
+struct TokenRequester<'a> {
+    principal: Principal,
+    basic: Option<BasicAuthentication<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct BasicAuthentication<'a> {
+    header: &'a str,
+    index: &'a str,
+    now: i64,
+}
+
 /// The grants a token carries: for each requested scope, the actions the principal may take on the
-/// repository it names, resolved through the same [`super::resolve`] the resource routes use. A scope
-/// that resolves to nothing, or grants nothing, contributes no grant — an empty result is a valid token,
-/// not an error.
-fn approved_grants(state: &ServingState, principal: &Principal, scopes: &[RequestedScope]) -> Vec<Grant> {
+/// repository it names, resolved through the same [`super::resolve`] the resource routes use. A named
+/// requester must authenticate as the same subject on every scoped index. A scope that resolves to
+/// nothing, authenticates as another subject, or grants nothing contributes no grant.
+fn approved_grants(state: &ServingState, requester: &TokenRequester<'_>, scopes: &[RequestedScope]) -> Vec<Grant> {
     let mut grants = Vec::new();
+    let mut authenticated_indexes = requester
+        .basic
+        .map(|basic| (basic, HashMap::from([(basic.index, true)])));
     for scope in scopes {
         let Some((index, repo)) = super::resolve(&state.indexes, &scope.name) else {
             continue;
         };
+        if let Some((basic, indexes)) = &mut authenticated_indexes
+            && !*indexes
+                .entry(index.name.as_str())
+                .or_insert_with(|| index.acl.identify(Some(basic.header), basic.now).principal == requester.principal)
+        {
+            continue;
+        }
         let actions: BTreeSet<Action> = scope
             .actions
             .iter()
             .copied()
-            .filter(|&action| authorize(principal, &index.acl, Some(repo), action).is_ok())
+            .filter(|&action| authorize(&requester.principal, &index.acl, Some(repo), action).is_ok())
             .collect();
         if !actions.is_empty() {
             grants.push(Grant {

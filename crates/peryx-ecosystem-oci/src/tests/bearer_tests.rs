@@ -172,6 +172,38 @@ async fn test_bearer_token_may_not_push_beyond_scope(#[case] requested_scope: &s
     );
 }
 
+#[rstest]
+#[case::different_secret("other", StatusCode::UNAUTHORIZED)]
+#[case::same_secret(SECRET, StatusCode::OK)]
+#[tokio::test]
+async fn test_named_subject_isolated_by_index_secret(#[case] target_secret: &str, #[case] expected: StatusCode) {
+    let dir = tempfile::tempdir().unwrap();
+    let actions = &[Action::Read, Action::Write];
+    let indexes = vec![
+        scoped_index("source", "source", "ci", SECRET, "*", actions),
+        scoped_index("target", "target", "ci", target_secret, "*", actions),
+    ];
+    let (_state, app) = realm_app(&dir, indexes);
+    let body = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(body);
+    push(&app, "target/app", &digest, body, &auth(target_secret)).await;
+    let (_, token) = request_token(
+        &app,
+        "service=peryx&scope=repository:target/app:pull",
+        Some(&auth(SECRET)),
+    )
+    .await;
+
+    let (status, _, _) = send_with(
+        &app,
+        Method::GET,
+        &format!("/v2/target/app/manifests/{digest}"),
+        &[("authorization", &format!("Bearer {token}"))],
+    )
+    .await;
+    assert_eq!(status, expected);
+}
+
 #[tokio::test]
 async fn test_docker_login_flow_validates_and_then_pushes() {
     let dir = tempfile::tempdir().unwrap();
