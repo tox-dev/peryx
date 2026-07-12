@@ -154,3 +154,28 @@ async fn test_buffered_virtual_shadows_upstream_when_cached_layer_is_listed_firs
 
     assert_upload_shadows_upstream(&detail, &hosted);
 }
+
+#[tokio::test]
+async fn test_buffered_virtual_caps_version_at_a_pre_pep700_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    // A PEP 503-era upstream that advertises no version promises none of PEP 700's fields, so the
+    // merged virtual page must fall back to the base version rather than inherit the default ceiling.
+    let body = format!(
+        "{{\"name\":\"peryxpkg\",\"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\
+         \"url\":\"https://upstream.invalid/peryxpkg-1.0-py3-none-any.whl\",\
+         \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}]}}"
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/peryxpkg/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&server)
+        .await;
+    let state = state_for(&server, &dir, active_policy());
+
+    let (status, _, detail) = get(&state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(json["meta"]["api-version"], crate::API_VERSION_BASE);
+}

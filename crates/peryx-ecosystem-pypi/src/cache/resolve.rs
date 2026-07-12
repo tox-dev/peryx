@@ -108,6 +108,11 @@ async fn virtual_detail(
         if let Some(detail) = detail {
             found = true;
             versions.extend(detail.versions);
+            // A virtual index guarantees only what its weakest layer does: a layer that cannot promise
+            // PEP 700's `versions`/`size` caps the merged page at the base version too.
+            if detail.meta.api_version == crate::API_VERSION_BASE {
+                meta.api_version = crate::API_VERSION_BASE;
+            }
             if meta.project_status.is_none() && detail.meta.project_status.is_some() {
                 meta.project_status = detail.meta.project_status;
                 meta.project_status_reason = detail.meta.project_status_reason;

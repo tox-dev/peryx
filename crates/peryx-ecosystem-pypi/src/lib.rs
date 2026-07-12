@@ -55,9 +55,9 @@ pub use name::{
     PackageName, file_matches_version, is_valid_name, normalize_name, normalize_name_cow, project_of_filename,
 };
 pub use simple::{
-    API_VERSION, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus,
-    Provenance, SimpleError, Yanked, parse_detail, parse_index, parse_meta, render_detail_html, render_index_html,
-    to_json,
+    API_VERSION, API_VERSION_BASE, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList,
+    ProjectListEntry, ProjectStatus, Provenance, SimpleError, Yanked, parse_detail, parse_index, parse_meta,
+    render_detail_html, render_index_html, to_json,
 };
 pub use version::{Version, VersionSpecifiers, parse_version, parse_version_specifiers, sorted_desc, versions_match};
 

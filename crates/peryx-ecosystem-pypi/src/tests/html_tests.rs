@@ -123,7 +123,14 @@ fn test_parse_ignores_irrelevant_meta_and_gpg_sig_edges() {
         <a href="signed.whl" data-gpg-sig>signed.whl</a>
         <a href="unknown.whl" data-gpg-sig="unknown">unknown.whl</a>"#;
     let parsed = parse_detail_html("x", html, &base()).unwrap();
-    assert_eq!(parsed.meta, Meta::default());
+    // A page that advertises no repository-version promises no PEP 700 fields, so it maps to the base.
+    assert_eq!(
+        parsed.meta,
+        Meta {
+            api_version: crate::API_VERSION_BASE,
+            ..Meta::default()
+        }
+    );
     assert_eq!(parsed.files[0].gpg_sig, Some(true));
     assert_eq!(parsed.files[1].gpg_sig, None);
 }

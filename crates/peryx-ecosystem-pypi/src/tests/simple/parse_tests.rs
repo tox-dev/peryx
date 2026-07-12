@@ -54,7 +54,14 @@ fn test_parse_detail_roundtrips_serialized_model() {
 #[test]
 fn test_parse_detail_minimal() {
     let parsed = crate::parse_detail(b"{\"name\":\"x\"}").unwrap();
-    assert_eq!(parsed.meta, Meta::default());
+    // A page that advertises no version promises no PEP 700 fields, so it maps to the base version.
+    assert_eq!(
+        parsed.meta,
+        Meta {
+            api_version: crate::API_VERSION_BASE,
+            ..Meta::default()
+        }
+    );
     assert_eq!(parsed.name, "x");
     assert!(parsed.versions.is_empty());
     assert!(parsed.files.is_empty());

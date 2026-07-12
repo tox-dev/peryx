@@ -15,6 +15,19 @@ fn test_parse_meta_reads_project_status() {
 }
 
 #[test]
+fn test_parse_meta_advertises_ceiling_only_for_pep700_upstreams() {
+    for (upstream, served) in [
+        (r#"{"api-version":"1.1"}"#, crate::API_VERSION),
+        (r#"{"api-version":"1.4"}"#, crate::API_VERSION),
+        (r#"{"api-version":"1.0"}"#, crate::API_VERSION_BASE),
+        (r"{}", crate::API_VERSION_BASE),
+    ] {
+        let meta = crate::parse_meta(upstream.as_bytes()).unwrap();
+        assert_eq!(meta.api_version, served, "upstream {upstream}");
+    }
+}
+
+#[test]
 fn test_parse_meta_rejects_invalid_project_status() {
     let err = crate::parse_meta(br#"{"api-version":"1.4","project-status":"frozen"}"#).unwrap_err();
     assert!(matches!(&err, SimpleError::InvalidProjectStatus(status) if status == "frozen"));

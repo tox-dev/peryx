@@ -4,9 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use super::SimpleError;
 
-/// The Simple API version peryx advertises.
+/// The highest Simple API version peryx advertises, for a page that carries every PEP 700 guarantee.
 pub const API_VERSION: &str = "1.4";
+/// The version peryx falls back to when it cannot guarantee PEP 700's `versions` and per-file `size`:
+/// PEP 691, which mandates neither. PEP 700's additions start at 1.1, so anything below it is `1.0`.
+pub const API_VERSION_BASE: &str = "1.0";
 const API_MAJOR: u64 = 1;
+/// The first minor version whose payload guarantees `versions` and per-file `size` (PEP 700).
+const PEP700_MINOR: u64 = 1;
 
 /// The `meta` object shared by both response kinds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,12 +44,12 @@ impl Meta {
         project_status: Option<String>,
         project_status_reason: Option<String>,
     ) -> Result<Self, SimpleError> {
-        validate_api_version(api_version)?;
+        let api_version = served_version(api_version)?;
         if let Some(status) = project_status.as_deref() {
             validate_project_status(status)?;
         }
         Ok(Self {
-            api_version: API_VERSION,
+            api_version,
             project_status,
             project_status_reason,
         })
@@ -79,9 +84,12 @@ impl IncomingMeta {
     }
 }
 
-fn validate_api_version(version: Option<&str>) -> Result<(), SimpleError> {
+/// The version peryx advertises for an upstream that declared `version`: its own ceiling once the
+/// upstream promises PEP 700's `versions`/`size` (minor >= 1), otherwise PEP 691's base. An upstream
+/// that advertises nothing (a bare PEP 503 index) promises neither, so it maps to the base too.
+fn served_version(version: Option<&str>) -> Result<&'static str, SimpleError> {
     let Some(version) = version else {
-        return Ok(());
+        return Ok(API_VERSION_BASE);
     };
     let Some((major, minor)) = version.split_once('.') else {
         return Err(SimpleError::InvalidApiVersion(version.to_owned()));
@@ -92,10 +100,14 @@ fn validate_api_version(version: Option<&str>) -> Result<(), SimpleError> {
     if major != API_MAJOR {
         return Err(SimpleError::UnsupportedApiVersion(version.to_owned()));
     }
-    minor
+    let minor = minor
         .parse::<u64>()
         .map_err(|_| SimpleError::InvalidApiVersion(version.to_owned()))?;
-    Ok(())
+    Ok(if minor >= PEP700_MINOR {
+        API_VERSION
+    } else {
+        API_VERSION_BASE
+    })
 }
 
 fn validate_project_status(status: &str) -> Result<(), SimpleError> {
