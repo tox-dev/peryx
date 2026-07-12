@@ -40,9 +40,11 @@ digests while streaming the artifact into a staged blob. A lone md5 digest is re
 
 Before publishing the staged blob, peryx validates the project name, [PEP 440](https://peps.python.org/pep-0440/)
 version, safe filename shape, `filetype`, archive readability, and metadata identity. Wheel uploads must contain one
-normalized `{name}-{version}.dist-info/` directory with `METADATA`, `WHEEL`, and `RECORD`. The `WHEEL` tags and optional
-build field must match the filename, and `RECORD` must cover each archive file except `RECORD` and deprecated RECORD
-signatures with sha256-or-better hashes. When `RECORD` includes a size, the size must match the archive member.
+`{name}-{version}.dist-info/` directory that
+[matches the filename by normalized name and version](@/ecosystems/pypi/reference/dist-info.md), with `METADATA`,
+`WHEEL`, and `RECORD`. The `WHEEL` tags and optional build field must match the filename, and `RECORD` must cover each
+archive file except `RECORD` and deprecated RECORD signatures with sha256-or-better hashes. When `RECORD` includes a
+size, the size must match the archive member.
 
 A source distribution is a `.tar.gz` or a `.zip`, and peryx holds both to the same
 [PEP 625](https://peps.python.org/pep-0625/) strictness. The filename splits its name from its version at the last `-`,
