@@ -110,6 +110,17 @@ pub trait EcosystemDriver: Send + Sync {
     /// Writes and peryx's own service endpoints are classified before this reaches a driver.
     fn classify_route(&self, path: &str) -> crate::rate_limit::RouteClass;
 
+    /// Resolve credentials before local bucket selection so changing an invalid header cannot allocate
+    /// another bucket. Return `Anonymous` when credentials are absent or invalid; the caller uses the client IP.
+    fn rate_limit_principal(
+        &self,
+        _state: &ServingState,
+        _position: Option<usize>,
+        _headers: &HeaderMap,
+    ) -> peryx_identity::Principal {
+        peryx_identity::Principal::Anonymous
+    }
+
     /// The `GET /+api` entry for one index of this ecosystem: its wire-protocol endpoints,
     /// capabilities, and copyable client configuration. The neutral handler wraps each ecosystem's
     /// entries into one discovery document.

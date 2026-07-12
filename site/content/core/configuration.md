@@ -313,9 +313,12 @@ Rate limits are local to one peryx process and disabled by default. When `enable
 bounded in-memory buckets; restarting the process clears the buckets. `max_clients` caps the number of client/class
 buckets kept in memory. Set a class `requests` or `window_secs` to `0` to disable that class limit.
 
-For authenticated requests, peryx hashes the `Authorization` header and uses the hash as the bucket key. It does not
-store the credential value. Other requests use the peer IP address. In in-process tests and deployments without socket
-peer metadata, peryx falls back to `X-Forwarded-For`, then `X-Real-IP`, then `127.0.0.1`.
+peryx hashes a named principal with a process-random seed and stores neither the credential nor the principal name;
+invalid credentials and routes without an authentication driver use the peer IP. In tests and deployments without socket
+peer metadata, peryx tries `X-Forwarded-For` before `X-Real-IP`. peryx uses `127.0.0.1` when neither header exists.
+
+Clients can change a Basic username or bearer value without changing buckets when both values resolve to the same
+principal. peryx groups rotated invalid `Authorization` values under the peer IP.
 
 | Key           | Meaning                                     | Default |
 | ------------- | ------------------------------------------- | ------- |

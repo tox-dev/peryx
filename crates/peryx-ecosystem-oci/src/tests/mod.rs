@@ -25,6 +25,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::AppState;
+use peryx_driver::rate_limit::RateLimitConfig;
 use peryx_http::router;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken, Signer};
 use peryx_index::{Index, IndexKind};
@@ -32,6 +33,7 @@ use peryx_policy::Policy;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
+use rstest::rstest;
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
@@ -76,22 +78,40 @@ fn writable_index(name: &str, route: &str, volatile: bool, token: &str) -> Index
 /// `/v2/token` endpoint mint JWTs. The clock reads real time: `jsonwebtoken` validates a token's `exp`
 /// against the wall clock, so a token minted here has to expire in the real future to verify.
 fn realm_app(dir: &TempDir, indexes: Vec<Index>) -> (Arc<AppState>, axum::Router) {
+    realm_app_with_clock_and_limits(dir, indexes, Arc::new(current_unix_time), RateLimitConfig::default())
+}
+
+fn realm_app_with_clock_and_limits(
+    dir: &TempDir,
+    indexes: Vec<Index>,
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    rate_limit: RateLimitConfig,
+) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let clock = Arc::new(|| {
-        i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap()
-    });
-    let mut state = AppState::with_clock(meta, blobs, 60, indexes, clock);
+    let mut state = AppState::with_limits(
+        meta,
+        blobs,
+        60,
+        indexes,
+        clock,
+        rate_limit,
+        Vec::<(String, usize)>::new(),
+    );
     crate::install(&mut state, HashMap::new());
     state.set_token_realm(Signer::new(b"realm-test-signing-key", crate::TOKEN_SERVICE), 300);
     let state = Arc::new(state);
     (state.clone(), router(state))
+}
+
+fn current_unix_time() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
 }
 
 /// A hosted OCI index that gates reads (`anonymous_read = false`) behind a single named token whose
@@ -350,39 +370,53 @@ async fn test_unknown_route_reports_name_unknown() {
     assert!(body_has_code(&body, "NAME_UNKNOWN"), "{body:?}");
 }
 
+#[rstest]
+#[case::anonymous(None, None)]
+#[case::basic(Some("Basic invalid-one"), Some("Basic invalid-two"))]
+#[case::bearer(Some("Bearer invalid-one"), Some("Bearer invalid-two"))]
 #[tokio::test]
-async fn test_v2_reads_are_rate_limited_through_the_oci_classifier() {
-    // With the limiter on, the OCI driver classifies a manifest read as a listing, so a second read
-    // from the same client is denied. This proves `/v2/` traffic is classed by the registered namespace
-    // driver, not the neutral fallback.
+async fn test_v2_anonymous_and_invalid_credentials_share_the_ip_bucket(
+    #[case] first_credential: Option<&str>,
+    #[case] second_credential: Option<&str>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = rate_limited_oci_app(&dir);
+    let first_status = rate_limited_manifest_read(&app, first_credential).await;
+    let second_status = rate_limited_manifest_read(&app, second_credential).await;
+
+    assert_eq!(
+        (first_status, second_status),
+        (StatusCode::NOT_FOUND, StatusCode::TOO_MANY_REQUESTS)
+    );
+}
+
+fn rate_limited_oci_app(dir: &TempDir) -> axum::Router {
     use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 
-    let dir = tempfile::tempdir().unwrap();
-    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
-    let rate_limit = RateLimitConfig {
-        listing: RouteLimit::new(1, 60),
-        ..RateLimitConfig::enabled_defaults()
-    };
-    let index = oci_index("store", "store", IndexKind::Hosted { volatile: false });
     let mut state = AppState::with_limits(
-        meta,
-        blobs,
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        BlobStore::new(dir.path().join("blobs")),
         60,
-        vec![index],
+        vec![oci_index("store", "store", IndexKind::Hosted { volatile: false })],
         Arc::new(|| 1000),
-        rate_limit,
+        RateLimitConfig {
+            listing: RouteLimit::new(1, 60),
+            ..RateLimitConfig::enabled_defaults()
+        },
         Vec::<(String, usize)>::new(),
     );
     crate::install(&mut state, HashMap::new());
-    let app = router(Arc::new(state));
-    let headers = [("x-forwarded-for", "192.0.2.9")];
+    router(Arc::new(state))
+}
 
-    let (first, ..) = send_with(&app, Method::GET, "/v2/store/app/manifests/1.0", &headers).await;
-    let (second, ..) = send_with(&app, Method::GET, "/v2/store/app/manifests/1.0", &headers).await;
-
-    assert_eq!(first, StatusCode::NOT_FOUND);
-    assert_eq!(second, StatusCode::TOO_MANY_REQUESTS);
+async fn rate_limited_manifest_read(app: &axum::Router, credential: Option<&str>) -> StatusCode {
+    let mut headers = vec![("x-forwarded-for", "192.0.2.9")];
+    if let Some(credential) = credential {
+        headers.push(("authorization", credential));
+    }
+    send_with(app, Method::GET, "/v2/store/app/manifests/1.0", &headers)
+        .await
+        .0
 }
 
 /// Whether an error body carries the given distribution-spec code.

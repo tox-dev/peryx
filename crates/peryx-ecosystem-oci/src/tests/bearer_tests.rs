@@ -1,14 +1,18 @@
 //! The OCI Bearer token realm end to end: the `/v2/` challenge, the `/v2/token` endpoint, and the
 //! scoped enforcement on resource routes that together make `docker login` validate.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use axum::http::{Method, StatusCode, header};
+use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use rstest::rstest;
 
 use peryx_identity::Action;
 
 use super::{
-    auth, body_has_code, hosted_writable, oci_digest, realm_app, scoped_index, send, send_body, send_with, token_from,
-    writable_index,
+    auth, body_has_code, current_unix_time, hosted_writable, oci_digest, realm_app, realm_app_with_clock_and_limits,
+    scoped_index, send, send_body, send_with, token_from, writable_index,
 };
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -74,6 +78,41 @@ async fn test_v2_accepts_case_insensitive_basic_scheme(#[case] scheme: &str) {
     let authorization = auth(SECRET).replacen("Basic", scheme, 1);
     let (status, _, _) = send_with(&app, Method::GET, "/v2/", &[("authorization", &authorization)]).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_refreshed_bearers_for_one_principal_share_a_rate_limit_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let issued_at = Arc::new(AtomicI64::new(current_unix_time()));
+    let clock = {
+        let issued_at = Arc::clone(&issued_at);
+        Arc::new(move || issued_at.load(Ordering::Relaxed))
+    };
+    let (_, app) = realm_app_with_clock_and_limits(
+        &dir,
+        vec![scoped_index("store", "store", "ci", SECRET, "team/*", &[Action::Read])],
+        clock,
+        RateLimitConfig {
+            artifact: RouteLimit::new(1, 60),
+            ..RateLimitConfig::enabled_defaults()
+        },
+    );
+    let query = "service=peryx&scope=repository:store/team/app:pull";
+    let (_, first_token) = request_token(&app, query, Some(&auth(SECRET))).await;
+    issued_at.fetch_add(1, Ordering::Relaxed);
+    let (_, refreshed_token) = request_token(&app, query, Some(&auth(SECRET))).await;
+    assert_ne!(first_token, refreshed_token);
+
+    let path = format!("/v2/store/team/app/blobs/{}", oci_digest(b"missing"));
+    let first_credential = format!("Bearer {first_token}");
+    let (first_status, ..) = send_with(&app, Method::GET, &path, &[("authorization", &first_credential)]).await;
+    let refreshed_credential = format!("Bearer {refreshed_token}");
+    let (refreshed_status, ..) = send_with(&app, Method::GET, &path, &[("authorization", &refreshed_credential)]).await;
+
+    assert_eq!(
+        (first_status, refreshed_status),
+        (StatusCode::NOT_FOUND, StatusCode::TOO_MANY_REQUESTS)
+    );
 }
 
 #[rstest]

@@ -5,6 +5,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
+use base64::Engine as _;
 use http_body_util::BodyExt as _;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
@@ -20,7 +21,7 @@ use peryx_driver::rate_limit::{
 };
 use peryx_driver::state::AppState;
 use peryx_http::router;
-use peryx_identity::IndexAcl;
+use peryx_identity::{IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
@@ -31,36 +32,7 @@ struct Harness {
 }
 
 async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Harness {
-    let dir = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
-    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
-    let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
-    let ticks = Arc::new(AtomicI64::new(1000));
-    let state = super::wired(AppState::with_limits(
-        meta,
-        blobs,
-        60,
-        vec![Index {
-            name: "pypi".to_owned(),
-            route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Cached {
-                client: upstream,
-                offline: false,
-            },
-            policy: Policy::default(),
-            acl: IndexAcl::default(),
-        }],
-        Arc::new(move || ticks.load(Ordering::Relaxed)),
-        rate_limit,
-        [("pypi".to_owned(), upstream_concurrency)],
-    ));
-    Harness {
-        _dir: dir,
-        server,
-        state,
-    }
+    harness_with_acl(rate_limit, upstream_concurrency, IndexAcl::default()).await
 }
 
 async fn request(state: &Arc<AppState>, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, HeaderMap, String) {
@@ -149,28 +121,77 @@ async fn test_peer_metadata_beats_forwarded_headers() {
 }
 
 #[tokio::test]
-async fn test_authenticated_requests_use_token_bucket() {
-    let h = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
-    let headers = [
-        ("x-forwarded-for", "192.0.2.1"),
-        ("authorization", "Basic cGlwOnNlY3JldA=="),
-    ];
+async fn test_rotated_usernames_for_the_same_principal_share_a_bucket() {
+    let statuses = principal_bucket_statuses([
+        basic_authorization("pip", "secret"),
+        basic_authorization("twine", "secret"),
+    ])
+    .await;
 
-    let (first, ..) = request(&h.state, "/pypi/simple/", &headers).await;
-    let (second, ..) = request(&h.state, "/pypi/simple/", &headers).await;
-    let (third, ..) = request(
-        &h.state,
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::TOO_MANY_REQUESTS]);
+}
+
+#[tokio::test]
+async fn test_distinct_principals_use_separate_buckets() {
+    let statuses = principal_bucket_statuses([
+        basic_authorization("pip", "secret"),
+        basic_authorization("twine", "other-secret"),
+    ])
+    .await;
+
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::OK]);
+}
+
+async fn principal_bucket_statuses(credentials: [String; 2]) -> [StatusCode; 2] {
+    let harness = authenticated_harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
+    let first_status = request(
+        &harness.state,
         "/pypi/simple/",
-        &[
-            ("x-forwarded-for", "192.0.2.1"),
-            ("authorization", "Basic dHdpbmU6c2VjcmV0"),
-        ],
+        &[("x-forwarded-for", "192.0.2.1"), ("authorization", &credentials[0])],
+    )
+    .await
+    .0;
+    let second_status = request(
+        &harness.state,
+        "/pypi/simple/",
+        &[("x-forwarded-for", "192.0.2.1"), ("authorization", &credentials[1])],
+    )
+    .await
+    .0;
+
+    [first_status, second_status]
+}
+
+fn basic_authorization(user: &str, password: &str) -> String {
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
+    )
+}
+
+#[rstest::rstest]
+#[case::basic("Basic invalid-one", "Basic invalid-two")]
+#[case::bearer("Bearer invalid-one", "Bearer invalid-two")]
+#[tokio::test]
+async fn test_invalid_credentials_share_the_ip_bucket(#[case] first_credential: &str, #[case] second_credential: &str) {
+    let harness = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
+
+    let (first_status, ..) = request(
+        &harness.state,
+        "/pypi/simple/",
+        &[("x-forwarded-for", "192.0.2.1"), ("authorization", first_credential)],
+    )
+    .await;
+    let (second_status, ..) = request(
+        &harness.state,
+        "/pypi/simple/",
+        &[("x-forwarded-for", "192.0.2.1"), ("authorization", second_credential)],
     )
     .await;
 
     assert_eq!(
-        (first, second, third),
-        (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS, StatusCode::OK)
+        (first_status, second_status),
+        (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS)
     );
 }
 
@@ -256,14 +277,14 @@ async fn test_denials_are_logged_and_counted() {
 async fn test_token_denials_are_logged_as_token_clients() {
     let capture = LogCapture::default();
     let _guard = capture.install();
-    let h = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
+    let harness = authenticated_harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
     let headers = [
         ("x-forwarded-for", "192.0.2.1"),
         ("authorization", "Basic cGlwOnNlY3JldA=="),
     ];
 
-    let _ = request(&h.state, "/pypi/simple/", &headers).await;
-    let _ = request(&h.state, "/pypi/simple/", &headers).await;
+    let _ = request(&harness.state, "/pypi/simple/", &headers).await;
+    let _ = request(&harness.state, "/pypi/simple/", &headers).await;
 
     let events = capture.security_events();
     let event = events
@@ -272,6 +293,55 @@ async fn test_token_denials_are_logged_as_token_clients() {
         .unwrap_or_else(|| panic!("{}", capture.text()));
     assert_eq!(field(event, "event"), Some("rate_limit"));
     assert_eq!(field(event, "result"), Some("denied"));
+}
+
+async fn authenticated_harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Harness {
+    harness_with_acl(
+        rate_limit,
+        upstream_concurrency,
+        IndexAcl {
+            anonymous_read: true,
+            tokens: [("pip", "secret"), ("twine", "other-secret")]
+                .into_iter()
+                .map(|(name, secret)| NamedToken {
+                    name: name.to_owned(),
+                    secret: secret.to_owned(),
+                    grants: Vec::new(),
+                    expires_at: None,
+                })
+                .collect(),
+        },
+    )
+    .await
+}
+
+async fn harness_with_acl(rate_limit: RateLimitConfig, upstream_concurrency: usize, acl: IndexAcl) -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let state = super::wired(AppState::with_limits(
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        BlobStore::new(dir.path().join("blobs")),
+        60,
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Cached {
+                client: UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap(),
+                offline: false,
+            },
+            policy: Policy::default(),
+            acl,
+        }],
+        Arc::new(|| 1000),
+        rate_limit,
+        [("pypi".to_owned(), upstream_concurrency)],
+    ));
+    Harness {
+        _dir: dir,
+        server,
+        state,
+    }
 }
 
 #[tokio::test]

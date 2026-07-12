@@ -277,6 +277,15 @@ impl EcosystemDriver for OciRegistry {
         }
     }
 
+    fn rate_limit_principal(
+        &self,
+        state: &ServingState,
+        _position: Option<usize>,
+        headers: &HeaderMap,
+    ) -> peryx_identity::Principal {
+        auth::rate_limit_principal(state, headers)
+    }
+
     fn discover_index(
         &self,
         index: peryx_driver::state::IndexDescription,

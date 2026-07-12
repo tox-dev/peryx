@@ -193,6 +193,17 @@ fn test_a_driver_publishes_no_metric_families_by_default() {
     assert!(StubServing(peryx_core::Ecosystem::Pypi).metric_families().is_empty());
 }
 
+#[test]
+fn test_a_driver_resolves_no_rate_limit_principal_by_default() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let (_dir, state) = unwired_state();
+    assert_eq!(
+        StubServing(peryx_core::Ecosystem::Pypi).rate_limit_principal(&state, None, &axum::http::HeaderMap::new()),
+        peryx_identity::Principal::Anonymous
+    );
+}
+
 #[tokio::test]
 async fn test_a_driver_sweeps_nothing_by_default() {
     use peryx_driver::serving::{EcosystemDriver as _, RefreshSweep};

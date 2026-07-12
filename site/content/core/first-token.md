@@ -79,6 +79,30 @@ This one returns `403` with `token does not grant this action`. The credential i
 authenticate again; the token simply holds no grant for a project named `other-widgets`. Scope is enforced on the name
 the upload declares, so a token cannot reach past the projects it was issued for.
 
+## Observe the principal rate-limit bucket
+
+Add a one-request listing limit to `peryx.toml`, then restart peryx:
+
+```toml
+[rate_limit]
+enabled = true
+
+[rate_limit.listing]
+requests = 1
+window_secs = 60
+```
+
+Send two listing requests with the `ci` password and different Basic usernames:
+
+```shell
+curl -o /dev/null -w '%{http_code}\n' -u first:ci-secret http://127.0.0.1:4433/root/pypi/simple/
+curl -o /dev/null -w '%{http_code}\n' -u second:ci-secret http://127.0.0.1:4433/root/pypi/simple/
+```
+
+peryx returns `200` for the first request and `429` for the second. Both credentials resolve to the named principal
+`ci`, so a Basic username change keeps the bucket. peryx groups a wrong password under the source address. A client
+cannot gain fresh buckets by rotating invalid `Authorization` values.
+
 ## The one-token shortcut
 
 If you want a hosted index that a single trusted token may write and delete anywhere, you do not need an

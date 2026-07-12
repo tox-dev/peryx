@@ -498,6 +498,12 @@ all-project access on each index. Project globs cover both PyPI project names an
 the core either wire format. Contributors keep wire formats in ecosystem crates; principals and grants belong in the
 identity crate.
 
+**Rate-limit identity.** Implement `rate_limit_principal` in each driver that accepts `Authorization`. Use the resolved
+index position for an indexed mount and the driver's protection space for an absolute mount. Return a verified
+`Principal`; the limiter hashes its named subject with a process-random `RandomState` and stores no identity. Invalid
+and anonymous credentials share an address bucket. Keep protocol parsing and signature checks in the driver.
+`RateLimiter` contains the bucket state and IP fallback.
+
 {% mermaid() %}
 flowchart TD
 pypi["PyPI upload<br/>Basic __token__:tok"]

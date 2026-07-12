@@ -1,7 +1,7 @@
 //! Local abuse controls for one peryx process.
 
-use std::collections::HashMap;
-use std::hash::{Hash as _, Hasher as _};
+use std::collections::{HashMap, hash_map::RandomState};
+use std::hash::BuildHasher as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -128,6 +128,7 @@ impl RateLimitConfig {
 pub struct RateLimiter {
     config: RateLimitConfig,
     buckets: Cache<BucketKey, Arc<Mutex<Window>>>,
+    principal_hasher: RandomState,
     allowed: RouteCounters,
     denied: RouteCounters,
 }
@@ -139,6 +140,7 @@ impl RateLimiter {
         Self {
             config,
             buckets: Cache::builder().max_capacity(capacity).build(),
+            principal_hasher: RandomState::new(),
             allowed: RouteCounters::default(),
             denied: RouteCounters::default(),
         }
@@ -371,20 +373,22 @@ pub struct UpstreamLimited {
 
 pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract::Request, next: Next) -> Response {
     let path = request.uri().path();
-    let class = service_route_class(request.method(), path).unwrap_or_else(|| {
-        // A GET inside an index namespace is classed by the driver that serves it, selected at the same
-        // URL boundary the router dispatches on: a namespace ecosystem that owns the path, else the
-        // per-index ecosystem's Simple-style API.
-        state.absolute_driver_for_path(path).map_or_else(
-            || {
-                state
-                    .driver_for_path(path)
-                    .map_or(RouteClass::Listing, |driver| driver.classify_route(path))
-            },
-            |driver| driver.classify_route(path),
-        )
-    });
-    let actor = actor_key(&request);
+    let class = service_route_class(request.method(), path);
+    let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
+    // Avoid a second route lookup when credential validation and read classification both need the driver.
+    let resolved_driver = if class.is_none() || has_authorization {
+        route_driver(&state, path)
+    } else {
+        None
+    };
+    let class =
+        class.unwrap_or_else(|| resolved_driver.map_or(RouteClass::Listing, |(driver, _)| driver.classify_route(path)));
+    let principal = if has_authorization && let Some((driver, position)) = resolved_driver {
+        driver.rate_limit_principal(&state, position, request.headers())
+    } else {
+        peryx_identity::Principal::Anonymous
+    };
+    let actor = state.rate_limits.actor_key(principal, &request);
     match state.rate_limits.check(class, actor) {
         Ok(()) => next.run(request).await,
         Err(limited) => {
@@ -439,17 +443,26 @@ pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     None
 }
 
-fn actor_key(request: &axum::extract::Request) -> ActorKey {
-    if let Some(value) = request.headers().get(header::AUTHORIZATION) {
-        return ActorKey::Token(header_hash(value));
+fn route_driver<'a>(
+    state: &'a AppState,
+    path: &str,
+) -> Option<(&'a Arc<dyn crate::serving::EcosystemDriver>, Option<usize>)> {
+    if let Some(driver) = state.absolute_driver_for_path(path) {
+        return Some((driver, None));
     }
-    ActorKey::Ip(peer_ip(request).unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+    let (position, _) = state.resolve_position(path.trim_start_matches('/'))?;
+    Some((state.driver_for(state.index_at(position).ecosystem)?, Some(position)))
 }
 
-fn header_hash(value: &HeaderValue) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.as_bytes().hash(&mut hasher);
-    hasher.finish()
+impl RateLimiter {
+    fn actor_key(&self, principal: peryx_identity::Principal, request: &axum::extract::Request) -> ActorKey {
+        match principal {
+            peryx_identity::Principal::Named { subject } => ActorKey::Token(self.principal_hasher.hash_one(subject)),
+            peryx_identity::Principal::Anonymous => {
+                ActorKey::Ip(peer_ip(request).unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+            }
+        }
+    }
 }
 
 fn peer_ip(request: &axum::extract::Request) -> Option<IpAddr> {

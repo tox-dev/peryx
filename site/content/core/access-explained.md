@@ -23,6 +23,25 @@ These are different credentials pointing in opposite directions. Keeping them se
 secret is `token` while a client credential is an `access_token`: one is what peryx sends out, the other is what a
 client sends in.
 
+## Why local rate limits use verified principals
+
+`Authorization` claims an identity. The driver for the route decides whether to accept it. Hashing the raw header before
+that check lets a client rotate invalid Basic or bearer values and receive a new rate-limit bucket for each value.
+
+peryx asks the driver that owns the route to verify the credential; after acceptance, peryx hashes the named principal
+with a process-random seed and groups invalid or anonymous traffic by client IP, storing neither the credential nor the
+principal name in the bounded bucket cache.
+
+[RFC 9110 section 11.6.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-11.6.2) defines `Authorization` as
+credentials that let a user agent authenticate. [Section 11.4](https://www.rfc-editor.org/rfc/rfc9110.html#section-11.4)
+classifies invalid credentials as an authentication failure. Kubernetes
+[API Priority and Fairness](https://kubernetes.io/docs/concepts/cluster-administration/flow-control/) follows the same
+split. Authenticated flows can use the requesting user, while unauthenticated requests belong to
+`system:unauthenticated`.
+
+Operators who enable the limiter pay credential verification on requests that carry `Authorization`. peryx keeps the
+existing route-classification path for requests without that header.
+
 ## Why peryx never forwards a client's credential upstream
 
 A tempting shortcut is to take the credential a client presented and replay it against the upstream, so a private

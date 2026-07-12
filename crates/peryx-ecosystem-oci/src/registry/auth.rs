@@ -14,8 +14,8 @@ use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{
-    Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, Signer, authorize, authorize_all,
-    authorize_exact_grants, authorize_grants, strip_auth_scheme,
+    Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, authorize, authorize_all, authorize_exact_grants,
+    authorize_grants, strip_auth_scheme,
 };
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
@@ -32,11 +32,15 @@ const CATALOG_GRANT: &str = "\0registry\0catalog";
 pub(super) fn negotiate_version(state: &ServingState, headers: &HeaderMap) -> Response {
     if let Some(signer) = &state.signer
         && restricts(state)
-        && !presents_valid_credential(signer, state, headers)
+        && verified_principal(state, headers).is_none()
     {
         return challenge(signer.audience(), headers, None, None);
     }
     super::version_ok()
+}
+
+pub(super) fn rate_limit_principal(state: &ServingState, headers: &HeaderMap) -> Principal {
+    verified_principal(state, headers).unwrap_or(Principal::Anonymous)
 }
 
 /// Whether any OCI index restricts access, which is what turns the frictionless zero-config `200` into
@@ -49,20 +53,20 @@ fn restricts(state: &ServingState) -> bool {
         .any(|index| !index.acl.anonymous_read || !index.acl.tokens.is_empty())
 }
 
-/// Whether the request already carries a credential this realm accepts: a bearer it signed, or a Basic
-/// password one of its indexes issued. Takes the signer the caller resolved, so a bearer is verified
-/// without re-checking that a realm exists.
-fn presents_valid_credential(signer: &Signer, state: &ServingState, headers: &HeaderMap) -> bool {
-    let Some(header) = authorization(headers) else {
-        return false;
-    };
+fn verified_principal(state: &ServingState, headers: &HeaderMap) -> Option<Principal> {
+    let header = authorization(headers)?;
     if let Some(token) = strip_auth_scheme(header, "Bearer") {
-        return signer.verify(token).is_ok();
+        return state
+            .signer
+            .as_ref()?
+            .verify(token)
+            .ok()
+            .map(|(principal, _)| principal);
     }
     if strip_auth_scheme(header, "Basic").is_some() {
-        return named_requester(state, header).is_some();
+        return named_requester(state, header).map(|requester| requester.principal);
     }
-    false
+    None
 }
 
 /// Answer `GET /v2/token`: a request for this realm's service gets a JWT whose grants are the
