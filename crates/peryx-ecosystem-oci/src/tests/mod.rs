@@ -89,7 +89,7 @@ fn realm_app(dir: &TempDir, indexes: Vec<Index>) -> (Arc<AppState>, axum::Router
     });
     let mut state = AppState::with_clock(meta, blobs, 60, indexes, clock);
     crate::install(&mut state, HashMap::new());
-    state.set_token_realm(Signer::new(b"realm-test-signing-key"), 300);
+    state.set_token_realm(Signer::new(b"realm-test-signing-key", crate::TOKEN_SERVICE), 300);
     let state = Arc::new(state);
     (state.clone(), router(state))
 }

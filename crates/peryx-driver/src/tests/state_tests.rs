@@ -52,7 +52,7 @@ fn test_token_realm_is_unset_until_installed() {
     assert!(state.signer.is_none());
     assert_eq!(state.token_ttl_secs, crate::state::DEFAULT_TOKEN_TTL_SECS);
 
-    state.set_token_realm(peryx_identity::Signer::new(b"key"), 900);
+    state.set_token_realm(peryx_identity::Signer::new(b"key", "peryx"), 900);
     assert!(state.signer.is_some());
     assert_eq!(state.token_ttl_secs, 900);
 }

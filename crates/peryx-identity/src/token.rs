@@ -14,21 +14,33 @@ use crate::{Grant, Principal};
 /// RFC 7519, rather than from a hand-rolled MAC.
 #[derive(Clone)]
 pub struct Signer {
+    audience: String,
     encoding: EncodingKey,
     decoding: DecodingKey,
     validation: Validation,
 }
 
 impl Signer {
+    /// Build a signer whose tokens are valid only for `audience`.
     #[must_use]
-    pub fn new(key: &[u8]) -> Self {
+    pub fn new(key: &[u8], audience: impl Into<String>) -> Self {
+        let audience = audience.into();
         let mut validation = Validation::new(Algorithm::HS256);
         validation.leeway = 0;
+        validation.required_spec_claims.insert("aud".to_owned());
+        validation.set_audience(&[&audience]);
         Self {
+            audience,
             encoding: EncodingKey::from_secret(key),
             decoding: DecodingKey::from_secret(key),
             validation,
         }
+    }
+
+    /// The service this signer mints tokens for and accepts tokens on behalf of.
+    #[must_use]
+    pub fn audience(&self) -> &str {
+        &self.audience
     }
 
     /// Mint a token for `principal` carrying `grants`, valid for `ttl_secs` from `issued_at` (unix
@@ -40,26 +52,27 @@ impl Signer {
     /// fixed struct of strings and integers.
     #[must_use]
     pub fn mint(&self, principal: &Principal, grants: &[Grant], issued_at: i64, ttl_secs: i64) -> String {
-        let claims = Claims {
+        let claims = MintedClaims {
             sub: match principal {
-                Principal::Anonymous => String::new(),
-                Principal::Named { subject } => subject.clone(),
+                Principal::Anonymous => "",
+                Principal::Named { subject } => subject,
             },
+            aud: &self.audience,
             iat: issued_at,
             exp: issued_at + ttl_secs,
-            grants: grants.to_vec(),
+            grants,
         };
         jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &self.encoding)
             .expect("HS256 signing of serializable claims cannot fail")
     }
 
     /// Recover the principal and grants a token asserts, rejecting one this key did not sign, one whose
-    /// claims were altered, and one past its expiry.
+    /// claims were altered, one intended for another audience, and one past its expiry.
     ///
     /// # Errors
-    /// Returns [`TokenError`] when the token fails signature, structure, or expiry validation.
+    /// Returns [`TokenError`] when the token fails signature, structure, audience, or expiry validation.
     pub fn verify(&self, token: &str) -> Result<(Principal, Vec<Grant>), TokenError> {
-        let claims = jsonwebtoken::decode::<Claims>(token, &self.decoding, &self.validation)
+        let claims = jsonwebtoken::decode::<VerifiedClaims>(token, &self.decoding, &self.validation)
             .map_err(TokenError)?
             .claims;
         let principal = if claims.sub.is_empty() {
@@ -75,10 +88,17 @@ impl Signer {
 #[error("invalid token: {0}")]
 pub struct TokenError(jsonwebtoken::errors::Error);
 
-#[derive(Serialize, Deserialize)]
-struct Claims {
-    sub: String,
+#[derive(Serialize)]
+struct MintedClaims<'a> {
+    sub: &'a str,
+    aud: &'a str,
     iat: i64,
     exp: i64,
+    grants: &'a [Grant],
+}
+
+#[derive(Deserialize)]
+struct VerifiedClaims {
+    sub: String,
     grants: Vec<Grant>,
 }

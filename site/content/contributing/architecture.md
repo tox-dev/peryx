@@ -463,24 +463,24 @@ and a `Grant` pairing actions with project globs. An index carries an `IndexAcl`
 named tokens, each with a secret, grants, and an optional expiry. Two calls do the work. `IndexAcl::identify` turns an
 `Authorization` header into a `Principal` by matching the presented password against a live token.
 `authorize(principal, acl, project, action)` answers the one access question and returns a typed `Denial` (unavailable,
-unauthenticated, or forbidden) an ecosystem maps to its own status. The crate also mints and verifies peryx's own JWTs
-through `Signer`, so the signing key is identity state rather than protocol state; the OCI token endpoint that will call
-it lands with the Bearer flow.
+unauthenticated, or forbidden) an ecosystem maps to its own status. The crate also mints and verifies peryx's
+audience-bound JWTs through `Signer`, so the signing key and audience check remain identity state rather than protocol
+state.
 
 **Extension.** The neutral core knows `(Principal, IndexAcl, project, Action)` and nothing about how a client presented
 itself. Each ecosystem reduces its wire protocol to those four before it calls in. PyPI reads a Basic
-`__token__:<token>` header on its upload path and calls `authorize` with `Write` or `Delete`; OCI's `resolve_writable`
-does the same for a push or delete, and the forthcoming Bearer realm will parse an OCI
-`scope=repository:<name>:pull,push` string into a project and action there, never in the core. The grant grammar is
-deliberately glob-over-project so it maps onto a PyPI project name and an OCI repository name alike without the core
-learning either. A contributor keeps the boundary by asking one question: does this name a wire format? If so it belongs
-in the ecosystem crate; if it is a principal, an action, or a grant, it belongs here.
+`__token__:<token>` header on its upload path and calls `authorize` with `Write` or `Delete`; OCI resource routes do the
+same for a push or delete, and the Bearer realm parses an OCI `scope=repository:<name>:pull,push` string into a project
+and action there, never in the core. The grant grammar is deliberately glob-over-project so it maps onto a PyPI project
+name and an OCI repository name alike without the core learning either. A contributor keeps the boundary by asking one
+question: does this name a wire format? If so it belongs in the ecosystem crate; if it is a principal, an action, or a
+grant, it belongs here.
 
 {% mermaid() %}
 flowchart TD
 pypi["PyPI upload<br/>Basic __token__:tok"]
 oci["OCI push / delete<br/>resolve_writable"]
-bearer["OCI Bearer realm<br/>scope=repository:name:push (forthcoming)"]
+bearer["OCI Bearer realm<br/>scope=repository:name:push"]
 id["identify header to Principal"]
 auth["authorize(principal, acl, project, action)"]
 acl["IndexAcl<br/>anonymous_read · named tokens · grants"]

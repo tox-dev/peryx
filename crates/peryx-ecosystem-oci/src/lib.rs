@@ -25,6 +25,9 @@ pub const OCI_LEXICON: Lexicon = Lexicon {
     put: "push",
 };
 
+/// The audience named by this registry's Bearer challenges and tokens.
+pub const TOKEN_SERVICE: &str = "peryx";
+
 mod discovery;
 mod error;
 mod mirror;

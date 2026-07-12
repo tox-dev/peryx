@@ -11,9 +11,9 @@
 //! and a bearer token all reduce to those four before they reach [`authorize`]. A grant carries project
 //! globs (`team/*`), which match `PyPI` project names and OCI repository names alike.
 //!
-//! [`Signer`] mints and verifies the JWTs a token realm hands out. It lives here because the signing
-//! key is identity state, not protocol state: an ecosystem's token endpoint calls `mint` with the
-//! grants [`authorize`] approved and never sees the key.
+//! [`Signer`] mints and verifies the audience-bound JWTs a token realm hands out. It lives here because
+//! the signing key is identity state, not protocol state: an ecosystem's token endpoint calls `mint`
+//! with the grants [`authorize`] approved and never sees the key.
 
 mod acl;
 mod token;

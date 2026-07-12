@@ -6,7 +6,7 @@ use crate::{Action, Glob, Grant, Principal, Signer};
 const HOUR: i64 = 3600;
 
 fn signer() -> Signer {
-    Signer::new(b"signing-key")
+    Signer::new(b"signing-key", "peryx")
 }
 
 fn grants() -> Vec<Grant> {
@@ -71,7 +71,17 @@ fn test_verify_rejects_a_payload_swapped_under_a_valid_signature() {
 
 #[test]
 fn test_verify_rejects_a_token_another_key_signed() {
-    let token = Signer::new(b"other-key").mint(&Principal::Anonymous, &[], now(), HOUR);
+    let token = Signer::new(b"other-key", "peryx").mint(&Principal::Anonymous, &[], now(), HOUR);
 
     assert!(signer().verify(&token).is_err());
+}
+
+#[test]
+fn test_verify_rejects_a_token_for_another_audience() {
+    let token = Signer::new(b"signing-key", "other").mint(&Principal::Anonymous, &[], now(), HOUR);
+
+    assert_eq!(
+        signer().verify(&token).unwrap_err().to_string(),
+        "invalid token: InvalidAudience"
+    );
 }

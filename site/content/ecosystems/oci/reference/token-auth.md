@@ -23,8 +23,9 @@ token_ttl_secs = 300                                # how long a minted token li
 default_anonymous_read = true                       # per-index anonymous_read default; default true
 ```
 
-The key signs an HS256 JWT. Keep it secret and stable: rotating it invalidates every token minted under the old key, and
-sharing it across replicas lets any replica verify a token the primary minted.
+The key signs an HS256 JWT whose `aud` claim is `peryx`. Keep it secret and stable: rotating it invalidates every token
+minted under the old key, and sharing it across replicas lets any replica verify a token the primary minted. Audience
+validation prevents another service that shares the key from presenting its tokens to this registry.
 
 ## Version check
 
@@ -44,12 +45,13 @@ sharing it across replicas lets any replica verify a token the primary minted.
 
 | Parameter | Meaning                                                                                  |
 | --------- | ---------------------------------------------------------------------------------------- |
-| `service` | The realm's service name; a client echoes the `service` from the challenge (`peryx`).    |
+| `service` | Required. The client echoes the challenge's service name, `peryx`.                       |
 | `scope`   | An access request, `repository:<name>:<actions>`. Repeatable, or space-separated in one. |
 | `account` | The username the client logged in as. Recorded for audit; not an input to authorization. |
 
 Authentication:
 
+- A missing, different, or repeated `service` gets `403`; peryx never mints a token for another audience.
 - No `Authorization` header: the request is anonymous.
 - `Basic` credentials: peryx checks the password against every OCI index's tokens. A password that authenticates nowhere
   gets `401`; this is what makes `docker login` reject a wrong password. A password that authenticates names its
@@ -103,7 +105,7 @@ The `error` follows [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750#sec
 | `error`              | Meaning                                                      | Client action                       |
 | -------------------- | ------------------------------------------------------------ | ----------------------------------- |
 | (none)               | No credential was presented on a route that needs one.       | Request a token, then retry.        |
-| `invalid_token`      | The bearer failed verification: wrong signature, or expired. | Request a fresh token, then retry.  |
+| `invalid_token`      | The bearer failed signature, expiry, or audience validation. | Request a fresh token, then retry.  |
 | `insufficient_scope` | The credential is valid but grants nothing for this action.  | Do not retry; the grant is missing. |
 
 The `scope` names what the request needed, so a client can request the right token and retry. When no signing key is

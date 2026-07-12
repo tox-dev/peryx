@@ -19,8 +19,6 @@ use std::collections::BTreeSet;
 
 use crate::error::{ErrorCode, error_response};
 
-/// The `service` a challenge and a token request name, so a client's token is bound to this realm.
-const SERVICE: &str = "peryx";
 /// The realm path a challenge points a client at.
 const TOKEN_PATH: &str = "/v2/token";
 
@@ -31,7 +29,7 @@ pub(super) fn negotiate_version(state: &ServingState, headers: &HeaderMap) -> Re
         && restricts(state)
         && !presents_valid_credential(signer, state, headers)
     {
-        return challenge(headers, None, None);
+        return challenge(signer.audience(), headers, None, None);
     }
     super::version_ok()
 }
@@ -62,18 +60,21 @@ fn presents_valid_credential(signer: &Signer, state: &ServingState, headers: &He
     false
 }
 
-/// Answer `GET /v2/token`: always a `200` JWT whose grants are the intersection of the requested scope
-/// with what the caller may do, except that a Basic credential matching no live token is a real login
-/// failure and gets `401`.
+/// Answer `GET /v2/token`: a request for this realm's service gets a JWT whose grants are the
+/// intersection of the requested scope with what the caller may do. A missing or different service is
+/// denied, and a Basic credential matching no live token is a login failure.
 pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str) -> Response {
     let Some(signer) = &state.signer else {
         return error_response(ErrorCode::Unsupported, "token authentication is not enabled");
+    };
+    let Some(scopes) = parse_token_request(query, signer.audience()) else {
+        return error_response(ErrorCode::Denied, "requested service is not available");
     };
     let principal = match resolve_principal(state, authorization(headers)) {
         Ok(principal) => principal,
         Err(response) => return response,
     };
-    let grants = approved_grants(state, &principal, &parse_scopes(query));
+    let grants = approved_grants(state, &principal, &scopes);
     let now = (state.clock)();
     let token = signer.mint(&principal, &grants, now, state.token_ttl_secs);
     let body = json!({
@@ -143,13 +144,19 @@ struct RequestedScope {
     actions: BTreeSet<Action>,
 }
 
-/// The scopes a token request asks for. A client sends one `scope` per repository, or several
-/// space-separated in one parameter; both spellings are accepted.
-fn parse_scopes(query: &str) -> Vec<RequestedScope> {
-    url::form_urlencoded::parse(query.as_bytes())
-        .filter(|(key, _)| key == "scope")
-        .flat_map(|(_, value)| value.split(' ').filter_map(parse_scope).collect::<Vec<_>>())
-        .collect()
+/// Validate the request's one service and return its scopes. A client sends one `scope` per
+/// repository, or several space-separated in one parameter; both spellings are accepted.
+fn parse_token_request(query: &str, audience: &str) -> Option<Vec<RequestedScope>> {
+    let mut requested_service = None;
+    let mut scopes = Vec::new();
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "service" if requested_service.replace(value == audience).is_some() => return None,
+            "scope" => scopes.extend(value.split(' ').filter_map(parse_scope)),
+            _ => {}
+        }
+    }
+    requested_service?.then_some(scopes)
 }
 
 /// One `repository:<name>:<actions>` scope into its repository and the neutral actions it requests; any
@@ -272,13 +279,13 @@ pub(super) fn resource_challenge(
     denial: Denial,
     bad_token: bool,
 ) -> Response {
-    if state.signer.is_none() {
+    let Some(signer) = &state.signer else {
         return if matches!(denial, Denial::Forbidden) {
             error_response(ErrorCode::Denied, "token does not grant this action")
         } else {
             basic_challenge()
         };
-    }
+    };
     let error = if bad_token {
         Some("invalid_token")
     } else if matches!(denial, Denial::Forbidden) {
@@ -286,7 +293,7 @@ pub(super) fn resource_challenge(
     } else {
         None
     };
-    challenge(headers, Some(&resource_scope(name, action)), error)
+    challenge(signer.audience(), headers, Some(&resource_scope(name, action)), error)
 }
 
 /// The `repository:<name>:<verbs>` scope a challenge advertises for an action, so a client knows the
@@ -303,9 +310,9 @@ fn resource_scope(name: &str, action: Action) -> String {
 
 /// A `401` carrying the Bearer challenge: the realm to authenticate at, the service the token binds to,
 /// and optionally the scope needed and the `error` explaining the refusal.
-fn challenge(headers: &HeaderMap, scope: Option<&str>, error: Option<&str>) -> Response {
+fn challenge(service: &str, headers: &HeaderMap, scope: Option<&str>, error: Option<&str>) -> Response {
     use std::fmt::Write as _;
-    let mut value = format!("Bearer realm=\"{}\",service=\"{SERVICE}\"", realm(headers));
+    let mut value = format!("Bearer realm=\"{}\",service=\"{service}\"", realm(headers));
     if let Some(scope) = scope {
         let _ = write!(value, ",scope=\"{scope}\"");
     }
@@ -345,7 +352,7 @@ fn authorization(headers: &HeaderMap) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, RequestedScope, parse_scopes, resource_scope, scope_actions};
+    use super::{Action, RequestedScope, parse_token_request, resource_scope, scope_actions};
     use std::collections::BTreeSet;
 
     fn scope_named<'a>(scopes: &'a [RequestedScope], name: &str) -> &'a BTreeSet<Action> {
@@ -360,10 +367,12 @@ mod tests {
     fn test_parse_scopes_maps_verbs_and_drops_unusable_scopes() {
         // `+` is a query-encoded space, so one parameter can carry several scopes; a second parameter
         // adds another. A non-repository resource, an empty name, and a two-field scope are all dropped.
-        let scopes = parse_scopes(
-            "scope=repository:team/app:pull,push+repository:lib/x:delete,bogus&\
+        let scopes = parse_token_request(
+            "service=peryx&scope=repository:team/app:pull,push+repository:lib/x:delete,bogus&\
              scope=repository:all/y:*+registry:catalog:*+repository::pull+repository:onlytwo",
-        );
+            "peryx",
+        )
+        .unwrap();
         assert_eq!(scopes.len(), 3);
         assert_eq!(
             scope_named(&scopes, "team/app"),

@@ -258,6 +258,18 @@ async fn test_token_endpoint_rejects_a_wrong_password() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+#[rstest]
+#[case::absent("")]
+#[case::different("service=other")]
+#[case::duplicated("service=peryx&service=peryx")]
+#[tokio::test]
+async fn test_token_endpoint_rejects_an_invalid_service(#[case] query: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = team_registry(&dir);
+    let (status, _) = request_token(&app, query, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn test_token_endpoint_ignores_an_unresolvable_scope() {
     let dir = tempfile::tempdir().unwrap();

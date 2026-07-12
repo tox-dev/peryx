@@ -27,9 +27,9 @@ The Bearer scheme splits authentication into a handshake with a dedicated token 
 runs it:
 
 1. `GET /v2/` returns `401` with `WWW-Authenticate: Bearer realm=".../v2/token",service="peryx"`. The daemon learns
-   where to authenticate.
+   where to authenticate and which service the token must name as its audience.
 1. `GET /v2/token` with the Basic credentials. peryx checks the password against the index tokens and returns a signed
-   JWT. A password that authenticates nowhere gets a `401`, and the login fails there.
+   JWT bound to the advertised service. A password that authenticates nowhere gets a `401`, and the login fails there.
 1. `GET /v2/` again, now with `Authorization: Bearer <jwt>`. peryx verifies the token and answers `200`, which the
    daemon reads as login success.
 
@@ -68,6 +68,8 @@ A peryx token is a self-contained HS256 JWT: the client's credential is an expir
 token endpoint approved. Verifying one is a signature check with no database lookup, so a replica can verify a token the
 primary minted without sharing state, which is the property the high-availability story needs. The signing key is
 identity state, not protocol state: the OCI crate calls the neutral signer to mint and verify, and never sees the key.
+The token also names `peryx` as its audience. The registry checks that claim so another service cannot reuse a token,
+even when both services share a signing key.
 
 ## See also
 
