@@ -10,6 +10,8 @@ each endpoint down with copyable example requests and responses.
 
 - `GET /{route}/simple/`: project list, JSON or HTML by `Accept`.
 - `GET /{route}/simple/{project}/`: project detail, merged across virtual-index layers.
+- `GET /{route}/simple` and `GET /{route}/simple/{project}`: `301` to the slash-terminated, name-normalized canonical
+  URL ([trailing-slash redirects](@/ecosystems/pypi/reference/simple-api.md#trailing-slash-redirects)).
 - `GET /{route}/{project}/json`: legacy PyPI project JSON: `info`, `releases`, and latest-release `urls`.
 - `GET /{route}/{project}/{version}/json`: legacy PyPI release JSON for one version.
 - `GET /{route}/files/{sha256}/{filename}`: artifact download, cached content-addressed.
@@ -17,6 +19,7 @@ each endpoint down with copyable example requests and responses.
 - `POST /{route}/`: upload ([legacy API](https://docs.pypi.org/api/upload/), used by
   [twine](https://twine.readthedocs.io/) and `uv publish`).
 - `GET /{route}/+api`: index discovery, absolute URLs, capabilities, and redacted client config.
+- `GET /{route}/+search`: search this index's cached packages.
 - `GET /{route}/inspect/{sha256}/{filename}`: archive member listing as JSON.
 - `GET /{route}/inspect/{sha256}/{filename}/{member}`: one archive member's content.
 - `PUT /{route}/{project}/[{version}/]yank`: yank files ([PEP 592](https://peps.python.org/pep-0592/)); cached files get
@@ -26,13 +29,15 @@ each endpoint down with copyable example requests and responses.
 - `PUT /{route}/{project}/[{version}/]restore`: restore hidden cached files.
 - `PUT /{route}/{project}/{version}/promote?from=...`: promote uploaded records from another route's hosted layer.
 - `GET /+api`: server discovery, global URLs plus every configured index.
+- `GET /+search`: search cached packages across every configured index.
+- `GET /api-docs/openapi.json`: the server's OpenAPI description.
 - `GET /+status`: JSON health, version, counters, index descriptions.
 - `GET /+stats`: usage counters, drillable to project and file level.
 - `GET /metrics`: [Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/) text exposition.
 
 The web UI lives outside the index namespace: `GET /` (dashboard), `GET /admin/status` (read-only operational status),
-`GET /browse` (package browser), `GET /stats` (usage drill-down), and `GET /pkg/*` (the wasm bundle that hydrates the
-pages).
+`GET /browse` (package browser), `GET /search` (package search), `GET /stats` (usage drill-down), and `GET /pkg/*` (the
+wasm bundle that hydrates the pages).
 
 ## Content negotiation
 
