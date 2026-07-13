@@ -1,6 +1,6 @@
 //! The `POST`/`PATCH`/`PUT` blob-upload session lifecycle.
 
-use super::blobs::{blob_created, blob_fault, commit_blob, stream_into};
+use super::blobs::{blob_created, blob_fault, commit_blob};
 use super::*;
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self};
@@ -45,9 +45,9 @@ impl OciRegistry {
         }
         if let Some(digest) = params.get("digest") {
             let mut pending = state.blobs.begin().map_err(blob_fault)?;
-            let size = stream_into(&mut pending, body).await?;
-            if let Some(response) = policy_size_denial(index, &repo, size) {
-                return Ok(response);
+            let mut size = 0;
+            if let Err(err) = append_body(&mut pending, &mut size, body, index, &repo).await {
+                return err.into_response();
             }
             return commit_blob(state, pending, &index.name, &repo, name, digest);
         }
@@ -93,13 +93,16 @@ impl OciRegistry {
         session: &str,
         mut entry: UploadSession,
         body: Body,
-    ) -> Result<UploadSession, ServeError> {
-        match append_chunk(&mut entry, body).await {
+        index: &Index,
+        repo: &str,
+    ) -> Result<UploadSession, UploadBodyError> {
+        match append_body(&mut entry.pending, &mut entry.offset, body, index, repo).await {
             Ok(()) => Ok(entry),
-            Err(err) => {
+            Err(UploadBodyError::Fault(err)) => {
                 self.uploads.lock().await.insert(session.to_owned(), entry);
-                Err(err)
+                Err(UploadBodyError::Fault(err))
             }
+            Err(err @ UploadBodyError::Denied(_)) => Err(err),
         }
     }
 
@@ -160,7 +163,7 @@ impl OciRegistry {
         session: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, _, _) = match resolve_writable(state, name, headers, Action::Write) {
+        let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
@@ -177,7 +180,10 @@ impl OciRegistry {
             self.uploads.lock().await.insert(session.to_owned(), entry);
             return Ok(range_not_satisfiable(name, session, offset));
         }
-        let entry = self.append_or_restore(session, entry, body).await?;
+        let entry = match self.append_or_restore(session, entry, body, index, &repo).await {
+            Ok(entry) => entry,
+            Err(err) => return err.into_response(),
+        };
         let offset = entry.offset;
         self.uploads.lock().await.insert(session.to_owned(), entry);
         Ok(upload_accepted(name, session, offset))
@@ -206,7 +212,10 @@ impl OciRegistry {
             self.uploads.lock().await.insert(session.to_owned(), entry);
             return Ok(range_not_satisfiable(name, session, offset));
         }
-        let entry = self.append_or_restore(session, entry, body).await?;
+        let entry = match self.append_or_restore(session, entry, body, index, &repo).await {
+            Ok(entry) => entry,
+            Err(err) => return err.into_response(),
+        };
         // A `PUT` without a digest cannot commit, but the staged bytes are still good: keep the
         // session so the client can retry with the digest rather than re-upload everything.
         let Some(digest) = query_params(query).remove("digest") else {
@@ -216,9 +225,6 @@ impl OciRegistry {
                 "finishing an upload requires a digest",
             ));
         };
-        if let Some(response) = policy_size_denial(index, &repo, entry.offset) {
-            return Ok(response);
-        }
         commit_blob(state, entry.pending, &index.name, &repo, name, &digest)
     }
 }
@@ -235,17 +241,42 @@ impl UploadSession {
     }
 }
 
-/// Append a request body to a session's staged blob, advancing `offset` as each chunk lands.
-///
-/// Bumping per chunk, rather than once at the end like [`stream_into`], keeps `offset` in step with
-/// the bytes the hasher has absorbed. So when a body read fails partway, the caller can leave the
-/// session in the map at the offset it reached and the client resumes from there.
-async fn append_chunk(entry: &mut UploadSession, body: Body) -> Result<(), ServeError> {
+enum UploadBodyError {
+    Fault(ServeError),
+    Denied(Response),
+}
+
+impl UploadBodyError {
+    fn into_response(self) -> Result<Response, ServeError> {
+        match self {
+            Self::Fault(err) => Err(err),
+            Self::Denied(response) => Ok(response),
+        }
+    }
+}
+
+async fn append_body(
+    pending: &mut PendingBlob,
+    offset: &mut u64,
+    body: Body,
+    index: &Index,
+    repo: &str,
+) -> Result<(), UploadBodyError> {
     let mut stream = body.into_data_stream();
+    let limit = index.policy.max_file_size();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| ServeError::Transport(err.to_string()))?;
-        entry.pending.write(&chunk).map_err(blob_fault)?;
-        entry.offset += chunk.len() as u64;
+        let chunk = chunk.map_err(|err| UploadBodyError::Fault(ServeError::Transport(err.to_string())))?;
+        let size = *offset + chunk.len() as u64;
+        if limit.is_some_and(|limit| size > limit) {
+            return Err(UploadBodyError::Denied(
+                policy_size_denial(index, repo, size).expect("size above the policy limit is denied"),
+            ));
+        }
+        pending
+            .write(&chunk)
+            .map_err(blob_fault)
+            .map_err(UploadBodyError::Fault)?;
+        *offset = size;
     }
     Ok(())
 }

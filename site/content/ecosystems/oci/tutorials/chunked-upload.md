@@ -68,6 +68,10 @@ returned `Location` unchanged. A restart discards this process-local state. Afte
 `PATCH` attempt, peryx removes the session during the next process-wide maintenance pass. The pass runs once per minute,
 so the staged file can remain for less than one minute beyond that deadline.
 
+If the hosted index sets `max_file_size_bytes`, the first `PATCH` or final `PUT` that would cross the limit returns
+`403 DENIED` and removes the session. Start a new session with a smaller blob; the rejected bytes never reach the staged
+file.
+
 ## Append the first two chunks
 
 Each `PATCH` sends one chunk with a `Content-Range: <start>-<end>` that begins exactly where the last chunk ended.

@@ -413,18 +413,6 @@ fn download_error_response(err: DownloadError) -> Response {
     }
 }
 
-/// Drain a request body into a staged blob, returning the byte count written.
-pub(super) async fn stream_into(pending: &mut PendingBlob, body: Body) -> Result<u64, ServeError> {
-    let mut written = 0u64;
-    let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| ServeError::Transport(err.to_string()))?;
-        pending.write(&chunk).map_err(blob_fault)?;
-        written += chunk.len() as u64;
-    }
-    Ok(written)
-}
-
 pub(super) fn commit_blob(
     state: &ServingState,
     pending: PendingBlob,

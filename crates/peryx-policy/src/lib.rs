@@ -137,6 +137,12 @@ impl Policy {
         self.max_project_size_bytes.is_some()
     }
 
+    /// The configured per-file size limit, if any.
+    #[must_use]
+    pub const fn max_file_size(&self) -> Option<u64> {
+        self.max_file_size_bytes
+    }
+
     /// The configured per-project size limit, if any.
     #[must_use]
     pub const fn max_project_size(&self) -> Option<u64> {

@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use axum::http::{Method, StatusCode};
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode};
 use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_http::router;
@@ -12,8 +13,9 @@ use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
+use tower::ServiceExt as _;
 
-use super::{auth, oci_digest, send, send_body};
+use super::{auth, oci_digest, send, send_body, send_with};
 use crate::store::{self, Manifest};
 
 const TOKEN: &str = "s3cret";
@@ -261,6 +263,24 @@ async fn test_policy_refuses_a_monolithic_blob_over_the_size_limit() {
 }
 
 #[tokio::test]
+async fn test_policy_stops_a_monolithic_upload_at_the_size_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+    let digest = oci_digest(b"12345");
+
+    assert_eq!(
+        send_stream_with_late_error(
+            &app,
+            Method::POST,
+            &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+            b"12345",
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
 async fn test_policy_refuses_a_chunked_blob_over_the_size_limit() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = store_size_limited(&dir, 4);
@@ -287,4 +307,74 @@ async fn test_policy_refuses_a_chunked_blob_over_the_size_limit() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(String::from_utf8_lossy(&body).contains("DENIED"));
+}
+
+#[rstest::rstest]
+#[case::patch(Method::PATCH)]
+#[case::finish(Method::PUT)]
+#[tokio::test]
+async fn test_policy_overflow_drops_a_chunked_upload_session(#[case] method: Method) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+    let (_, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers["location"].to_str().unwrap().to_owned();
+    assert_eq!(
+        send_body(
+            &app,
+            Method::PATCH,
+            &location,
+            &[("authorization", &auth(TOKEN))],
+            b"abc".to_vec(),
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let uri = if method == Method::PUT {
+        format!("{location}?digest={}", oci_digest(b"abcde"))
+    } else {
+        location.clone()
+    };
+
+    assert_eq!(
+        send_stream_with_late_error(&app, method, &uri, b"de").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))])
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+async fn send_stream_with_late_error(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    chunk: &'static [u8],
+) -> StatusCode {
+    let body = futures_util::stream::iter([
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(chunk)),
+        Err(std::io::Error::other("body must not be polled")),
+    ]);
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", auth(TOKEN))
+                .body(Body::from_stream(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
 }

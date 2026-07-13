@@ -99,6 +99,10 @@ status `GET` or `PATCH` attempt. The once-per-minute sweep removes expired sessi
 another session runs the same expiry pass. When a client changes the name, peryx keeps the original session and staged
 bytes unchanged.
 
+The hosted index's `max_file_size_bytes` applies while a monolithic `POST`, chunk `PATCH`, or final `PUT` streams. peryx
+checks the cumulative byte count before writing each chunk. An over-limit request returns `403 DENIED`; for a chunked
+upload, it also removes the session and its staged file, so later requests for that id return `404 BLOB_UPLOAD_UNKNOWN`.
+
 ### The 416 resume response
 
 `PATCH /v2/<name>/blobs/uploads/<session>` appends a chunk only when its `Content-Range` begins exactly where the last

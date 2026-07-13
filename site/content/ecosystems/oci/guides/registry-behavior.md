@@ -118,6 +118,9 @@ curl -sS -i -u _:<token> -X DELETE \
 # 404 Not Found
 ```
 
+A `403 DENIED` caused by `max_file_size_bytes` also removes the session. Do not send `DELETE` or resume from the last
+range; reduce the blob or raise the index limit, then start another upload.
+
 Send follow-up requests to the exact `Location` from the opening response. peryx returns `404 BLOB_UPLOAD_UNKNOWN` when
 the repository path differs, including when the caller can write both repositories.
 

@@ -94,6 +94,13 @@ OCI driver takes the session-map lock once and removes entries whose last status
 least one hour ago. The process keeps an abandoned session and its open temp file for less than one minute past the idle
 deadline.
 
+### Why a size denial removes the session
+
+peryx invalidates an upload session once its cumulative size crosses the file-size policy. It checks each chunk before
+the chunk reaches the staged file. peryx returns `403 DENIED` and removes the session with its staged bytes if a `PATCH`
+or final `PUT` would cross the bound. After a transport failure, peryx keeps the accepted prefix so a retry can complete
+the upload.
+
 ### Why a 416 carries the session coordinates
 
 A chunked upload is a contract about order: each chunk must begin exactly where the last one ended. When a chunk breaks
