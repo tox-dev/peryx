@@ -25,13 +25,10 @@ impl IndexerCtx<'_> {
     }
 }
 
-/// What one search request reads: the indexer's inputs, the mutation epoch that decides whether the
-/// derived index is stale, and the vocabularies used to label each result.
+/// Keep invalidation state in [`PackageSearch`](crate::PackageSearch); supply only indexer inputs and
+/// result vocabularies per request.
 pub struct SearchCtx<'a> {
     pub indexer: IndexerCtx<'a>,
-    /// The process's mutation counter. The derived index rebuilds when it advances past the one the
-    /// current documents were built from.
-    pub epoch: u64,
     pub lexicons: &'a LexiconRegistry,
 }
 

@@ -165,13 +165,37 @@ impl DriverTxn<'_> {
         Ok(entries)
     }
 
+    /// Avoid copying values when a transaction needs only matching keys.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn prefix_keys(&self, prefix: &str) -> Result<Vec<String>, MetaError> {
+        let mut keys = Vec::new();
+        for entry in self.table.range(prefix..)? {
+            let (key, _) = entry?;
+            if !key.value().starts_with(prefix) {
+                break;
+            }
+            keys.push(key.value().to_owned());
+        }
+        Ok(keys)
+    }
+
     /// Stage an upsert of `key` to `value`.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn put(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
-        self.table.insert(key, value)?;
+        self.upsert(key, value)?;
         Ok(())
+    }
+
+    /// Preserve insert-versus-replace information while staging a write.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn upsert(&mut self, key: &str, value: &[u8]) -> Result<bool, MetaError> {
+        Ok(self.table.insert(key, value)?.is_none())
     }
 
     /// Stage a removal of `key`, reporting whether it was present.

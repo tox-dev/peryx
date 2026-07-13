@@ -1,17 +1,25 @@
 //! The OCI indexer turns stored repositories and their tags into neutral search documents.
 
+use axum::http::Method;
 use peryx_core::Ecosystem;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_search::{PackageIndexer as _, PackageSource};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{app_with_indexes, hosted_writable, virtual_stack, writable_index};
+use super::{
+    app_with_indexes, auth, hosted_writable, oci_digest, proxy, search_total, send, send_body, virtual_stack,
+    writable_index,
+};
 use crate::OciIndexer;
 use crate::store;
 
 const TOKEN: &str = "s3cret";
 const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
 
 #[tokio::test]
 async fn test_oci_indexer_surfaces_repositories_and_tags() {
@@ -42,6 +50,57 @@ async fn test_oci_indexer_is_empty_without_tags() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = hosted_writable(&dir, TOKEN);
     assert!(OciIndexer.documents(&state.indexer_ctx()).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_search_refreshes_after_hosted_tag_insert() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let before = search_total(&app, "app").await;
+
+    push_tag(&app, "team/app", "latest").await;
+
+    assert_eq!((before, search_total(&app, "app").await), (0, 1));
+}
+
+#[tokio::test]
+async fn test_search_refreshes_after_proxy_tag_fill() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/team/app/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(MANIFEST.to_vec(), MANIFEST_TYPE))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let before = search_total(&app, "app").await;
+
+    send(&app, Method::GET, "/v2/hub/team/app/manifests/latest").await;
+
+    assert_eq!((before, search_total(&app, "app").await), (0, 1));
+}
+
+#[rstest::rstest]
+#[case::tag(false)]
+#[case::digest(true)]
+#[tokio::test]
+async fn test_search_refreshes_after_manifest_delete_removes_tag(#[case] by_digest: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let digest = push_tag(&app, "team/app", "latest").await;
+    let before = search_total(&app, "app").await;
+    let reference = if by_digest { digest.as_str() } else { "latest" };
+
+    send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/team/app/manifests/{reference}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!((before, search_total(&app, "app").await), (1, 0));
 }
 
 #[tokio::test]
@@ -109,4 +168,16 @@ async fn test_oci_indexer_skips_non_oci_indexes() {
     // Only the OCI index yields documents; the PyPI index is skipped, not misread.
     assert!(documents.iter().all(|doc| doc.index == "store"));
     assert!(documents.iter().any(|doc| doc.display_name == "library/app"));
+}
+
+async fn push_tag(app: &axum::Router, repo: &str, tag: &str) -> String {
+    send_body(
+        app,
+        Method::PUT,
+        &format!("/v2/store/{repo}/manifests/{tag}"),
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        MANIFEST.to_vec(),
+    )
+    .await;
+    oci_digest(MANIFEST)
 }

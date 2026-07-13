@@ -386,7 +386,9 @@ pub async fn store_manifest(
     };
     store::record_manifest(&state.meta, index, repo, &canonical, &manifest)?;
     if let Some(tag) = tag {
-        store::put_tag(&state.meta, index, repo, tag, &canonical)?;
+        if store::put_tag(&state.meta, index, repo, tag, &canonical)? {
+            state.bump_search_epoch();
+        }
         store::set_tag_freshness(&state.meta, index, repo, tag, &canonical, (state.clock)())?;
     }
     Ok((manifest, canonical))

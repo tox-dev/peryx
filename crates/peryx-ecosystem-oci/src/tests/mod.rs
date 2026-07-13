@@ -266,6 +266,14 @@ async fn send(app: &axum::Router, method: Method, uri: &str) -> (StatusCode, Hea
     send_with(app, method, uri, &[]).await
 }
 
+async fn search_total(app: &axum::Router, query: &str) -> u64 {
+    let response = send(app, Method::GET, &format!("/+search?q={query}&page_size=25")).await;
+    assert_eq!(response.0, StatusCode::OK);
+    serde_json::from_slice::<serde_json::Value>(&response.2).unwrap()["total"]
+        .as_u64()
+        .unwrap()
+}
+
 /// Send a request carrying extra headers.
 async fn send_with(
     app: &axum::Router,

@@ -47,7 +47,6 @@ impl Stores {
                 meta: &self.meta,
                 blobs: &self.blobs,
             },
-            epoch: 0,
             lexicons,
         }
     }

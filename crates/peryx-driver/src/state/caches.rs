@@ -29,9 +29,14 @@ impl ServingState {
         self.cache.remember_negative(key, (self.clock)() + ttl_secs);
     }
 
-    /// Retire every hot-cache entry after a mutation (upload, yank, hide, restore, or a fresh
-    /// upstream page).
+    /// Invalidate rendered pages and search documents after a `PyPI` mutation.
     pub fn bump_epoch(&self) {
         self.cache.bump_epoch();
+        self.bump_search_epoch();
+    }
+
+    /// Preserve rendered page caches across `OCI` tag mutations.
+    pub fn bump_search_epoch(&self) {
+        self.search.bump_epoch();
     }
 }

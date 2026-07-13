@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tantivy::collector::{Count, TopDocs};
@@ -31,6 +32,7 @@ pub struct PackageSearch {
     reader: IndexReader,
     fields: SearchFields,
     indexer: Arc<dyn PackageIndexer>,
+    epoch: AtomicU64,
     indexed_epoch: Mutex<Option<u64>>,
     rebuild_lock: Mutex<()>,
 }
@@ -88,6 +90,7 @@ impl PackageSearch {
             reader,
             fields,
             indexer: default_indexer(),
+            epoch: AtomicU64::new(0),
             indexed_epoch: Mutex::new(None),
             rebuild_lock: Mutex::new(()),
         })
@@ -98,6 +101,11 @@ impl PackageSearch {
     pub fn add_indexer(&mut self, indexer: Arc<dyn PackageIndexer>) {
         let current = std::mem::replace(&mut self.indexer, default_indexer());
         self.indexer = Arc::new(CompositeIndexer(vec![current, indexer]));
+    }
+
+    /// Call after committing a mutation that changes searchable documents.
+    pub fn bump_epoch(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Search cached package documents.
@@ -159,8 +167,8 @@ impl PackageSearch {
     }
 
     fn ensure_current(&self, ctx: &SearchCtx<'_>) -> Result<(), SearchError> {
-        let epoch = ctx.epoch;
         let _guard = self.rebuild_lock.lock().expect("search rebuild lock");
+        let epoch = self.epoch.load(Ordering::Relaxed);
         if self
             .indexed_epoch
             .lock()
