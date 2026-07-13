@@ -25,7 +25,8 @@ default_anonymous_read = true                       # per-index anonymous_read d
 
 The key signs an HS256 JWT whose `aud` claim is `peryx`. Keep it secret and stable: rotating it invalidates every token
 minted under the old key, and sharing it across replicas lets any replica verify a token the primary minted. Audience
-validation prevents another service that shares the key from presenting its tokens to this registry.
+validation prevents another service that shares the key from presenting its tokens to this registry. `signing_key` and
+`signing_key_file` must contain at least one non-whitespace character; otherwise peryx exits during startup.
 
 ## Version check
 

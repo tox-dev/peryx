@@ -479,8 +479,10 @@ named tokens, each with a secret, grants, and an optional expiry. Two calls do t
 `authorize(principal, acl, project, action)` answers the one access question and returns a typed `Denial` (unavailable,
 unauthenticated, or forbidden) an ecosystem maps to its own status. The crate also mints and verifies peryx's
 audience-bound JWTs through `Signer`, so the signing key and audience check remain identity state rather than protocol
-state. Registry-wide decisions call `authorize_all`. It requires an explicit `*` grant because existing projects cannot
-prove access to future projects. Exact token grants keep registry resources separate from project glob matching.
+state. The composition root rejects empty and whitespace-only signing keys before it constructs `Signer`; keep that
+invariant at the identity boundary when adding another token protocol. Registry-wide decisions call `authorize_all`. It
+requires an explicit `*` grant because existing projects cannot prove access to future projects. Exact token grants keep
+registry resources separate from project glob matching.
 
 `peryx-driver::access::ReadAccess` resolves credentials for neutral presentation paths; hydrated `/+ui` handlers and
 Leptos server rendering prepare one per-index decision before calling a browse driver. That decision also filters each

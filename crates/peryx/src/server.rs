@@ -67,6 +67,9 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     peryx_ecosystem_oci::install(&mut state, oci_settings);
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
+        if key.trim().is_empty() {
+            bail!("token realm signing key must not be empty");
+        }
         state.set_token_realm(
             Signer::new(key.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE),
             config.auth.token_ttl_secs,

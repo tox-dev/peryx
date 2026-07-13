@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -236,6 +236,37 @@ fn test_build_state_reports_an_unreadable_signing_key_file() {
     };
 
     assert!(err.to_string().contains("read the token realm signing key"), "{err}");
+}
+
+#[rstest]
+#[case::literal(empty_literal_signing_key, "token realm signing key must not be empty")]
+#[case::file(empty_file_signing_key, "read the token realm signing key")]
+fn test_build_state_rejects_an_empty_signing_key(#[case] source: fn(&Path) -> SecretSource, #[case] expected: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().join("data"),
+        auth: AuthConfig {
+            signing_key: Some(source(dir.path())),
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(err) = build_state(&config) else {
+        panic!("expected empty signing-key error");
+    };
+
+    assert_eq!(err.to_string(), expected);
+}
+
+fn empty_literal_signing_key(_: &Path) -> SecretSource {
+    SecretSource::Literal(" \n".to_owned())
+}
+
+fn empty_file_signing_key(dir: &Path) -> SecretSource {
+    let path = dir.join("signing-key");
+    std::fs::write(&path, " \n").unwrap();
+    SecretSource::File(path)
 }
 
 #[tokio::test]

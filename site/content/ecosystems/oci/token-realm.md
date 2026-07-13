@@ -82,8 +82,9 @@ A peryx token is a self-contained HS256 JWT: the client's credential is an expir
 token endpoint approved. Verifying one is a signature check with no database lookup, so a replica can verify a token the
 primary minted without sharing state, which is the property the high-availability story needs. The signing key is
 identity state, not protocol state: the OCI crate calls the neutral signer to mint and verify, and never sees the key.
-The token also names `peryx` as its audience. The registry checks that claim so another service cannot reuse a token,
-even when both services share a signing key.
+An empty key has no secret entropy and lets an attacker forge those assertions, so peryx rejects empty and
+whitespace-only keys at startup. The token also names `peryx` as its audience. The registry checks that claim so another
+service cannot reuse a token, even when both services share a signing key.
 
 ## See also
 

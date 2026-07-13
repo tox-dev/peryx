@@ -38,7 +38,8 @@ actions = ["read", "write"]
 The `[auth] signing_key` turns the token realm on. The `[[index.access_token]]` names one credential, `ci`, that may
 read and write any repository matching `team/*`. In production keep the key and the secret in files with
 `signing_key_file` and `secret_file`; see
-[keep a secret out of the config file](@/core/control-access.md#keep-a-secret-out-of-the-config-file).
+[keep a secret out of the config file](@/core/control-access.md#keep-a-secret-out-of-the-config-file). peryx refuses to
+start when the signing key is empty or contains only whitespace.
 
 Start the server:
 
