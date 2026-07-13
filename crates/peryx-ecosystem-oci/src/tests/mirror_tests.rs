@@ -6,7 +6,7 @@ use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{oci_digest, proxy, send};
+use super::{oci_digest, proxy, search_total, send};
 use crate::mirror::{MirrorMode, MirrorRow, mirror as mirror_with};
 use crate::settings::IndexSettings;
 use peryx_driver::ServingState;
@@ -90,6 +90,26 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
             .all(|row| row.status == "cached")
     );
     assert_eq!(verify.last().unwrap().status, "synced");
+}
+
+#[tokio::test]
+async fn test_search_refreshes_after_mirror_inserts_tag() {
+    let server = MockServer::start().await;
+    mount_manifest(&server, "library/app", "latest", b"{}", MANIFEST_TYPE).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let before = search_total(&app, "app").await;
+
+    mirror(
+        &state.serving,
+        &state.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!((before, search_total(&app, "app").await), (0, 1));
 }
 
 #[tokio::test]

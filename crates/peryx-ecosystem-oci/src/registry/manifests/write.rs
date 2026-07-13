@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use peryx_driver::ServingState;
 use peryx_events::webhook::WebhookEventKind;
-use peryx_storage::meta::MetaStore;
 
 use crate::error::{ErrorCode, error_response, error_response_with_status};
 use crate::store::{self, Manifest};
@@ -74,8 +73,10 @@ pub(in crate::registry) async fn put_manifest(
         bytes: bytes.to_vec(),
     };
     store::record_manifest(&state.meta, &index.name, &repo, &canonical, &manifest)?;
-    if let Reference::Tag(tag) = reference {
-        store::put_tag(&state.meta, &index.name, &repo, tag, &canonical)?;
+    if let Reference::Tag(tag) = reference
+        && store::put_tag(&state.meta, &index.name, &repo, tag, &canonical)?
+    {
+        state.bump_search_epoch();
     }
     let subject = record_referrer(state, &index.name, &repo, &canonical, &media_type, &bytes)?;
     let location = format!("/v2/{name}/manifests/{canonical}");
@@ -149,13 +150,15 @@ pub(in crate::registry) fn delete_manifest(
         Err(response) => return Ok(response),
     };
     let (removed, version, digest) = match reference {
-        Reference::Tag(tag) => (
-            store::delete_tag(&state.meta, &index.name, &repo, tag)?,
-            Some(tag.clone()),
-            None,
-        ),
+        Reference::Tag(tag) => {
+            let removed = store::delete_tag(&state.meta, &index.name, &repo, tag)?;
+            if removed {
+                state.bump_search_epoch();
+            }
+            (removed, Some(tag.clone()), None)
+        }
         Reference::Digest(digest) => (
-            delete_manifest_by_digest(&state.meta, &index.name, &repo, digest)?,
+            delete_manifest_by_digest(state, &index.name, &repo, digest)?,
             None,
             Some(digest.clone()),
         ),
@@ -183,14 +186,17 @@ pub(in crate::registry) fn delete_manifest(
 /// record that this repo serves the digest, then unlink the global record only when nothing else still
 /// references it. Reports whether anything changed, so an untouched absent digest still answers
 /// `404 MANIFEST_UNKNOWN`.
-fn delete_manifest_by_digest(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, ServeError> {
-    let present = store::get_manifest(meta, digest)?.is_some();
-    let cleaned = store::delete_repo_tags_to(meta, index, repo, digest)?;
-    if present && !store::referenced_manifest_digests(meta)?.contains(digest) {
-        store::delete_manifest(meta, digest)?;
+fn delete_manifest_by_digest(state: &ServingState, index: &str, repo: &str, digest: &str) -> Result<bool, ServeError> {
+    let present = store::get_manifest(&state.meta, digest)?.is_some();
+    let (removed_tags, removed_referrers) = store::delete_repo_tags_to(&state.meta, index, repo, digest)?;
+    if removed_tags > 0 {
+        state.bump_search_epoch();
     }
-    store::prune_manifest_membership(meta, index, repo, digest)?;
-    Ok(present || cleaned > 0)
+    if present && !store::referenced_manifest_digests(&state.meta)?.contains(digest) {
+        store::delete_manifest(&state.meta, digest)?;
+    }
+    store::prune_manifest_membership(&state.meta, index, repo, digest)?;
+    Ok(present || removed_tags > 0 || removed_referrers > 0)
 }
 /// A `201 Created` for a stored manifest, echoing `OCI-Subject` when the manifest declared a subject.
 fn manifest_created(location: &str, digest: &str, subject: Option<&str>) -> Response {

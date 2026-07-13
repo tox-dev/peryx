@@ -254,7 +254,9 @@ impl Mirror<'_> {
         };
         store::record_manifest(&self.state.meta, self.index, repo, &digest, &manifest)?;
         if let Some(tag) = tag {
-            store::put_tag(&self.state.meta, self.index, repo, tag, &digest)?;
+            if store::put_tag(&self.state.meta, self.index, repo, tag, &digest)? {
+                self.state.bump_search_epoch();
+            }
             store::set_tag_freshness(&self.state.meta, self.index, repo, tag, &digest, (self.state.clock)())?;
         }
         rows.push(MirrorRow::synced(

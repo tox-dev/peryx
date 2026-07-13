@@ -28,13 +28,12 @@ impl AppState {
         self.lexicons.register(ecosystem, lexicon);
     }
 
-    /// What one search request reads from this state: the indexers' stores, the mutation epoch that
-    /// decides whether the derived index is stale, and the registered vocabularies.
+    /// Keep invalidation state in [`PackageSearch`](peryx_search::PackageSearch); borrow only indexer
+    /// data and vocabularies for each request.
     #[must_use]
     pub fn search_ctx(&self) -> SearchCtx<'_> {
         SearchCtx {
             indexer: self.indexer_ctx(),
-            epoch: self.cache.epoch.load(std::sync::atomic::Ordering::Relaxed),
             lexicons: &self.lexicons,
         }
     }

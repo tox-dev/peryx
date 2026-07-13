@@ -96,6 +96,22 @@ fn test_driver_txn_get_sees_committed_and_absent_keys() {
 }
 
 #[test]
+fn test_driver_txn_upsert_reports_insert_and_replace() {
+    let (_dir, store) = super::store();
+
+    let result = store
+        .commit_driver_txn(|txn| {
+            Ok::<_, MetaError>(((txn.upsert("k", b"first")?, txn.upsert("k", b"second")?), Vec::new()))
+        })
+        .unwrap();
+
+    assert_eq!(
+        (result, store.get_driver_value("k").unwrap()),
+        ((true, false), Some(b"second".to_vec()))
+    );
+}
+
+#[test]
 fn test_driver_txn_prefix_stops_at_the_first_key_outside_the_prefix() {
     let (_dir, store) = super::store();
     store.put_driver_value("app/a", b"1").unwrap();

@@ -157,12 +157,12 @@ pub fn blob_membership_key(index: &str, repo: &str, digest: &str) -> String {
     format!("{BLOB_MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}{digest}")
 }
 
-/// Point a tag at a manifest digest.
+/// Returns `true` when the searchable tag set grows; retargeting an existing tag returns `false`.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-pub fn put_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str, digest: &str) -> Result<(), MetaError> {
-    meta.put_driver_value(&tag_key(index, repo, tag), digest.as_bytes())
+pub fn put_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str, digest: &str) -> Result<bool, MetaError> {
+    meta.commit_driver_txn(|txn| Ok((txn.upsert(&tag_key(index, repo, tag), digest.as_bytes())?, Vec::new())))
 }
 
 /// Resolve a tag to its cached manifest digest.
@@ -253,9 +253,11 @@ fn reachable_as_child(meta: &MetaStore, index: &str, repo: &str, digest: &str) -
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Result<bool, MetaError> {
-    let removed = meta.delete_driver_value(&tag_key(index, repo, tag))?;
-    meta.delete_driver_value(&tag_freshness_key(index, repo, tag))?;
-    Ok(removed)
+    meta.commit_driver_txn(|txn| {
+        let removed = txn.remove(&tag_key(index, repo, tag))?;
+        txn.remove(&tag_freshness_key(index, repo, tag))?;
+        Ok((removed, Vec::new()))
+    })
 }
 
 /// The driver-KV key one upstream tag-list page lives under. The query is part of the key: `?n=` and
@@ -423,31 +425,40 @@ pub fn referenced_manifest_digests(meta: &MetaStore) -> Result<BTreeSet<String>,
 }
 
 /// Drop this index+repo's own pointers to `digest`: tags whose target is it (with their freshness
-/// records) and referrer records naming it as subject or as referrer. Returns how many records were
-/// removed, so a digest delete can tell whether it changed anything of this repo's.
+/// records) and referrer records naming it as subject or as referrer. Report their counts separately
+/// because only tag removal invalidates search.
 ///
 /// # Errors
 /// Returns a store error if a scan or write fails.
-pub fn delete_repo_tags_to(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<usize, MetaError> {
-    let mut removed = 0;
+pub fn delete_repo_tags_to(
+    meta: &MetaStore,
+    index: &str,
+    repo: &str,
+    digest: &str,
+) -> Result<(usize, usize), MetaError> {
     let tags = tag_prefix(index, repo);
-    for key in meta.driver_prefix_keys(&tags)? {
-        if meta.get_driver_value(&key)?.as_deref() == Some(digest.as_bytes())
-            && let Some(tag) = key.strip_prefix(tags.as_str())
-        {
-            delete_tag(meta, index, repo, tag)?;
-            removed += 1;
+    meta.commit_driver_txn(|txn| {
+        let mut removed_tags = 0;
+        for (key, target) in txn.prefix(&tags)? {
+            if target == digest.as_bytes()
+                && let Some(tag) = key.strip_prefix(tags.as_str())
+            {
+                txn.remove(&key)?;
+                txn.remove(&tag_freshness_key(index, repo, tag))?;
+                removed_tags += 1;
+            }
         }
-    }
-    for key in meta.driver_prefix_keys(&format!("{REFERRER_PREFIX}{index}\u{0}{repo}\u{0}"))? {
-        if let Some((subject, referrer)) = split_referrer_key(&key)
-            && (subject == digest || referrer == digest)
-        {
-            meta.delete_driver_value(&key)?;
-            removed += 1;
+        let mut removed_referrers = 0;
+        for key in txn.prefix_keys(&format!("{REFERRER_PREFIX}{index}\u{0}{repo}\u{0}"))? {
+            if let Some((subject, referrer)) = split_referrer_key(&key)
+                && (subject == digest || referrer == digest)
+            {
+                txn.remove(&key)?;
+                removed_referrers += 1;
+            }
         }
-    }
-    Ok(removed)
+        Ok(((removed_tags, removed_referrers), Vec::new()))
+    })
 }
 
 /// The `(subject, referrer)` digests a referrer key `oci\0r\0{index}\0{repo}\0{subject}\0{referrer}`
@@ -560,6 +571,20 @@ mod tests {
     }
 
     #[test]
+    fn test_put_tag_reports_insert_and_repoints() {
+        let (_dir, meta) = store();
+
+        assert_eq!(
+            (
+                put_tag(&meta, "hub", "library/nginx", "latest", "sha256:1").unwrap(),
+                put_tag(&meta, "hub", "library/nginx", "latest", "sha256:2").unwrap(),
+                get_tag(&meta, "hub", "library/nginx", "latest").unwrap()
+            ),
+            (true, false, Some("sha256:2".to_owned()))
+        );
+    }
+
+    #[test]
     fn test_referrers_scope_to_index_repo_and_subject() {
         let (_dir, meta) = store();
         put_referrer(
@@ -637,8 +662,7 @@ mod tests {
         put_referrer(&meta, "store", "app", "sha256:sub", "sha256:x", b"{}").unwrap();
         put_referrer(&meta, "store", "app", "sha256:z", "sha256:zref", b"{}").unwrap();
 
-        // One tag whose target is the digest, plus the two referrer records naming it.
-        assert_eq!(delete_repo_tags_to(&meta, "store", "app", "sha256:x").unwrap(), 3);
+        assert_eq!(delete_repo_tags_to(&meta, "store", "app", "sha256:x").unwrap(), (1, 2));
         assert_eq!(get_tag(&meta, "store", "app", "latest").unwrap(), None);
         assert_eq!(tag_freshness(&meta, "store", "app", "latest").unwrap(), None);
         assert_eq!(
@@ -652,8 +676,7 @@ mod tests {
         assert!(list_referrers(&meta, "store", "app", "sha256:x").unwrap().is_empty());
         assert!(list_referrers(&meta, "store", "app", "sha256:sub").unwrap().is_empty());
         assert_eq!(list_referrers(&meta, "store", "app", "sha256:z").unwrap().len(), 1);
-        // Nothing left to clear on a repeat.
-        assert_eq!(delete_repo_tags_to(&meta, "store", "app", "sha256:x").unwrap(), 0);
+        assert_eq!(delete_repo_tags_to(&meta, "store", "app", "sha256:x").unwrap(), (0, 0));
     }
 
     fn index_of(child: &str) -> Manifest {
