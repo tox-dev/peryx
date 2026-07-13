@@ -221,7 +221,12 @@ impl Upstream {
         if response.status() != StatusCode::UNAUTHORIZED {
             return finish(response);
         }
-        let Some(challenge) = response.headers().get("www-authenticate").and_then(parse_bearer) else {
+        let Some(challenge) = response
+            .headers()
+            .get_all("www-authenticate")
+            .iter()
+            .find_map(parse_bearer)
+        else {
             return finish(response);
         };
         let token = self.fetch_token(&challenge, &scope, auth).await?;
@@ -323,13 +328,48 @@ struct Bearer {
     scope: Option<String>,
 }
 
-/// Parse a `WWW-Authenticate` header value, keeping only a `Bearer` challenge with a realm.
 fn parse_bearer(value: &HeaderValue) -> Option<Bearer> {
-    let mut rest = strip_auth_scheme(value.to_str().ok()?, "Bearer")?;
+    let mut value = value.to_str().ok()?;
+    loop {
+        if let Some(parameters) = strip_auth_scheme(trim_ows(value), "Bearer")
+            && let Some(challenge) = parse_bearer_parameters(parameters)
+        {
+            return Some(challenge);
+        }
+        let comma = next_comma(value)?;
+        value = &value[comma + 1..];
+    }
+}
+
+fn next_comma(value: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else if byte == b'"' {
+            quoted = true;
+        } else if byte == b',' {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn parse_bearer_parameters(mut rest: &str) -> Option<Bearer> {
     let mut realm = None;
     let mut service = None;
     let mut scope = None;
     loop {
+        if !starts_parameter(rest) {
+            break;
+        }
         let (key, value, tail) = auth_parameter(rest)?;
         if key.eq_ignore_ascii_case("realm") {
             realm = Some(value.into_owned());
@@ -344,7 +384,7 @@ fn parse_bearer(value: &HeaderValue) -> Option<Bearer> {
         }
         rest = trim_ows(rest.strip_prefix(',')?);
         if rest.is_empty() {
-            return None;
+            break;
         }
     }
     Some(Bearer {
@@ -354,12 +394,19 @@ fn parse_bearer(value: &HeaderValue) -> Option<Bearer> {
     })
 }
 
+fn starts_parameter(value: &str) -> bool {
+    let value = trim_ows(value);
+    let key_len = token_len(value);
+    key_len > 0 && trim_ows(&value[key_len..]).starts_with('=')
+}
+
+fn token_len(value: &str) -> usize {
+    value.bytes().position(|byte| !is_token(byte)).unwrap_or(value.len())
+}
+
 fn auth_parameter(value: &str) -> Option<(&str, Cow<'_, str>, &str)> {
     let value = trim_ows(value);
-    let key_len = value.bytes().position(|byte| !is_token(byte)).unwrap_or(value.len());
-    if key_len == 0 {
-        return None;
-    }
+    let key_len = token_len(value);
     let key = &value[..key_len];
     let rest = trim_ows(&value[key_len..]).strip_prefix('=')?;
     let (value, rest) = auth_value(trim_ows(rest))?;
@@ -528,8 +575,31 @@ mod tests {
         )
     }
 
+    async fn assert_manifest_authenticates(server: &MockServer, base: &str) {
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(match_header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(server)
+            .await;
+
+        let response = Upstream::new()
+            .manifest(base, &Auth::None, "library/nginx", "latest")
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
-    async fn test_manifest_accepts_standard_bearer_parameters() {
+    async fn test_manifest_selects_bearer_from_combined_challenges() {
         let server = MockServer::start().await;
         let base = format!("{}/", server.uri());
         Mock::given(method("GET"))
@@ -538,7 +608,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(401).insert_header(
                 "www-authenticate",
                 format!(
-                    r#"bEaReR ReAlM="{base}token?aud=a,b",SeRvIcE="reg\"istry",ScOpE="repository:library\/nginx:pull""#
+                    r#"Basic realm="login", bEaReR ReAlM="{base}token?aud=a,b",SeRvIcE="reg\"istry",ScOpE="repository:library\/nginx:pull","#
                 )
                 .as_str(),
             ))
@@ -570,8 +640,44 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn test_manifest_selects_bearer_from_repeated_challenge_fields() {
+        let server = MockServer::start().await;
+        let base = format!("{}/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(Unauthenticated)
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .append_header("www-authenticate", r#"Basic realm="login"#)
+                    .append_header("www-authenticate", format!(r#"Bearer realm="{base}token""#).as_str()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_manifest_authenticates(&server, &base).await;
+    }
+
+    #[tokio::test]
+    async fn test_manifest_selects_bearer_after_malformed_challenge() {
+        let server = MockServer::start().await;
+        let base = format!("{}/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(Unauthenticated)
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "www-authenticate",
+                format!(r#"Bearer realmnoeq, Bearer realm="{base}token""#).as_str(),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_manifest_authenticates(&server, &base).await;
+    }
+
     #[rstest]
-    #[case::trailing_comma(r#"Bearer realm="https://auth.example/token","#)]
     #[case::missing_name("Bearer =token")]
     #[case::unterminated_quote(r#"Bearer realm="https://auth.example/token"#)]
     #[case::unterminated_escape(r#"Bearer realm="https://auth.example/token\"#)]
