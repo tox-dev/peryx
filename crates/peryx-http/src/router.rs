@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::middleware;
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
@@ -48,9 +48,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/{*path}",
             get(handlers::dispatch_get)
-                .post(handlers::dispatch_post)
                 .put(handlers::dispatch_put)
-                .delete(handlers::dispatch_delete),
+                .delete(handlers::dispatch_delete)
+                .merge(post(handlers::dispatch_post).layer(DefaultBodyLimit::disable())),
         )
         .layer(
             TraceLayer::new_for_http()

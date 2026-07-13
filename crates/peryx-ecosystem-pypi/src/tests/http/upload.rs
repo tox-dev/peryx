@@ -59,6 +59,20 @@ async fn test_upload_direct_to_local_route() {
     assert!(detail.contains("peryxpkg"));
 }
 #[tokio::test]
+async fn test_upload_accepts_file_above_default_body_limit() {
+    let h = harness().await;
+    let default_limit = 2 * 1024 * 1024;
+    let wheel = fixture_wheel_with_body_compression("1.0", &vec![0; default_limit], zip::CompressionMethod::Stored);
+    assert!(wheel.len() > default_limit);
+    assert_eq!(upload_peryxpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
+
+    let digest = Digest::of(&wheel);
+    let uri = format!("/hosted/files/{}/peryxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get_bytes(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, wheel);
+}
+#[tokio::test]
 async fn test_upload_sdist_gains_metadata_sibling() {
     let h = harness().await;
     let sdist = fixture_sdist();
