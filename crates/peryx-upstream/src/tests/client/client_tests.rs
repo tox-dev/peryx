@@ -26,6 +26,43 @@ async fn test_fetch_bytes() {
 }
 
 #[tokio::test]
+async fn test_fetch_bytes_limited_accepts_body_at_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .and(header("accept-encoding", "identity"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&server)
+        .await;
+    let client = simple_client(&server);
+
+    let bytes = client
+        .fetch_bytes_limited(&format!("{}/files/pkg.whl", server.uri()), 10)
+        .await
+        .unwrap();
+
+    assert_eq!(&bytes[..], b"wheelbytes");
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_limited_rejects_content_length_over_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&server)
+        .await;
+    let client = simple_client(&server);
+
+    let err = client
+        .fetch_bytes_limited(&format!("{}/files/pkg.whl", server.uri()), 9)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.user_message(), "upstream response exceeds the 9-byte limit");
+}
+
+#[tokio::test]
 async fn test_stream_bytes_streams_file() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

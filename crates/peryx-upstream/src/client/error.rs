@@ -32,6 +32,8 @@ pub enum UpstreamError {
     MissingContentType { url: Url },
     #[error("unsupported upstream Simple API Content-Type {content_type:?} from {url}")]
     UnsupportedContentType { url: Url, content_type: String },
+    #[error("upstream response exceeds the {limit}-byte limit")]
+    ResponseTooLarge { limit: usize },
 }
 
 impl UpstreamError {
@@ -40,7 +42,10 @@ impl UpstreamError {
     pub fn status(&self) -> Option<u16> {
         match self {
             Self::Http(err) => err.status().map(|status| status.as_u16()),
-            Self::Url(_) | Self::MissingContentType { .. } | Self::UnsupportedContentType { .. } => None,
+            Self::Url(_)
+            | Self::MissingContentType { .. }
+            | Self::UnsupportedContentType { .. }
+            | Self::ResponseTooLarge { .. } => None,
         }
     }
 }
@@ -59,6 +64,7 @@ impl UpstreamError {
             Self::Http(_) => "upstream request failed".to_owned(),
             Self::MissingContentType { .. } => "upstream response missed Simple API Content-Type".to_owned(),
             Self::UnsupportedContentType { .. } => "upstream returned unsupported Simple API Content-Type".to_owned(),
+            Self::ResponseTooLarge { limit } => format!("upstream response exceeds the {limit}-byte limit"),
         }
     }
 }
