@@ -13,8 +13,14 @@ fn test_prepare_accepts_matching_declared_digests() {
     assert!(prepare(form, staged, "root/hosted", 1000).is_ok());
 }
 #[test]
-fn test_prepare_accepts_only_md5_declared_digest() {
-    let wheel = wheel_metadata("Flask", "1.0");
+fn test_prepare_accepts_only_md5_for_a_large_upload() {
+    let padding = vec![b'x'; 128 * 1024 + 1];
+    let [module, metadata, wheel_file] = wheel_record_entries();
+    let wheel = wheel_zip(
+        &[module, metadata, wheel_file, ("Flask/padding.bin", &padding)],
+        Some("flask-1.0.dist-info/RECORD"),
+        None,
+    );
     let (_dir, staged) = staged_upload(&wheel);
     let mut form = staged_form(&wheel);
     form.sha256_digest = None;
