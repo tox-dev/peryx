@@ -3475,7 +3475,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "http-body-util",
- "moka",
+ "parking_lot",
  "peryx-core",
  "peryx-driver",
  "peryx-events",

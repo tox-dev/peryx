@@ -25,7 +25,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-moka.workspace = true
+parking_lot.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde = { workspace = true, features = ["derive"] }

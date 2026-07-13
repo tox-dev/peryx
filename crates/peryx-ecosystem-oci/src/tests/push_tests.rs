@@ -8,6 +8,7 @@ use http_body_util::BodyExt as _;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
+use peryx_storage::meta::DriverBatch;
 use rstest::rstest;
 use tower::ServiceExt as _;
 
@@ -1129,6 +1130,48 @@ async fn test_blob_delete_removes_only_the_target_repository_link() {
             true,
         )
     );
+}
+
+#[tokio::test]
+async fn test_blob_membership_cache_evicts_oldest_link_over_limit() {
+    const CACHE_BYTES: usize = 8 << 20;
+    const INDEX_BYTES: usize = 1 << 20;
+    let index_name = "x".repeat(INDEX_BYTES);
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = app_with_indexes(&dir, vec![writable_index(&index_name, "store", true, TOKEN)]);
+    let digest = upload_blob(&app, "store/source", b"shared-layer").await;
+    let repos = (0..=CACHE_BYTES / INDEX_BYTES)
+        .map(|index| format!("repo{index}"))
+        .collect::<Vec<_>>();
+    let keys = repos
+        .iter()
+        .map(|repo| format!("oci\0bm\0{index_name}\0{repo}\0{digest}"))
+        .collect::<Vec<_>>();
+    let mut puts = DriverBatch::new();
+    for key in &keys {
+        puts.put(key.clone(), Vec::new());
+    }
+    state.meta.commit_driver_batch(&puts, false).unwrap();
+    for repo in &repos {
+        send(&app, Method::GET, &format!("/v2/store/{repo}/blobs/{digest}")).await;
+    }
+    let newest_index = repos.len() - 1;
+    let mut deletes = DriverBatch::new();
+    deletes.delete(keys[0].clone());
+    deletes.delete(keys[newest_index].clone());
+    state.meta.commit_driver_batch(&deletes, false).unwrap();
+
+    let oldest = send(&app, Method::GET, &format!("/v2/store/{}/blobs/{digest}", repos[0]))
+        .await
+        .0;
+    let newest = send(
+        &app,
+        Method::GET,
+        &format!("/v2/store/{}/blobs/{digest}", repos[newest_index]),
+    )
+    .await
+    .0;
+    assert_eq!((oldest, newest), (StatusCode::NOT_FOUND, StatusCode::OK));
 }
 
 async fn upload_blob(app: &axum::Router, name: &str, blob: &[u8]) -> String {
