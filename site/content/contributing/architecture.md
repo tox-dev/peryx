@@ -245,6 +245,11 @@ membership map controls which `(index, repository)` may serve those bytes. peryx
 store, where an OCI layer and a Python wheel dedupe against the same content-addressed tree. Contributors can add a
 third ecosystem without changing storage because each driver owns its value encodings and key layout.
 
+OCI keeps upload sessions process-local because their staged blob disappears with the process. The session entry pairs
+the staged state with its index resolution and full request name. peryx chooses a 128-bit random identifier, then checks
+both values after authorizing a subsequent request. A writer may resume an upload that another credential opened for
+that repository.
+
 {% mermaid() %}
 flowchart TD
 pypi["PyPI driver"]

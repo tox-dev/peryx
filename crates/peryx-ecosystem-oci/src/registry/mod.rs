@@ -115,6 +115,7 @@ impl From<ServeError> for String {
         err.message()
     }
 }
+
 /// The OCI/Docker registry driver.
 ///
 /// Holds one shared upstream fetcher over the process's stores, the per-index settings the
@@ -124,7 +125,6 @@ pub struct OciRegistry {
     upstream: Upstream,
     settings: std::collections::HashMap<String, IndexSettings>,
     uploads: tokio::sync::Mutex<std::collections::HashMap<String, UploadSession>>,
-    next_upload: std::sync::atomic::AtomicU64,
     blob_memberships: Cache<String, ()>,
     // Prevent a completed deletion from leaving a positive authorization cached.
     blob_membership_gate: RwLock<()>,
@@ -135,7 +135,6 @@ impl Default for OciRegistry {
             upstream: Upstream::default(),
             settings: std::collections::HashMap::new(),
             uploads: tokio::sync::Mutex::default(),
-            next_upload: std::sync::atomic::AtomicU64::new(0),
             blob_memberships: Cache::builder()
                 .weigher(|key: &String, &()| u32::try_from(key.len()).unwrap_or(u32::MAX))
                 .max_capacity(8 << 20)
@@ -144,14 +143,11 @@ impl Default for OciRegistry {
         }
     }
 }
-/// A blob upload between its `POST` (start) and `PUT` (finish): the staged bytes, how many landed, and
-/// the index that opened it. The session map is process-global, so the owning index is checked on
-/// every follow-up request; otherwise a client authorized for its own index could reach another
-/// index's session by its id and disrupt or read it.
 struct UploadSession {
     pending: PendingBlob,
     offset: u64,
     index: String,
+    name: String,
     /// When the session last saw activity: its `POST`, a `PATCH`, or a status `GET`. The TTL runs from
     /// here, not from creation, so a slow but active upload keeps its place instead of being evicted
     /// mid-flight.
@@ -180,10 +176,16 @@ impl OciRegistry {
         crate::settings::upstream_repo(prefix, client.base_url(), repo)
     }
 
-    /// A fresh, process-unique upload-session id. Sessions are ephemeral, so a counter suffices.
-    fn new_session(&self) -> String {
-        let next = self.next_upload.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        format!("{next:032x}")
+    fn random_session() -> Result<String, ServeError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut bytes = [0; 16];
+        getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
+        let mut session = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            session.push(HEX[usize::from(byte >> 4)] as char);
+            session.push(HEX[usize::from(byte & 0x0f)] as char);
+        }
+        Ok(session)
     }
 }
 #[async_trait]

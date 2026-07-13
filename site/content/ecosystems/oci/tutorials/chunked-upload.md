@@ -62,10 +62,11 @@ loc=$(curl -sS -u _:demo-secret -X POST -D - -o /dev/null \
 echo "$loc"   # /v2/images/blob-demo/blobs/uploads/<session>
 ```
 
-The response carries `Docker-Upload-UUID: <session>` and `Range: 0-0`; the `Range` is the byte span received so far,
-empty at the start. peryx keeps `<session>` in memory on this process, and a restart discards it. After one hour without
-a status check or `PATCH` attempt, peryx removes the session during the next process-wide maintenance pass. The pass
-runs once per minute, so the staged file can remain for less than one minute beyond that deadline.
+Read `Docker-Upload-UUID: <session>` and `Range: 0-0` from the response. `Range` shows the byte span received so far and
+starts empty. peryx creates an opaque random id and records the complete `images/blob-demo` repository name. Keep the
+returned `Location` unchanged. A restart discards this process-local state. After one hour without a status check or
+`PATCH` attempt, peryx removes the session during the next process-wide maintenance pass. The pass runs once per minute,
+so the staged file can remain for less than one minute beyond that deadline.
 
 ## Append the first two chunks
 

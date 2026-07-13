@@ -3472,6 +3472,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "flate2",
  "futures-util",
+ "getrandom 0.4.3",
  "http",
  "http-body-util",
  "moka",

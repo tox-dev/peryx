@@ -68,6 +68,12 @@ A chunked upload stages bytes in a temp file that the session owns, and the sess
 never leaves that state stranded: a client that knows it is done can reclaim its bytes at once, and a client that lost
 its place is handed back the coordinates to continue.
 
+peryx uses the session id only to locate temporary state. A 128-bit operating-system random value makes active uploads
+infeasible to enumerate. The opening repository name stays with the state. For each follow-up, peryx checks write access
+and compares the request repository. When a client moves an id under another repository, peryx reports it as unknown and
+keeps the original session. Another credential may resume the upload when it can write the same repository because peryx
+authenticates each request.
+
 ### Why cancelling an upload unlinks the staged file
 
 If a push stops partway, without a crash, without a `PUT`, that staged file has no natural end. peryx reaps an idle

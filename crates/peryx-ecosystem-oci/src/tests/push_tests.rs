@@ -12,8 +12,8 @@ use rstest::rstest;
 use tower::ServiceExt as _;
 
 use super::{
-    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, proxy, send, send_body, send_with,
-    writable_index,
+    app_with_indexes, auth, body_has_code, hosted, hosted_writable, oci_digest, proxy, scoped_index, send, send_body,
+    send_with, writable_index,
 };
 
 const TOKEN: &str = "s3cret";
@@ -964,6 +964,97 @@ async fn test_upload_session_is_scoped_to_its_index() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[rstest]
+#[case::status(Method::GET, &[])]
+#[case::append(Method::PATCH, b"attacker")]
+#[case::finish(Method::PUT, b"attacker")]
+#[case::cancel(Method::DELETE, &[])]
+#[tokio::test]
+async fn test_upload_session_is_scoped_to_its_repository(#[case] method: Method, #[case] body: &[u8]) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let location = start_session(&app, "store/app", TOKEN).await;
+    let session = location.rsplit('/').next().unwrap();
+
+    let attack = format!("/v2/store/other/blobs/uploads/{session}");
+    let (status, _, response) =
+        send_body(&app, method, &attack, &[("authorization", &auth(TOKEN))], body.to_vec()).await;
+    assert_eq!(
+        (status, body_has_code(&response, "BLOB_UPLOAD_UNKNOWN")),
+        (StatusCode::NOT_FOUND, true),
+        "{response:?}"
+    );
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::GET,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn test_upload_session_can_resume_with_another_authorized_credential() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = scoped_index("store", "store", "writer-a", "secret-a", "app", &[Action::Write]);
+    index.acl.tokens.push(NamedToken {
+        name: "writer-b".to_owned(),
+        secret: "secret-b".to_owned(),
+        grants: vec![Grant {
+            projects: vec![Glob::new("app")],
+            actions: BTreeSet::from([Action::Write]),
+        }],
+        expires_at: None,
+    });
+    let (_state, app) = app_with_indexes(&dir, vec![index]);
+    let location = start_session(&app, "store/app", "secret-a").await;
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth("secret-b"))],
+        b"chunk".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn test_upload_session_id_is_128_bit_lowercase_hex() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+
+    let location = start_session(&app, "store/app", TOKEN).await;
+    let session = location.rsplit('/').next().unwrap();
+
+    assert_eq!(
+        (
+            session.len(),
+            session
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        ),
+        (32, true)
+    );
+}
+
+async fn start_session(app: &axum::Router, name: &str, token: &str) -> String {
+    let (status, headers, _) = send_body(
+        app,
+        Method::POST,
+        &format!("/v2/{name}/blobs/uploads/"),
+        &[("authorization", &auth(token))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    headers[header::LOCATION].to_str().unwrap().to_owned()
 }
 
 #[tokio::test]

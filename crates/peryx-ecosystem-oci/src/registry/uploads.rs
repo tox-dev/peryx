@@ -51,27 +51,35 @@ impl OciRegistry {
             }
             return commit_blob(state, pending, &index.name, &repo, name, digest);
         }
-        let pending = state.blobs.begin().map_err(blob_fault)?;
-        let session = self.new_session();
         let now = (state.clock)();
-        let entry = UploadSession {
-            pending,
-            offset: 0,
-            index: index.name.clone(),
-            last_active_at: now,
-        };
+        let session = Self::random_session()?;
+        let pending = state.blobs.begin().map_err(blob_fault)?;
         let mut uploads = self.uploads.lock().await;
         reclaim_expired(&mut uploads, now);
-        uploads.insert(session.clone(), entry);
+        let session = std::iter::once(Ok(session))
+            .chain(std::iter::repeat_with(Self::random_session))
+            .find(|candidate| {
+                let candidate = candidate.as_ref();
+                candidate.is_err() || candidate.is_ok_and(|candidate| !uploads.contains_key(candidate))
+            })
+            .expect("session candidate iterator cannot end")?;
+        uploads.insert(
+            session.clone(),
+            UploadSession {
+                pending,
+                offset: 0,
+                index: index.name.clone(),
+                name: name.to_owned(),
+                last_active_at: now,
+            },
+        );
         drop(uploads);
         Ok(upload_accepted(name, &session, 0))
     }
 
-    /// Remove an open session by id, but only when `index` is the one that opened it, so a client
-    /// authorized for its own index cannot take or disrupt another index's upload by guessing the id.
-    async fn take_session(&self, index: &str, session: &str) -> Option<UploadSession> {
+    async fn take_session(&self, index: &str, name: &str, session: &str) -> Option<UploadSession> {
         let mut uploads = self.uploads.lock().await;
-        if uploads.get(session).is_none_or(|entry| entry.index != index) {
+        if uploads.get(session).is_none_or(|entry| !entry.belongs_to(index, name)) {
             return None;
         }
         uploads.remove(session)
@@ -109,7 +117,7 @@ impl OciRegistry {
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        Ok(match self.take_session(&index.name, session).await {
+        Ok(match self.take_session(&index.name, name, session).await {
             Some(_) => StatusCode::NO_CONTENT.into_response(),
             None => error_response(ErrorCode::BlobUploadUnknown, "upload unknown"),
         })
@@ -132,7 +140,7 @@ impl OciRegistry {
             .lock()
             .await
             .get_mut(session)
-            .filter(|entry| entry.index == index.name)
+            .filter(|entry| entry.belongs_to(&index.name, name))
             .map(|entry| {
                 entry.last_active_at = (state.clock)();
                 entry.offset
@@ -156,7 +164,7 @@ impl OciRegistry {
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        let Some(mut entry) = self.take_session(&index.name, session).await else {
+        let Some(mut entry) = self.take_session(&index.name, name, session).await else {
             return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
         };
         // The TTL runs from last activity, so this chunk keeps the session alive whether or not it lands.
@@ -189,7 +197,7 @@ impl OciRegistry {
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        let Some(entry) = self.take_session(&index.name, session).await else {
+        let Some(entry) = self.take_session(&index.name, name, session).await else {
             return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
         };
         // A final chunk carrying a `Content-Range` must also be contiguous, exactly like a `PATCH`.
@@ -219,6 +227,12 @@ pub(super) fn reclaim_expired(uploads: &mut std::collections::HashMap<String, Up
     let before = uploads.len();
     uploads.retain(|_, session| now.saturating_sub(session.last_active_at) < UPLOAD_SESSION_TTL_SECS);
     before - uploads.len()
+}
+
+impl UploadSession {
+    fn belongs_to(&self, index: &str, name: &str) -> bool {
+        self.index == index && self.name == name
+    }
 }
 
 /// Append a request body to a session's staged blob, advancing `offset` as each chunk lands.

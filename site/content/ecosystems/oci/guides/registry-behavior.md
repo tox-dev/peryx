@@ -118,6 +118,9 @@ curl -sS -i -u _:<token> -X DELETE \
 # 404 Not Found
 ```
 
+Send follow-up requests to the exact `Location` from the opening response. peryx returns `404 BLOB_UPLOAD_UNKNOWN` when
+the repository path differs, including when the caller can write both repositories.
+
 Because sessions live in the peryx process, a restart drops every open one, so a `DELETE` after a restart also answers
 `404`. Reach for cancel in a CI job that aborts a build, or a script that opens a session it then decides not to use, so
 the server is not left holding bytes no one will finish.

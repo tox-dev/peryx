@@ -78,24 +78,26 @@ target.
 
 ## Upload sessions
 
-An upload session belongs to a hosted index and lives in the serving process. Writing to one needs the target index's
-`upload_token` as the Basic-auth password, like every other write. Sessions are held in memory, so a restart drops every
-open session and a subsequent request against it is `404`.
+The opening request records its complete `<name>` in the upload session. peryx encodes a 128-bit random id as 32
+lowercase hexadecimal characters. For a continuation request, peryx checks write access for the requested repository and
+then compares both stored scope values. A credential with write access may continue when the repository matches. Since
+peryx holds sessions in memory, a restart drops open sessions and later requests receive `404`.
 
 ### Cancel an upload session
 
 `DELETE /v2/<name>/blobs/uploads/<session>` cancels an open upload (distribution-spec end-14).
 
-| Condition                                                  | Status                    |
-| ---------------------------------------------------------- | ------------------------- |
-| `<session>` is an open session this index opened           | `204 No Content`          |
-| `<session>` is unknown, already committed, or already gone | `404 BLOB_UPLOAD_UNKNOWN` |
-| Missing or wrong `upload_token`                            | `401 UNAUTHORIZED`        |
-| The resolved index is read-only or has uploads disabled    | `403 DENIED`              |
+| Condition                                                     | Status                    |
+| ------------------------------------------------------------- | ------------------------- |
+| Request matches the recorded index and complete `<name>`      | `204 No Content`          |
+| Client supplies an unknown, gone, or cross-repository session | `404 BLOB_UPLOAD_UNKNOWN` |
+| Credential lacks write access to the requested repository     | `401 UNAUTHORIZED`        |
+| Index configuration disallows uploads                         | `403 DENIED`              |
 
 A `204` drops the session and unlinks its staged temp file. peryx expires an unfinished session after one hour without a
 status `GET` or `PATCH` attempt. The once-per-minute sweep removes expired sessions within the next minute; starting
-another session runs the same expiry pass.
+another session runs the same expiry pass. When a client changes the name, peryx keeps the original session and staged
+bytes unchanged.
 
 ### The 416 resume response
 
