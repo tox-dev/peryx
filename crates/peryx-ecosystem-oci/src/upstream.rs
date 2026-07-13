@@ -366,17 +366,32 @@ fn parse_bearer_parameters(mut rest: &str) -> Option<Bearer> {
     let mut realm = None;
     let mut service = None;
     let mut scope = None;
+    let mut extension_names: Vec<&str> = Vec::new();
     loop {
         if !starts_parameter(rest) {
             break;
         }
         let (key, value, tail) = auth_parameter(rest)?;
         if key.eq_ignore_ascii_case("realm") {
+            if realm.is_some() {
+                return None;
+            }
             realm = Some(value.into_owned());
         } else if key.eq_ignore_ascii_case("service") {
+            if service.is_some() {
+                return None;
+            }
             service = Some(value.into_owned());
         } else if key.eq_ignore_ascii_case("scope") {
+            if scope.is_some() {
+                return None;
+            }
             scope = Some(value.into_owned());
+        } else {
+            if extension_names.iter().any(|name| key.eq_ignore_ascii_case(name)) {
+                return None;
+            }
+            extension_names.push(key);
         }
         rest = trim_ows(tail);
         if rest.is_empty() {
@@ -670,6 +685,55 @@ mod tests {
                 "www-authenticate",
                 format!(r#"Bearer realmnoeq, Bearer realm="{base}token""#).as_str(),
             ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_manifest_authenticates(&server, &base).await;
+    }
+
+    #[rstest]
+    #[case::realm_exact_token("realm=invalid")]
+    #[case::realm_mixed_quoted(r#"ReAlM="://""#)]
+    #[case::service_exact_equal_token("service=registry,service=registry")]
+    #[case::service_mixed_different_quoted(r#"service="first",SeRvIcE="second""#)]
+    #[case::scope_exact_equal_quoted(r#"scope="repository:app:pull",scope="repository:app:pull""#)]
+    #[case::scope_mixed_different_token("scope=first,ScOpE=second")]
+    #[case::extension_exact_equal_quoted(r#"extension="value",extension="value""#)]
+    #[case::extension_mixed_different_token("extension=first,ExTeNsIoN=second")]
+    #[tokio::test]
+    async fn test_manifest_skips_bearer_with_duplicate_parameter(#[case] parameters: &str) {
+        let server = MockServer::start().await;
+        let base = format!("{}/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(Unauthenticated)
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "www-authenticate",
+                format!(r#"Bearer realm="{base}wrong",{parameters}, Bearer realm="{base}token""#).as_str(),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_manifest_authenticates(&server, &base).await;
+    }
+
+    #[tokio::test]
+    async fn test_manifest_selects_bearer_after_duplicate_parameter_field() {
+        let server = MockServer::start().await;
+        let base = format!("{}/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v2/library/nginx/manifests/latest"))
+            .and(Unauthenticated)
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .append_header(
+                        "www-authenticate",
+                        format!(r#"Bearer realm="{base}wrong",realm=invalid"#).as_str(),
+                    )
+                    .append_header("www-authenticate", format!(r#"Bearer realm="{base}token""#).as_str()),
+            )
             .expect(1)
             .mount(&server)
             .await;
