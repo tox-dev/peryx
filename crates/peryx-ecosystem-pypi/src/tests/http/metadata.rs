@@ -63,6 +63,28 @@ async fn test_metadata_served_verified_and_counted() {
         "metadata counter never reached 2:\n{metrics}"
     );
 }
+
+#[tokio::test]
+async fn test_metadata_rejects_sidecar_over_size_limit() {
+    let h = harness().await;
+    let artifact = Digest::of(b"artifact");
+    let metadata = Digest::of(b"metadata");
+    h.state
+        .meta
+        .put_metadata(
+            artifact.as_str(),
+            &oversized_metadata_server(),
+            metadata.as_str(),
+            "pypi",
+        )
+        .unwrap();
+
+    let uri = format!("/pypi/files/{}/pkg.whl.metadata", artifact.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.contains("upstream response exceeds the 16777216-byte limit"));
+}
 #[tokio::test]
 async fn test_buffered_persist_inserts_metadata_before_url_query() {
     let h = harness().await;
@@ -465,4 +487,23 @@ async fn test_metadata_digest_mismatch_is_server_error() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(body.contains("metadata fetch on index \"pypi\" for file \"pkg.whl.metadata\""));
     assert!(body.contains("blob store error: digest mismatch"));
+}
+
+fn oversized_metadata_server() -> String {
+    use std::io::{Read as _, Write as _};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut socket = listener.accept().unwrap().0;
+        let mut buffer = [0; 1024];
+        let _ = socket.read(&mut buffer);
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            crate::archive::MAX_WHEEL_METADATA_BYTES + 1
+        )
+        .unwrap();
+    });
+    format!("http://{addr}/pkg.whl.metadata")
 }

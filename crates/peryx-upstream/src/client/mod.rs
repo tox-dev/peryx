@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use reqwest::header::{
     ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, HeaderMap, HeaderName, IF_NONE_MATCH, RANGE,
@@ -178,6 +178,48 @@ impl UpstreamClient {
                     attempt += 1;
                 }
                 Err(err) => return Err(err.into()),
+            }
+        }
+    }
+
+    /// Fetch a file's bytes from an absolute URL without reading more than `limit` bytes.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::ResponseTooLarge`] if the response exceeds `limit`, or
+    /// [`UpstreamError::Http`] if the request fails or answers a non-success status.
+    pub async fn fetch_bytes_limited(&self, url: &str, limit: usize) -> Result<Bytes, UpstreamError> {
+        use futures_util::TryStreamExt as _;
+
+        let mut attempt = 0;
+        loop {
+            let response = self
+                .send_with_retry(|| self.authenticate(self.bulk.get(url).header(ACCEPT_ENCODING, "identity")))
+                .await?
+                .error_for_status()?;
+            let content_length = response.content_length();
+            if content_length.is_some_and(|length| length > u64::try_from(limit).unwrap_or(u64::MAX)) {
+                return Err(UpstreamError::ResponseTooLarge { limit });
+            }
+            let mut bytes = BytesMut::with_capacity(
+                content_length
+                    .and_then(|length| usize::try_from(length).ok())
+                    .unwrap_or_default(),
+            );
+            let mut stream = response.bytes_stream();
+            loop {
+                match stream.try_next().await {
+                    Ok(Some(chunk)) if chunk.len() > limit - bytes.len() => {
+                        return Err(UpstreamError::ResponseTooLarge { limit });
+                    }
+                    Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+                    Ok(None) => return Ok(bytes.freeze()),
+                    Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
+                        sleep_before_retry_str(url, attempt, &err).await;
+                        attempt += 1;
+                        break;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
             }
         }
     }

@@ -26,7 +26,12 @@ async fn fetch_from_source(state: &ServingState, source: &str, url: &str) -> Res
         return Err(CacheError::OfflineMissing("metadata"));
     }
     let _permit = upstream_permit(state, source).await?;
-    Ok(client.fetch_bytes(url).await?)
+    Ok(client
+        .fetch_bytes_limited(
+            url,
+            usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).expect("metadata limit fits in memory"),
+        )
+        .await?)
 }
 
 /// Resolve an artifact's PEP 658 metadata bytes: cached blob, advertised upstream sibling, or
