@@ -38,7 +38,7 @@ pub struct BasicCredentials {
 /// Basic, not valid base64/UTF-8, or has no `user:password` separator.
 #[must_use]
 pub fn parse_basic(header_value: &str) -> Option<BasicCredentials> {
-    let encoded = header_value.strip_prefix("Basic ")?;
+    let encoded = strip_auth_scheme(header_value, "Basic")?;
     let decoded = STANDARD.decode(encoded.trim()).ok()?;
     let credentials = String::from_utf8(decoded).ok()?;
     let (user, password) = credentials.split_once(':')?;
@@ -46,6 +46,14 @@ pub fn parse_basic(header_value: &str) -> Option<BasicCredentials> {
         user: user.to_owned(),
         password: password.to_owned(),
     })
+}
+
+/// HTTP authentication schemes compare case-insensitively while their credentials remain case-sensitive.
+#[must_use]
+pub fn strip_auth_scheme<'a>(header_value: &'a str, scheme: &str) -> Option<&'a str> {
+    let (presented, credential) = header_value.split_at_checked(scheme.len())?;
+    let credential = credential.strip_prefix(' ')?;
+    presented.eq_ignore_ascii_case(scheme).then_some(credential)
 }
 
 /// Compare a presented secret to a configured one without an early-out on the first differing byte, so

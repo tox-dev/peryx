@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use crate::{IndexAcl, Principal, parse_basic};
 
 use super::basic;
@@ -55,9 +57,13 @@ fn test_identify_keeps_the_presented_user_whatever_the_verdict() {
     assert_eq!(acl.identify(None, 0).user, None);
 }
 
-#[test]
-fn test_parse_basic_extracts_user_and_password() {
-    let parsed = parse_basic(&basic(b"alice:s3cret")).unwrap();
-    assert_eq!(parsed.user, "alice");
-    assert_eq!(parsed.password, "s3cret");
+#[rstest]
+#[case::canonical("Basic")]
+#[case::lower("basic")]
+#[case::mixed("bAsIc")]
+fn test_parse_basic_extracts_credentials_for_case_insensitive_scheme(#[case] scheme: &str) {
+    let header = basic(b"alice:s3cret").replacen("Basic", scheme, 1);
+    let parsed = parse_basic(&header).unwrap();
+
+    assert_eq!((parsed.user.as_str(), parsed.password.as_str()), ("alice", "s3cret"));
 }

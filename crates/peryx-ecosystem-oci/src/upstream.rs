@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use axum::http::{HeaderValue, Method, StatusCode};
+use peryx_identity::strip_auth_scheme;
 use peryx_upstream::Auth;
 use reqwest::Response;
 use tokio::sync::Mutex;
@@ -334,9 +335,7 @@ struct Bearer {
 /// Parse a `WWW-Authenticate` header value, keeping only a `Bearer` challenge with a realm.
 fn parse_bearer(value: &HeaderValue) -> Option<Bearer> {
     let value = value.to_str().ok()?;
-    let rest = value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))?;
+    let rest = strip_auth_scheme(value, "Bearer")?;
     let mut realm = None;
     let mut service = None;
     let mut scope = None;

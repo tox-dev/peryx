@@ -30,6 +30,26 @@ fn test_bearer_read_access_finds_projects_under_index_routes(#[case] route: &str
 }
 
 #[rstest]
+#[case::lower("bearer")]
+#[case::mixed("bEaReR")]
+fn test_bearer_read_access_accepts_case_insensitive_scheme(#[case] scheme: &str) {
+    let (_dir, state, mut headers) = app("", "app");
+    let token = headers[header::AUTHORIZATION]
+        .to_str()
+        .unwrap()
+        .split_once(' ')
+        .unwrap()
+        .1;
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("{scheme} {token}")).unwrap(),
+    );
+    let access = ReadAccess::from_headers(&state, &headers);
+
+    assert_eq!(access.for_index(state.index_at(0)).authorize_project("app"), Ok(()));
+}
+
+#[rstest]
 #[case::any(None)]
 #[case::named(Some("app"))]
 fn test_public_read_access_allows_projects(#[case] project: Option<&str>) {

@@ -15,7 +15,7 @@ use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{
     Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, Signer, authorize, authorize_all,
-    authorize_exact_grants, authorize_grants,
+    authorize_exact_grants, authorize_grants, strip_auth_scheme,
 };
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
@@ -56,10 +56,10 @@ fn presents_valid_credential(signer: &Signer, state: &ServingState, headers: &He
     let Some(header) = authorization(headers) else {
         return false;
     };
-    if let Some(token) = header.strip_prefix("Bearer ") {
+    if let Some(token) = strip_auth_scheme(header, "Bearer") {
         return signer.verify(token).is_ok();
     }
-    if header.starts_with("Basic ") {
+    if strip_auth_scheme(header, "Basic").is_some() {
         return named_requester(state, header).is_some();
     }
     false
@@ -95,7 +95,7 @@ pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str
 /// named subject a Basic password authenticates, or a `401` when Basic authenticates nowhere.
 fn resolve_requester<'a>(state: &'a ServingState, header: Option<&'a str>) -> Result<TokenRequester<'a>, Response> {
     match header {
-        Some(header) if header.starts_with("Basic ") => {
+        Some(header) if strip_auth_scheme(header, "Basic").is_some() => {
             named_requester(state, header).ok_or_else(|| error_response(ErrorCode::Unauthorized, "invalid credentials"))
         }
         _ => Ok(TokenRequester {
@@ -255,7 +255,7 @@ pub(super) fn authorize_read(state: &ServingState, headers: &HeaderMap, name: &s
 }
 
 pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Result<(), Response> {
-    if let Some(token) = authorization(headers).and_then(|header| header.strip_prefix("Bearer "))
+    if let Some(token) = authorization(headers).and_then(|header| strip_auth_scheme(header, "Bearer"))
         && let Some(signer) = &state.signer
     {
         return match signer.verify(token) {
@@ -265,7 +265,7 @@ pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Re
         };
     }
     let requester = authorization(headers)
-        .filter(|header| header.starts_with("Basic "))
+        .filter(|header| strip_auth_scheme(header, "Basic").is_some())
         .and_then(|header| named_requester(state, header))
         .unwrap_or(TokenRequester {
             principal: Principal::Anonymous,
@@ -297,7 +297,7 @@ fn authorize_catalog_requester(state: &ServingState, requester: &TokenRequester<
 /// Resolve a resource credential, retaining a verified bearer's embedded grants for authorization.
 pub(super) fn identify(state: &ServingState, acl: &IndexAcl, headers: &HeaderMap) -> PresentedIdentity {
     let header = authorization(headers);
-    if let Some(token) = header.and_then(|header| header.strip_prefix("Bearer "))
+    if let Some(token) = header.and_then(|header| strip_auth_scheme(header, "Bearer"))
         && let Some(signer) = &state.signer
     {
         return match signer.verify(token) {

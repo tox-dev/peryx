@@ -64,11 +64,15 @@ async fn test_v2_stays_open_for_an_anonymous_deployment() {
     assert_eq!(headers["docker-distribution-api-version"], "registry/2.0");
 }
 
+#[rstest]
+#[case::lower("basic")]
+#[case::mixed("bAsIc")]
 #[tokio::test]
-async fn test_v2_accepts_a_valid_basic_credential() {
+async fn test_v2_accepts_case_insensitive_basic_scheme(#[case] scheme: &str) {
     let dir = tempfile::tempdir().unwrap();
     let app = team_registry(&dir);
-    let (status, _, _) = send_with(&app, Method::GET, "/v2/", &[("authorization", &auth(SECRET))]).await;
+    let authorization = auth(SECRET).replacen("Basic", scheme, 1);
+    let (status, _, _) = send_with(&app, Method::GET, "/v2/", &[("authorization", &authorization)]).await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -132,18 +136,18 @@ async fn test_catalog_rejects_a_token_without_catalog_scope(#[case] requested_sc
 }
 
 #[rstest]
-#[case::basic(false)]
-#[case::bearer(true)]
+#[case::basic("bAsIc", false)]
+#[case::bearer("bEaReR", true)]
 #[tokio::test]
-async fn test_catalog_accepts_authorized_credentials(#[case] bearer: bool) {
+async fn test_catalog_accepts_case_insensitive_auth_scheme(#[case] scheme: &str, #[case] bearer: bool) {
     let dir = tempfile::tempdir().unwrap();
     let app = catalog_registry(&dir);
     publish_tag(&app, "store/team/app").await;
     let (token_status, authorization) = if bearer {
         let (status, token) = request_token(&app, "service=peryx&scope=registry:catalog:*", Some(&auth(SECRET))).await;
-        (status, format!("Bearer {token}"))
+        (status, format!("{scheme} {token}"))
     } else {
-        (StatusCode::OK, auth(SECRET))
+        (StatusCode::OK, auth(SECRET).replacen("Basic", scheme, 1))
     };
 
     let (status, _, body) = send_with(&app, Method::GET, "/v2/_catalog", &[("authorization", &authorization)]).await;
@@ -211,8 +215,11 @@ fn catalog_denied_registry(dir: &tempfile::TempDir, different_subjects: bool) ->
     .1
 }
 
+#[rstest]
+#[case::lower("bearer")]
+#[case::mixed("bEaReR")]
 #[tokio::test]
-async fn test_token_endpoint_issues_an_anonymous_token_that_pulls_a_public_repo() {
+async fn test_resource_accepts_case_insensitive_bearer_scheme(#[case] scheme: &str) {
     let dir = tempfile::tempdir().unwrap();
     // `writable_index` reads anonymously (a public repo) but still carries a credential, so the realm
     // challenges and issues tokens.
@@ -228,7 +235,7 @@ async fn test_token_endpoint_issues_an_anonymous_token_that_pulls_a_public_repo(
         &app,
         Method::GET,
         &format!("/v2/pub/app/manifests/{digest}"),
-        &[("authorization", &format!("Bearer {token}"))],
+        &[("authorization", &format!("{scheme} {token}"))],
     )
     .await;
     assert_eq!(pull, StatusCode::OK);
@@ -461,6 +468,18 @@ async fn test_basic_is_still_accepted_on_a_resource_push() {
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
     push(&app, "store/app", &digest, body, &auth(SECRET)).await;
+}
+
+#[rstest]
+#[case::lower("basic")]
+#[case::mixed("bAsIc")]
+#[tokio::test]
+async fn test_token_endpoint_accepts_case_insensitive_basic_scheme(#[case] scheme: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = team_registry(&dir);
+    let authorization = auth(SECRET).replacen("Basic", scheme, 1);
+    let (status, _) = request_token(&app, "service=peryx", Some(&authorization)).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]

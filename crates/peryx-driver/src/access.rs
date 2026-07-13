@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use axum::http::{HeaderMap, header};
-use peryx_identity::{Action, Denial, Grant, Principal, authorize, authorize_grants};
+use peryx_identity::{Action, Denial, Grant, Principal, authorize, authorize_grants, strip_auth_scheme};
 use peryx_search::{SearchAccess, SearchAccessPattern};
 
 use crate::{Index, ServingState};
@@ -32,7 +32,7 @@ impl ReadAccess {
     #[must_use]
     pub fn from_headers(state: &ServingState, headers: &HeaderMap) -> Self {
         let header = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-        let credential = if let Some(token) = header.and_then(|value| value.strip_prefix("Bearer "))
+        let credential = if let Some(token) = header.and_then(|value| strip_auth_scheme(value, "Bearer"))
             && let Some(signer) = &state.signer
             && let Ok((_, grants)) = signer.verify(token)
         {

@@ -2,15 +2,18 @@
 
 use super::support::*;
 
+#[rstest]
+#[case::lower("bearer")]
+#[case::mixed("bEaReR")]
 #[tokio::test]
-async fn test_token_flow_presents_configured_basic_credentials_to_the_realm() {
+async fn test_token_flow_accepts_case_insensitive_challenge(#[case] scheme: &str) {
     let server = MockServer::start().await;
     let body = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
     Mock::given(method("GET"))
         .and(path("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
-            format!(r#"Bearer realm="{}/token",service="reg""#, server.uri()).as_str(),
+            format!(r#"{scheme} realm="{}/token",service="reg""#, server.uri()).as_str(),
         ))
         .up_to_n_times(1)
         .mount(&server)
