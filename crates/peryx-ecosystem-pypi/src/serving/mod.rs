@@ -136,6 +136,20 @@ impl EcosystemDriver for PypiServing {
         }
     }
 
+    fn rate_limit_principal(
+        &self,
+        state: &ServingState,
+        position: Option<usize>,
+        headers: &HeaderMap,
+    ) -> peryx_identity::Principal {
+        identify(
+            state,
+            state.index_at(position.expect("an indexed driver receives a resolved index position")),
+            headers,
+        )
+        .principal
+    }
+
     fn metric_families(&self) -> &'static [MetricFamily] {
         PYPI_FAMILIES
     }

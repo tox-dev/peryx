@@ -81,6 +81,27 @@ default_anonymous_read = false
 Every index now defaults to private reads, and an index that should stay open opts back in with `anonymous_read = true`.
 One knob makes a fully private server the default and a public index the exception.
 
+## Rate-limit named principals
+
+Enable local rate limits when authenticated clients need buckets separate from callers sharing their IP address.
+
+```toml
+[rate_limit]
+enabled = true
+max_clients = 4096
+
+[rate_limit.upload]
+requests = 30
+window_secs = 60
+```
+
+peryx verifies a presented credential through the driver that owns the route. Credentials resolving to the same named
+principal share one bucket per route class, including after a Basic username or bearer change. Invalid and anonymous
+credentials share the source-address bucket. A client cannot allocate fresh buckets by rotating invalid credentials.
+
+peryx prefers socket peer metadata over forwarding headers. Configure your proxy to pass a trusted client address.
+Without peer metadata, peryx tries `X-Forwarded-For` before `X-Real-IP`.
+
 ## Keep a secret out of the config file
 
 Every secret key has a `_file` sibling that names a path to read the value from, so the config file holds no plaintext:

@@ -42,23 +42,36 @@ fn bench_serve(criterion: &mut Criterion) {
     for (name, rate_limit) in [("disabled", RateLimitConfig::default()), ("enabled", enabled_limits())] {
         let (_dir, state) = cached(rate_limit, &detail);
         let app = router(state);
-        runtime.block_on(serve(app.clone(), "/pypi/simple/flask/", JSON));
+        runtime.block_on(serve(app.clone(), "/pypi/simple/flask/", JSON, None));
         group.bench_with_input(BenchmarkId::new("simple_json", name), &app, |bencher, app| {
             bencher
                 .to_async(&runtime)
-                .iter(|| serve(app.clone(), "/pypi/simple/flask/", JSON));
+                .iter(|| serve(app.clone(), "/pypi/simple/flask/", JSON, None));
         });
         group.bench_with_input(BenchmarkId::new("simple_html", name), &app, |bencher, app| {
             bencher
                 .to_async(&runtime)
-                .iter(|| serve(app.clone(), "/pypi/simple/flask/", HTML));
+                .iter(|| serve(app.clone(), "/pypi/simple/flask/", HTML, None));
         });
         group.bench_with_input(BenchmarkId::new("legacy_json", name), &app, |bencher, app| {
             bencher
                 .to_async(&runtime)
-                .iter(|| serve(app.clone(), "/pypi/flask/json", JSON));
+                .iter(|| serve(app.clone(), "/pypi/flask/json", JSON, None));
         });
     }
+    let (_dir, state) = cached(enabled_limits(), &detail);
+    let app = router(state);
+    let authorization = Some("Basic cGlwOnNlY3JldA==");
+    runtime.block_on(serve(app.clone(), "/pypi/simple/flask/", JSON, authorization));
+    group.bench_with_input(
+        BenchmarkId::new("simple_json", "enabled_authenticated"),
+        &app,
+        |bencher, app| {
+            bencher
+                .to_async(&runtime)
+                .iter(|| serve(app.clone(), "/pypi/simple/flask/", JSON, authorization));
+        },
+    );
     group.finish();
 }
 
@@ -99,7 +112,7 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
                 offline: false,
             },
             policy: Policy::default(),
-            acl: IndexAcl::default(),
+            acl: IndexAcl::upload_token("secret"),
         }],
         Arc::new(|| 1000),
         rate_limit,
@@ -116,12 +129,15 @@ const fn enabled_limits() -> RateLimitConfig {
     }
 }
 
-async fn serve(app: axum::Router, uri: &str, accept: &str) {
-    let request = Request::builder()
-        .uri(uri)
-        .header("accept", accept)
-        .body(Body::empty())
-        .unwrap();
+async fn serve(app: axum::Router, uri: &str, accept: &str, authorization: Option<&str>) {
+    let request = Request::builder().uri(uri).header("accept", accept);
+    let request = if let Some(authorization) = authorization {
+        request.header("authorization", authorization)
+    } else {
+        request
+    }
+    .body(Body::empty())
+    .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let _ = response.into_body().collect().await.unwrap().to_bytes();
