@@ -39,18 +39,24 @@ pub async fn pypi_dispatch_get(
     rest: &str,
     uri: axum::http::Uri,
     headers: HeaderMap,
+    head: bool,
 ) -> Response {
-    pypi_get(&state, position, rest, &headers, &uri).await
+    pypi_get(&state, position, rest, &headers, &uri, head).await
 }
 
 /// `PyPI` GET routing within an index: the Simple index and project detail (HTML, PEP 691 JSON, legacy
 /// JSON), release files, and archive inspection.
+///
+/// Only the file route reads `head`. Everywhere else the answer is a page peryx has to produce anyway
+/// to know its status, and axum drops the body of it; a file is the one representation whose body costs
+/// an upstream download.
 async fn pypi_get(
     state: &Arc<ServingState>,
     position: usize,
     rest: &str,
     headers: &HeaderMap,
     uri: &axum::http::Uri,
+    head: bool,
 ) -> Response {
     let index = state.index_at(position);
     match legacy_json_target(rest) {
@@ -141,7 +147,7 @@ async fn pypi_get(
         return detail_response(detail, &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
-        return file_route(state, index, file, headers).await;
+        return file_route(state, index, file, headers, head).await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
         return inspect_route(state.clone(), index.route.clone(), target, uri.query()).await;
@@ -162,7 +168,7 @@ fn simple_slash_redirect(uri: &axum::http::Uri, rest: &str, canonical_tail: &str
     (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, location)], "").into_response()
 }
 
-async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, headers: &HeaderMap) -> Response {
+async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, headers: &HeaderMap, head: bool) -> Response {
     let route = index.route.clone();
     let Some((sha256, raw_filename)) = file.split_once('/') else {
         return not_found();
@@ -211,6 +217,17 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
         return response;
     }
     let range = applicable_range(headers, &etag);
+    if head {
+        return head_blob(
+            state,
+            &route,
+            &filename,
+            &digest,
+            range,
+            &etag,
+            conditional_date(headers),
+        );
+    }
     serve_blob(state, route, &filename, digest, range, &etag, conditional_date(headers)).await
 }
 
@@ -316,6 +333,87 @@ fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> 
     }))
 }
 
+/// What every representation of an artifact carries, whatever the method and whatever the store holds.
+const fn blob_headers(etag: &str) -> [(header::HeaderName, &str); 4] {
+    [
+        (header::CONTENT_TYPE, "application/octet-stream"),
+        (header::CACHE_CONTROL, IMMUTABLE),
+        (header::ACCEPT_RANGES, "bytes"),
+        (header::ETAG, etag),
+    ]
+}
+
+/// Answer a file `HEAD` with the headers of the `GET` it stands for and no body.
+///
+/// Nothing here opens the artifact or asks upstream for it, which is the point: a probe of an uncached
+/// wheel used to start the whole download — hashed, written, and paid for in bandwidth — for a client
+/// that cannot receive a byte of it.
+///
+/// A cached blob answers a `Range` the way the matching `GET` does. An uncached one has no seekable
+/// body behind it, so its `GET` streams the whole representation and ignores the `Range`; the `HEAD`
+/// says the same. Its `Content-Length` is the size the index page registered, and is omitted when the
+/// page carried none: an uncached artifact's length is not peryx's to invent.
+fn head_blob(
+    state: &Arc<ServingState>,
+    route: &str,
+    filename: &str,
+    digest: &Digest,
+    range: Option<&str>,
+    etag: &str,
+    since: Option<&str>,
+) -> Response {
+    let probe = match cache::probe_file(state, digest) {
+        Ok(probe) => probe,
+        Err(err) => return cache_error_response(&err, CacheContext::file(route, digest.as_str(), filename)),
+    };
+    let (status, length, content_range, modified) = match probe {
+        cache::FileProbe::Cached(size, stored) => {
+            let modified = stored.map(|stored| last_modified(stored, SystemTime::now()));
+            // The condition outranks the range, as it does for the GET this describes.
+            if let Some(modified) = modified
+                && since.is_some_and(|field| if_modified_since(field, modified))
+            {
+                return unchanged(etag, Some(modified));
+            }
+            match range.map_or(RangeSpec::Ignore, |value| parse_range(value, size)) {
+                RangeSpec::Ignore => (StatusCode::OK, Some(size), None, modified),
+                RangeSpec::Unsatisfiable => return unsatisfiable_range(size),
+                RangeSpec::Satisfiable(start, end) => (
+                    StatusCode::PARTIAL_CONTENT,
+                    Some(end - start + 1),
+                    Some(format!("bytes {start}-{end}/{size}")),
+                    modified,
+                ),
+            }
+        }
+        // An uncached blob has no write to date, the way the teed GET has none to state.
+        cache::FileProbe::Upstream(size) => (StatusCode::OK, size, None, None),
+    };
+    let mut builder = Response::builder().status(status);
+    for (name, value) in blob_headers(etag) {
+        builder = builder.header(name, value);
+    }
+    if let Some(modified) = modified {
+        builder = builder.header(header::LAST_MODIFIED, http_date(modified));
+    }
+    if let Some(length) = length {
+        builder = builder.header(header::CONTENT_LENGTH, length);
+    }
+    if let Some(content_range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
+    }
+    // An empty body has an exact size, so hyper would infer `Content-Length: 0` and tell the client
+    // the artifact holds nothing. A stream has no size to infer, which leaves the length the header
+    // above states, or none when the index page published none, the way the teed GET answers.
+    let body = length.map_or_else(
+        || axum::body::Body::from_stream(futures_util::stream::empty::<Result<bytes::Bytes, std::io::Error>>()),
+        |_| axum::body::Body::empty(),
+    );
+    builder
+        .body(body)
+        .expect("head response builds from validated header parts")
+}
+
 /// Stream a blob to the client: from disk when cached, teed from the upstream cache otherwise.
 ///
 /// A cached blob honors a single-range request, which is how pip resumes an interrupted wheel
@@ -336,12 +434,7 @@ async fn serve_blob(
     since: Option<&str>,
 ) -> Response {
     let digest_hex = digest.as_str().to_owned();
-    let blob_headers = [
-        (header::CONTENT_TYPE, "application/octet-stream"),
-        (header::CACHE_CONTROL, IMMUTABLE),
-        (header::ACCEPT_RANGES, "bytes"),
-        (header::ETAG, etag),
-    ];
+    let blob_headers = blob_headers(etag);
     match cache::stream_file(state.clone(), digest, route.clone(), filename.to_owned()).await {
         Ok(cache::FileOutcome::Cached(path)) => {
             let Ok(file) = tokio::fs::File::open(&path).await else {

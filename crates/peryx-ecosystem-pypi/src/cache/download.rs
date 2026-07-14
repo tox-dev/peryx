@@ -58,6 +58,42 @@ pub async fn file_path(
     Ok(state.blobs.path_for(&digest))
 }
 
+/// What a file is, told without reading a byte of it.
+pub enum FileProbe {
+    /// The blob is on disk, this long, written at this time when the store can say.
+    Cached(u64, Option<std::time::SystemTime>),
+    /// Fetchable from upstream, of the size the index page that registered it advertised, if any.
+    Upstream(Option<u64>),
+}
+
+/// Answer what can be known about a file without its bytes: whether it is served at all, and how long
+/// it is.
+///
+/// A `HEAD` is built from this, so it stops where [`stream_file`] would open an upstream connection.
+///
+/// The size of an uncached file is whatever the index page recorded (PEP 700 `size`), so an index that
+/// publishes none leaves it unknown. Asking upstream for it would trade the body fetch this exists to
+/// avoid for a smaller one, and a `HEAD` may omit a `Content-Length` it cannot state truthfully.
+///
+/// # Errors
+/// Returns [`CacheError::FileNotFound`] if the digest has no known source, [`CacheError::OfflineMissing`]
+/// if the index it came from is offline, or another error on a store failure.
+pub fn probe_file(state: &ServingState, digest: &Digest) -> Result<FileProbe, CacheError> {
+    // One stat answers "is it cached", sizes it, and dates it, where the streaming path needs the
+    // handle too. The date is what a `GET` of the same blob validates on, so a `HEAD` states it too.
+    if let Ok(blob) = std::fs::metadata(state.blobs.path_for(digest)) {
+        return Ok(FileProbe::Cached(blob.len(), blob.modified().ok()));
+    }
+    let source = state
+        .meta
+        .get_file_url(digest.as_str())?
+        .ok_or(CacheError::FileNotFound)?;
+    if source_mirror(state, &source.source)?.1 {
+        return Err(CacheError::OfflineMissing("file"));
+    }
+    Ok(FileProbe::Upstream(source.size))
+}
+
 /// How a file download gets its bytes.
 pub enum FileOutcome {
     /// The blob is on disk; stream it from there.

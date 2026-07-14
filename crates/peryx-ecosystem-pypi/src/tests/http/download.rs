@@ -512,6 +512,157 @@ async fn test_if_range_without_a_range_is_ignored() {
     assert!(!headers.contains_key(header::CONTENT_RANGE));
     assert_eq!(body, WHEEL);
 }
+/// Register the wheel's upstream URL from an index page, with the size that page publishes, and refuse
+/// to serve its bytes: anything that reaches for the body fails the mock's expectation.
+async fn uncached_wheel_uri(h: &Harness, published_size: Option<usize>) -> String {
+    let digest = Digest::of(WHEEL);
+    let size = published_size.map_or_else(String::new, |size| format!(",\"size\":{size}"));
+    let detail = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{}/files/flask.whl\",\
+         \"hashes\":{{\"sha256\":\"{}\"}}{size}}}]}}",
+        h.server.uri(),
+        digest.as_str()
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(detail.into_bytes(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(WHEEL.to_vec()))
+        .expect(0)
+        .mount(&h.server)
+        .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await; // registers the file url
+    format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str())
+}
+
+/// An offline mirror serves what it has cached, so a `HEAD` of a blob it never cached says so rather
+/// than promising bytes no fetch is allowed to go and get.
+#[tokio::test]
+async fn test_head_of_an_uncached_file_on_an_offline_mirror_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let digest = Digest::of(WHEEL);
+    crate::store::PypiStore::put_file_url(&meta, digest.as_str(), "https://files.example/flask.whl", "pypi").unwrap();
+    let indexes = vec![Index {
+        name: "pypi".to_owned(),
+        route: "pypi".to_owned(),
+        ecosystem: peryx_core::Ecosystem::Pypi,
+        kind: IndexKind::Cached {
+            client: UpstreamClient::new("https://files.example/simple/").unwrap(),
+            offline: true,
+        },
+        policy: Policy::default(),
+        acl: IndexAcl::default(),
+    }];
+    let state = crate::tests::wired(AppState::new(
+        meta,
+        BlobStore::new(dir.path().join("blobs")),
+        60,
+        indexes,
+    ));
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+
+    let (status, _, body) = send_bytes(&state, "HEAD", &uri, &[]).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn test_head_of_an_uncached_file_never_fetches_the_artifact() {
+    let h = harness().await;
+    let uri = uncached_wheel_uri(&h, None).await;
+
+    let (status, _, body) = send_bytes(&h.state, "HEAD", &uri, &[]).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_empty());
+    assert!(!h.state.blobs.exists(&Digest::of(WHEEL)));
+}
+#[tokio::test]
+async fn test_head_of_an_uncached_file_carries_the_headers_of_its_download() {
+    let h = harness().await;
+    let uri = uncached_wheel_uri(&h, None).await;
+
+    let (_, headers, _) = send_bytes(&h.state, "HEAD", &uri, &[]).await;
+
+    assert_eq!(headers[header::CONTENT_TYPE], "application/octet-stream");
+    assert_eq!(headers[header::ETAG], wheel_etag());
+    assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(headers[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
+}
+#[tokio::test]
+async fn test_head_of_an_uncached_file_states_the_length_its_index_page_published() {
+    let h = harness().await;
+    let uri = uncached_wheel_uri(&h, Some(WHEEL.len())).await;
+
+    let (_, headers, _) = send_bytes(&h.state, "HEAD", &uri, &[]).await;
+
+    assert_eq!(headers[header::CONTENT_LENGTH], WHEEL.len().to_string());
+}
+#[tokio::test]
+async fn test_head_of_an_uncached_file_omits_a_length_no_index_page_published() {
+    let h = harness().await;
+    let uri = uncached_wheel_uri(&h, None).await;
+
+    let (_, headers, _) = send_bytes(&h.state, "HEAD", &uri, &[]).await;
+
+    assert!(!headers.contains_key(header::CONTENT_LENGTH));
+}
+// An uncached file is teed from upstream, and its GET serves the whole representation rather than slice
+// a body it cannot seek. The HEAD promises what that GET delivers.
+#[tokio::test]
+async fn test_head_of_an_uncached_file_answers_a_range_with_the_whole_representation() {
+    let h = harness().await;
+    let uri = uncached_wheel_uri(&h, Some(WHEEL.len())).await;
+
+    let (status, headers, _) = send_bytes(&h.state, "HEAD", &uri, &[("range", "bytes=2-5")]).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::CONTENT_RANGE));
+    assert_eq!(headers[header::CONTENT_LENGTH], WHEEL.len().to_string());
+}
+#[tokio::test]
+async fn test_head_of_a_file_no_index_registered_is_not_found() {
+    let h = harness().await;
+    let uri = format!(
+        "/pypi/files/{}/flask-1.0-py3-none-any.whl",
+        Digest::of(b"unknown").as_str()
+    );
+
+    let (status, _, body) = send_bytes(&h.state, "HEAD", &uri, &[]).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.is_empty());
+}
+#[rstest]
+#[case::whole(&[])]
+#[case::ranged(&[("range", "bytes=2-5")])]
+#[case::unsatisfiable(&[("range", "bytes=99-100")])]
+#[case::not_modified(&[("if-modified-since", "Fri, 31 Dec 2100 23:59:59 GMT")])]
+#[case::modified(&[("if-modified-since", "Tue, 15 Nov 1994 08:12:31 GMT")])]
+#[case::not_modified_over_a_range(&[
+    ("if-modified-since", "Fri, 31 Dec 2100 23:59:59 GMT"),
+    ("range", "bytes=2-5"),
+])]
+#[tokio::test]
+async fn test_head_of_a_cached_file_answers_what_its_get_would(#[case] extra_headers: &[(&str, &str)]) {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+
+    let (status, headers, body) = send_bytes(&h.state, "HEAD", &uri, extra_headers).await;
+    let (get_status, get_headers, _) = get_bytes_with_headers(&h.state, &uri, extra_headers).await;
+
+    assert_eq!(status, get_status);
+    assert_eq!(headers, get_headers);
+    assert!(body.is_empty());
+}
 #[tokio::test]
 async fn test_file_path_without_filename_is_not_found() {
     let h = harness().await;

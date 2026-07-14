@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::{Multipart, OriginalUri, Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::discover::index_api;
@@ -56,9 +56,13 @@ fn driver_for<'a>(state: &'a AppState, path: &str) -> Result<&'a Arc<dyn Ecosyst
 /// own endpoints, not an ecosystem's wire protocol, so they are served here for every ecosystem. The
 /// index is resolved once and its position handed to the driver, so a wire-protocol request pays for a
 /// single route lookup.
+///
+/// axum routes a `HEAD` to the `GET` handler and strips the body from what comes back, so the method
+/// travels to the driver: only the driver can answer a `HEAD` without first producing bytes nobody reads.
 pub async fn dispatch_get(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
+    method: Method,
     headers: HeaderMap,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
@@ -74,7 +78,9 @@ pub async fn dispatch_get(
                 Err(reason) => return reason.response(),
             };
             let rest = rest.to_owned();
-            serving.get(state.serving.clone(), position, rest, uri, headers).await
+            serving
+                .get(state.serving.clone(), position, rest, uri, headers, method)
+                .await
         }
     }
 }

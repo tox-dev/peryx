@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::Multipart;
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::Ecosystem;
 use peryx_core::Role;
@@ -212,8 +212,9 @@ impl EcosystemDriver for PypiServing {
         rest: String,
         uri: Uri,
         headers: HeaderMap,
+        method: Method,
     ) -> Response {
-        pypi_dispatch_get(state, position, &rest, uri, headers).await
+        pypi_dispatch_get(state, position, &rest, uri, headers, method == Method::HEAD).await
     }
 
     async fn post(&self, state: Arc<ServingState>, path: String, headers: HeaderMap, multipart: Multipart) -> Response {
