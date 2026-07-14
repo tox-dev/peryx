@@ -108,12 +108,11 @@ fn test_prepare_rejects_metadata_field_mismatches() {
 #[test]
 fn test_prepare_accepts_matching_metadata_form_fields() {
     let bytes = wheel_metadata_bytes(
-        b"Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense: MIT\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
+        b"Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
     );
     let (_dir, staged) = staged_upload(&bytes);
     let mut form = staged_form(&bytes);
-    form.metadata_version = Some("2.1".to_owned());
-    form.license = Some("MIT".to_owned());
+    form.metadata_version = Some("2.4".to_owned());
     form.license_expression = Some("MIT".to_owned());
     form.license_files.push("LICENSE".to_owned());
     form.provides_extra.push("cli".to_owned());
@@ -183,6 +182,18 @@ fn test_prepare_accepts_valid_project_url(#[case] label: &str, #[case] url: &str
     );
 }
 
+#[test]
+fn test_prepare_rejects_conflicting_license_fields() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nLicense: legacy\nLicense-Expression: MIT\n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::ConflictingLicenseFields
+    );
+}
 #[test]
 fn test_prepare_rejects_invalid_requires_python_and_clock() {
     let wheel = wheel_metadata("Flask", "1.0");

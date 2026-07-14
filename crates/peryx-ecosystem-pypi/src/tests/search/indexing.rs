@@ -186,7 +186,6 @@ async fn test_search_indexes_metadata_field_lists_and_long_text() {
              Version: 1.0\n\
              Summary: metadata fields\n\
              Requires-Python: >=3.11\n\
-             License: MIT\n\
              License-Expression: MIT\n\
              Author: Ada Lovelace\n\
              Maintainer: Release Team\n\

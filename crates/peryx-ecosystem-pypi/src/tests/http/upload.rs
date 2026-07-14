@@ -637,11 +637,10 @@ async fn test_upload_metadata_form_fields_are_validated() {
     let h = harness().await;
     let fields = vec![
         (":action", "file_upload"),
-        ("metadata_version", "2.1"),
+        ("metadata_version", "2.4"),
         ("name", "peryxpkg"),
         ("version", "1.0"),
         ("requires_python", ">=3.8"),
-        ("license", "MIT"),
         ("license_expression", "MIT"),
         ("license_file", "LICENSE"),
         ("provides_extra", "cli"),
@@ -650,7 +649,7 @@ async fn test_upload_metadata_form_fields_are_validated() {
         ("filetype", "bdist_wheel"),
     ];
     let wheel = fixture_wheel_with_metadata(
-        b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense: MIT\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
+        b"Metadata-Version: 2.4\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
     );
     let (content_type, body) = multipart_body(&fields, Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)));
     assert_eq!(
@@ -659,13 +658,51 @@ async fn test_upload_metadata_form_fields_are_validated() {
     );
 
     let mut fields = fields;
-    fields[6] = ("license_expression", "Apache-2.0");
+    fields[5] = ("license_expression", "Apache-2.0");
     assert_upload_response(
         &h,
         &fields,
         Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)),
         StatusCode::BAD_REQUEST,
         "metadata License-Expression \"MIT\" does not match upload value \"Apache-2.0\"",
+    )
+    .await;
+}
+#[tokio::test]
+async fn test_upload_rejects_conflicting_license_fields() {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(
+                b"Metadata-Version: 2.4\nName: peryxpkg\nVersion: 1.0\nLicense: legacy\nLicense-Expression: MIT\n",
+            )
+            .as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "metadata License and License-Expression fields are mutually exclusive",
+    )
+    .await;
+}
+#[tokio::test]
+async fn test_upload_accepts_legacy_license_field() {
+    let h = harness().await;
+    let mut fields = upload_fields();
+    fields.extend([("metadata_version", "2.3"), ("license", "MIT")]);
+    assert_upload_response(
+        &h,
+        &fields,
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(
+                b"Metadata-Version: 2.3\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense: MIT\n",
+            )
+            .as_slice(),
+        )),
+        StatusCode::OK,
+        "upload accepted",
     )
     .await;
 }

@@ -201,6 +201,7 @@ fn upload_error_reason(err: &UploadError) -> String {
     match err {
         UploadError::InvalidContent(message) => format!("invalid content: {message}"),
         UploadError::InvalidMetadataUtf8 => "metadata is not UTF-8".to_owned(),
+        UploadError::ConflictingLicenseFields => "metadata contains both License and License-Expression".to_owned(),
         UploadError::InvalidRequiresPython(value) => format!("invalid Requires-Python: {value}"),
         UploadError::MetadataNameMismatch { metadata, form } => {
             format!("metadata name {metadata:?} does not match {form:?}")

@@ -50,12 +50,7 @@ pub fn parse_metadata(text: &str) -> CoreMetadataDoc {
             "summary" => doc.summary = non_empty(value),
             "requires-python" => doc.requires_python = non_empty(value),
             "license" => doc.license = non_empty(value),
-            "license-expression" => {
-                doc.license_expression = non_empty(value);
-                if doc.license.is_none() {
-                    doc.license = doc.license_expression.clone();
-                }
-            }
+            "license-expression" => doc.license_expression = non_empty(value),
             "license-file" => doc.license_files.push(value.to_owned()),
             "author" | "author-email" => doc.author = doc.author.or_else(|| non_empty(value)),
             "maintainer" | "maintainer-email" => doc.maintainer = doc.maintainer.or_else(|| non_empty(value)),
@@ -115,10 +110,10 @@ impl CoreMetadataDoc {
 
         let mut blocks = Vec::new();
         for (label, value) in [
-            ("Requires Python", &self.requires_python),
-            ("License", &self.license),
-            ("Author", &self.author),
-            ("Maintainer", &self.maintainer),
+            ("Requires Python", self.requires_python.as_ref()),
+            ("License", self.license_expression.as_ref().or(self.license.as_ref())),
+            ("Author", self.author.as_ref()),
+            ("Maintainer", self.maintainer.as_ref()),
         ] {
             if let Some(value) = value {
                 blocks.push(UiBlock::KeyValue {

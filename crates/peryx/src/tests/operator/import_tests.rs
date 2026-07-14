@@ -150,6 +150,15 @@ fn test_import_dir_reports_metadata_validation_reasons() {
         wheel_with_identity("VersionMismatch", "1.0", "VersionMismatch", "2.0", ">=3.8"),
     )
     .unwrap();
+    std::fs::write(
+        import.join("LicenseConflict-1.0-py3-none-any.whl"),
+        wheel_with_metadata(
+            "LicenseConflict",
+            "1.0",
+            b"Metadata-Version: 2.4\nName: LicenseConflict\nVersion: 1.0\nLicense: legacy\nLicense-Expression: MIT\n",
+        ),
+    )
+    .unwrap();
     let config = Config {
         data_dir: root.path().join("data"),
         ..Config::default()
@@ -163,6 +172,9 @@ fn test_import_dir_reports_metadata_validation_reasons() {
     assert!(text.contains("NameMismatch-1.0-py3-none-any.whl\tnamemismatch\t1.0\tmetadata name"));
     assert!(text.contains("Utf8-1.0-py3-none-any.whl\tutf8\t1.0\tmetadata is not UTF-8"));
     assert!(text.contains("VersionMismatch-1.0-py3-none-any.whl\tversionmismatch\t1.0\tmetadata version"));
+    assert!(text.contains(
+        "LicenseConflict-1.0-py3-none-any.whl\tlicenseconflict\t1.0\tmetadata contains both License and License-Expression"
+    ));
 }
 
 #[test]

@@ -96,6 +96,8 @@ pub enum UploadError {
     InvalidMetadataUtf8,
     /// `Project-URL` did not contain a 1-32 character label and an HTTP(S) URL.
     InvalidProjectUrl { label: String, url: String },
+    /// The metadata document contained both `License` and `License-Expression`.
+    ConflictingLicenseFields,
     /// The metadata project name does not match the upload form.
     MetadataNameMismatch { metadata: String, form: String },
     /// The metadata version does not match the upload form.
@@ -400,6 +402,9 @@ fn validate_metadata_identity(
             metadata: metadata_version.to_string(),
             form: parsed_version.to_string(),
         });
+    }
+    if metadata.license.is_some() && metadata.license_expression.is_some() {
+        return Err(UploadError::ConflictingLicenseFields);
     }
     compare_metadata_field(
         "Metadata-Version",
