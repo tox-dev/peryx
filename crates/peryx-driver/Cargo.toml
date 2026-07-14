@@ -21,6 +21,7 @@ axum = { workspace = true, features = ["multipart"] }
 toml.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+ipnet.workspace = true
 moka = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true

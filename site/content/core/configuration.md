@@ -313,17 +313,25 @@ Rate limits are local to one peryx process and disabled by default. When `enable
 bounded in-memory buckets; restarting the process clears the buckets. `max_clients` caps the number of client/class
 buckets kept in memory. Set a class `requests` or `window_secs` to `0` to disable that class limit.
 
-peryx hashes a named principal with a process-random seed and stores neither the credential nor the principal name;
-invalid credentials and routes without an authentication driver use the peer IP. In tests and deployments without socket
-peer metadata, peryx tries `X-Forwarded-For` before `X-Real-IP`. peryx uses `127.0.0.1` when neither header exists.
+peryx hashes a named principal with a process-random seed and stores neither the credential nor the principal name.
+Invalid credentials and routes without an authentication driver use the socket peer IP. Without socket metadata, peryx
+uses `127.0.0.1` and ignores forwarding headers.
+
+Set `trusted_proxies` to the reverse-proxy networks from which peryx accepts client addresses. For a matching socket
+peer, peryx scans `X-Forwarded-For` from the nearest hop and selects the first address outside the trusted networks. If
+the header is absent, peryx accepts one `X-Real-IP` value. Peryx uses the socket peer when the trusted suffix is
+malformed or the chain contains trusted addresses throughout. It treats IPv4-mapped IPv6 addresses as their IPv4
+equivalents. Leave the list empty for direct deployments. Exclude client networks and intermediaries that accept
+caller-supplied forwarding headers.
 
 Clients can change a Basic username or bearer value without changing buckets when both values resolve to the same
 principal. peryx groups rotated invalid `Authorization` values under the peer IP.
 
-| Key           | Meaning                                     | Default |
-| ------------- | ------------------------------------------- | ------- |
-| `enabled`     | Install the HTTP request limiter            | `false` |
-| `max_clients` | Maximum client/class buckets kept in memory | `8192`  |
+| Setting           | Meaning                                              | Default |
+| ----------------- | ---------------------------------------------------- | ------- |
+| `enabled`         | Install the HTTP request limiter                     | `false` |
+| `max_clients`     | Maximum client/class buckets kept in memory          | `8192`  |
+| `trusted_proxies` | IPv4 and IPv6 networks allowed to set client headers | `[]`    |
 
 Each route class is a sub-table with `requests` and `window_secs`:
 
@@ -348,6 +356,7 @@ Example:
 [rate_limit]
 enabled = true
 max_clients = 4096
+trusted_proxies = ["127.0.0.1/32", "10.42.0.0/16"]
 
 [rate_limit.listing]
 requests = 300

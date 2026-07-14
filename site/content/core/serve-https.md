@@ -55,6 +55,33 @@ If a load balancer, ingress controller, or reverse proxy ([nginx](https://nginx.
 terminate TLS, forwarding plain HTTP to peryx on a private network. A clustered deployment usually takes this shape, and
 it needs no peryx TLS config.
 
+For a rate-limited deployment, configure the proxy addresses that may supply the client IP. The nginx configuration
+below runs on the same host as peryx, removes any forwarding chain sent by the caller, and writes the address nginx
+accepted:
+
+```nginx
+location / {
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_pass http://127.0.0.1:4433;
+}
+```
+
+Configure that loopback peer in `peryx.toml`:
+
+```toml
+[rate_limit]
+enabled = true
+trusted_proxies = ["127.0.0.1/32"]
+```
+
+For an internal proxy chain, the edge must overwrite the caller's forwarding fields and each later proxy must append its
+immediate peer. Add the internal proxy networks to `trusted_proxies`. Keep client networks out. Peryx walks the chain
+from the nearest proxy and uses the first address outside those networks. Keep peryx unreachable from outside the
+private network so clients cannot bypass the TLS proxy.
+
 ## Point clients at HTTPS
 
 Once peryx serves HTTPS with a trusted certificate, drop the `http://` for `https://` and remove any insecure flag:

@@ -313,12 +313,15 @@ impl LogConfig {
     }
 }
 
-const fn apply_rate_limit(mut base: RateLimitConfig, partial: PartialRateLimitConfig) -> RateLimitConfig {
+fn apply_rate_limit(mut base: RateLimitConfig, partial: PartialRateLimitConfig) -> RateLimitConfig {
     if let Some(enabled) = partial.enabled {
         base.enabled = enabled;
     }
     if let Some(max_clients) = partial.max_clients {
         base.max_clients = max_clients;
+    }
+    if let Some(trusted_proxies) = partial.trusted_proxies {
+        base.trusted_proxies = trusted_proxies;
     }
     base.listing = apply_route_limit(base.listing, partial.listing);
     base.metadata = apply_route_limit(base.metadata, partial.metadata);

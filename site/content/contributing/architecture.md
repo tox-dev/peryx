@@ -508,7 +508,11 @@ identity crate.
 index position for an indexed mount and the driver's protection space for an absolute mount. Return a verified
 `Principal`; the limiter hashes its named subject with a process-random `RandomState` and stores no identity. Invalid
 and anonymous credentials share an address bucket. Keep protocol parsing and signature checks in the driver.
-`RateLimiter` contains the bucket state and IP fallback.
+`RateLimiter` contains the bucket state and address resolution. Require socket metadata from a configured trusted proxy
+before accepting forwarding headers. Walk `X-Forwarded-For` from the nearest hop and stop at the first address outside
+the trusted networks; ignore values farther toward the client. Use the local or socket-peer identity when metadata is
+missing or the trusted suffix is unusable. Preserve the empty-list fast path and parse configured CIDRs before requests
+arrive.
 
 {% mermaid() %}
 flowchart TD

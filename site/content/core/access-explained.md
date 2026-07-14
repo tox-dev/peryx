@@ -32,6 +32,19 @@ peryx asks the driver that owns the route to verify the credential; after accept
 with a process-random seed and groups invalid or anonymous traffic by client IP, storing neither the credential nor the
 principal name in the bounded bucket cache.
 
+A caller can put any client address in a forwarding header, much as a caller can put an identity in `Authorization`.
+Accepting that address without a trusted intermediary would let the caller rotate buckets. Behind a reverse proxy,
+relying on the socket peer makes every anonymous client share the proxy's bucket.
+
+peryx requires the socket peer to match `[rate_limit].trusted_proxies` before it accepts forwarding headers. It walks
+`X-Forwarded-For` from the proxy end and selects the first address outside the trusted networks. Addresses farther
+toward the client came through an untrusted hop and cannot change the result. If the trusted suffix is malformed, peryx
+uses the socket peer to avoid a forged address. It treats IPv4-mapped IPv6 addresses as their IPv4 equivalents.
+
+[RFC 7239 section 8.1](https://www.rfc-editor.org/rfc/rfc7239.html#section-8.1) describes why forwarding fields need a
+configured trust boundary. [Nginx's real-IP module](https://nginx.org/en/docs/http/ngx_http_realip_module.html) uses the
+same nearest-untrusted-hop rule with recursive processing.
+
 [RFC 9110 section 11.6.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-11.6.2) defines `Authorization` as
 credentials that let a user agent authenticate. [Section 11.4](https://www.rfc-editor.org/rfc/rfc9110.html#section-11.4)
 classifies invalid credentials as an authentication failure. Kubernetes

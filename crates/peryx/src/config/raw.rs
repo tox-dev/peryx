@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use ipnet::IpNet;
 use peryx_identity::Action;
 use peryx_policy::PolicyConfig;
 use serde::Deserialize;
@@ -204,11 +205,12 @@ pub struct PartialLogConfig {
 }
 
 /// The rate-limit half of [`PartialConfig`].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PartialRateLimitConfig {
     pub enabled: Option<bool>,
     pub max_clients: Option<u64>,
+    pub trusted_proxies: Option<Vec<IpNet>>,
     pub listing: PartialRouteLimit,
     pub metadata: PartialRouteLimit,
     pub artifact: PartialRouteLimit,

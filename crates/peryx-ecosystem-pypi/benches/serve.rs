@@ -6,9 +6,11 @@
 #[path = "support/detail.rs"]
 mod detail;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::Request;
 use http_body_util::BodyExt as _;
@@ -72,6 +74,18 @@ fn bench_serve(criterion: &mut Criterion) {
                 .iter(|| serve(app.clone(), "/pypi/simple/flask/", JSON, authorization));
         },
     );
+    let (_dir, state) = cached(trusted_proxy_limits(), &detail);
+    let app = router(state);
+    runtime.block_on(serve_from_proxy(app.clone(), "/pypi/simple/flask/", JSON));
+    group.bench_with_input(
+        BenchmarkId::new("simple_json", "enabled_trusted_proxy"),
+        &app,
+        |bencher, app| {
+            bencher
+                .to_async(&runtime)
+                .iter(|| serve_from_proxy(app.clone(), "/pypi/simple/flask/", JSON));
+        },
+    );
     group.finish();
 }
 
@@ -122,10 +136,17 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
     (dir, Arc::new(state))
 }
 
-const fn enabled_limits() -> RateLimitConfig {
+fn enabled_limits() -> RateLimitConfig {
     RateLimitConfig {
         listing: RouteLimit::new(u64::MAX, 60),
         ..RateLimitConfig::enabled_defaults()
+    }
+}
+
+fn trusted_proxy_limits() -> RateLimitConfig {
+    RateLimitConfig {
+        trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
+        ..enabled_limits()
     }
 }
 
@@ -138,6 +159,23 @@ async fn serve(app: axum::Router, uri: &str, accept: &str, authorization: Option
     }
     .body(Body::empty())
     .unwrap();
+    send(app, request).await;
+}
+
+async fn serve_from_proxy(app: axum::Router, uri: &str, accept: &str) {
+    let mut request = Request::builder()
+        .uri(uri)
+        .header("accept", accept)
+        .header("x-forwarded-for", "192.0.2.1")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))));
+    send(app, request).await;
+}
+
+async fn send(app: axum::Router, request: Request<Body>) {
     let response = app.oneshot(request).await.unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let _ = response.into_body().collect().await.unwrap().to_bytes();

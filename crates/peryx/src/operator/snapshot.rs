@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use ipnet::IpNet;
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use peryx_identity::Action;
@@ -32,7 +33,7 @@ struct SnapshotConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     acme: Option<SnapshotAcme<'a>>,
     log: SnapshotLog<'a>,
-    rate_limit: SnapshotRateLimit,
+    rate_limit: SnapshotRateLimit<'a>,
     auth: SnapshotAuth<'a>,
 }
 
@@ -148,9 +149,10 @@ struct SnapshotLog<'a> {
 }
 
 #[derive(Serialize)]
-struct SnapshotRateLimit {
+struct SnapshotRateLimit<'a> {
     enabled: bool,
     max_clients: u64,
+    trusted_proxies: &'a [IpNet],
     listing: SnapshotRouteLimit,
     metadata: SnapshotRouteLimit,
     artifact: SnapshotRouteLimit,
@@ -411,10 +413,11 @@ fn snapshot_tls(tls: Option<&TlsConfig>) -> (Option<SnapshotTls<'_>>, Option<Sna
     }
 }
 
-const fn snapshot_rate_limit(rate_limit: &RateLimitConfig) -> SnapshotRateLimit {
+fn snapshot_rate_limit(rate_limit: &RateLimitConfig) -> SnapshotRateLimit<'_> {
     let RateLimitConfig {
         enabled,
         max_clients,
+        trusted_proxies,
         listing,
         metadata,
         artifact,
@@ -424,6 +427,7 @@ const fn snapshot_rate_limit(rate_limit: &RateLimitConfig) -> SnapshotRateLimit 
     SnapshotRateLimit {
         enabled: *enabled,
         max_clients: *max_clients,
+        trusted_proxies,
         listing: snapshot_route_limit(*listing),
         metadata: snapshot_route_limit(*metadata),
         artifact: snapshot_route_limit(*artifact),

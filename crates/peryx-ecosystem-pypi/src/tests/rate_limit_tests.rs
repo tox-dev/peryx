@@ -1,10 +1,11 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use base64::Engine as _;
 use http_body_util::BodyExt as _;
 use peryx_storage::blob::{BlobStore, Digest};
@@ -36,21 +37,30 @@ async fn harness(rate_limit: RateLimitConfig, upstream_concurrency: usize) -> Ha
 }
 
 async fn request(state: &Arc<AppState>, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, HeaderMap, String) {
+    send(state, get_request(uri, headers)).await
+}
+
+fn get_request(uri: &str, headers: &[(&str, &str)]) -> Request<Body> {
     let mut builder = Request::builder().uri(uri).method("GET");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
-    send(state, builder.body(Body::empty()).unwrap()).await
+    builder.body(Body::empty()).unwrap()
 }
 
 async fn request_with_peer(
     state: &Arc<AppState>,
     uri: &str,
-    peer: std::net::SocketAddr,
+    peer: SocketAddr,
+    headers: &[(&str, &str)],
 ) -> (StatusCode, HeaderMap, String) {
-    let mut request = Request::builder().uri(uri).method("GET").body(Body::empty()).unwrap();
+    let mut request = get_request(uri, headers);
     request.extensions_mut().insert(ConnectInfo(peer));
     send(state, request).await
+}
+
+async fn status_with_peer(state: &Arc<AppState>, peer: SocketAddr, headers: &[(&str, &str)]) -> StatusCode {
+    request_with_peer(state, "/pypi/simple/", peer, headers).await.0
 }
 
 async fn send(state: &Arc<AppState>, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
@@ -66,6 +76,24 @@ fn limit_simple(requests: u64) -> RateLimitConfig {
         listing: RouteLimit::new(requests, 60),
         ..RateLimitConfig::enabled_defaults()
     }
+}
+
+fn limit_simple_with_trusted_proxies(requests: u64, trusted_proxies: &[&str]) -> RateLimitConfig {
+    RateLimitConfig {
+        trusted_proxies: trusted_proxies.iter().map(|network| network.parse().unwrap()).collect(),
+        ..limit_simple(requests)
+    }
+}
+
+async fn trusted_proxy_harness() -> (Harness, SocketAddr) {
+    (
+        harness(
+            limit_simple_with_trusted_proxies(1, &["198.51.100.0/24"]),
+            DEFAULT_UPSTREAM_CONCURRENCY,
+        )
+        .await,
+        "198.51.100.10:5000".parse().unwrap(),
+    )
 }
 
 #[test]
@@ -89,35 +117,205 @@ async fn test_default_rate_limiter_bypasses_requests() {
 }
 
 #[tokio::test]
-async fn test_ip_limit_returns_retry_after_and_separates_clients() {
-    let h = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
+async fn test_trusted_proxy_separates_clients() {
+    let (harness, peer) = trusted_proxy_harness().await;
 
-    let (first, ..) = request(&h.state, "/pypi/simple/", &[("x-forwarded-for", "192.0.2.1")]).await;
-    let (second, headers, body) = request(&h.state, "/pypi/simple/", &[("x-forwarded-for", "192.0.2.1")]).await;
-    let (third, ..) = request(&h.state, "/pypi/simple/", &[("x-forwarded-for", "192.0.2.2")]).await;
+    let first = status_with_peer(&harness.state, peer, &[("x-forwarded-for", "192.0.2.1")]).await;
+    let second = status_with_peer(&harness.state, peer, &[("x-forwarded-for", "192.0.2.1")]).await;
+    let third = status_with_peer(&harness.state, peer, &[("x-forwarded-for", "192.0.2.2")]).await;
 
     assert_eq!(
         (first, second, third),
         (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS, StatusCode::OK)
     );
+}
+
+#[tokio::test]
+async fn test_limit_response_returns_body_and_retry_after() {
+    let (harness, peer) = trusted_proxy_harness().await;
+    status_with_peer(&harness.state, peer, &[("x-forwarded-for", "192.0.2.1")]).await;
+    let (status, headers, body) = request_with_peer(
+        &harness.state,
+        "/pypi/simple/",
+        peer,
+        &[("x-forwarded-for", "192.0.2.1")],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body, "rate limit exceeded");
     let retry_after = headers[header::RETRY_AFTER].to_str().unwrap().parse::<u64>().unwrap();
     assert!((1..=60).contains(&retry_after));
 }
 
 #[tokio::test]
-async fn test_peer_metadata_beats_forwarded_headers() {
-    let h = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
-    let peer = std::net::SocketAddr::from(([192, 0, 2, 10], 5000));
+async fn test_forwarded_headers_without_peer_share_local_bucket() {
+    let harness = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
 
-    let (first, ..) = request_with_peer(&h.state, "/pypi/simple/", peer).await;
-    let (second, ..) = request_with_peer(&h.state, "/pypi/simple/", peer).await;
-    let (third, ..) = request(&h.state, "/pypi/simple/", &[("x-real-ip", "192.0.2.11")]).await;
+    let (first, ..) = request(&harness.state, "/pypi/simple/", &[("x-forwarded-for", "192.0.2.1")]).await;
+    let (second, ..) = request(&harness.state, "/pypi/simple/", &[("x-forwarded-for", "192.0.2.2")]).await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+}
+
+#[tokio::test]
+async fn test_untrusted_peer_ignores_forwarded_headers() {
+    let harness = harness(limit_simple(1), DEFAULT_UPSTREAM_CONCURRENCY).await;
+    let first_peer = SocketAddr::from(([192, 0, 2, 10], 5000));
+    let second_peer = SocketAddr::from(([192, 0, 2, 11], 5000));
+
+    let first = status_with_peer(&harness.state, first_peer, &[("x-forwarded-for", "198.51.100.1")]).await;
+    let second = status_with_peer(&harness.state, first_peer, &[("x-forwarded-for", "198.51.100.2")]).await;
+    let third = status_with_peer(&harness.state, second_peer, &[("x-forwarded-for", "198.51.100.1")]).await;
 
     assert_eq!(
         (first, second, third),
         (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS, StatusCode::OK)
     );
+}
+
+#[tokio::test]
+async fn test_trusted_proxy_uses_nearest_untrusted_forwarded_hop() {
+    let (harness, peer) = trusted_proxy_harness().await;
+
+    let first = status_with_peer(
+        &harness.state,
+        peer,
+        &[("x-forwarded-for", "192.0.2.1, 203.0.113.5, 198.51.100.20")],
+    )
+    .await;
+    let second = status_with_peer(
+        &harness.state,
+        peer,
+        &[("x-forwarded-for", "192.0.2.2, 203.0.113.5, 198.51.100.21")],
+    )
+    .await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+}
+
+#[tokio::test]
+async fn test_trusted_proxy_reads_repeated_forwarded_fields_in_order() {
+    let (harness, peer) = trusted_proxy_harness().await;
+    let first_headers = [
+        ("x-forwarded-for", "192.0.2.1"),
+        ("x-forwarded-for", "203.0.113.5, 198.51.100.20"),
+    ];
+    let second_headers = [
+        ("x-forwarded-for", "192.0.2.2"),
+        ("x-forwarded-for", "203.0.113.5, 198.51.100.21"),
+    ];
+
+    let first = status_with_peer(&harness.state, peer, &first_headers).await;
+    let second = status_with_peer(&harness.state, peer, &second_headers).await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+}
+
+#[rstest::rstest]
+#[case::malformed_suffix("192.0.2.1, invalid, 198.51.100.20", "192.0.2.2, invalid, 198.51.100.20")]
+#[case::trusted_throughout("198.51.100.20, 198.51.100.21", "198.51.100.22")]
+#[tokio::test]
+async fn test_trusted_proxy_falls_back_to_peer_for_unusable_forwarded_chain(
+    #[case] first_header: &str,
+    #[case] second_header: &str,
+) {
+    let (harness, peer) = trusted_proxy_harness().await;
+
+    let first = status_with_peer(
+        &harness.state,
+        peer,
+        &[("x-forwarded-for", first_header), ("x-real-ip", "203.0.113.1")],
+    )
+    .await;
+    let second = status_with_peer(
+        &harness.state,
+        peer,
+        &[("x-forwarded-for", second_header), ("x-real-ip", "203.0.113.2")],
+    )
+    .await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+}
+
+#[tokio::test]
+async fn test_trusted_proxy_rejects_repeated_real_ip_fields() {
+    let (harness, peer) = trusted_proxy_harness().await;
+
+    let first = status_with_peer(
+        &harness.state,
+        peer,
+        &[("x-real-ip", "192.0.2.1"), ("x-real-ip", "192.0.2.2")],
+    )
+    .await;
+    let second = status_with_peer(
+        &harness.state,
+        peer,
+        &[("x-real-ip", "192.0.2.3"), ("x-real-ip", "192.0.2.4")],
+    )
+    .await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+}
+
+#[tokio::test]
+async fn test_trusted_proxy_rejects_non_text_forwarded_field() {
+    let (harness, peer) = trusted_proxy_harness().await;
+    let request = || {
+        let mut request = get_request("/pypi/simple/", &[]);
+        request.extensions_mut().insert(ConnectInfo(peer));
+        request
+            .headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_bytes(&[0xff]).unwrap());
+        request
+    };
+
+    let (first, ..) = send(&harness.state, request()).await;
+    let (second, ..) = send(&harness.state, request()).await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+}
+
+#[tokio::test]
+async fn test_trusted_proxy_canonicalizes_ipv4_mapped_addresses() {
+    let harness = harness(
+        limit_simple_with_trusted_proxies(1, &["198.51.100.0/24"]),
+        DEFAULT_UPSTREAM_CONCURRENCY,
+    )
+    .await;
+    let peer = "[::ffff:198.51.100.10]:5000".parse().unwrap();
+
+    let first = status_with_peer(&harness.state, peer, &[("x-real-ip", "::ffff:192.0.2.1")]).await;
+    let second = status_with_peer(&harness.state, peer, &[("x-real-ip", "192.0.2.2")]).await;
+    let third = status_with_peer(&harness.state, peer, &[("x-real-ip", "192.0.2.1")]).await;
+
+    assert_eq!(
+        (first, second, third),
+        (StatusCode::OK, StatusCode::OK, StatusCode::TOO_MANY_REQUESTS)
+    );
+}
+
+#[rstest::rstest]
+#[case::ipv4("198.51.100.10:5000", "198.51.100.0/24", "192.0.2.1", "192.0.2.2")]
+#[case::ipv6("[2001:db8:1::10]:5000", "2001:db8:1::/64", "2001:db8:2::1", "2001:db8:2::2")]
+#[tokio::test]
+async fn test_trusted_proxy_accepts_real_ip_for_both_address_families(
+    #[case] peer: &str,
+    #[case] trusted_proxy: &str,
+    #[case] first_client: &str,
+    #[case] second_client: &str,
+) {
+    let harness = harness(
+        limit_simple_with_trusted_proxies(1, &[trusted_proxy]),
+        DEFAULT_UPSTREAM_CONCURRENCY,
+    )
+    .await;
+    let peer = peer.parse().unwrap();
+
+    let first = status_with_peer(&harness.state, peer, &[("x-real-ip", first_client)]).await;
+    let second = status_with_peer(&harness.state, peer, &[("x-real-ip", second_client)]).await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::OK));
 }
 
 #[tokio::test]

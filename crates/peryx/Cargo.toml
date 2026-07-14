@@ -50,6 +50,7 @@ axum-server.workspace = true
 rustls-acme.workspace = true
 rustls.workspace = true
 futures-util.workspace = true
+ipnet.workspace = true
 mimalloc.workspace = true
 tokio.workspace = true
 clap.workspace = true

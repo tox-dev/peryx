@@ -85,6 +85,7 @@ file = "/var/log/peryx.log"
 [rate_limit]
 enabled = true
 max_clients = 17
+trusted_proxies = ["127.0.0.1/32", "2001:db8::/32"]
 
 [rate_limit.listing]
 requests = 11

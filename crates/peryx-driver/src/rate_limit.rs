@@ -11,6 +11,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
+use ipnet::IpNet;
 use moka::sync::Cache;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -78,6 +79,7 @@ impl RouteLimit {
 pub struct RateLimitConfig {
     pub enabled: bool,
     pub max_clients: u64,
+    pub trusted_proxies: Vec<IpNet>,
     pub listing: RouteLimit,
     pub metadata: RouteLimit,
     pub artifact: RouteLimit,
@@ -90,6 +92,7 @@ impl Default for RateLimitConfig {
         Self {
             enabled: false,
             max_clients: 8192,
+            trusted_proxies: Vec::new(),
             listing: RouteLimit::new(600, 60),
             metadata: RouteLimit::new(1200, 60),
             artifact: RouteLimit::new(300, 60),
@@ -105,6 +108,7 @@ impl RateLimitConfig {
         Self {
             enabled: true,
             max_clients: 8192,
+            trusted_proxies: Vec::new(),
             listing: RouteLimit::new(600, 60),
             metadata: RouteLimit::new(1200, 60),
             artifact: RouteLimit::new(300, 60),
@@ -459,31 +463,68 @@ impl RateLimiter {
         match principal {
             peryx_identity::Principal::Named { subject } => ActorKey::Token(self.principal_hasher.hash_one(subject)),
             peryx_identity::Principal::Anonymous => {
-                ActorKey::Ip(peer_ip(request).unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+                ActorKey::Ip(self.client_ip(request).unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
             }
         }
     }
-}
 
-fn peer_ip(request: &axum::extract::Request) -> Option<IpAddr> {
-    request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip())
-        .or_else(|| forwarded_ip(request.headers()))
-}
+    fn client_ip(&self, request: &axum::extract::Request) -> Option<IpAddr> {
+        let peer = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()?
+            .0
+            .ip()
+            .to_canonical();
+        if !self.is_trusted_proxy(peer) {
+            return Some(peer);
+        }
+        Some(self.forwarded_client_ip(request.headers()).unwrap_or(peer))
+    }
 
-fn forwarded_ip(headers: &HeaderMap) -> Option<IpAddr> {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').find_map(|part| part.trim().parse().ok()))
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().parse().ok())
-        })
+    fn forwarded_client_ip(&self, headers: &HeaderMap) -> Option<IpAddr> {
+        let forwarded_values = headers.get_all("x-forwarded-for");
+        if forwarded_values.iter().next().is_none() {
+            let mut real_values = headers.get_all("x-real-ip").iter();
+            let real_value = real_values.next()?.to_str().ok()?;
+            if real_values.next().is_some() {
+                return None;
+            }
+            return real_value
+                .trim()
+                .parse::<IpAddr>()
+                .map(|address| address.to_canonical())
+                .ok();
+        }
+
+        let mut client = None;
+        let mut suffix_malformed = false;
+        for forwarded_value in forwarded_values {
+            let Ok(forwarded_value) = forwarded_value.to_str() else {
+                client = None;
+                suffix_malformed = true;
+                continue;
+            };
+            for part in forwarded_value.split(',') {
+                let Ok(address) = part.trim().parse::<IpAddr>().map(|address| address.to_canonical()) else {
+                    client = None;
+                    suffix_malformed = true;
+                    continue;
+                };
+                if !self.is_trusted_proxy(address) {
+                    client = Some(address);
+                    suffix_malformed = false;
+                }
+            }
+        }
+        if suffix_malformed { None } else { client }
+    }
+
+    fn is_trusted_proxy(&self, address: IpAddr) -> bool {
+        self.config
+            .trusted_proxies
+            .iter()
+            .any(|network| network.contains(&address))
+    }
 }
 
 fn limited_response(retry_after: u64) -> Response {

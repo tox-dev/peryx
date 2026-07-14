@@ -37,6 +37,7 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
 http = "1"
 http-body-util = "0.1"
+ipnet = { version = "2.12", features = ["serde"] }
 sha2 = "0.11"
 blake2 = "0.10"
 md-5 = "0.10"

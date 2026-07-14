@@ -99,8 +99,24 @@ peryx verifies a presented credential through the driver that owns the route. Cr
 principal share one bucket per route class, including after a Basic username or bearer change. Invalid and anonymous
 credentials share the source-address bucket. A client cannot allocate fresh buckets by rotating invalid credentials.
 
-peryx prefers socket peer metadata over forwarding headers. Configure your proxy to pass a trusted client address.
-Without peer metadata, peryx tries `X-Forwarded-For` before `X-Real-IP`.
+## Preserve client buckets behind a reverse proxy
+
+List the networks from which peryx accepts proxy connections:
+
+```toml
+[rate_limit]
+enabled = true
+trusted_proxies = ["127.0.0.1/32", "10.42.0.0/16"]
+```
+
+Add proxy addresses and exclude client networks. The edge proxy must replace caller-supplied `X-Forwarded-For`; each
+later trusted proxy appends its own peer. Peryx starts at the socket peer and selects the nearest address outside the
+configured networks. It ignores forwarding headers from direct callers and uses the socket peer when a trusted suffix
+contains malformed input.
+
+Leave `trusted_proxies` empty when clients connect to peryx without a proxy. See
+[serve HTTPS](@/core/serve-https.md#terminate-tls-at-a-reverse-proxy) for an nginx configuration that overwrites the
+client-controlled headers.
 
 ## Keep a secret out of the config file
 
