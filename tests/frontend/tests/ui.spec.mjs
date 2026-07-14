@@ -101,10 +101,22 @@ test("usage stats page lists indexes and drills into one", async ({ page }) => {
   await expect(page.locator(".breadcrumb")).toContainText("root/pypi");
 });
 
-test("project page copies the install snippet and downloads artifacts", async ({ page }) => {
+test("project server render keeps the relative install snippet", async ({ page }) => {
+  const response = await page.request.get(PROJECT_URL);
+  expect(await response.text()).toContain("uv pip install --index-url /root/pypi/simple/ veloxdemo");
+});
+
+test("project install snippet uses the browser origin when copied", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await goto(page, PROJECT_URL);
-  await expect(page.locator(".install code")).toContainText("uv pip install");
-  await page.locator(".install button.copy").click(); // clicking must not throw
+  const command = "uv pip install --index-url http://127.0.0.1:4455/root/pypi/simple/ veloxdemo";
+  await expect(page.locator(".install code")).toHaveText(command);
+  await page.locator(".install button.copy").click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);
+});
+
+test("project page downloads artifacts", async ({ page }) => {
+  await goto(page, PROJECT_URL);
   // The file's own link resolves to the real content-addressed artifact.
   const href = await page
     .locator("table.files tbody tr td a", { hasText: /\.whl$/ })

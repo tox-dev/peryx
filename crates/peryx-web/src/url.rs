@@ -10,6 +10,24 @@ pub(crate) fn simple_index_url(route: &str) -> String {
     url
 }
 
+#[must_use]
+#[cfg(any(feature = "hydrate", test))]
+pub(crate) fn browser_http_origin(protocol: &str, hostname: &str, port: &str) -> Option<String> {
+    if hostname.is_empty() || !matches!(protocol, "http:" | "https:") {
+        return None;
+    }
+    let port = (!port.is_empty() && !matches!((protocol, port), ("http:", "80") | ("https:", "443"))).then_some(port);
+    let mut origin = String::with_capacity(protocol.len() + hostname.len() + port.map_or(2, |value| value.len() + 3));
+    origin.push_str(protocol);
+    origin.push_str("//");
+    origin.push_str(hostname);
+    if let Some(port) = port {
+        origin.push(':');
+        origin.push_str(port);
+    }
+    Some(origin)
+}
+
 /// The neutral browse-data endpoint for one index's project names: `/+ui/projects?index=<route>`.
 #[must_use]
 #[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
@@ -328,12 +346,39 @@ fn push_query(url: &mut String, key: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::{
         admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url,
-        browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_url, inspect_url,
-        search_api_url, search_page_url, simple_index_url, stats_api_url, stats_index_url, stats_project_url,
-        ui_manifest_url, ui_member_url, ui_members_url, ui_project_url, ui_projects_url,
+        browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_url, browser_http_origin,
+        inspect_url, search_api_url, search_page_url, simple_index_url, stats_api_url, stats_index_url,
+        stats_project_url, ui_manifest_url, ui_member_url, ui_members_url, ui_project_url, ui_projects_url,
     };
+
+    #[rstest]
+    #[case("http:", "localhost", "", "http://localhost")]
+    #[case("http:", "localhost", "80", "http://localhost")]
+    #[case("https:", "packages.example", "443", "https://packages.example")]
+    #[case("https:", "packages.example", "8443", "https://packages.example:8443")]
+    fn test_browser_http_origin_formats_ports(
+        #[case] protocol: &str,
+        #[case] hostname: &str,
+        #[case] port: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(browser_http_origin(protocol, hostname, port).as_deref(), Some(expected));
+    }
+
+    #[rstest]
+    #[case("ftp:", "packages.example", "21")]
+    #[case("https:", "", "")]
+    fn test_browser_http_origin_rejects_unsupported_locations(
+        #[case] protocol: &str,
+        #[case] hostname: &str,
+        #[case] port: &str,
+    ) {
+        assert_eq!(browser_http_origin(protocol, hostname, port), None);
+    }
 
     #[test]
     fn test_package_urls_encode_paths_and_queries() {
