@@ -239,6 +239,109 @@ async fn test_project_page_prefers_an_active_stable_release(
     assert_eq!(meta.version.as_deref(), Some(expected));
 }
 
+/// The wheel of the `index`th file of `version`. The build tag keeps a release's wheels apart.
+fn release_wheel(index: usize, version: &str) -> String {
+    format!("flask-{version}-{index}-py3-none-any.whl")
+}
+
+/// The PEP 658 sibling of [`release_wheel`], summarizing itself so the summary the page renders names
+/// the file its metadata came from.
+fn release_metadata(index: usize, version: &str) -> String {
+    format!(
+        "Metadata-Version: 2.1\nName: flask\nVersion: {version}\nSummary: {}\n",
+        release_wheel(index, version)
+    )
+}
+
+/// A Simple-API detail whose files are `(version, yanked, has a metadata sibling)`, listed in the
+/// order upstream serves them.
+fn detail_with_release_metadata(server: &MockServer, versions: &[&str], files: &[(&str, bool, bool)]) -> String {
+    let files = files
+        .iter()
+        .enumerate()
+        .map(|(index, (version, yanked, sibling))| {
+            let wheel = release_wheel(index, version);
+            let mut file = serde_json::json!({
+                "filename": wheel,
+                "url": format!("{}/files/{wheel}", server.uri()),
+                "hashes": {"sha256": Digest::of(wheel.as_bytes()).as_str()},
+                "yanked": yanked,
+            });
+            if *sibling {
+                let digest = Digest::of(release_metadata(index, version).as_bytes());
+                file["core-metadata"] = serde_json::json!({"sha256": digest.as_str()});
+            }
+            file
+        })
+        .collect::<Vec<_>>();
+    crate::to_json(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "flask",
+        "versions": versions,
+        "files": files,
+    }))
+}
+
+#[rstest]
+#[case::default_release_over_a_later_sibling(
+    &["1.0", "2.0"],
+    &[("2.0", false, true), ("1.0", false, true)],
+    "2.0",
+    Some("flask-2.0-0-py3-none-any.whl"),
+)]
+#[case::pep440_equal_release(&["2.0.0"], &[("2.0", false, true)], "2.0.0", Some("flask-2.0-0-py3-none-any.whl"))]
+#[case::active_sibling_over_a_yanked_one(
+    &["2.0"],
+    &[("2.0", true, true), ("2.0", false, true)],
+    "2.0",
+    Some("flask-2.0-1-py3-none-any.whl"),
+)]
+#[case::first_filename_settles_a_tie(
+    &["2.0"],
+    &[("2.0", false, true), ("2.0", false, true)],
+    "2.0",
+    Some("flask-2.0-0-py3-none-any.whl"),
+)]
+#[case::release_without_a_sibling(
+    &["1.0", "2.0"],
+    &[("2.0", false, false), ("1.0", false, true)],
+    "2.0",
+    None,
+)]
+#[case::no_versions_listed(
+    &[],
+    &[("1.0", false, true), ("2.0", false, true)],
+    "2.0",
+    Some("flask-2.0-1-py3-none-any.whl"),
+)]
+#[tokio::test]
+async fn test_project_page_reads_metadata_from_the_default_release(
+    #[case] versions: &[&str],
+    #[case] files: &[(&str, bool, bool)],
+    #[case] version: &str,
+    #[case] summary: Option<&str>,
+) {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    mount_json_page(&h.server, &detail_with_release_metadata(&h.server, versions, files)).await;
+    // The cached page registers the siblings; their blobs then answer the metadata read locally.
+    get(&h.state, "/pypi/simple/flask/", None).await;
+    for (index, (release, ..)) in files.iter().enumerate() {
+        h.state
+            .blobs
+            .write(release_metadata(index, release).as_bytes())
+            .unwrap();
+    }
+    let (_, meta) = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.version.as_deref(), Some(version));
+    assert_eq!(meta.summary.as_deref(), summary);
+}
+
 #[tokio::test]
 async fn test_project_page_surfaces_a_resolve_error() {
     use peryx_driver::serving::EcosystemDriver as _;

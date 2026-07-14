@@ -16,8 +16,8 @@ pub(super) fn project_names(state: &ServingState, position: usize) -> Result<Vec
     Ok(list.projects.into_iter().map(|entry| entry.name).collect())
 }
 
-/// A project's page data: its files as a neutral [`UiProject`], and the neutral [`UiMeta`] of its
-/// newest file that carries a PEP 658 metadata sibling.
+/// A project's page data: its files as a neutral [`UiProject`], and the neutral [`UiMeta`] the
+/// page's default release carries in a PEP 658 metadata sibling.
 pub(super) async fn project_page(
     state: Arc<ServingState>,
     position: usize,
@@ -40,11 +40,17 @@ pub(super) async fn project_page(
     // `to_json` serializes the detail, so parsing it straight back cannot fail.
     let value = serde_json::from_str(&to_json(&detail)).expect("to_json emits JSON that round-trips");
     let ui = ui_project_from_detail(&value);
-    let mut meta = match ui.files.iter().rev().find(|file| file.has_metadata) {
+    let default = default_version(&ui);
+    // A pre-PEP 700 upstream names no versions, so no release owns a file and the newest sibling stands in.
+    let sibling = match default.as_deref() {
+        Some(version) => metadata_file(&ui, version),
+        None => ui.files.iter().rev().find(|file| file.has_metadata),
+    };
+    let mut meta = match sibling {
         Some(file) => metadata_for(&state, &route, file).await?,
         None => UiMeta::default(),
     };
-    meta.version = default_version(&ui).or(meta.version);
+    meta.version = default.or(meta.version);
     Ok(Some((ui, meta)))
 }
 
@@ -72,6 +78,17 @@ fn has_active_file(project: &UiProject, version: &str) -> bool {
         .files
         .iter()
         .any(|file| !file.yanked && file_matches_version(&file.filename, version))
+}
+
+/// The file whose PEP 658 metadata sibling describes `version`, so the page never borrows another
+/// release's metadata. An active file outranks a yanked one, and the filename settles the rest, so a
+/// release with several siblings always renders the same one.
+fn metadata_file<'a>(project: &'a UiProject, version: &str) -> Option<&'a peryx_core::UiFile> {
+    project
+        .files
+        .iter()
+        .filter(|file| file.has_metadata && file_matches_version(&file.filename, version))
+        .min_by(|left, right| (left.yanked, &left.filename).cmp(&(right.yanked, &right.filename)))
 }
 
 /// Fetch and parse the PEP 658 metadata sibling of `file` into the neutral view model.
