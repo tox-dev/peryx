@@ -754,7 +754,67 @@ async fn test_ui_project_page_selects_stable_legacy_version(#[case] versions: &[
     assert!(body.contains("<span class=\"version\">legacy-z</span>"), "{body}");
 }
 
+#[tokio::test]
+async fn test_ui_project_page_marks_a_release_its_publisher_yanked_whole() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0"],
+        "files": [
+            {
+                "filename": "veloxdemo-1.0-py3-none-any.whl",
+                "url": "/pypi/files/veloxdemo-1.0-py3-none-any.whl",
+                "yanked": "<script>alert(1)</script> use 2.0",
+            },
+            {
+                "filename": "veloxdemo-2.0-py3-none-any.whl",
+                "url": "/pypi/files/veloxdemo-2.0-py3-none-any.whl",
+                "yanked": "superseded",
+            },
+            {
+                "filename": "veloxdemo-2.0.tar.gz",
+                "url": "/pypi/files/veloxdemo-2.0.tar.gz",
+                "yanked": false,
+            },
+        ],
+    }));
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.matches(r#"class="release yanked""#).count(),
+        1,
+        "only 1.0 lost every file; 2.0 keeps an active sdist: {body}"
+    );
+    assert!(
+        body.contains("&lt;script&gt;alert(1)&lt;/script&gt; use 2.0"),
+        "the publisher's reason renders as text: {body}"
+    );
+    assert!(!body.contains("<script>alert(1)"), "{body}");
+    // The 2.0 wheel carries "superseded", which the file row still shows; the release keeps an
+    // active sdist, so only its chip has to stay clear of the reason.
+    let releases = body
+        .split_once(r#"<ul class="releases">"#)
+        .and_then(|(_, rest)| rest.split_once("</ul>"))
+        .map(|(releases, _)| releases)
+        .expect("the version list renders");
+    assert!(
+        !releases.contains("superseded"),
+        "2.0 stays active, so its chip shows no reason: {releases}"
+    );
+}
+
 fn version_router(versions: &[&str]) -> (tempfile::TempDir, axum::Router) {
+    detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": versions,
+        "files": [],
+    }))
+}
+
+/// Serve `detail` as the cached Simple API page of `veloxdemo` on the offline `pypi` index, so the
+/// project page renders it without an upstream request.
+fn detail_router(detail: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let mut config = ui_config(&dir);
     let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
@@ -772,13 +832,7 @@ fn version_router(versions: &[&str]) -> (tempfile::TempDir, axum::Router) {
                 fetched_at_unix: 0,
                 content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
                 fresh_secs: None,
-                body: serde_json::to_vec(&serde_json::json!({
-                    "meta": {"api-version": "1.1"},
-                    "name": "veloxdemo",
-                    "versions": versions,
-                    "files": [],
-                }))
-                .unwrap(),
+                body: serde_json::to_vec(detail).unwrap(),
             },
         )
         .unwrap();

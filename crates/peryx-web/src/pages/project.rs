@@ -18,7 +18,7 @@ use regex::Regex;
 use super::{ErrorMessage, copy_to_clipboard, human_size};
 use crate::data::load_project_view;
 use crate::markdown::{external_link_rel, is_safe_artifact_link, is_safe_link, render_description};
-use crate::model::{UiFile, UiProject, UiProjectView};
+use crate::model::{UiFile, UiProject, UiProjectView, UiRelease};
 #[cfg(feature = "hydrate")]
 use crate::url::browser_http_origin;
 use crate::url::{
@@ -119,11 +119,12 @@ fn ProjectBody(
     let latest = meta
         .version
         .clone()
-        .or_else(|| ui.versions.last().cloned())
+        .or_else(|| ui.versions.last().map(|release| release.version.clone()))
         .unwrap_or_default();
     let description = meta.description.as_ref().map(render_description).unwrap_or_default();
     let notice = description.notice;
     let summary = meta.summary.clone();
+    let admin_versions = ui.versions.iter().map(|release| release.version.clone()).collect();
     view! {
         <header class="project-head">
             <h1>{ui.name.clone()} <span class="version">{latest}</span></h1>
@@ -137,10 +138,10 @@ fn ProjectBody(
                 <div class="description" inner_html=description.html></div>
                 <h2>"Files"</h2>
                 <FileTable route=route.clone() project=ui.name.clone() files=ui.files.clone() />
-                <AdminPanel route=route project=ui.name.clone() versions=ui.versions.clone() refresh token set_token set_outcome />
+                <AdminPanel route=route project=ui.name.clone() versions=admin_versions refresh token set_token set_outcome />
             </div>
             <aside class="project-side">
-                <MetaPanel meta versions=ui.versions />
+                <MetaPanel meta releases=ui.versions />
             </aside>
         </div>
     }
@@ -422,12 +423,36 @@ fn is_sha256_hex(sha256: &str) -> bool {
 }
 
 #[component]
-fn MetaPanel(meta: UiMeta, versions: Vec<String>) -> impl IntoView {
+fn MetaPanel(meta: UiMeta, releases: Vec<UiRelease>) -> impl IntoView {
     let blocks = meta.blocks.into_iter().map(block_view).collect_view();
     view! {
         <h3>"Versions"</h3>
-        <p class="chips">{versions.into_iter().map(|version| view! { <code>{version}</code> }).collect_view()}</p>
+        <ul class="releases">{releases.into_iter().map(release_row).collect_view()}</ul>
         {blocks}
+    }
+}
+
+/// One release: its version, a badge when its publisher yanked the whole release, and the reasons
+/// they gave. The reasons come from the package, so they render as text, never as markup.
+fn release_row(release: UiRelease) -> impl IntoView {
+    let UiRelease {
+        version,
+        yanked,
+        yanked_reasons,
+    } = release;
+    let reasons = (!yanked_reasons.is_empty()).then(|| {
+        view! {
+            <ul class="yank-reasons">
+                {yanked_reasons.into_iter().map(|reason| view! { <li>{reason}</li> }).collect_view()}
+            </ul>
+        }
+    });
+    view! {
+        <li class=if yanked { "release yanked" } else { "release" }>
+            <code>{version}</code>
+            {yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
+            {reasons}
+        </li>
     }
 }
 

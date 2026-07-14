@@ -25,6 +25,19 @@ pub fn versions_match(left: &str, right: &str) -> bool {
     left == right || matches!((parse_version(left), parse_version(right)), (Some(left), Some(right)) if left == right)
 }
 
+/// A version identity that matches [`versions_match`]: two versions are the same release when their
+/// strings are equal or they parse to the same PEP 440 version. Grouping by this key collapses a
+/// per-version rescan of the files into one pass.
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum VersionKey {
+    Parsed(Version),
+    Raw(String),
+}
+
+pub fn version_key(version: &str) -> VersionKey {
+    parse_version(version).map_or_else(|| VersionKey::Raw(version.to_owned()), VersionKey::Parsed)
+}
+
 /// Sort version strings newest-first. Strings that do not parse as PEP 440 keep their input order
 /// after the parseable ones.
 #[must_use]

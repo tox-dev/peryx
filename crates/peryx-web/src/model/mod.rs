@@ -9,8 +9,8 @@ mod snapshot;
 mod stats;
 
 pub use project::{
-    UiArtifactRef, UiFile, UiManifest, UiMember, UiMemberChunk, UiProject, UiProjectView, members_from_listing,
-    projects_from_list,
+    UiArtifactRef, UiFile, UiManifest, UiMember, UiMemberChunk, UiProject, UiProjectView, UiRelease,
+    members_from_listing, projects_from_list,
 };
 pub use search::{UiSearchPage, UiSearchResult, source_label};
 pub use snapshot::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentUpload, UiSnapshot, UiUpstream};

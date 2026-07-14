@@ -54,9 +54,9 @@ pub(super) async fn project_page(
     Ok(Some((ui, meta)))
 }
 
-/// The release the project page defaults to. An active release (one keeping at least one non-yanked
-/// file) outranks a fully yanked one, a stable release outranks a pre-release, and the greatest PEP
-/// 440 version wins within a class, the order the file-yanking specification and Warehouse use.
+/// The release the project page defaults to. An active release (one the publisher has not yanked
+/// whole) outranks a yanked one, a stable release outranks a pre-release, and the greatest PEP 440
+/// version wins within a class, the order the file-yanking specification and Warehouse use.
 ///
 /// A version that does not parse as PEP 440 counts as neither stable nor greater than a parseable
 /// one, so it wins only when nothing else can, and then the greatest string takes it.
@@ -64,20 +64,13 @@ fn default_version(project: &UiProject) -> Option<String> {
     project
         .versions
         .iter()
-        .map(|version| {
-            let parsed = parse_version(version);
+        .map(|release| {
+            let parsed = parse_version(&release.version);
             let stable = parsed.as_ref().is_some_and(|parsed| !parsed.any_prerelease());
-            ((has_active_file(project, version), stable, parsed), version)
+            ((!release.yanked, stable, parsed), &release.version)
         })
         .max()
         .map(|(_, version)| version.clone())
-}
-
-fn has_active_file(project: &UiProject, version: &str) -> bool {
-    project
-        .files
-        .iter()
-        .any(|file| !file.yanked && file_matches_version(&file.filename, version))
 }
 
 /// The file whose PEP 658 metadata sibling describes `version`, so the page never borrows another
