@@ -141,6 +141,7 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
         _rest: String,
         _uri: axum::http::Uri,
         _headers: axum::http::HeaderMap,
+        _method: axum::http::Method,
     ) -> axum::response::Response {
         axum::response::IntoResponse::into_response(self.0.as_str().to_owned())
     }
@@ -339,6 +340,7 @@ async fn test_bare_driver_serving_methods_reach_the_wrong_mount_guard() {
             "rest".to_owned(),
             Uri::from_static("/x"),
             HeaderMap::new(),
+            Method::GET,
         )
         .await;
     assert_eq!(get.status(), StatusCode::INTERNAL_SERVER_ERROR);

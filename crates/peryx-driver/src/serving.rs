@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::{Multipart, Request};
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use peryx_core::{Ecosystem, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject, UiProjectView};
 
@@ -420,8 +420,12 @@ pub trait EcosystemDriver: Send + Sync {
         wrong_mount()
     }
 
-    /// Serve a GET for an [`Indexed`](RouteMount::Indexed) wire-protocol path. The router has resolved
-    /// the request to index `position`, with `rest` the sub-path after the index route.
+    /// Serve a GET or HEAD for an [`Indexed`](RouteMount::Indexed) wire-protocol path. The router has
+    /// resolved the request to index `position`, with `rest` the sub-path after the index route.
+    ///
+    /// Both methods arrive here because a HEAD asks for the headers of the GET it stands for, and only
+    /// the driver knows how to produce them without the body: axum strips the body it is handed, so a
+    /// driver that ignores `method` still answers correctly, but it pays for bytes no client reads.
     async fn get(
         &self,
         _state: Arc<ServingState>,
@@ -429,6 +433,7 @@ pub trait EcosystemDriver: Send + Sync {
         _rest: String,
         _uri: Uri,
         _headers: HeaderMap,
+        _method: Method,
     ) -> Response {
         wrong_mount()
     }
