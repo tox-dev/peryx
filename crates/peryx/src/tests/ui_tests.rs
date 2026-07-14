@@ -861,8 +861,45 @@ async fn test_ui_project_page_marks_outbound_artifact_links_external(#[case] url
 
 const EXTERNAL_LINK_REL: &str = "external nofollow noopener noreferrer";
 const ARTIFACT_FILENAME: &str = "veloxdemo-1.0.tar.bz2";
+const ARCHIVE_DIGEST: &str = "5a105e8b9d40e1329780d62ea2265d8a4d4ef6a0d4b2f6c0c1a5b9a0f0d1c2e3";
+
+#[rstest]
+#[case::wheel("veloxdemo-1.0-py3-none-any.whl", ARCHIVE_DIGEST, true)]
+#[case::zip("veloxdemo-1.0.zip", ARCHIVE_DIGEST, true)]
+#[case::egg("veloxdemo-1.0.egg", ARCHIVE_DIGEST, true)]
+#[case::tar("veloxdemo-1.0.tar", ARCHIVE_DIGEST, true)]
+#[case::tar_gz("veloxdemo-1.0.tar.gz", ARCHIVE_DIGEST, true)]
+#[case::tgz("veloxdemo-1.0.tgz", ARCHIVE_DIGEST, true)]
+#[case::unsupported_format("veloxdemo-1.0.tar.bz2", ARCHIVE_DIGEST, false)]
+#[case::digest_free_wheel("veloxdemo-1.0-py3-none-any.whl", "", false)]
+#[case::truncated_digest_wheel("veloxdemo-1.0-py3-none-any.whl", "5a105e8b9d40e132", false)]
+#[tokio::test]
+async fn test_ui_project_page_links_contents_only_for_browsable_archives(
+    #[case] filename: &str,
+    #[case] sha256: &str,
+    #[case] browsable: bool,
+) {
+    let hashes = if sha256.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({"sha256": sha256})
+    };
+    let (_dir, router) = file_router(&serde_json::json!({
+        "filename": filename,
+        "url": format!("https://example.com/{filename}"),
+        "hashes": hashes,
+    }));
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&format!(">{filename}</a>")), "{body}");
+    assert_eq!(body.contains("class=\"inspect\""), browsable, "{body}");
+}
 
 fn artifact_router(url: &str) -> (tempfile::TempDir, axum::Router) {
+    file_router(&serde_json::json!({"filename": ARTIFACT_FILENAME, "url": url, "hashes": {}}))
+}
+
+fn file_router(file: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let mut config = ui_config(&dir);
     let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
@@ -884,11 +921,7 @@ fn artifact_router(url: &str) -> (tempfile::TempDir, axum::Router) {
                     "meta": {"api-version": "1.1"},
                     "name": "veloxdemo",
                     "versions": ["1.0"],
-                    "files": [{
-                        "filename": ARTIFACT_FILENAME,
-                        "url": url,
-                        "hashes": {},
-                    }],
+                    "files": [file],
                 }))
                 .unwrap(),
             },

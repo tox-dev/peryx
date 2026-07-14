@@ -305,17 +305,17 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
     } else {
         filename.into_any()
     };
-    let inspect = browse_archive_url(route, project, &file.sha256, &file.filename);
+    let inspect = (supports_archive_browser(&file.filename) && is_sha256_hex(&file.sha256))
+        .then(|| browse_archive_url(route, project, &file.sha256, &file.filename));
     let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
     view! {
         <tr class=class>
             <td>
                 {download}
-                {supports_archive_browser(&file.filename)
-                    .then(|| view! {
-                        " · "
-                        <a class="inspect" href=inspect>"contents"</a>
-                    })}
+                {inspect.map(|href| view! {
+                    " · "
+                    <a class="inspect" href=href>"contents"</a>
+                })}
             </td>
             <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
             <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |time| time.chars().take(10).collect())}</td>
@@ -407,6 +407,15 @@ fn supports_archive_browser(filename: &str) -> bool {
         || filename
             .get(filename.len().saturating_sub(4)..)
             .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tgz"))
+}
+
+/// The archive route addresses an artifact by digest, so a Simple API file that omits its sha256 has
+/// nothing to browse.
+fn is_sha256_hex(sha256: &str) -> bool {
+    sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[component]
