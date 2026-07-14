@@ -192,6 +192,53 @@ async fn test_project_page_selects_latest_version(#[case] versions: &[&str], #[c
     assert_eq!(meta.version.as_deref(), Some(expected));
 }
 
+/// A Simple-API detail listing one wheel per `(version, yanked)` pair, so the project page sees
+/// which releases keep an active file.
+fn detail_with_yanks(versions: &[&str], files: &[(&str, bool)]) -> String {
+    let files = files
+        .iter()
+        .map(|(version, yanked)| {
+            serde_json::json!({
+                "filename": format!("flask-{version}-py3-none-any.whl"),
+                "url": format!("/files/flask-{version}-py3-none-any.whl"),
+                "hashes": {"sha256": Digest::of(version.as_bytes()).as_str()},
+                "yanked": yanked,
+            })
+        })
+        .collect::<Vec<_>>();
+    crate::to_json(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "flask",
+        "versions": versions,
+        "files": files,
+    }))
+}
+
+#[rstest]
+#[case::active_beats_yanked(&["2.0", "4.0"], &[("2.0", false), ("4.0", true)], "2.0")]
+#[case::stable_beats_prerelease(&["2.0", "3.0rc1"], &[("2.0", false), ("3.0rc1", false)], "2.0")]
+#[case::greatest_active_stable(&["2.0", "3.0"], &[("2.0", false), ("3.0", false)], "3.0")]
+#[case::one_active_file_keeps_the_release(&["2.0", "4.0"], &[("2.0", false), ("4.0", true), ("4.0", false)], "4.0")]
+#[case::active_prerelease_beats_yanked_stable(&["2.0", "3.0rc1"], &[("2.0", true), ("3.0rc1", false)], "3.0rc1")]
+#[case::all_yanked_falls_back_to_greatest(&["2.0", "4.0"], &[("2.0", true), ("4.0", true)], "4.0")]
+#[tokio::test]
+async fn test_project_page_prefers_an_active_stable_release(
+    #[case] versions: &[&str],
+    #[case] files: &[(&str, bool)],
+    #[case] expected: &str,
+) {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    mount_json_page(&h.server, &detail_with_yanks(versions, files)).await;
+    let (_, meta) = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.version.as_deref(), Some(expected));
+}
+
 #[tokio::test]
 async fn test_project_page_surfaces_a_resolve_error() {
     use peryx_driver::serving::EcosystemDriver as _;

@@ -8,7 +8,7 @@ use peryx_driver::ServingState;
 use peryx_storage::blob::Digest;
 
 use crate::cache;
-use crate::{normalize_name, to_json, ui_meta, ui_project_from_detail};
+use crate::{file_matches_version, normalize_name, parse_version, to_json, ui_meta, ui_project_from_detail};
 
 /// The project names of the cached/hosted/virtual index at `position`.
 pub(super) fn project_names(state: &ServingState, position: usize) -> Result<Vec<String>, String> {
@@ -44,18 +44,34 @@ pub(super) async fn project_page(
         Some(file) => metadata_for(&state, &route, file).await?,
         None => UiMeta::default(),
     };
-    meta.version = latest_version(&ui.versions).or(meta.version);
+    meta.version = default_version(&ui).or(meta.version);
     Ok(Some((ui, meta)))
 }
 
-fn latest_version(versions: &[String]) -> Option<String> {
-    versions
+/// The release the project page defaults to. An active release (one keeping at least one non-yanked
+/// file) outranks a fully yanked one, a stable release outranks a pre-release, and the greatest PEP
+/// 440 version wins within a class, the order the file-yanking specification and Warehouse use.
+///
+/// A version that does not parse as PEP 440 counts as neither stable nor greater than a parseable
+/// one, so it wins only when nothing else can, and then the greatest string takes it.
+fn default_version(project: &UiProject) -> Option<String> {
+    project
+        .versions
         .iter()
-        .filter_map(|version| crate::parse_version(version).map(|parsed| (parsed, version)))
-        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
-        .map(|(_, version)| version)
-        .or_else(|| versions.iter().max())
-        .cloned()
+        .map(|version| {
+            let parsed = parse_version(version);
+            let stable = parsed.as_ref().is_some_and(|parsed| !parsed.any_prerelease());
+            ((has_active_file(project, version), stable, parsed), version)
+        })
+        .max()
+        .map(|(_, version)| version.clone())
+}
+
+fn has_active_file(project: &UiProject, version: &str) -> bool {
+    project
+        .files
+        .iter()
+        .any(|file| !file.yanked && file_matches_version(&file.filename, version))
 }
 
 /// Fetch and parse the PEP 658 metadata sibling of `file` into the neutral view model.
