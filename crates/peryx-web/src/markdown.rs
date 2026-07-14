@@ -51,8 +51,16 @@ fn render_markdown(text: &str) -> String {
 }
 
 pub(crate) fn is_safe_link(target: &str) -> bool {
+    is_safe_url(target, |scheme| matches!(scheme, "http" | "https" | "mailto"))
+}
+
+pub(crate) fn is_safe_artifact_link(target: &str) -> bool {
+    is_safe_url(target, |scheme| matches!(scheme, "http" | "https"))
+}
+
+fn is_safe_url(target: &str, allowed_scheme: impl FnOnce(&str) -> bool) -> bool {
     match Url::parse(target) {
-        Ok(url) => matches!(url.scheme(), "http" | "https" | "mailto"),
+        Ok(url) => allowed_scheme(url.scheme()),
         Err(ParseError::RelativeUrlWithoutBase) => true,
         Err(_) => false,
     }

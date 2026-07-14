@@ -8,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use peryx_core::path::local_file_url;
-use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::store::{CachedIndex, PypiStore as _};
 use peryx_ecosystem_pypi::upload::Uploaded;
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use peryx_identity::{Action, Glob, Grant, Principal, Signer};
@@ -753,6 +753,60 @@ async fn test_ui_project_page_sanitizes_metadata_links() {
     assert!(body.contains(">guide</a> unsafe</p>"));
     assert!(!body.contains("href=\"JaVaScRiPt:"), "{body}");
     assert!(!body.contains("href=\"data:text/html"), "{body}");
+}
+
+#[rstest]
+#[case::javascript("JaVaScRiPt:alert(1)", false)]
+#[case::data("data:text/html;base64,PHNjcmlwdD4=", false)]
+#[case::mailto("mailto:maintainer@example.com", false)]
+#[case::malformed("http://[invalid", false)]
+#[case::http("http://example.com/veloxdemo.whl", true)]
+#[case::https("https://example.com/veloxdemo.whl", true)]
+#[case::relative("/pypi/files/veloxdemo.whl", true)]
+#[tokio::test]
+async fn test_ui_project_page_sanitizes_artifact_links(#[case] url: &str, #[case] linked: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ui_config(&dir);
+    let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
+        panic!("pypi test index must be cached");
+    };
+    *offline = true;
+    let state = build_state(&config).unwrap();
+    let filename = "veloxdemo-1.0.tar.bz2";
+    state
+        .meta
+        .put_index(
+            "pypi/veloxdemo",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 0,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: serde_json::to_vec(&serde_json::json!({
+                    "meta": {"api-version": "1.1"},
+                    "name": "veloxdemo",
+                    "versions": ["1.0"],
+                    "files": [{
+                        "filename": filename,
+                        "url": url,
+                        "hashes": {},
+                    }],
+                }))
+                .unwrap(),
+            },
+        )
+        .unwrap();
+    let (status, body) = get(&router_for(state), "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (
+            body.contains(&format!(">{filename}<")),
+            body.contains(&format!("href=\"{url}\""))
+        ),
+        (true, linked),
+        "{body}"
+    );
 }
 
 fn wheel_with_metadata(metadata: &str) -> Vec<u8> {
