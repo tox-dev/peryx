@@ -633,6 +633,25 @@ async fn test_upload_invalid_project_url_is_bad_request() {
     .await;
 }
 
+#[tokio::test]
+async fn test_upload_rejects_field_older_than_its_introduction() {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(
+                b"Metadata-Version: 1.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\n",
+            )
+            .as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "metadata Requires-Python value \">=3.8\" requires Metadata-Version 1.2 or later",
+    )
+    .await;
+}
+
 #[rstest]
 #[case::missing_separator(
     b"Metadata-Version: 2.4\nName: peryxpkg\nmalformed header\nVersion: 1.0\nRequires-Python: >=3.8\n",

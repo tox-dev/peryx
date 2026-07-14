@@ -187,6 +187,15 @@ fn test_import_dir_reports_metadata_validation_reasons() {
         ),
     )
     .unwrap();
+    std::fs::write(
+        import.join("EarlyField-1.0-py3-none-any.whl"),
+        wheel_with_metadata(
+            "EarlyField",
+            "1.0",
+            b"Metadata-Version: 1.1\nName: EarlyField\nVersion: 1.0\nRequires-Python: >=3.8\n",
+        ),
+    )
+    .unwrap();
     let config = Config {
         data_dir: root.path().join("data"),
         ..Config::default()
@@ -211,6 +220,9 @@ fn test_import_dir_reports_metadata_validation_reasons() {
     ));
     assert!(text.contains(
         "BadClassifier-1.0-py3-none-any.whl\tbadclassifier\t1.0\tmetadata Classifier value \"Made Up :: Value\" is not a known trove classifier"
+    ));
+    assert!(text.contains(
+        "EarlyField-1.0-py3-none-any.whl\tearlyfield\t1.0\tmetadata Requires-Python value \">=3.8\" requires Metadata-Version 1.2 or later"
     ));
 }
 

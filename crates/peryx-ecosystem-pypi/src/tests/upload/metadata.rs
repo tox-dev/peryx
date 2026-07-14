@@ -113,7 +113,7 @@ fn test_prepare_rejects_metadata_field_mismatches() {
         ),
         (
             |form| form.license_files.push("NOTICE".to_owned()),
-            "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: LICENSE\n",
+            "Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: LICENSE\n",
             UploadError::MetadataFieldMismatch {
                 field: "License-File",
                 metadata: "LICENSE".to_owned(),
@@ -452,21 +452,145 @@ fn test_prepare_rejects_invalid_license_expression(#[case] expression: &str, #[c
 }
 
 #[rstest]
-#[case::v1_0("1.0")]
-#[case::v1_2("1.2")]
-#[case::v2_3("2.3")]
-fn test_prepare_rejects_license_expression_before_metadata_2_4(#[case] metadata_version: &str) {
-    let bytes = license_expression_wheel(metadata_version, "MIT");
+#[case::classifier(
+    "1.0",
+    "Classifier: Private :: Do Not Upload",
+    "Classifier",
+    "Private :: Do Not Upload",
+    "requires Metadata-Version 1.1 or later"
+)]
+#[case::maintainer(
+    "1.1",
+    "Maintainer: Pallets",
+    "Maintainer",
+    "Pallets",
+    "requires Metadata-Version 1.2 or later"
+)]
+#[case::requires_python(
+    "1.1",
+    "Requires-Python: >=3.8",
+    "Requires-Python",
+    ">=3.8",
+    "requires Metadata-Version 1.2 or later"
+)]
+#[case::requires_dist(
+    "1.1",
+    "Requires-Dist: click",
+    "Requires-Dist",
+    "click",
+    "requires Metadata-Version 1.2 or later"
+)]
+#[case::project_url(
+    "1.1",
+    "Project-URL: Docs, https://example.test/docs",
+    "Project-URL",
+    "Docs, https://example.test/docs",
+    "requires Metadata-Version 1.2 or later"
+)]
+#[case::description_content_type(
+    "1.2",
+    "Description-Content-Type: text/markdown",
+    "Description-Content-Type",
+    "text/markdown",
+    "requires Metadata-Version 2.1 or later"
+)]
+#[case::provides_extra(
+    "1.2",
+    "Provides-Extra: cli",
+    "Provides-Extra",
+    "cli",
+    "requires Metadata-Version 2.1 or later"
+)]
+#[case::license_expression(
+    "2.3",
+    "License-Expression: MIT",
+    "License-Expression",
+    "MIT",
+    "requires Metadata-Version 2.4 or later"
+)]
+#[case::license_file(
+    "2.3",
+    "License-File: LICENSE",
+    "License-File",
+    "LICENSE",
+    "requires Metadata-Version 2.4 or later"
+)]
+fn test_prepare_rejects_field_older_than_its_introduction(
+    #[case] metadata_version: &str,
+    #[case] header: &str,
+    #[case] field: &'static str,
+    #[case] value: &str,
+    #[case] reason: &'static str,
+) {
+    let bytes = introduction_wheel(metadata_version, header);
     let (_dir, staged) = staged_upload(&bytes);
 
     assert_eq!(
-        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        prepare(introduction_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
         UploadError::InvalidMetadataValue {
-            field: "License-Expression",
-            value: "MIT".to_owned(),
-            reason: "requires Metadata-Version 2.4 or later",
+            field,
+            value: value.to_owned(),
+            reason,
         }
     );
+}
+
+#[rstest]
+#[case::classifier("1.1", "Classifier: Topic :: Software Development :: Libraries")]
+#[case::maintainer("1.2", "Maintainer: Pallets")]
+#[case::requires_python("1.2", "Requires-Python: >=3.8")]
+#[case::requires_dist("1.2", "Requires-Dist: click")]
+#[case::project_url("1.2", "Project-URL: Docs, https://example.test/docs")]
+#[case::description_content_type("2.1", "Description-Content-Type: text/markdown")]
+#[case::provides_extra("2.1", "Provides-Extra: cli")]
+#[case::license_expression("2.4", "License-Expression: MIT")]
+#[case::license_file("2.4", "License-File: LICENSE")]
+#[case::document_v1_0(
+    "1.0",
+    "Summary: a web framework\nKeywords: web\nHome-Page: https://example.test\nAuthor: Pallets\nLicense: BSD-3-Clause"
+)]
+#[case::document_v1_1(
+    "1.1",
+    "Summary: a web framework\nClassifier: Topic :: Software Development :: Libraries"
+)]
+#[case::document_v1_2("1.2", "Requires-Python: >=3.8\nRequires-Dist: click\nMaintainer: Pallets")]
+#[case::document_v2_1(
+    "2.1",
+    "Requires-Python: >=3.8\nDescription-Content-Type: text/markdown\nProvides-Extra: cli"
+)]
+#[case::document_v2_5(
+    "2.5",
+    "Requires-Python: >=3.8\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli"
+)]
+fn test_prepare_accepts_fields_introduced_by_its_metadata_version(
+    #[case] metadata_version: &str,
+    #[case] headers: &str,
+) {
+    let bytes = introduction_wheel(metadata_version, headers);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(introduction_form(&bytes), staged, "root/hosted", 1000)
+            .unwrap()
+            .display_name,
+        "Flask"
+    );
+}
+
+/// The wheel carries `licenses/LICENSE` so a declared `License-File` resolves.
+fn introduction_wheel(metadata_version: &str, headers: &str) -> Vec<u8> {
+    wheel_metadata_bytes_with_licenses(
+        format!("Metadata-Version: {metadata_version}\nName: Flask\nVersion: 1.0\n{headers}\n").as_bytes(),
+        &["LICENSE"],
+    )
+}
+
+/// The form declares no `Requires-Python`, which a document older than metadata 1.2 cannot carry.
+fn introduction_form(bytes: &[u8]) -> UploadForm {
+    UploadForm {
+        requires_python: None,
+        ..staged_form(bytes)
+    }
 }
 
 fn license_expression_wheel(metadata_version: &str, expression: &str) -> Vec<u8> {

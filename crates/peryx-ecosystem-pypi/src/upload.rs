@@ -4,6 +4,7 @@
 //! form into a stored file is validation plus content addressing. The async multipart reading lives
 //! in the handler; everything it depends on is unit-testable without a server.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use md5::{Digest as _, Md5};
@@ -409,7 +410,8 @@ fn validate_metadata_identity(
     normalized: &str,
     parsed_version: &crate::Version,
 ) -> Result<(), UploadError> {
-    validate_metadata_version(metadata.metadata_version.as_deref())?;
+    let declared = validate_metadata_version(metadata.metadata_version.as_deref())?;
+    validate_field_introductions(metadata, declared)?;
     if normalize_name(&metadata.name) != normalized || !is_valid_name(&metadata.name) {
         return Err(UploadError::MetadataNameMismatch {
             metadata: metadata.name.clone(),
@@ -456,33 +458,98 @@ fn validate_metadata_identity(
     compare_project_urls(form, metadata)
 }
 
-fn validate_metadata_version(value: Option<&str>) -> Result<(), UploadError> {
+/// A supported Core Metadata version, ranked as `major * 10 + minor` so a declared version orders
+/// against the version that introduced a field.
+fn validate_metadata_version(value: Option<&str>) -> Result<u8, UploadError> {
     let Some(value) = value else {
         return Err(UploadError::MissingMetadataVersion);
     };
-    if matches!(
-        value,
-        "1.0" | "1.1" | "1.2" | "2.1" | "2.2" | "2.3" | "2.4" | "2.5" | "2.6"
-    ) {
-        Ok(())
-    } else {
-        Err(UploadError::UnsupportedMetadataVersion(value.to_owned()))
+    match value {
+        "1.0" => Ok(10),
+        "1.1" => Ok(11),
+        "1.2" => Ok(12),
+        "2.1" => Ok(21),
+        "2.2" => Ok(22),
+        "2.3" => Ok(23),
+        "2.4" => Ok(24),
+        "2.5" => Ok(25),
+        "2.6" => Ok(26),
+        _ => Err(UploadError::UnsupportedMetadataVersion(value.to_owned())),
     }
+}
+
+/// Core Metadata introduced each field in a version, and a document may not use a field that
+/// postdates the version it declares. Deprecating a field leaves it usable — `License` still reads
+/// under 2.4 — so an introduction is the only bound.
+///
+/// Versions follow the field history in
+/// <https://packaging.python.org/en/latest/specifications/core-metadata/>.
+fn validate_field_introductions(metadata: &CoreMetadataDoc, declared: u8) -> Result<(), UploadError> {
+    const SINCE_1_1: (u8, &str) = (11, "requires Metadata-Version 1.1 or later");
+    const SINCE_1_2: (u8, &str) = (12, "requires Metadata-Version 1.2 or later");
+    const SINCE_2_1: (u8, &str) = (21, "requires Metadata-Version 2.1 or later");
+    const SINCE_2_4: (u8, &str) = (24, "requires Metadata-Version 2.4 or later");
+
+    for (field, (since, reason), value) in [
+        ("Classifier", SINCE_1_1, metadata.classifiers.first().map(Cow::from)),
+        ("Maintainer", SINCE_1_2, metadata.maintainer.as_ref().map(Cow::from)),
+        (
+            "Requires-Python",
+            SINCE_1_2,
+            metadata.requires_python.as_ref().map(Cow::from),
+        ),
+        (
+            "Requires-Dist",
+            SINCE_1_2,
+            metadata.requires_dist.first().map(Cow::from),
+        ),
+        (
+            "Project-URL",
+            SINCE_1_2,
+            metadata
+                .project_urls
+                .first()
+                .map(|(label, url)| Cow::Owned(format!("{label}, {url}"))),
+        ),
+        (
+            "Description-Content-Type",
+            SINCE_2_1,
+            metadata.description_content_type.as_ref().map(Cow::from),
+        ),
+        (
+            "Provides-Extra",
+            SINCE_2_1,
+            metadata.provides_extra.first().map(Cow::from),
+        ),
+        (
+            "License-Expression",
+            SINCE_2_4,
+            metadata.license_expression.as_ref().map(Cow::from),
+        ),
+        ("License-File", SINCE_2_4, metadata.license_files.first().map(Cow::from)),
+    ] {
+        if let Some(value) = value
+            && declared < since
+        {
+            return Err(UploadError::InvalidMetadataValue {
+                field,
+                value: value.into_owned(),
+                reason,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_license_expression(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
     let Some(expression) = metadata.license_expression.as_deref() else {
         return Ok(());
     };
-    let invalid = |reason| UploadError::InvalidMetadataValue {
+    crate::license::validate_expression(expression).map_err(|reason| UploadError::InvalidMetadataValue {
         field: "License-Expression",
         value: expression.to_owned(),
         reason,
-    };
-    if !matches!(metadata.metadata_version.as_deref(), Some("2.4" | "2.5" | "2.6")) {
-        return Err(invalid("requires Metadata-Version 2.4 or later"));
-    }
-    crate::license::validate_expression(expression).map_err(invalid)
+    })
 }
 
 fn validate_provided_extras(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
