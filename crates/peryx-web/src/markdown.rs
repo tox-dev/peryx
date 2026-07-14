@@ -1,27 +1,77 @@
 //! Long-description rendering for project pages.
 //!
-//! Package authors control descriptions, so the renderer shows embedded HTML as text and accepts
-//! HTTP, HTTPS, mailto, or relative destinations.
+//! Package authors control descriptions, so the renderer keeps embedded HTML off the page and
+//! accepts HTTP, HTTPS, mailto, or relative destinations.
 
+use std::collections::HashSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use ammonia::Builder;
 use peryx_core::UiDescription;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 use url::{ParseError, Url};
 
 pub(crate) const EXTERNAL_LINK_REL: &str = "external nofollow noopener noreferrer";
 
+/// A rendered long description plus the message to show when rendering did not succeed.
+#[derive(Default)]
+pub struct RenderedDescription {
+    pub html: String,
+    pub notice: Option<&'static str>,
+}
+
 /// Render a long description to safe HTML.
 ///
-/// Markdown is rendered when the document declares `text/markdown` (or declares nothing, which
-/// pypi.org treats as markdown-friendly plain text); other content types are shown as preformatted
-/// text.
+/// Markdown is rendered when the document declares `text/markdown`, reStructuredText when it
+/// declares `text/x-rst` or declares nothing, which is the default Core Metadata mandates. Other
+/// content types, and reStructuredText that fails to render, are shown as preformatted text.
 #[must_use]
-pub fn render_description(description: &UiDescription) -> String {
-    let content_type = description.content_type.as_deref().unwrap_or("text/markdown");
+pub fn render_description(description: &UiDescription) -> RenderedDescription {
+    let content_type = description.content_type.as_deref().unwrap_or("text/x-rst");
     if content_type.starts_with("text/markdown") {
-        render_markdown(&description.text)
+        RenderedDescription {
+            html: render_markdown(&description.text),
+            notice: None,
+        }
+    } else if content_type.starts_with("text/x-rst") {
+        rst_html(&description.text).map_or_else(
+            || RenderedDescription {
+                html: render_plain(&description.text),
+                notice: Some("This description is not valid reStructuredText, so it is shown as plain text."),
+            },
+            |html| RenderedDescription { html, notice: None },
+        )
     } else {
-        format!("<pre class=\"description-plain\">{}</pre>", escape(&description.text))
+        RenderedDescription {
+            html: render_plain(&description.text),
+            notice: None,
+        }
     }
+}
+
+/// The renderer panics on document nodes it does not implement, such as substitution references,
+/// and package authors control the source, so a panic here is bad input rather than a bug.
+fn rst_html(text: &str) -> Option<String> {
+    let render = || {
+        let document = rst_parser::parse(text).ok()?;
+        let mut out = Vec::with_capacity(text.len());
+        rst_renderer::render_html(&document, &mut out, false).ok()?;
+        String::from_utf8(out).ok()
+    };
+    let html = catch_unwind(AssertUnwindSafe(render)).ok().flatten()?;
+    // The renderer emits `raw` directives verbatim and does not restrict destinations, so the
+    // sanitizer, not the renderer, is what keeps author HTML off the page.
+    Some(
+        Builder::new()
+            .url_schemes(HashSet::from(["http", "https", "mailto"]))
+            .link_rel(Some(EXTERNAL_LINK_REL))
+            .clean(&html)
+            .to_string(),
+    )
+}
+
+fn render_plain(text: &str) -> String {
+    format!("<pre class=\"description-plain\">{}</pre>", escape(text))
 }
 
 fn render_markdown(text: &str) -> String {

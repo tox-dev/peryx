@@ -122,6 +122,7 @@ fn ProjectBody(
         .or_else(|| ui.versions.last().cloned())
         .unwrap_or_default();
     let description = meta.description.as_ref().map(render_description).unwrap_or_default();
+    let notice = description.notice;
     let summary = meta.summary.clone();
     view! {
         <header class="project-head">
@@ -132,7 +133,8 @@ fn ProjectBody(
         <div class="project-grid">
             <div class="project-main">
                 <h2>"Description"</h2>
-                <div class="description" inner_html=description></div>
+                {notice.map(|notice| view! { <p class="dim">{notice}</p> })}
+                <div class="description" inner_html=description.html></div>
                 <h2>"Files"</h2>
                 <FileTable route=route.clone() project=ui.name.clone() files=ui.files.clone() />
                 <AdminPanel route=route project=ui.name.clone() versions=ui.versions.clone() refresh token set_token set_outcome />
