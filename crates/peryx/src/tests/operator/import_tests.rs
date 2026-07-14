@@ -160,6 +160,15 @@ fn test_import_dir_reports_metadata_validation_reasons() {
         ),
     )
     .unwrap();
+    std::fs::write(
+        import.join("InvalidExtra-1.0-py3-none-any.whl"),
+        wheel_with_metadata(
+            "InvalidExtra",
+            "1.0",
+            b"Metadata-Version: 2.3\nName: InvalidExtra\nVersion: 1.0\nProvides-Extra: Dev_Test\n",
+        ),
+    )
+    .unwrap();
     let config = Config {
         data_dir: root.path().join("data"),
         ..Config::default()
@@ -175,6 +184,9 @@ fn test_import_dir_reports_metadata_validation_reasons() {
     assert!(text.contains("VersionMismatch-1.0-py3-none-any.whl\tversionmismatch\t1.0\tmetadata version"));
     assert!(text.contains(
         "LicenseConflict-1.0-py3-none-any.whl\tlicenseconflict\t1.0\tmetadata contains both License and License-Expression"
+    ));
+    assert!(text.contains(
+        "InvalidExtra-1.0-py3-none-any.whl\tinvalidextra\t1.0\tmetadata Provides-Extra value \"Dev_Test\" must match ^[a-z0-9]+(-[a-z0-9]+)*$"
     ));
 }
 

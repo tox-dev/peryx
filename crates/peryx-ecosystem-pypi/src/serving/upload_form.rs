@@ -280,6 +280,10 @@ pub(super) fn upload_error_message(err: &UploadError) -> (StatusCode, String) {
                 "invalid metadata Metadata-Version {value:?}: supported values are 1.0 through 1.2 and 2.1 through 2.6"
             ),
         ),
+        UploadError::InvalidMetadataValue { field, value, reason } => (
+            StatusCode::BAD_REQUEST,
+            format!("metadata {field} value {value:?} {reason}"),
+        ),
         UploadError::MetadataNameMismatch { metadata, form } => (
             StatusCode::BAD_REQUEST,
             format!("metadata Name {metadata:?} does not match upload name {form:?}"),

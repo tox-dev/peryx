@@ -732,6 +732,30 @@ async fn test_upload_accepts_legacy_license_field() {
     )
     .await;
 }
+#[rstest]
+#[case::unnormalized(
+    b"Metadata-Version: 2.3\nName: peryxpkg\nVersion: 1.0\nProvides-Extra: Dev_Test\n",
+    "metadata Provides-Extra value \"Dev_Test\" must match ^[a-z0-9]+(-[a-z0-9]+)*$"
+)]
+#[case::collision(
+    b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nProvides-Extra: Dev.Test\nProvides-Extra: dev_test\n",
+    "metadata Provides-Extra value \"dev_test\" duplicates an earlier value after normalization"
+)]
+#[tokio::test]
+async fn test_upload_rejects_invalid_provided_extra(#[case] metadata: &[u8], #[case] expected: &str) {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(metadata).as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        expected,
+    )
+    .await;
+}
 #[tokio::test]
 async fn test_upload_non_utf8_field_is_bad_request() {
     let h = harness().await;
