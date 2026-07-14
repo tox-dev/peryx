@@ -39,9 +39,8 @@ const BENCH_PYTHON: &str = "3.14";
 
 /// What pip and uv ask a simple index for, and so what any workload standing in for them must send.
 ///
-/// peryx picks the representation by looking for `json` anywhere in `Accept`, so a workload sending
-/// `*/*` silently measures the PEP 503 HTML render instead of the PEP 691 JSON an installer receives.
-/// The two paths are not comparable: HTML re-parses and re-renders the page per request.
+/// Installers prefer PEP 691 JSON, while the server returns default PEP 503 HTML for `*/*`. The render paths are not
+/// comparable: HTML re-parses and re-renders the page per request.
 pub(super) const SIMPLE_ACCEPT: &str = "application/vnd.pypi.simple.v1+json, text/html;q=0.5";
 
 /// The PEP 503 HTML an installer never asks for, but a browser and an old client do.

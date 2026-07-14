@@ -1343,7 +1343,7 @@
           {
             "name": "Accept",
             "in": "header",
-            "description": "`application/vnd.pypi.simple.v1+json` for PEP 691 JSON; anything else gets PEP 503 HTML",
+            "description": "Clients may rank PEP 691 JSON and PEP 503 HTML media ranges with `q` weights",
             "required": false,
             "example": "application/vnd.pypi.simple.v1+json"
           }
@@ -1400,7 +1400,7 @@
           {
             "name": "Accept",
             "in": "header",
-            "description": "`application/vnd.pypi.simple.v1+json` for PEP 691 JSON; anything else gets PEP 503 HTML",
+            "description": "Clients may rank PEP 691 JSON and PEP 503 HTML media ranges with `q` weights",
             "required": false,
             "example": "application/vnd.pypi.simple.v1+json"
           }

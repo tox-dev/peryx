@@ -64,18 +64,127 @@ pub enum Format {
     Html,
 }
 
-/// Pick a response format from the `Accept` header: JSON when it asks for it, HTML otherwise.
+/// Pick the supported response format with the highest `Accept` quality, falling back to HTML.
 #[must_use]
 pub fn negotiate(headers: &HeaderMap) -> Format {
-    let accept = headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    if accept.contains("json") {
+    let mut json = Preference::default();
+    let mut html = Preference::default();
+    for accept in headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+    {
+        for range in accept.split(',').filter_map(parse_accept_range) {
+            if !range.utf8
+                && let Some(specificity) = specificity(range.media, JSON_MEDIA_TYPES, JSON_MEDIA_RANGES)
+            {
+                json.consider(specificity * 2, range.quality);
+            }
+            if let Some(specificity) = specificity(range.media, HTML_MEDIA_TYPES, HTML_MEDIA_RANGES) {
+                html.consider(specificity * 2 + u8::from(range.utf8), range.quality);
+            }
+        }
+    }
+    if json.quality > html.quality {
         Format::Json
     } else {
         Format::Html
     }
+}
+
+#[derive(Default)]
+struct Preference {
+    specificity: u8,
+    quality: u16,
+}
+
+impl Preference {
+    const fn consider(&mut self, specificity: u8, quality: u16) {
+        if specificity > self.specificity || specificity == self.specificity && quality > self.quality {
+            self.specificity = specificity;
+            self.quality = quality;
+        }
+    }
+}
+
+struct AcceptRange<'a> {
+    media: &'a str,
+    quality: u16,
+    utf8: bool,
+}
+
+fn parse_accept_range(range: &str) -> Option<AcceptRange<'_>> {
+    let mut parts = range.split(';');
+    let media = parts.next()?.trim();
+    let mut quality = None;
+    let mut utf8 = false;
+    for parameter in parts {
+        let (name, value) = parameter.split_once('=')?;
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("q") {
+            if quality.is_some() {
+                return None;
+            }
+            quality = Some(parse_qvalue(value)?);
+        } else if name.eq_ignore_ascii_case("charset") {
+            if utf8 || !(value.eq_ignore_ascii_case("utf-8") || value.eq_ignore_ascii_case("\"utf-8\"")) {
+                return None;
+            }
+            utf8 = true;
+        } else {
+            return None;
+        }
+    }
+    (!media.is_empty()).then_some(AcceptRange {
+        media,
+        quality: quality.unwrap_or(1000),
+        utf8,
+    })
+}
+
+fn parse_qvalue(value: &str) -> Option<u16> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 3 || !fraction.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    match whole {
+        "0" => Some(
+            fraction
+                .bytes()
+                .fold(0_u16, |quality, digit| quality * 10 + u16::from(digit - b'0'))
+                * [1000, 100, 10, 1][fraction.len()],
+        ),
+        "1" if fraction.bytes().all(|digit| digit == b'0') => Some(1000),
+        _ => None,
+    }
+}
+
+const JSON_MEDIA_TYPES: &[&str] = &[
+    "application/json",
+    "application/vnd.pypi.simple.v1+json",
+    "application/vnd.pypi.simple.latest+json",
+];
+const JSON_MEDIA_RANGES: &[&str] = &["application/*"];
+const HTML_MEDIA_TYPES: &[&str] = &[
+    "text/html",
+    "application/vnd.pypi.simple.v1+html",
+    "application/vnd.pypi.simple.latest+html",
+];
+const HTML_MEDIA_RANGES: &[&str] = &["text/*", "application/*"];
+
+fn specificity(media: &str, types: &[&str], ranges: &[&str]) -> Option<u8> {
+    types
+        .iter()
+        .any(|candidate| media.eq_ignore_ascii_case(candidate))
+        .then_some(2)
+        .or_else(|| {
+            ranges
+                .iter()
+                .any(|candidate| media.eq_ignore_ascii_case(candidate))
+                .then_some(1)
+        })
+        .or_else(|| media.eq_ignore_ascii_case("*/*").then_some(0))
 }
 
 /// The PEP 658 `.metadata` sibling: a resolver reads a distribution's `METADATA` without downloading

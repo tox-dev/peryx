@@ -120,6 +120,66 @@ async fn test_project_list_html() {
     assert!(body.contains("peryxpkg"));
 }
 #[rstest]
+#[case::html_preferred("text/html, application/vnd.pypi.simple.v1+json;q=0.001", "text/html; charset=utf-8")]
+#[case::json_refused("application/vnd.pypi.simple.v1+json;q=0", "text/html; charset=utf-8")]
+#[case::json_preferred(
+    "text/html;q=0.001, application/vnd.pypi.simple.v1+json",
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::specific_refusal_overrides_wildcard("*/*, application/vnd.pypi.simple.v1+json;q=0", "text/html; charset=utf-8")]
+#[case::text_refusal_leaves_json("text/*;q=0, */*", "application/vnd.pypi.simple.v1+json")]
+#[case::specific_html_quality_overrides_wildcard(
+    "application/*, text/html;q=0.5",
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::mixed_case_json("Application/Vnd.Pypi.Simple.V1+Json", "application/vnd.pypi.simple.v1+json")]
+#[case::latest_html_preferred(
+    "application/vnd.pypi.simple.latest+json;q=0.2, application/vnd.pypi.simple.latest+html;q=0.3",
+    "text/html; charset=utf-8"
+)]
+#[case::utf8_html_parameter(
+    "text/html;charset=\"utf-8\";q=0.6, application/json;q=0.5",
+    "text/html; charset=utf-8"
+)]
+#[case::json_charset_is_not_supported("application/json;charset=utf-8, text/html;q=0.5", "text/html; charset=utf-8")]
+#[case::uppercase_quality("application/json;Q=0.9, text/html;q=0.8", "application/vnd.pypi.simple.v1+json")]
+#[case::maximum_quality("application/json;q=1.000", "application/vnd.pypi.simple.v1+json")]
+#[case::equal_quality_uses_html("application/vnd.pypi.simple.v1+json, text/html", "text/html; charset=utf-8")]
+#[case::duplicate_range_uses_higher_quality(
+    "application/json;q=0.1, application/json;q=0.8, text/html;q=0.5",
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::invalid_quality("application/json;q=1.001", "text/html; charset=utf-8")]
+#[case::overprecise_quality("application/json;q=0.0001", "text/html; charset=utf-8")]
+#[case::nonnumeric_quality("application/json;q=0.x", "text/html; charset=utf-8")]
+#[case::missing_quality_value("application/json;q", "text/html; charset=utf-8")]
+#[case::duplicate_quality("application/json;q=1;q=0.5", "text/html; charset=utf-8")]
+#[case::duplicate_charset(
+    "text/html;charset=utf-8;charset=utf-8, application/json;q=0.5",
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::unsupported_charset(
+    "text/html;charset=iso-8859-1, application/json;q=0.5",
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::parameterized_refusal_is_more_specific(
+    "text/html, text/html;charset=utf-8;q=0, application/json;q=0.5",
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::unknown_parameter("application/json;version=1", "text/html; charset=utf-8")]
+#[case::empty_media_range(";q=1, application/json;q=0.5", "application/vnd.pypi.simple.v1+json")]
+#[tokio::test]
+async fn test_simple_negotiation_honors_quality_values(#[case] accept: &str, #[case] expected_content_type: &str) {
+    let h = harness().await;
+
+    let (status, headers, _) = get(&h.state, "/pypi/simple/", Some(accept)).await;
+
+    assert_eq!(
+        (status, headers[header::CONTENT_TYPE].to_str().unwrap()),
+        (StatusCode::OK, expected_content_type)
+    );
+}
+#[rstest]
 #[case::html("text/html", "text/html; charset=utf-8")]
 #[case::pep691_json("application/json", "application/vnd.pypi.simple.v1+json")]
 #[tokio::test]

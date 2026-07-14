@@ -29,7 +29,7 @@ pub(super) fn accept_param() -> ParameterBuilder {
         .name("Accept")
         .parameter_in(ParameterIn::Header)
         .description(Some(
-            "`application/vnd.pypi.simple.v1+json` for PEP 691 JSON; anything else gets PEP 503 HTML",
+            "Clients may rank PEP 691 JSON and PEP 503 HTML media ranges with `q` weights",
         ))
         .example(Some(json!(MIME_SIMPLE_JSON)))
 }
