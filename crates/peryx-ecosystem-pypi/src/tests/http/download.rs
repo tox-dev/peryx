@@ -244,6 +244,101 @@ async fn test_cached_file_serves_the_whole_wheel_for_a_range_it_cannot_read(#[ca
     assert!(!headers.contains_key(header::CONTENT_RANGE));
     assert_eq!(body, WHEEL);
 }
+fn wheel_etag() -> String {
+    format!("\"{}\"", Digest::of(WHEEL).as_str())
+}
+
+#[rstest]
+#[case::get("GET")]
+#[case::head("HEAD")]
+#[tokio::test]
+async fn test_cached_file_is_served_under_its_digest_as_an_entity_tag(#[case] verb: &str) {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+
+    let (status, headers, _) = send_bytes(&h.state, verb, &uri, &[]).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::ETAG], wheel_etag());
+}
+#[rstest]
+#[case::exact(&wheel_etag())]
+#[case::weak(&format!("W/{}", wheel_etag()))]
+#[case::any("*")]
+#[case::list(&format!("\"0000\", {}", wheel_etag()))]
+#[tokio::test]
+async fn test_cached_file_matching_if_none_match_is_not_modified(#[case] field: &str) {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+
+    let (status, headers, body) = get_bytes_with_headers(&h.state, &uri, &[("if-none-match", field)]).await;
+
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(headers[header::ETAG], wheel_etag());
+    assert_eq!(headers[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
+    assert!(body.is_empty());
+}
+#[rstest]
+#[case::other_digest("\"0000\"")]
+#[case::malformed("not-a-tag")]
+#[tokio::test]
+async fn test_cached_file_serves_the_wheel_for_an_if_none_match_it_does_not_meet(#[case] field: &str) {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+
+    let (status, headers, body) = get_bytes_with_headers(&h.state, &uri, &[("if-none-match", field)]).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::ETAG], wheel_etag());
+    assert_eq!(body, WHEEL);
+}
+#[tokio::test]
+async fn test_matching_if_none_match_answers_before_the_range_is_read() {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+
+    let conditional = [("if-none-match", &*wheel_etag()), ("range", "bytes=2-5")];
+    let (status, headers, body) = get_bytes_with_headers(&h.state, &uri, &conditional).await;
+
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(!headers.contains_key(header::CONTENT_RANGE));
+    assert!(body.is_empty());
+}
+#[tokio::test]
+async fn test_range_is_served_when_if_none_match_holds_other_bytes() {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+
+    let conditional = [("if-none-match", "\"0000\""), ("range", "bytes=2-5")];
+    let (status, headers, body) = get_bytes_with_headers(&h.state, &uri, &conditional).await;
+
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(headers[header::ETAG], wheel_etag());
+    assert_eq!(headers[header::CONTENT_RANGE], format!("bytes 2-5/{}", WHEEL.len()));
+    assert_eq!(body, &WHEEL[2..=5]);
+}
+#[tokio::test]
+async fn test_matching_if_none_match_never_fetches_an_uncached_artifact() {
+    let h = harness().await;
+    let digest = Digest::of(WHEEL);
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, None).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(WHEEL.to_vec()))
+        .expect(0)
+        .mount(&h.server)
+        .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await; // registers the file url
+
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, headers, body) = get_bytes_with_headers(&h.state, &uri, &[("if-none-match", &wheel_etag())]).await;
+
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(headers[header::ETAG], wheel_etag());
+    assert!(body.is_empty());
+    assert!(!h.state.blobs.exists(&digest));
+}
 #[tokio::test]
 async fn test_file_path_without_filename_is_not_found() {
     let h = harness().await;

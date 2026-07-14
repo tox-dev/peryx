@@ -74,6 +74,18 @@ pub(super) fn range_param() -> ParameterBuilder {
         .example(Some(json!("bytes=0-1023")))
 }
 
+pub(super) fn if_none_match_param() -> ParameterBuilder {
+    ParameterBuilder::new()
+        .name("If-None-Match")
+        .parameter_in(ParameterIn::Header)
+        .description(Some(
+            "Entity tags the client already holds; a match answers `304` before any range is read",
+        ))
+        .example(Some(json!(
+            "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\""
+        )))
+}
+
 pub(super) fn filename_param(example: &str) -> ParameterBuilder {
     ParameterBuilder::new()
         .name("filename")

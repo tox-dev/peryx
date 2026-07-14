@@ -23,7 +23,15 @@ pub async fn get_bytes_with_headers(
     uri: &str,
     extra_headers: &[(&str, &str)],
 ) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let mut builder = Request::builder().uri(uri).method("GET");
+    send_bytes(state, "GET", uri, extra_headers).await
+}
+pub async fn send_bytes(
+    state: &Arc<AppState>,
+    verb: &str,
+    uri: &str,
+    extra_headers: &[(&str, &str)],
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let mut builder = Request::builder().uri(uri).method(verb);
     for (name, value) in extra_headers {
         builder = builder.header(*name, *value);
     }

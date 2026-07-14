@@ -11,6 +11,7 @@
 
 pub mod access;
 pub mod body;
+pub mod conditional;
 pub mod discovery;
 pub mod download;
 mod driver_set;

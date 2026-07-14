@@ -1035,7 +1035,7 @@
           "files"
         ],
         "summary": "Download an artifact",
-        "description": "Serves the blob if cached; otherwise fetches it from its upstream cache, verifies the sha256, caches it, and serves it. The `{filename}` segment is display context and must be percent-encoded as one path segment. Responses are immutable (`Cache-Control: max-age=31536000`). A cached blob honors a single byte range, so an interrupted download can resume; a range this server cannot read is ignored and the whole artifact served.",
+        "description": "Serves the blob if cached; otherwise fetches it from its upstream cache, verifies the sha256, caches it, and serves it. The `{filename}` segment is display context and must be percent-encoded as one path segment. Responses are immutable (`Cache-Control: max-age=31536000`) and carry the quoted sha256 as their `ETag`. A cached blob honors a single byte range, so an interrupted download can resume; a range this server cannot read is ignored and the whole artifact served.",
         "parameters": [
           {
             "name": "route",
@@ -1064,6 +1064,13 @@
             "description": "One byte range over a cached artifact; multiple ranges are ignored",
             "required": false,
             "example": "bytes=0-1023"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "Entity tags the client already holds; a match answers `304` before any range is read",
+            "required": false,
+            "example": "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\""
           }
         ],
         "responses": {
@@ -1078,6 +1085,9 @@
             "content": {
               "application/octet-stream": {}
             }
+          },
+          "304": {
+            "description": "`If-None-Match` names the artifact's digest, so no body is sent"
           },
           "400": {
             "description": "The digest is not 64 lowercase hex, or the filename is not a safe path segment"

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
+use peryx_driver::conditional::if_none_match;
 use peryx_driver::not_found;
 use peryx_driver::range::{RangeSpec, parse_range, unsatisfiable_range};
 use peryx_driver::state::ServingState;
@@ -204,8 +205,38 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
             CacheContext::metadata(&route, digest.as_str(), &filename),
         );
     }
+    let etag = format!("\"{}\"", digest.as_str());
+    if let Some(response) = not_modified(headers, &etag) {
+        return response;
+    }
     let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok());
-    serve_blob(state, route, &filename, digest, range).await
+    serve_blob(state, route, &filename, digest, range, &etag).await
+}
+
+const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+
+/// The `304` a client holding these bytes earns, or nothing when it holds other bytes.
+///
+/// RFC 9110 s13.1.2 puts this condition ahead of the method and of `Range`, and the access and
+/// download-policy checks have run by now, so a match answers the request before anything opens the
+/// blob or fetches it from upstream. The `304` repeats the metadata a `200` would have carried, minus
+/// the body.
+///
+/// A digest this index has never cached matches all the same: the URL names the bytes, so a client
+/// holding them holds the current representation whether or not the store does.
+fn not_modified(headers: &HeaderMap, etag: &str) -> Option<Response> {
+    let field = headers.get(header::IF_NONE_MATCH)?.to_str().ok()?;
+    if_none_match(field, etag).then(|| {
+        (
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag),
+                (header::CACHE_CONTROL, IMMUTABLE),
+                (header::ACCEPT_RANGES, "bytes"),
+            ],
+        )
+            .into_response()
+    })
 }
 
 fn download_policy_response(state: &ServingState, index: &Index, filename: &str, digest: &Digest) -> Option<Response> {
@@ -276,12 +307,14 @@ async fn serve_blob(
     filename: &str,
     digest: Digest,
     range: Option<&str>,
+    etag: &str,
 ) -> Response {
     let digest_hex = digest.as_str().to_owned();
     let blob_headers = [
         (header::CONTENT_TYPE, "application/octet-stream"),
-        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        (header::CACHE_CONTROL, IMMUTABLE),
         (header::ACCEPT_RANGES, "bytes"),
+        (header::ETAG, etag),
     ];
     match cache::stream_file(state.clone(), digest, route.clone(), filename.to_owned()).await {
         Ok(cache::FileOutcome::Cached(path)) => {
