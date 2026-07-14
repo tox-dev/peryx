@@ -1,6 +1,7 @@
 //! Cross-cutting serving behavior.
 
 use super::support::*;
+use rstest::rstest;
 
 #[tokio::test]
 async fn test_negative_cache_expires_by_clock() {
@@ -166,6 +167,29 @@ async fn test_artifact_path_reports_an_unfetchable_file() {
         .await
         .unwrap_err();
     assert!(err.contains("artifact on index"), "{err}");
+}
+
+#[rstest]
+#[case::pep440(&["2.0", "1!1.0rc1", "10.0", "1!1.0.post01", "1!1.0.post1", "1.0"], "1!1.0.post1")]
+#[case::legacy(&["legacy-z", "legacy-a"], "legacy-z")]
+#[tokio::test]
+async fn test_project_page_selects_latest_version(#[case] versions: &[&str], #[case] expected: &str) {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let page = crate::to_json(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "flask",
+        "versions": versions,
+        "files": [],
+    }));
+    mount_json_page(&h.server, &page).await;
+    let (_, meta) = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.version.as_deref(), Some(expected));
 }
 
 #[tokio::test]

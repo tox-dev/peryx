@@ -114,11 +114,10 @@ fn ProjectBody(
     set_token: WriteSignal<String>,
     set_outcome: WriteSignal<String>,
 ) -> impl IntoView {
-    let latest = ui
-        .versions
-        .last()
-        .cloned()
-        .or_else(|| meta.version.clone())
+    let latest = meta
+        .version
+        .clone()
+        .or_else(|| ui.versions.last().cloned())
         .unwrap_or_default();
     let install = format!("uv pip install --index-url {} {}", simple_index_url(&route), ui.name);
     let description = meta.description.as_ref().map(render_description).unwrap_or_default();

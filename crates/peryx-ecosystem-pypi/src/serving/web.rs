@@ -40,11 +40,22 @@ pub(super) async fn project_page(
     // `to_json` serializes the detail, so parsing it straight back cannot fail.
     let value = serde_json::from_str(&to_json(&detail)).expect("to_json emits JSON that round-trips");
     let ui = ui_project_from_detail(&value);
-    let meta = match ui.files.iter().rev().find(|file| file.has_metadata) {
+    let mut meta = match ui.files.iter().rev().find(|file| file.has_metadata) {
         Some(file) => metadata_for(&state, &route, file).await?,
         None => UiMeta::default(),
     };
+    meta.version = latest_version(&ui.versions).or(meta.version);
     Ok(Some((ui, meta)))
+}
+
+fn latest_version(versions: &[String]) -> Option<String> {
+    versions
+        .iter()
+        .filter_map(|version| crate::parse_version(version).map(|parsed| (parsed, version)))
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
+        .map(|(_, version)| version)
+        .or_else(|| versions.iter().max())
+        .cloned()
 }
 
 /// Fetch and parse the PEP 658 metadata sibling of `file` into the neutral view model.

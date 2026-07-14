@@ -8,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use peryx_core::path::local_file_url;
-use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::store::{CachedIndex, PypiStore as _};
 use peryx_ecosystem_pypi::upload::Uploaded;
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use peryx_identity::{Action, Glob, Grant, Principal, Signer};
@@ -718,6 +718,56 @@ async fn test_ui_project_page_renders_metadata(ui_router: (tempfile::TempDir, ax
     assert!(body.contains("badge meta-badge"));
     assert!(body.contains("Manage uploads"));
     assert!(body.contains("1.2 kB"));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_selects_latest_pep440_version() {
+    let (_dir, router) = version_router(&["2.0", "1!1.0rc1", "10.0", "1!1.0.post01", "1!1.0.post1", "1.0"]);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<span class=\"version\">1!1.0.post1</span>"), "{body}");
+}
+
+#[rstest]
+#[case::ascending(&["legacy-a", "legacy-z"])]
+#[case::descending(&["legacy-z", "legacy-a"])]
+#[tokio::test]
+async fn test_ui_project_page_selects_stable_legacy_version(#[case] versions: &[&str]) {
+    let (_dir, router) = version_router(versions);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<span class=\"version\">legacy-z</span>"), "{body}");
+}
+
+fn version_router(versions: &[&str]) -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ui_config(&dir);
+    let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
+        panic!("pypi test index must be cached");
+    };
+    *offline = true;
+    let state = build_state(&config).unwrap();
+    state
+        .meta
+        .put_index(
+            "pypi/veloxdemo",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 0,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: serde_json::to_vec(&serde_json::json!({
+                    "meta": {"api-version": "1.1"},
+                    "name": "veloxdemo",
+                    "versions": versions,
+                    "files": [],
+                }))
+                .unwrap(),
+            },
+        )
+        .unwrap();
+    (dir, router_for(state))
 }
 
 #[tokio::test]
