@@ -216,6 +216,29 @@ async fn test_search_indexes_metadata_field_lists_and_long_text() {
     assert_eq!(value["results"][0]["normalized_name"], "longtext");
     assert_eq!(value["results"][0]["summary"], "metadata fields");
 }
+
+#[tokio::test]
+async fn test_search_indexes_legacy_home_page() {
+    let h = harness().await;
+    put_uploaded_package_with_metadata(
+        &h.state,
+        "legacy-home",
+        "Metadata-Version: 2.1\nName: legacy-home\nVersion: 1.0\nHome-Page: https://legacy.example/project\n",
+        None,
+    );
+
+    let (status, _headers, body) = get(
+        &h.state,
+        "/hosted/+search?q=legacy.example&page_size=25",
+        Some("application/json"),
+    )
+    .await;
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["total"], 1);
+    assert_eq!(value["results"][0]["normalized_name"], "legacy-home");
+}
 #[test]
 fn test_search_public_filter_labels_and_scan_errors() {
     let dir = tempfile::tempdir().unwrap();

@@ -371,6 +371,9 @@ fn push_metadata(text: &mut String, metadata: &CoreMetadataDoc) {
         push_text(text, label);
         push_text(text, url);
     }
+    if let Some(home_page) = &metadata.home_page {
+        push_text(text, home_page);
+    }
     push_text(text, &metadata.description);
 }
 

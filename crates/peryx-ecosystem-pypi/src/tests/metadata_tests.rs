@@ -62,11 +62,9 @@ fn test_parse_metadata_headers_and_body() {
     assert_eq!(doc.classifiers, ["Development Status :: 4 - Beta"]);
     assert_eq!(
         doc.project_urls,
-        [
-            ("Homepage".to_owned(), "https://example.test".to_owned()),
-            ("Homepage".to_owned(), "https://legacy.example.test".to_owned())
-        ]
+        [("Homepage".to_owned(), "https://example.test".to_owned())]
     );
+    assert_eq!(doc.home_page.as_deref(), Some("https://legacy.example.test"));
     assert_eq!(doc.description_content_type.as_deref(), Some("text/markdown"));
     assert!(doc.description.starts_with("# peryxpkg"));
 }
@@ -123,6 +121,29 @@ fn test_parse_metadata_splits_headers_from_body_on_a_crlf_blank_line() {
     assert_eq!(doc.name, "x");
     assert_eq!(doc.version, "1");
     assert_eq!(doc.description, "Description body.\r\nVersion: 2 in prose.");
+}
+
+#[test]
+fn test_ui_meta_keeps_legacy_home_page_in_links() {
+    use peryx_core::UiBlock;
+
+    let links = crate::ui_meta(
+        "Metadata-Version: 2.1\nName: p\nVersion: 1.0\nProject-URL: Docs, https://docs.example\nHome-Page: https://home.example\n",
+    )
+    .blocks
+    .into_iter()
+    .find_map(|block| match block {
+        UiBlock::Links { links, .. } => Some(links),
+        _ => None,
+    });
+
+    assert_eq!(
+        links,
+        Some(vec![
+            ("Docs".to_owned(), "https://docs.example".to_owned()),
+            ("Homepage".to_owned(), "https://home.example".to_owned())
+        ])
+    );
 }
 
 #[test]

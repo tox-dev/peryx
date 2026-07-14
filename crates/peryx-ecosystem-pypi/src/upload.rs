@@ -7,10 +7,11 @@
 use std::collections::BTreeMap;
 
 use md5::{Digest as _, Md5};
+use url::Url;
 
 use crate::{
-    CoreMetadata, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance, Yanked,
-    is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
+    CoreMetadata, CoreMetadataDoc, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance,
+    Yanked, is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
     parse_version_specifiers, to_json,
 };
 use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
@@ -93,6 +94,8 @@ pub enum UploadError {
     InvalidContent(String),
     /// The metadata document was not UTF-8.
     InvalidMetadataUtf8,
+    /// `Project-URL` did not contain a 1-32 character label and an HTTP(S) URL.
+    InvalidProjectUrl { label: String, url: String },
     /// The metadata project name does not match the upload form.
     MetadataNameMismatch { metadata: String, form: String },
     /// The metadata version does not match the upload form.
@@ -416,7 +419,7 @@ fn validate_metadata_identity(
     )?;
     compare_metadata_list("License-File", &form.license_files, &metadata.license_files)?;
     compare_metadata_list("Provides-Extra", &form.provides_extra, &metadata.provides_extra)?;
-    compare_project_urls(form, &metadata.project_urls)
+    compare_project_urls(form, metadata)
 }
 
 fn compare_metadata_field(field: &'static str, form: Option<&str>, metadata: Option<&str>) -> Result<(), UploadError> {
@@ -451,15 +454,25 @@ fn compare_metadata_list(field: &'static str, form: &[String], metadata: &[Strin
     }
 }
 
-fn compare_project_urls(form: &UploadForm, metadata: &[(String, String)]) -> Result<(), UploadError> {
+fn compare_project_urls(form: &UploadForm, metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
+    if let Some((label, url)) = metadata.project_urls.iter().find(|(label, url)| {
+        label.is_empty()
+            || label.chars().count() > 32
+            || !Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+    }) {
+        return Err(UploadError::InvalidProjectUrl {
+            label: label.clone(),
+            url: url.clone(),
+        });
+    }
     let form_urls = upload_project_urls(form);
     if form_urls.is_empty() {
         return Ok(());
     }
-    let mut metadata_urls: Vec<_> = metadata
-        .iter()
-        .map(|(label, url)| (label.clone(), url.clone()))
-        .collect();
+    let mut metadata_urls = metadata.project_urls.clone();
+    if let Some(home_page) = &metadata.home_page {
+        metadata_urls.push(("Homepage".to_owned(), home_page.clone()));
+    }
     metadata_urls.sort();
     if metadata_urls == form_urls {
         Ok(())
