@@ -567,7 +567,7 @@ async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8]) -> Digest {
+fn put_file(state: &peryx_driver::AppState, filename: &str, content: &[u8], core_metadata: CoreMetadata) -> Digest {
     let digest = Digest::of(content);
     state.blobs.write_verified(content, &digest).unwrap();
     let uploaded = Uploaded {
@@ -580,7 +580,7 @@ fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8
             size: Some(content.len() as u64),
             upload_time: None,
             yanked: Yanked::No,
-            core_metadata: CoreMetadata::Absent,
+            core_metadata,
             dist_info_metadata: CoreMetadata::Absent,
             gpg_sig: None,
             provenance: Provenance::Absent,
@@ -592,6 +592,10 @@ fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8
         .unwrap();
     state.meta.put_project("hosted", "veloxdemo", "veloxdemo").unwrap();
     digest
+}
+
+fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8]) -> Digest {
+    put_file(state, filename, content, CoreMetadata::Absent)
 }
 
 fn put_filter_files(state: &peryx_driver::AppState) {
@@ -716,11 +720,11 @@ async fn test_ui_project_page_renders_metadata(ui_router: (tempfile::TempDir, ax
     assert!(body.contains("1.2 kB"));
 }
 
-#[rstest]
 #[tokio::test]
-async fn test_ui_project_page_sanitizes_metadata_links(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
-    let wheel = wheel_with_metadata(concat!(
+async fn test_ui_project_page_sanitizes_metadata_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    let metadata = concat!(
         "Metadata-Version: 2.1\n",
         "Name: veloxdemo\n",
         "Version: 1.0.0\n",
@@ -728,8 +732,18 @@ async fn test_ui_project_page_sanitizes_metadata_links(ui_router: (tempfile::Tem
         "Project-URL: Unsafe, JaVaScRiPt:alert(1)\n",
         "Description-Content-Type: text/markdown\n\n",
         "[guide](https://example.com/guide) [unsafe](data:text/html;base64,PHNjcmlwdD4=)\n",
-    ));
-    upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;
+    );
+    let metadata_digest = state.blobs.write(metadata.as_bytes()).unwrap();
+    put_file(
+        &state,
+        "veloxdemo-1.0.0-py3-none-any.whl",
+        &wheel_with_metadata(metadata),
+        CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+            "sha256".to_owned(),
+            metadata_digest.as_str().to_owned(),
+        )])),
+    );
+    let router = router_for(state);
     let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("href=\"https://example.com/docs\""));
