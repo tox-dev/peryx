@@ -717,6 +717,52 @@ async fn test_ui_project_page_renders_metadata(ui_router: (tempfile::TempDir, ax
 }
 
 #[rstest]
+#[tokio::test]
+async fn test_ui_project_page_sanitizes_metadata_links(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let wheel = wheel_with_metadata(concat!(
+        "Metadata-Version: 2.1\n",
+        "Name: veloxdemo\n",
+        "Version: 1.0.0\n",
+        "Project-URL: Documentation, https://example.com/docs\n",
+        "Project-URL: Unsafe, JaVaScRiPt:alert(1)\n",
+        "Description-Content-Type: text/markdown\n\n",
+        "[guide](https://example.com/guide) [unsafe](data:text/html;base64,PHNjcmlwdD4=)\n",
+    ));
+    upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("href=\"https://example.com/docs\""));
+    assert!(body.contains("href=\"https://example.com/guide\""));
+    assert!(body.contains("rel=\"external nofollow noopener noreferrer\""));
+    assert!(body.contains("<li>Unsafe</li>"));
+    assert!(body.contains(">guide</a> unsafe</p>"));
+    assert!(!body.contains("href=\"JaVaScRiPt:"), "{body}");
+    assert!(!body.contains("href=\"data:text/html"), "{body}");
+}
+
+fn wheel_with_metadata(metadata: &str) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    let dist_info = "veloxdemo-1.0.0.dist-info";
+    let entries = [
+        (format!("{dist_info}/METADATA"), metadata.as_bytes().to_vec()),
+        (
+            format!("{dist_info}/WHEEL"),
+            b"Wheel-Version: 1.0\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n".to_vec(),
+        ),
+    ];
+    for (path, bytes) in &entries {
+        zip.start_file(path, options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    let record_path = format!("{dist_info}/RECORD");
+    zip.start_file(&record_path, options).unwrap();
+    zip.write_all(wheel_record(&entries, &record_path).as_bytes()).unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+#[rstest]
 #[case::substring(
     "/browse?index=hosted&project=veloxdemo&filename=cp312",
     &["1 of 3 files"][..],

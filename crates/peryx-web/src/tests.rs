@@ -1,4 +1,5 @@
 use peryx_core::UiDescription;
+use rstest::rstest;
 
 use crate::markdown::render_description;
 use crate::model::{UiSearchPage, UiSnapshot, members_from_listing, projects_from_list};
@@ -92,6 +93,56 @@ fn test_render_description_markdown_escapes_inline_html() {
     assert!(html.contains("<strong>bold</strong>"));
     assert!(!html.contains("<script>"), "inline HTML must be escaped, not executed");
     assert!(html.contains("&lt;script&gt;"));
+}
+
+#[rstest]
+#[case::javascript("JaVaScRiPt:alert(1)")]
+#[case::data("data:text/html;base64,PHNjcmlwdD4=")]
+#[case::malformed("http://[invalid")]
+fn test_render_description_markdown_removes_unsafe_link_target(#[case] target: &str) {
+    let html = render_description(&UiDescription {
+        text: format!("[unsafe]({target})"),
+        content_type: Some("text/markdown".to_owned()),
+    });
+    assert_eq!(html, "<p>unsafe</p>\n");
+}
+
+#[test]
+fn test_render_description_markdown_removes_unsafe_image_target() {
+    let html = render_description(&UiDescription {
+        text: "![payload](data:image/svg+xml;base64,PHN2Zz4=)".to_owned(),
+        content_type: Some("text/markdown".to_owned()),
+    });
+    assert_eq!(html, "<p>payload</p>\n");
+}
+
+#[test]
+fn test_render_description_markdown_preserves_safe_image() {
+    let html = render_description(&UiDescription {
+        text: "![payload](https://example.com/image.svg)".to_owned(),
+        content_type: Some("text/markdown".to_owned()),
+    });
+    assert_eq!(
+        html,
+        "<p><img src=\"https://example.com/image.svg\" alt=\"payload\" /></p>\n"
+    );
+}
+
+#[rstest]
+#[case::http("http://example.com/docs")]
+#[case::https("https://example.com/docs")]
+#[case::mailto("mailto:maintainer@example.com")]
+#[case::relative("../docs/")]
+#[case::fragment("#usage")]
+fn test_render_description_markdown_preserves_safe_link(#[case] target: &str) {
+    let html = render_description(&UiDescription {
+        text: format!("[docs]({target})"),
+        content_type: Some("text/markdown".to_owned()),
+    });
+    assert_eq!(
+        html,
+        format!("<p><a rel=\"external nofollow noopener noreferrer\" href=\"{target}\">docs</a></p>\n")
+    );
 }
 
 #[test]

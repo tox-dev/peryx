@@ -17,7 +17,7 @@ use regex::Regex;
 
 use super::{ErrorMessage, copy_to_clipboard, human_size};
 use crate::data::load_project_view;
-use crate::markdown::render_description;
+use crate::markdown::{EXTERNAL_LINK_REL, is_safe_link, render_description};
 use crate::model::{UiFile, UiProject, UiProjectView};
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_url, browse_index_url, browse_project_file_search_url,
@@ -403,7 +403,13 @@ fn block_view(block: UiBlock) -> AnyView {
         UiBlock::Links { label, links } => view! {
             <h3>{label}</h3>
             <ul class="links-list">
-                {links.into_iter().map(|(text, url)| view! { <li><a href=url rel="external">{text}</a></li> }).collect_view()}
+                {links.into_iter().map(|(text, url)| {
+                    if is_safe_link(&url) {
+                        view! { <li><a href=url rel=EXTERNAL_LINK_REL>{text}</a></li> }.into_any()
+                    } else {
+                        view! { <li>{text}</li> }.into_any()
+                    }
+                }).collect_view()}
             </ul>
         }
         .into_any(),
