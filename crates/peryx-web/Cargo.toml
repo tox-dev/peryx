@@ -54,8 +54,10 @@ regex.workspace = true
 peryx-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+url.workspace = true
 
 [dev-dependencies]
+rstest.workspace = true
 tokio.workspace = true
 
 [lints]

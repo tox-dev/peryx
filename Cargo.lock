@@ -3710,11 +3710,13 @@ dependencies = [
  "peryx-storage",
  "pulldown-cmark",
  "regex",
+ "rstest",
  "send_wrapper",
  "serde",
  "serde_json",
  "tokio",
  "tower-http 0.7.0",
+ "url",
  "wasm-bindgen",
  "web-sys",
 ]
