@@ -227,6 +227,78 @@ fn test_prepare_accepts_valid_project_url(#[case] label: &str, #[case] url: &str
     );
 }
 
+#[rstest]
+#[case::invalid_legacy_name(
+    "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nProvides-Extra: -dev\n",
+    "-dev",
+    "must be a valid project or extra name"
+)]
+#[case::unnormalized_modern_name(
+    "Metadata-Version: 2.3\nName: Flask\nVersion: 1.0\nProvides-Extra: Dev_Test\n",
+    "Dev_Test",
+    "must match ^[a-z0-9]+(-[a-z0-9]+)*$"
+)]
+#[case::unnormalized_latest_name(
+    "Metadata-Version: 2.6\nName: Flask\nVersion: 1.0\nProvides-Extra: Dev_Test\n",
+    "Dev_Test",
+    "must match ^[a-z0-9]+(-[a-z0-9]+)*$"
+)]
+#[case::invalid_modern_name(
+    "Metadata-Version: 2.3\nName: Flask\nVersion: 1.0\nProvides-Extra: -dev\n",
+    "-dev",
+    "must match ^[a-z0-9]+(-[a-z0-9]+)*$"
+)]
+fn test_prepare_rejects_invalid_provided_extra(
+    #[case] metadata: &str,
+    #[case] value: &str,
+    #[case] reason: &'static str,
+) {
+    let bytes = wheel_metadata_bytes(metadata.as_bytes());
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field: "Provides-Extra",
+            value: value.to_owned(),
+            reason,
+        }
+    );
+}
+
+#[test]
+fn test_prepare_rejects_normalized_provided_extra_collision() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nProvides-Extra: Dev.Test\nProvides-Extra: dev_test\n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field: "Provides-Extra",
+            value: "dev_test".to_owned(),
+            reason: "duplicates an earlier value after normalization",
+        }
+    );
+}
+
+#[test]
+fn test_prepare_preserves_legacy_provided_extras() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nProvides-Extra: Dev.Test\nProvides-Extra: docs\n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+    let mut form = staged_form(&bytes);
+    form.provides_extra = vec!["Dev.Test".to_owned(), "docs".to_owned()];
+    let prepared = prepare(form, staged, "root/hosted", 1000).unwrap();
+
+    assert_eq!(
+        crate::parse_metadata(std::str::from_utf8(&prepared.metadata).unwrap()).provides_extra,
+        ["Dev.Test", "docs"]
+    );
+}
+
 #[test]
 fn test_prepare_rejects_conflicting_license_fields() {
     let bytes = wheel_metadata_bytes(

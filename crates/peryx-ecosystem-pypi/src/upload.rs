@@ -4,15 +4,15 @@
 //! form into a stored file is validation plus content addressing. The async multipart reading lives
 //! in the handler; everything it depends on is unit-testable without a server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use md5::{Digest as _, Md5};
 use url::Url;
 
 use crate::{
     CoreMetadata, CoreMetadataDoc, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance,
-    Yanked, is_valid_name, normalize_name, parse_distribution_filename, parse_metadata, parse_version,
-    parse_version_specifiers, to_json,
+    Yanked, is_valid_name, normalize_name, normalize_name_cow, parse_distribution_filename, parse_metadata,
+    parse_version, parse_version_specifiers, to_json,
 };
 use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
 use peryx_storage::meta::{MetaError, MetaStore};
@@ -102,6 +102,12 @@ pub enum UploadError {
     MissingMetadataVersion,
     /// Peryx cannot apply semantics from an unsupported Core Metadata version.
     UnsupportedMetadataVersion(String),
+    /// Core Metadata assigns version-specific constraints to field values.
+    InvalidMetadataValue {
+        field: &'static str,
+        value: String,
+        reason: &'static str,
+    },
     /// The metadata project name does not match the upload form.
     MetadataNameMismatch { metadata: String, form: String },
     /// The metadata version does not match the upload form.
@@ -411,6 +417,7 @@ fn validate_metadata_identity(
     if metadata.license.is_some() && metadata.license_expression.is_some() {
         return Err(UploadError::ConflictingLicenseFields);
     }
+    validate_provided_extras(metadata)?;
     compare_metadata_field(
         "Metadata-Version",
         form.metadata_version.as_deref(),
@@ -444,6 +451,43 @@ fn validate_metadata_version(value: Option<&str>) -> Result<(), UploadError> {
     } else {
         Err(UploadError::UnsupportedMetadataVersion(value.to_owned()))
     }
+}
+
+fn validate_provided_extras(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
+    let normalized_required = matches!(
+        metadata.metadata_version.as_deref(),
+        Some("2.3" | "2.4" | "2.5" | "2.6")
+    );
+    let mut seen = HashSet::with_capacity(metadata.provides_extra.len());
+    for value in &metadata.provides_extra {
+        if !is_valid_name(value) {
+            return Err(UploadError::InvalidMetadataValue {
+                field: "Provides-Extra",
+                value: value.clone(),
+                reason: if normalized_required {
+                    "must match ^[a-z0-9]+(-[a-z0-9]+)*$"
+                } else {
+                    "must be a valid project or extra name"
+                },
+            });
+        }
+        let normalized = normalize_name_cow(value);
+        if normalized_required && normalized.as_ref() != value {
+            return Err(UploadError::InvalidMetadataValue {
+                field: "Provides-Extra",
+                value: value.clone(),
+                reason: "must match ^[a-z0-9]+(-[a-z0-9]+)*$",
+            });
+        }
+        if !seen.insert(normalized) {
+            return Err(UploadError::InvalidMetadataValue {
+                field: "Provides-Extra",
+                value: value.clone(),
+                reason: "duplicates an earlier value after normalization",
+            });
+        }
+    }
+    Ok(())
 }
 
 fn compare_metadata_field(field: &'static str, form: Option<&str>, metadata: Option<&str>) -> Result<(), UploadError> {

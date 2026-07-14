@@ -204,6 +204,9 @@ fn upload_error_reason(err: &UploadError) -> String {
         UploadError::ConflictingLicenseFields => "metadata contains both License and License-Expression".to_owned(),
         UploadError::MissingMetadataVersion => "metadata is missing Metadata-Version".to_owned(),
         UploadError::UnsupportedMetadataVersion(value) => format!("invalid Metadata-Version: {value:?}"),
+        UploadError::InvalidMetadataValue { field, value, reason } => {
+            format!("metadata {field} value {value:?} {reason}")
+        }
         UploadError::InvalidRequiresPython(value) => format!("invalid Requires-Python: {value}"),
         UploadError::MetadataNameMismatch { metadata, form } => {
             format!("metadata name {metadata:?} does not match {form:?}")
