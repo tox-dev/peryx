@@ -1,6 +1,7 @@
 //! Core-metadata validation against the declared form fields.
 
 use super::support::*;
+use rstest::rstest;
 
 #[test]
 fn test_prepare_rejects_metadata_mismatches() {
@@ -123,6 +124,65 @@ fn test_prepare_accepts_matching_metadata_form_fields() {
 
     assert_eq!(prepared.display_name, "Flask");
 }
+
+#[rstest]
+#[case::missing_comma("https://example.test", "", "https://example.test", None)]
+#[case::empty_label(", https://example.test", "", "https://example.test", None)]
+#[case::long_label(
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, https://example.test",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "https://example.test",
+    None
+)]
+#[case::empty_url("Docs,", "Docs", "", None)]
+#[case::malformed_url("Docs, https://example .test", "Docs", "https://example .test", None)]
+#[case::unsupported_scheme(
+    "Docs, irc://example.test",
+    "Docs",
+    "irc://example.test",
+    Some("Docs, irc://example.test")
+)]
+fn test_prepare_rejects_invalid_project_url(
+    #[case] project_url: &str,
+    #[case] label: &str,
+    #[case] url: &str,
+    #[case] form_url: Option<&str>,
+) {
+    let bytes = wheel_metadata_bytes(
+        format!("Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nProject-URL: {project_url}\n").as_bytes(),
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+    let mut form = staged_form(&bytes);
+    form.requires_python = None;
+    form.project_urls.extend(form_url.map(str::to_owned));
+
+    assert_eq!(
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidProjectUrl {
+            label: label.to_owned(),
+            url: url.to_owned()
+        }
+    );
+}
+
+#[rstest]
+#[case::unicode_label("éééééééééééééééééééééééééééééééé", "https://example.test")]
+#[case::url_with_comma("Docs", "https://example.test/a,b")]
+#[case::http_url("Docs", "http://example.test")]
+fn test_prepare_accepts_valid_project_url(#[case] label: &str, #[case] url: &str) {
+    let bytes = wheel_metadata_bytes(
+        format!("Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nProject-URL: {label}, {url}\n").as_bytes(),
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+    let mut form = staged_form(&bytes);
+    form.requires_python = None;
+
+    assert_eq!(
+        prepare(form, staged, "root/hosted", 1000).unwrap().display_name,
+        "Flask"
+    );
+}
+
 #[test]
 fn test_prepare_rejects_invalid_requires_python_and_clock() {
     let wheel = wheel_metadata("Flask", "1.0");

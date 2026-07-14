@@ -260,6 +260,12 @@ pub(super) fn upload_error_message(err: &UploadError) -> (StatusCode, String) {
             StatusCode::BAD_REQUEST,
             "artifact metadata is not valid UTF-8".to_owned(),
         ),
+        UploadError::InvalidProjectUrl { label, url } => (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid metadata Project-URL label {label:?} with URL {url:?}: expected a label of 1 to 32 characters and an HTTP or HTTPS URL"
+            ),
+        ),
         UploadError::MetadataNameMismatch { metadata, form } => (
             StatusCode::BAD_REQUEST,
             format!("metadata Name {metadata:?} does not match upload name {form:?}"),

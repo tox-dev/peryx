@@ -21,6 +21,7 @@ pub struct CoreMetadataDoc {
     pub classifiers: Vec<String>,
     /// `(label, url)` pairs from `Project-URL` headers.
     pub project_urls: Vec<(String, String)>,
+    pub home_page: Option<String>,
     /// The long description: the `Description` header or the document body.
     pub description: String,
     /// The `Description-Content-Type`, for example `text/markdown`.
@@ -73,7 +74,7 @@ pub fn parse_metadata(text: &str) -> CoreMetadataDoc {
                 let (label, url) = value.split_once(',').unwrap_or(("", value));
                 doc.project_urls.push((label.trim().to_owned(), url.trim().to_owned()));
             }
-            "home-page" => doc.project_urls.push(("Homepage".to_owned(), value.to_owned())),
+            "home-page" => doc.home_page = non_empty(value),
             "description" => value.clone_into(&mut doc.description),
             "description-content-type" => doc.description_content_type = non_empty(value),
             _ => {}
@@ -134,10 +135,14 @@ impl CoreMetadataDoc {
                 });
             }
         }
-        if !self.project_urls.is_empty() {
+        let mut links = self.project_urls.clone();
+        if let Some(home_page) = &self.home_page {
+            links.push(("Homepage".to_owned(), home_page.clone()));
+        }
+        if !links.is_empty() {
             blocks.push(UiBlock::Links {
                 label: "Links".to_owned(),
-                links: self.project_urls.clone(),
+                links,
             });
         }
         if let Some(groups) = classifier_groups(&self.classifiers) {

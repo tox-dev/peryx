@@ -613,6 +613,25 @@ async fn test_upload_content_validation_errors_include_actionable_body() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn test_upload_invalid_project_url_is_bad_request() {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(
+                b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nProject-URL: Docs, javascript:alert(0)\n",
+            )
+            .as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "invalid metadata Project-URL label \"Docs\" with URL \"javascript:alert(0)\": expected a label of 1 to 32 characters and an HTTP or HTTPS URL",
+    )
+    .await;
+}
 #[tokio::test]
 async fn test_upload_metadata_form_fields_are_validated() {
     let h = harness().await;
