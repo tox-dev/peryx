@@ -299,6 +299,51 @@ fn test_prepare_preserves_legacy_provided_extras() {
     );
 }
 
+#[rstest]
+#[case::parent("../LICENSE", "parent directory components are not allowed")]
+#[case::relative_parent("./../LICENSE", "parent directory components are not allowed")]
+#[case::unresolved_parent("licenses/../LICENSE", "parent directory components are not allowed")]
+#[case::glob("licenses/*", "paths must be resolved")]
+#[case::absolute("/licenses/LICENSE", "paths must be relative")]
+#[case::windows_drive("C:/licenses/LICENSE", "paths must be relative")]
+#[case::windows_drive_backslash("C:\\licenses\\LICENSE", "paths must be relative")]
+#[case::backslash("licenses\\LICENSE", "paths must use the '/' delimiter")]
+fn test_prepare_rejects_invalid_license_file(#[case] license_file: &str, #[case] reason: &'static str) {
+    let bytes = wheel_metadata_bytes(
+        format!(
+            "Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: {license_file}\n"
+        )
+        .as_bytes(),
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidLicenseFile {
+            value: license_file.to_owned(),
+            reason,
+        }
+    );
+}
+
+#[rstest]
+#[case::root("License-File: LICENSE\n")]
+#[case::nested("License-File: licenses/LICENSE.MIT\n")]
+#[case::multiple("License-File: licenses/LICENSE.MIT\nLicense-File: licenses/LICENSE.CC0\n")]
+fn test_prepare_accepts_valid_license_file(#[case] license_files: &str) {
+    let bytes = wheel_metadata_bytes(
+        format!("Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n{license_files}").as_bytes(),
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000)
+            .unwrap()
+            .display_name,
+        "Flask"
+    );
+}
+
 #[test]
 fn test_prepare_rejects_conflicting_license_fields() {
     let bytes = wheel_metadata_bytes(

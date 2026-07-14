@@ -694,6 +694,26 @@ async fn test_upload_metadata_form_fields_are_validated() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn test_upload_rejects_invalid_license_file() {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(
+                b"Metadata-Version: 2.4\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: ../LICENSE\n",
+            )
+            .as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "invalid metadata License-File \"../LICENSE\": parent directory components are not allowed",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn test_upload_rejects_conflicting_license_fields() {
     let h = harness().await;

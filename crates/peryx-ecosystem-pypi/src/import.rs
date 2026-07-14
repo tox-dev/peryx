@@ -208,6 +208,7 @@ fn upload_error_reason(err: &UploadError) -> String {
             format!("metadata {field} value {value:?} {reason}")
         }
         UploadError::InvalidRequiresPython(value) => format!("invalid Requires-Python: {value}"),
+        UploadError::InvalidLicenseFile { value, reason } => format!("invalid License-File {value:?}: {reason}"),
         UploadError::MetadataNameMismatch { metadata, form } => {
             format!("metadata name {metadata:?} does not match {form:?}")
         }

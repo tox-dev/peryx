@@ -96,6 +96,8 @@ pub enum UploadError {
     InvalidMetadataUtf8,
     /// `Project-URL` did not contain a 1-32 character label and an HTTP(S) URL.
     InvalidProjectUrl { label: String, url: String },
+    /// `License-File` did not locate a file below the project root.
+    InvalidLicenseFile { value: String, reason: &'static str },
     /// The metadata document contained both `License` and `License-Expression`.
     ConflictingLicenseFields,
     /// Core Metadata semantics depend on a declared version.
@@ -434,6 +436,7 @@ fn validate_metadata_identity(
         form.license_expression.as_deref(),
         metadata.license_expression.as_deref(),
     )?;
+    validate_license_files(&metadata.license_files)?;
     compare_metadata_list("License-File", &form.license_files, &metadata.license_files)?;
     compare_metadata_list("Provides-Extra", &form.provides_extra, &metadata.provides_extra)?;
     compare_project_urls(form, metadata)
@@ -503,6 +506,34 @@ fn compare_metadata_field(field: &'static str, form: Option<&str>, metadata: Opt
             form: form.to_owned(),
         })
     }
+}
+
+/// Core Metadata locates each `License-File` below the project root, as `packaging` does: no parent
+/// components, no unresolved globs, relative, and `/`-delimited.
+fn validate_license_files(values: &[String]) -> Result<(), UploadError> {
+    for value in values {
+        let reason = if value.contains("..") {
+            "parent directory components are not allowed"
+        } else if value.contains('*') {
+            "paths must be resolved"
+        } else if is_absolute_path(value) {
+            "paths must be relative"
+        } else if value.contains('\\') {
+            "paths must use the '/' delimiter"
+        } else {
+            continue;
+        };
+        return Err(UploadError::InvalidLicenseFile {
+            value: value.clone(),
+            reason,
+        });
+    }
+    Ok(())
+}
+
+/// A Windows drive root (`C:/LICENSE`) is absolute without a leading separator.
+fn is_absolute_path(value: &str) -> bool {
+    value.starts_with('/') || matches!(value.as_bytes(), [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic())
 }
 
 fn compare_metadata_list(field: &'static str, form: &[String], metadata: &[String]) -> Result<(), UploadError> {
