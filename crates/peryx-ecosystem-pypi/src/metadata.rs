@@ -130,7 +130,14 @@ impl CoreMetadataDoc {
                 });
             }
         }
-        let mut links = self.project_urls.clone();
+        let mut links: Vec<(String, String)> = self
+            .project_urls
+            .iter()
+            .map(|(label, url)| {
+                let label = well_known_label(label).map_or_else(|| label.clone(), str::to_owned);
+                (label, url.clone())
+            })
+            .collect();
         if let Some(home_page) = &self.home_page {
             links.push(("Homepage".to_owned(), home_page.clone()));
         }
@@ -156,6 +163,29 @@ impl CoreMetadataDoc {
             blocks,
         }
     }
+}
+
+/// The display name of a `Project-URL` label under the well-known project URLs specification (PEP 753),
+/// or `None` for a label that is not well known and so is presented as published. Labels match after
+/// their ASCII punctuation and whitespace are deleted and the rest is lowercased, so `Bug Tracker`,
+/// `bug_tracker` and `bugtracker` all render as `Issue Tracker`.
+fn well_known_label(label: &str) -> Option<&'static str> {
+    let normalized = label
+        .chars()
+        .filter(|character| !character.is_ascii_punctuation() && !character.is_ascii_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    Some(match normalized.as_str() {
+        "homepage" => "Homepage",
+        "source" | "repository" | "sourcecode" | "github" => "Source Code",
+        "download" => "Download",
+        "changelog" | "changes" | "whatsnew" | "history" => "Changelog",
+        "releasenotes" => "Release Notes",
+        "documentation" | "docs" => "Documentation",
+        "issues" | "issue" | "bugs" | "tracker" | "issuetracker" | "bugtracker" => "Issue Tracker",
+        "funding" | "sponsor" | "donate" | "donation" => "Funding",
+        _ => return None,
+    })
 }
 
 /// Group trove classifiers by their top-level `::`-separated category, the way pypi.org presents them.

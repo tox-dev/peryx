@@ -1,4 +1,5 @@
 use peryx_core::UiBlock;
+use rstest::rstest;
 
 use crate::{file_matches_version, parse_metadata, ui_project_from_detail};
 
@@ -154,24 +155,57 @@ fn test_parse_metadata_splits_headers_from_body_on_a_crlf_blank_line() {
 
 #[test]
 fn test_ui_meta_keeps_legacy_home_page_in_links() {
-    use peryx_core::UiBlock;
-
-    let links = crate::ui_meta(
+    let links = ui_links(
         "Metadata-Version: 2.1\nName: p\nVersion: 1.0\nProject-URL: Docs, https://docs.example\nHome-Page: https://home.example\n",
-    )
-    .blocks
-    .into_iter()
-    .find_map(|block| match block {
-        UiBlock::Links { links, .. } => Some(links),
-        _ => None,
-    });
+    );
 
     assert_eq!(
         links,
-        Some(vec![
-            ("Docs".to_owned(), "https://docs.example".to_owned()),
+        [
+            ("Documentation".to_owned(), "https://docs.example".to_owned()),
             ("Homepage".to_owned(), "https://home.example".to_owned())
-        ])
+        ]
+    );
+}
+
+fn ui_links(text: &str) -> Vec<(String, String)> {
+    crate::ui_meta(text)
+        .blocks
+        .into_iter()
+        .find_map(|block| match block {
+            UiBlock::Links { links, .. } => Some(links),
+            _ => None,
+        })
+        .expect("a Links block")
+}
+
+#[rstest]
+#[case::spelled_out("Bug Tracker", "Issue Tracker")]
+#[case::snake_case("bug_tracker", "Issue Tracker")]
+#[case::kebab_case("BUG-TRACKER", "Issue Tracker")]
+#[case::alias("issues", "Issue Tracker")]
+#[case::source_alias("GitHub", "Source Code")]
+#[case::docs_alias("Docs", "Documentation")]
+#[case::funding_alias("Donate", "Funding")]
+#[case::unknown_label("Mastodon", "Mastodon")]
+#[case::unknown_label_keeps_punctuation("Chat (Discord)", "Chat (Discord)")]
+fn test_ui_meta_normalizes_well_known_project_url_labels(#[case] label: &str, #[case] displayed: &str) {
+    let text = format!("Metadata-Version: 2.4\nName: p\nVersion: 1.0\nProject-URL: {label}, https://example.test\n");
+    assert_eq!(
+        ui_links(&text),
+        [(displayed.to_owned(), "https://example.test".to_owned())]
+    );
+}
+
+#[test]
+fn test_parse_metadata_keeps_raw_project_url_labels() {
+    // Normalization is presentation-only, so uploads and the Simple API keep the published label.
+    let doc = parse_metadata(
+        "Metadata-Version: 2.4\nName: p\nVersion: 1.0\nProject-URL: bug_tracker, https://bugs.example\n",
+    );
+    assert_eq!(
+        doc.project_urls,
+        [("bug_tracker".to_owned(), "https://bugs.example".to_owned())]
     );
 }
 
