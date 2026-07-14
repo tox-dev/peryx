@@ -28,10 +28,8 @@ pub struct CoreMetadataDoc {
     pub description_content_type: Option<String>,
 }
 
-/// Why a core-metadata document was rejected.
-///
-/// Each variant is a defect that `email.parser` under the `compat32` policy reports, the parser core
-/// metadata names as its format standard, and that `packaging` and Warehouse both refuse.
+/// Why a core-metadata document was rejected. Each variant is a defect `packaging` and Warehouse
+/// both refuse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetadataError {
     /// A header line carries no colon. `email.parser` ends the header block there, so every field
@@ -41,6 +39,9 @@ pub enum MetadataError {
     MissingHeaderName(String),
     /// The document opens with a folded continuation line, which continues no header.
     LeadingContinuation(String),
+    /// A single-use field appears more than once, leaving no one value to read. Holds the field name,
+    /// lowercased.
+    RepeatedField(String),
 }
 
 impl std::fmt::Display for MetadataError {
@@ -51,20 +52,53 @@ impl std::fmt::Display for MetadataError {
             Self::LeadingContinuation(line) => {
                 write!(f, "document starts with the continuation line {line:?}")
             }
+            Self::RepeatedField(field) => write!(f, "single-use field {field:?} appears more than once"),
         }
     }
 }
 
 impl std::error::Error for MetadataError {}
 
+/// The single-use core-metadata fields, lowercased. Every other field either repeats by specification
+/// (`Classifier`, `Requires-Dist`, `Project-URL`, `License-File`, …) or is one core metadata does not
+/// name; both may appear any number of times.
+const SINGLE_USE_FIELDS: [&str; 16] = [
+    "metadata-version",
+    "name",
+    "version",
+    "summary",
+    "description",
+    "description-content-type",
+    "keywords",
+    "home-page",
+    "download-url",
+    "author",
+    "author-email",
+    "maintainer",
+    "maintainer-email",
+    "license",
+    "license-expression",
+    "requires-python",
+];
+
 /// Parse a core-metadata document.
 ///
 /// # Errors
-/// Returns [`MetadataError`] when the header block is not a well-formed RFC 822 message.
+/// Returns [`MetadataError`] when the header block is not a well-formed RFC 822 message, or when a
+/// single-use field repeats.
 pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
     let mut doc = CoreMetadataDoc::default();
     let (headers, body) = split_document(text);
+    // A bit per SINGLE_USE_FIELDS entry: the repeat check allocates nothing.
+    let mut seen: u16 = 0;
     for (key, value) in unfold(headers)? {
+        if let Some(index) = SINGLE_USE_FIELDS.iter().position(|field| *field == key) {
+            let bit = 1 << index;
+            if seen & bit != 0 {
+                return Err(MetadataError::RepeatedField(key));
+            }
+            seen |= bit;
+        }
         let value = value.trim();
         match key.as_str() {
             "metadata-version" => doc.metadata_version = non_empty(value),

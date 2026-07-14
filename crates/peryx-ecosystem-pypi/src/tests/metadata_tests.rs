@@ -179,6 +179,43 @@ fn test_parse_metadata_rejects_malformed_headers(
     assert_eq!((err.to_string().as_str(), &err), (message, &expected));
 }
 
+#[rstest]
+#[case::name("Metadata-Version: 2.1\nName: peryxpkg\nName: peryxpkg\nVersion: 1.0\n", "name")]
+#[case::version("Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nVersion: 2.0\n", "version")]
+#[case::metadata_version(
+    "Metadata-Version: 2.1\nMetadata-Version: 2.4\nName: p\nVersion: 1\n",
+    "metadata-version"
+)]
+#[case::differing_case("Name: p\nVersion: 1\nSummary: one\nsummary: two\n", "summary")]
+#[case::folded_repeat("Name: p\nVersion: 1\nAuthor: Jane\n Doe\nAuthor: June\n", "author")]
+fn test_parse_metadata_rejects_repeated_single_use_field(#[case] text: &str, #[case] field: &str) {
+    let err = parse_metadata(text).unwrap_err();
+
+    assert_eq!(
+        (err.to_string(), err),
+        (
+            format!("single-use field {field:?} appears more than once"),
+            MetadataError::RepeatedField(field.to_owned())
+        )
+    );
+}
+
+#[rstest]
+#[case::classifier("Classifier: Typing :: Typed\nClassifier: Framework :: Flask\n")]
+#[case::requires_dist("Requires-Dist: flask\nRequires-Dist: click\n")]
+#[case::project_url("Project-URL: Docs, https://docs.example\nProject-URL: Home, https://home.example\n")]
+#[case::license_file("License-File: LICENSE\nLicense-File: NOTICE\n")]
+#[case::provides_extra("Provides-Extra: dev\nProvides-Extra: test\n")]
+#[case::distinct_single_use("Summary: one\nAuthor: Jane\nAuthor-email: jane@example.test\n")]
+#[case::no_repeat("")]
+fn test_parse_metadata_accepts_a_document_without_a_repeated_single_use_field(#[case] tail: &str) {
+    let text = format!("Metadata-Version: 2.4\nName: peryxpkg\nVersion: 1.0\n{tail}");
+
+    let doc = parse_metadata(&text).unwrap();
+
+    assert_eq!((doc.name.as_str(), doc.version.as_str()), ("peryxpkg", "1.0"));
+}
+
 #[test]
 fn test_parse_metadata_ignores_unknown_headers() {
     let doc = parse_metadata("Name: x\nX-Internal: ignored\nVersion: 1\n").unwrap();
