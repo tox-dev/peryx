@@ -1,4 +1,4 @@
-use peryx_core::UiBlock;
+use peryx_core::{UiBlock, UiRelease};
 use rstest::rstest;
 
 use crate::{MetadataError, file_matches_version, parse_metadata, ui_project_from_detail};
@@ -45,6 +45,72 @@ fn test_ui_project_from_detail_maps_yanked(
         (project.files[0].yanked, project.files[0].yanked_reason.as_deref()),
         (expected, reason)
     );
+}
+
+#[rstest]
+#[case::every_file_yanked(&["1.0"], &[("1.0", r#""broken""#), ("1.0", "true")], true, &["broken"])]
+#[case::one_active_file(&["1.0"], &[("1.0", r#""broken""#), ("1.0", "false")], false, &[])]
+#[case::distinct_reasons(
+    &["1.0"],
+    &[("1.0", r#""broken""#), ("1.0", r#""broken""#), ("1.0", r#""unsafe""#)],
+    true,
+    &["broken", "unsafe"],
+)]
+#[case::reasonless_yank(&["1.0"], &[("1.0", "true"), ("1.0", r#""""#)], true, &[])]
+#[case::pep440_equivalent_spelling(&["1.0.0"], &[("1.0", r#""broken""#)], true, &["broken"])]
+#[case::release_without_files(&["1.0"], &[], false, &[])]
+#[case::yank_of_another_release(&["1.0"], &[("2.0", "true")], false, &[])]
+fn test_ui_project_from_detail_marks_a_release_its_publisher_yanked_whole(
+    #[case] versions: &[&str],
+    #[case] files: &[(&str, &str)],
+    #[case] yanked: bool,
+    #[case] reasons: &[&str],
+) {
+    assert_eq!(
+        ui_project_from_detail(&detail_with_yanks(versions, files)).versions,
+        [UiRelease {
+            version: versions[0].to_owned(),
+            yanked,
+            yanked_reasons: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
+        }]
+    );
+}
+
+#[test]
+fn test_ui_project_from_detail_leaves_a_release_a_nameless_file_says_nothing_about() {
+    let detail = serde_json::json!({
+        "name": "veloxdemo",
+        "versions": ["1.0"],
+        "files": [
+            {"filename": "notes.txt", "yanked": true},
+            {"filename": "veloxdemo-1.0-py3-none-any.whl", "yanked": false},
+        ],
+    });
+
+    assert_eq!(
+        ui_project_from_detail(&detail).versions,
+        [UiRelease {
+            version: "1.0".to_owned(),
+            yanked: false,
+            yanked_reasons: vec![],
+        }]
+    );
+}
+
+/// A detail page declaring `versions`, with one wheel per `(version, yanked)` pair. The yank is the
+/// JSON an index serves under PEP 592: `false`, `true`, or the reason.
+fn detail_with_yanks(versions: &[&str], files: &[(&str, &str)]) -> serde_json::Value {
+    let files: Vec<serde_json::Value> = files
+        .iter()
+        .enumerate()
+        .map(|(index, (version, yanked))| {
+            serde_json::json!({
+                "filename": format!("veloxdemo-{version}-{index}-py3-none-any.whl"),
+                "yanked": serde_json::from_str::<serde_json::Value>(yanked).expect("case spells yanked as JSON"),
+            })
+        })
+        .collect();
+    serde_json::json!({"name": "veloxdemo", "versions": versions, "files": files})
 }
 
 #[test]

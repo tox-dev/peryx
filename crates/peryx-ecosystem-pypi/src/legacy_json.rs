@@ -5,23 +5,11 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
+use crate::version::{VersionKey, version_key};
 use crate::{
-    File, ProjectDetail, Version, Yanked, distribution_version_segment, file_matches_version,
-    parse_distribution_filename, parse_version, sorted_desc,
+    File, ProjectDetail, Yanked, distribution_version_segment, file_matches_version, parse_distribution_filename,
+    parse_version, sorted_desc,
 };
-
-/// A version identity that matches [`file_matches_version`]: two versions are the same release when
-/// their strings are equal or they parse to the same PEP 440 version. Grouping by this key collapses
-/// the per-version file rescan into one pass.
-#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum VersionKey {
-    Parsed(Version),
-    Raw(String),
-}
-
-fn version_key(version: &str) -> VersionKey {
-    parse_version(version).map_or_else(|| VersionKey::Raw(version.to_owned()), VersionKey::Parsed)
-}
 
 /// Bucket a project's files by release version in a single pass, so rendering every release is linear
 /// in the number of files rather than files times versions.

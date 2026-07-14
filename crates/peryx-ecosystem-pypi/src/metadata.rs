@@ -1,6 +1,11 @@
 //! Core-metadata parsing: the `METADATA` document of a wheel (also served as the PEP 658 sibling),
 //! RFC 822-style headers followed by an optional long-description body.
 
+use std::collections::HashMap;
+
+use crate::distribution_version_segment;
+use crate::version::{VersionKey, version_key};
+
 /// The fields of a core-metadata document that the web UI presents, in the spirit of a pypi.org
 /// project page. Unknown fields are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -274,28 +279,71 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProjec
         .as_array()
         .into_iter()
         .flatten()
-        .map(|file| {
-            let yanked = &file["yanked"];
-            peryx_core::UiFile {
-                filename: string_at(file, "filename"),
-                url: string_at(file, "url"),
-                sha256: file["hashes"]["sha256"].as_str().unwrap_or_default().to_owned(),
-                size: file["size"].as_u64(),
-                upload_time: file["upload-time"].as_str().map(str::to_owned),
-                yanked: yanked.as_bool().unwrap_or(false) || yanked.is_string(),
-                yanked_reason: yanked.as_str().filter(|reason| !reason.is_empty()).map(str::to_owned),
-                has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
-            }
+        .map(|file| peryx_core::UiFile {
+            filename: string_at(file, "filename"),
+            url: string_at(file, "url"),
+            sha256: file["hashes"]["sha256"].as_str().unwrap_or_default().to_owned(),
+            size: file["size"].as_u64(),
+            upload_time: file["upload-time"].as_str().map(str::to_owned),
+            yanked: file_yanked(file),
+            yanked_reason: file["yanked"]
+                .as_str()
+                .filter(|reason| !reason.is_empty())
+                .map(str::to_owned),
+            has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
         })
         .collect();
     peryx_core::UiProject {
         name: string_at(value, "name"),
-        versions: value["versions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|version| version.as_str().map(str::to_owned))
-            .collect(),
+        versions: releases(value),
         files,
     }
+}
+
+/// PEP 592 spells a yank as `true` or as the reason itself, so a string counts as a yank too.
+fn file_yanked(file: &serde_json::Value) -> bool {
+    file["yanked"].as_bool().unwrap_or(false) || file["yanked"].is_string()
+}
+
+/// The releases the detail page declares, each with the yank state its files give it.
+///
+/// A release is yanked when the publisher yanked every file of the PEP 440-equivalent version, so one
+/// active file keeps the release active and a release with no files is not yanked. Its reasons are the
+/// distinct nonempty ones its files carry, in the order the index lists them.
+fn releases(value: &serde_json::Value) -> Vec<peryx_core::UiRelease> {
+    let mut yanks: HashMap<VersionKey, ReleaseYank> = HashMap::new();
+    for file in value["files"].as_array().into_iter().flatten() {
+        let Some(version) = file["filename"].as_str().and_then(distribution_version_segment) else {
+            continue;
+        };
+        let yank = yanks.entry(version_key(version)).or_default();
+        if !file_yanked(file) {
+            yank.active = true;
+        } else if let Some(reason) = file["yanked"].as_str().filter(|reason| !reason.is_empty())
+            && !yank.reasons.iter().any(|seen| seen == reason)
+        {
+            yank.reasons.push(reason.to_owned());
+        }
+    }
+    value["versions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(|version| {
+            let yank = yanks.get(&version_key(version)).filter(|yank| !yank.active);
+            peryx_core::UiRelease {
+                version: version.to_owned(),
+                yanked: yank.is_some(),
+                yanked_reasons: yank.map(|yank| yank.reasons.clone()).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct ReleaseYank {
+    /// Whether any file of the release is still usable, which keeps the whole release active.
+    active: bool,
+    reasons: Vec<String>,
 }

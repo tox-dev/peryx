@@ -65,8 +65,19 @@ pub enum UiBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiProject {
     pub name: String,
-    pub versions: Vec<String>,
+    pub versions: Vec<UiRelease>,
     pub files: Vec<UiFile>,
+}
+
+/// One release of a project: a version and the yank state its files give it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiRelease {
+    pub version: String,
+    /// Whether the publisher yanked the whole release. A release keeping one usable file is active.
+    pub yanked: bool,
+    /// The reasons the publisher gave, distinct and in the order the index lists them. Empty when the
+    /// release is active or the publisher gave no reason.
+    pub yanked_reasons: Vec<String>,
 }
 
 /// One downloadable file as the project page shows it.

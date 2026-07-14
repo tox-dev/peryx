@@ -284,6 +284,10 @@ table.files td.empty { color: var(--text-soft); text-align: center; }
 tr.yanked td a { text-decoration: line-through; color: var(--text-soft); }
 .project-side h3 { margin-bottom: 0.3rem; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
 .chips code { margin: 0 0.3rem 0.3rem 0; display: inline-block; }
+.releases { list-style: none; padding: 0; margin: 0 0 0.6rem; }
+.releases li { margin-bottom: 0.3rem; }
+.releases li.yanked code { text-decoration: line-through; color: var(--text-soft); }
+.yank-reasons { list-style: none; padding: 0; margin: 0.15rem 0 0; color: var(--text-soft); font-size: 0.85rem; }
 .classifiers { list-style: none; padding: 0; margin: 0 0 0.6rem; color: var(--text-soft); font-size: 0.85rem; }
 .classifier-group { margin: 0.5rem 0 0.1rem; font-weight: 600; font-size: 0.85rem; }
 .member-content {

@@ -21,5 +21,5 @@ pub use lexicon::{Lexicon, LexiconRegistry};
 pub use role::Role;
 pub use view::{
     UiArtifactRef, UiBlock, UiDescription, UiFile, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject,
-    UiProjectView,
+    UiProjectView, UiRelease,
 };
