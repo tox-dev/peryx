@@ -104,8 +104,8 @@ peryx returns `200` for the first request and `429` for the second. Both credent
 cannot gain fresh buckets by rotating invalid `Authorization` values.
 
 Leave `trusted_proxies` unset for this local run. Named principals use their verified subject. The proxy list controls
-the address bucket for anonymous or invalid credentials. For a proxy deployment, follow the
-[reverse-proxy recipe](@/core/control-access.md#preserve-client-buckets-behind-a-reverse-proxy).
+the address bucket for anonymous or invalid credentials and which peers may set the public origin. For a proxy
+deployment, follow the [reverse-proxy recipe](@/core/control-access.md#preserve-client-buckets-behind-a-reverse-proxy).
 
 ## The one-token shortcut
 

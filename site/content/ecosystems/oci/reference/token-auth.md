@@ -38,7 +38,8 @@ validation prevents another service that shares the key from presenting its toke
 - `401` with `WWW-Authenticate: Bearer realm="<base>/v2/token",service="peryx"` when an OCI index restricts access. An
   index restricts when its `anonymous_read` is `false` or it carries any named credential.
 
-`<base>` is the origin peryx is reached at, read from the request's forwarded host. `service` is always `peryx`.
+`<base>` is the origin peryx is reached at. Peryx accepts `X-Forwarded-Host` and `X-Forwarded-Proto` only when the
+socket peer belongs to `[rate_limit].trusted_proxies`; other requests use `Host` and HTTP. `service` is always `peryx`.
 
 ## The token endpoint
 

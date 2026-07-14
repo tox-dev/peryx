@@ -173,6 +173,15 @@ impl RateLimiter {
         self.config.enabled
     }
 
+    #[must_use]
+    pub fn trusts_proxy(&self, address: IpAddr) -> bool {
+        let address = address.to_canonical();
+        self.config
+            .trusted_proxies
+            .iter()
+            .any(|network| network.contains(&address))
+    }
+
     fn check(&self, class: RouteClass, actor: ActorKey) -> Result<(), Limited> {
         let limit = self.config.limit(class);
         if limit.requests == 0 || limit.window_secs == 0 {
@@ -481,7 +490,7 @@ impl RateLimiter {
             .0
             .ip()
             .to_canonical();
-        if !self.is_trusted_proxy(peer) {
+        if !self.trusts_proxy(peer) {
             return Some(peer);
         }
         Some(self.forwarded_client_ip(request.headers()).unwrap_or(peer))
@@ -516,20 +525,13 @@ impl RateLimiter {
                     suffix_malformed = true;
                     continue;
                 };
-                if !self.is_trusted_proxy(address) {
+                if !self.trusts_proxy(address) {
                     client = Some(address);
                     suffix_malformed = false;
                 }
             }
         }
         if suffix_malformed { None } else { client }
-    }
-
-    fn is_trusted_proxy(&self, address: IpAddr) -> bool {
-        self.config
-            .trusted_proxies
-            .iter()
-            .any(|network| network.contains(&address))
     }
 }
 

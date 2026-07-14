@@ -38,8 +38,10 @@ relying on the socket peer makes every anonymous client share the proxy's bucket
 
 peryx requires the socket peer to match `[rate_limit].trusted_proxies` before it accepts forwarding headers. It walks
 `X-Forwarded-For` from the proxy end and selects the first address outside the trusted networks. Addresses farther
-toward the client came through an untrusted hop and cannot change the result. If the trusted suffix is malformed, peryx
-uses the socket peer to avoid a forged address. It treats IPv4-mapped IPv6 addresses as their IPv4 equivalents.
+toward the client came through an untrusted hop and cannot change the result. The same boundary gates `X-Forwarded-Host`
+and `X-Forwarded-Proto`, which supply absolute discovery links and the OCI token realm. Without the check, a direct
+caller could point clients or login flows at an origin it controls. If the trusted client-address suffix is malformed,
+peryx uses the socket peer to avoid a forged address. It treats IPv4-mapped IPv6 addresses as their IPv4 equivalents.
 
 [RFC 7239 section 8.1](https://www.rfc-editor.org/rfc/rfc7239.html#section-8.1) describes why forwarding fields need a
 configured trust boundary. [Nginx's real-IP module](https://nginx.org/en/docs/http/ngx_http_realip_module.html) uses the

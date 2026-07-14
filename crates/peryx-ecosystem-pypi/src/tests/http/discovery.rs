@@ -4,7 +4,7 @@ use super::support::*;
 use peryx_identity::IndexAcl;
 
 #[tokio::test]
-async fn test_discovery_document_uses_request_origin_and_redacts_token() {
+async fn test_discovery_document_ignores_untrusted_forwarding_and_redacts_token() {
     let h = harness().await;
     let (status, body) = get_with_headers(
         &h.state,
@@ -25,23 +25,23 @@ async fn test_discovery_document_uses_request_origin_and_redacts_token() {
     assert_eq!(
         json["urls"],
         serde_json::json!({
-            "api": "https://packages.example/+api",
-            "status": "https://packages.example/+status",
-            "stats": "https://packages.example/+stats",
-            "openapi": "https://packages.example/api-docs/openapi.json",
-            "web": "https://packages.example/"
+            "api": "http://internal.local/+api",
+            "status": "http://internal.local/+status",
+            "stats": "http://internal.local/+stats",
+            "openapi": "http://internal.local/api-docs/openapi.json",
+            "web": "http://internal.local/"
         })
     );
     assert_eq!(
         virtual_index["urls"],
         serde_json::json!({
-            "api": "https://packages.example/root/pypi/+api",
-            "simple": "https://packages.example/root/pypi/simple/",
-            "upload": "https://packages.example/root/pypi/",
-            "status": "https://packages.example/+status",
-            "web": "https://packages.example/browse?index=root%2Fpypi",
-            "stats": "https://packages.example/stats?index=root%2Fpypi",
-            "openapi": "https://packages.example/api-docs/openapi.json"
+            "api": "http://internal.local/root/pypi/+api",
+            "simple": "http://internal.local/root/pypi/simple/",
+            "upload": "http://internal.local/root/pypi/",
+            "status": "http://internal.local/+status",
+            "web": "http://internal.local/browse?index=root%2Fpypi",
+            "stats": "http://internal.local/stats?index=root%2Fpypi",
+            "openapi": "http://internal.local/api-docs/openapi.json"
         })
     );
     assert_eq!(

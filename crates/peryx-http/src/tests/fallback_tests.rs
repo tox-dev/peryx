@@ -2,8 +2,11 @@
 //! keeps several route-mounted ecosystems apart once they are.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode};
+use peryx_driver::rate_limit::RateLimitConfig;
 use peryx_identity::IndexAcl;
+use rstest::rstest;
 use tower::ServiceExt as _;
 
 use peryx_driver::state::{AppState, ServingState};
@@ -17,6 +20,23 @@ fn unwired_state_with(indexes: Vec<peryx_driver::state::Index>) -> (tempfile::Te
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     (dir, std::sync::Arc::new(AppState::new(meta, blobs, 60, indexes)))
+}
+
+fn unwired_state_with_limits(rate_limit: RateLimitConfig) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    (
+        dir,
+        std::sync::Arc::new(AppState::with_rate_limits(
+            meta,
+            blobs,
+            60,
+            Vec::new(),
+            rate_limit,
+            std::iter::empty(),
+        )),
+    )
 }
 
 fn pypi_index(route: &str) -> peryx_driver::state::Index {
@@ -89,6 +109,38 @@ async fn test_unwired_state_discovery_lists_no_indexes() {
     let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(document["indexes"].as_array().unwrap().is_empty());
     assert!(document["urls"]["status"].is_string());
+}
+
+#[rstest]
+#[case::missing(None, "http://internal.test/+status")]
+#[case::untrusted(Some("192.0.2.1:443"), "http://internal.test/+status")]
+#[case::trusted(Some("127.0.0.1:443"), "https://packages.example/+status")]
+#[tokio::test]
+async fn test_discovery_accepts_forwarded_origin_only_from_a_trusted_proxy(
+    #[case] peer: Option<&str>,
+    #[case] expected: &str,
+) {
+    let (_dir, state) = unwired_state_with_limits(RateLimitConfig {
+        trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
+        ..RateLimitConfig::default()
+    });
+    let app = crate::router(state);
+    let mut request = Request::builder()
+        .uri("/+api")
+        .header("host", "internal.test")
+        .header("x-forwarded-host", "packages.example")
+        .header("x-forwarded-proto", "https")
+        .body(Body::empty())
+        .unwrap();
+    if let Some(peer) = peer {
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+    }
+    let response = app.oneshot(request).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(document["urls"]["status"], expected);
 }
 
 #[tokio::test]

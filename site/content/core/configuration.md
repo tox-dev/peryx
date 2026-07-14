@@ -336,21 +336,22 @@ peryx hashes a named principal with a process-random seed and stores neither the
 Invalid credentials and routes without an authentication driver use the socket peer IP. Without socket metadata, peryx
 uses `127.0.0.1` and ignores forwarding headers.
 
-Set `trusted_proxies` to the reverse-proxy networks from which peryx accepts client addresses. For a matching socket
+Set `trusted_proxies` to the reverse-proxy networks from which peryx accepts forwarding headers. For a matching socket
 peer, peryx scans `X-Forwarded-For` from the nearest hop and selects the first address outside the trusted networks. If
-the header is absent, peryx accepts one `X-Real-IP` value. Peryx uses the socket peer when the trusted suffix is
-malformed or the chain contains trusted addresses throughout. It treats IPv4-mapped IPv6 addresses as their IPv4
-equivalents. Leave the list empty for direct deployments. Exclude client networks and intermediaries that accept
-caller-supplied forwarding headers.
+the header is absent, peryx accepts one `X-Real-IP` value. The same peer check gates `X-Forwarded-Host` and
+`X-Forwarded-Proto` for public API links and OCI token realms, whether or not `enabled` is true. Peryx uses the socket
+peer when the trusted client-address suffix is malformed or the chain contains trusted addresses throughout. It treats
+IPv4-mapped IPv6 addresses as their IPv4 equivalents. Leave the list empty for direct deployments. Exclude client
+networks and intermediaries that accept caller-supplied forwarding headers.
 
 Clients can change a Basic username or bearer value without changing buckets when both values resolve to the same
 principal. peryx groups rotated invalid `Authorization` values under the peer IP.
 
-| Setting           | Meaning                                              | Default |
-| ----------------- | ---------------------------------------------------- | ------- |
-| `enabled`         | Install the HTTP request limiter                     | `false` |
-| `max_clients`     | Maximum client/class buckets kept in memory          | `8192`  |
-| `trusted_proxies` | IPv4 and IPv6 networks allowed to set client headers | `[]`    |
+| Setting           | Meaning                                                  | Default |
+| ----------------- | -------------------------------------------------------- | ------- |
+| `enabled`         | Install the HTTP request limiter                         | `false` |
+| `max_clients`     | Maximum client/class buckets kept in memory              | `8192`  |
+| `trusted_proxies` | IPv4 and IPv6 networks allowed to set forwarding headers | `[]`    |
 
 Each route class is a sub-table with `requests` and `window_secs`:
 

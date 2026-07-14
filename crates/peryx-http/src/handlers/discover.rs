@@ -1,8 +1,9 @@
 //! API discovery: the neutral envelope plus each index's driver-rendered entry, and the `OpenAPI` doc.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{OriginalUri, State};
+use axum::extract::{ConnectInfo, OriginalUri, Request, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 
@@ -10,8 +11,14 @@ use peryx_driver::state::AppState;
 
 /// `GET /{route}/+api`: the discovery entry for one index, rendered by its ecosystem driver and
 /// wrapped in the neutral envelope.
-pub(super) fn index_api(state: &AppState, position: usize, uri: &axum::http::Uri, headers: &HeaderMap) -> Response {
-    let base = peryx_driver::discovery::BaseUrl::from_request(headers, uri);
+pub(super) fn index_api(
+    state: &AppState,
+    position: usize,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    trusted_proxy: bool,
+) -> Response {
+    let base = peryx_driver::discovery::BaseUrl::from_request(headers, uri, trusted_proxy);
     let description = peryx_driver::state::describe_index(&state.indexes, position);
     let entry = discover_index_entry(state, description, base.as_ref());
     axum::Json(peryx_driver::discovery::index_envelope(entry)).into_response()
@@ -39,12 +46,19 @@ pub async fn openapi_spec(State(state): State<Arc<AppState>>) -> Response {
 ///
 /// The envelope (version, service URLs) is neutral; each configured index's entry is rendered by its
 /// own ecosystem driver, so the document covers every ecosystem the server hosts.
-pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri, headers: HeaderMap) -> Response {
-    let base = peryx_driver::discovery::BaseUrl::from_request(&headers, &uri);
+pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri, request: Request) -> Response {
+    let base = peryx_driver::discovery::BaseUrl::from_request(request.headers(), &uri, trusts_proxy(&state, &request));
     let indexes = state
         .describe_indexes()
         .into_iter()
         .map(|index| discover_index_entry(&state, index, base.as_ref()))
         .collect();
     axum::Json(peryx_driver::discovery::root_envelope(base.as_ref(), indexes)).into_response()
+}
+
+pub(super) fn trusts_proxy(state: &AppState, request: &Request) -> bool {
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|ConnectInfo(address)| state.rate_limits.trusts_proxy(address.ip()))
 }

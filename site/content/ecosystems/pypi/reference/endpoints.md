@@ -85,10 +85,11 @@ Upload and direct file-download denials use the same JSON shape:
 same shape for one index. Peryx builds these documents from request headers and runtime index configuration; it does not
 scan package pages or storage.
 
-When the request carries an origin (`Host`, or `X-Forwarded-Host` plus `X-Forwarded-Proto` behind a proxy), URL fields
-are absolute and `client_configuration` includes copyable `pip.conf`, `uv.toml`, and `.pypirc` text. The `.pypirc`
-snippet uses `__token__` as the username and `<upload-token>` as the password, and Peryx never returns the configured
-upload token. Read-only indexes omit upload URLs and `.pypirc`.
+When the request carries an origin (`Host`, or `X-Forwarded-Host` plus `X-Forwarded-Proto` from a peer listed in
+`[rate_limit].trusted_proxies`), URL fields are absolute and `client_configuration` includes copyable `pip.conf`,
+`uv.toml`, and `.pypirc` text. Forwarding headers from any other peer are ignored. The `.pypirc` snippet uses
+`__token__` as the username and `<upload-token>` as the password, and Peryx never returns the configured upload token.
+Read-only indexes omit upload URLs and `.pypirc`.
 
 Capability flags describe the current route only. `uploads`, `yanking`, and `volatile_deletes` follow the configured
 hosted upload target; Simple HTML/JSON, PEP 658 metadata siblings, project status, provenance, and legacy JSON are true

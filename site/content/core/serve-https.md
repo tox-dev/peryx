@@ -55,9 +55,8 @@ If a load balancer, ingress controller, or reverse proxy ([nginx](https://nginx.
 terminate TLS, forwarding plain HTTP to peryx on a private network. A clustered deployment usually takes this shape, and
 it needs no peryx TLS config.
 
-For a rate-limited deployment, configure the proxy addresses that may supply the client IP. The nginx configuration
-below runs on the same host as peryx, removes any forwarding chain sent by the caller, and writes the address nginx
-accepted:
+Configure the proxy addresses that may supply the public origin and client IP. The nginx configuration below runs on the
+same host as peryx, replaces any forwarding fields sent by the caller, and writes the address nginx accepted:
 
 ```nginx
 location / {

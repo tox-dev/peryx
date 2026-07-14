@@ -3,11 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Multipart, OriginalUri, Path, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::extract::{Multipart, OriginalUri, Path, Request, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use super::discover::index_api;
+use super::discover::{index_api, trusts_proxy};
 use super::query::index_search;
 use peryx_driver::serving::EcosystemDriver;
 use peryx_driver::state::AppState;
@@ -62,16 +62,17 @@ fn driver_for<'a>(state: &'a AppState, path: &str) -> Result<&'a Arc<dyn Ecosyst
 pub async fn dispatch_get(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
-    method: Method,
-    headers: HeaderMap,
+    request: Request,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let Some((position, rest)) = state.resolve_position(uri.path().trim_start_matches('/')) else {
         return not_found();
     };
+    let trusted_proxy = trusts_proxy(&state, &request);
+    let (parts, _) = request.into_parts();
     match rest {
-        "+api" | "+api/" => index_api(&state, position, &uri, &headers),
-        "+search" | "+search/" => index_search(state, position, &uri, &headers).await,
+        "+api" | "+api/" => index_api(&state, position, &uri, &parts.headers, trusted_proxy),
+        "+search" | "+search/" => index_search(state, position, &uri, &parts.headers).await,
         _ => {
             let serving = match driver_at(&state, position) {
                 Ok(serving) => serving.clone(),
@@ -79,7 +80,7 @@ pub async fn dispatch_get(
             };
             let rest = rest.to_owned();
             serving
-                .get(state.serving.clone(), position, rest, uri, headers, method)
+                .get(state.serving.clone(), position, rest, uri, parts.headers, parts.method)
                 .await
         }
     }

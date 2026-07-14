@@ -22,7 +22,7 @@ use crate::settings::IndexSettings;
 use crate::upstream::{Upstream, UpstreamError};
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
@@ -41,6 +41,7 @@ use std::borrow::Cow;
 use std::collections::hash_map::RandomState;
 use std::collections::{HashSet, VecDeque};
 use std::hash::BuildHasher;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod auth;
@@ -55,6 +56,8 @@ use manifests::{delete_manifest, put_manifest};
 const DOCKER_CONTENT_DIGEST: HeaderName = HeaderName::from_static("docker-content-digest");
 /// The header carrying an upload session's id.
 const DOCKER_UPLOAD_UUID: HeaderName = HeaderName::from_static("docker-upload-uuid");
+const X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
+const X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
 /// The media type served for blob bytes.
 const OCTET_STREAM: &str = "application/octet-stream";
 /// The media type assumed when an upstream manifest response omits its content type.
@@ -223,7 +226,17 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         RouteMount::Absolute(&["/v2/"])
     }
 
-    async fn serve(&self, state: Arc<ServingState>, request: Request) -> Response {
+    async fn serve(&self, state: Arc<ServingState>, mut request: Request) -> Response {
+        if state.signer.is_some()
+            && (request.headers().contains_key(&X_FORWARDED_HOST) || request.headers().contains_key(&X_FORWARDED_PROTO))
+            && !request
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .is_some_and(|ConnectInfo(address)| state.rate_limits.trusts_proxy(address.ip()))
+        {
+            request.headers_mut().remove(&X_FORWARDED_HOST);
+            request.headers_mut().remove(&X_FORWARDED_PROTO);
+        }
         let path = request.uri().path();
         if matches!(request.method(), &Method::GET | &Method::HEAD) && (path == "/v2/" || path == "/v2") {
             return auth::negotiate_version(&state, request.headers());

@@ -446,7 +446,8 @@ fn unauthorized(www_authenticate: &str) -> Response {
 /// that carries no host falls back to the relative path, still enough for a client on the same origin.
 fn realm(headers: &HeaderMap) -> String {
     let placeholder = Uri::from_static("/");
-    BaseUrl::from_request(headers, &placeholder).map_or_else(|| TOKEN_PATH.to_owned(), |base| base.join(TOKEN_PATH))
+    BaseUrl::from_request(headers, &placeholder, true)
+        .map_or_else(|| TOKEN_PATH.to_owned(), |base| base.join(TOKEN_PATH))
 }
 
 fn authorization(headers: &HeaderMap) -> Option<&str> {

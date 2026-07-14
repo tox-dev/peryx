@@ -4,9 +4,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use axum::http::{Method, StatusCode, header};
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::{Method, Request, StatusCode, header};
 use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use rstest::rstest;
+use tower::ServiceExt as _;
 
 use peryx_identity::Action;
 
@@ -48,6 +51,51 @@ async fn test_v2_challenges_with_a_bearer_realm_when_an_acl_restricts() {
     assert_eq!(
         headers[header::WWW_AUTHENTICATE],
         "Bearer realm=\"http://registry.example:5000/v2/token\",service=\"peryx\""
+    );
+}
+
+#[rstest]
+#[case::missing(None, "http://internal.test:5000")]
+#[case::untrusted(Some("192.0.2.1:443"), "http://internal.test:5000")]
+#[case::trusted(Some("127.0.0.1:443"), "https://registry.example")]
+#[tokio::test]
+async fn test_v2_accepts_forwarded_realm_only_from_a_trusted_proxy(
+    #[case] peer: Option<&str>,
+    #[case] expected_origin: &str,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, app) = realm_app_with_clock_and_limits(
+        &dir,
+        vec![scoped_index(
+            "store",
+            "store",
+            "ci",
+            SECRET,
+            "team/*",
+            &[Action::Read, Action::Write],
+        )],
+        Arc::new(current_unix_time),
+        RateLimitConfig {
+            trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
+            ..RateLimitConfig::default()
+        },
+    );
+    let mut request = Request::builder()
+        .uri("/v2/")
+        .header("host", "internal.test:5000")
+        .header("x-forwarded-host", "registry.example")
+        .header("x-forwarded-proto", "https")
+        .body(Body::empty())
+        .unwrap();
+    if let Some(peer) = peer {
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+    }
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.headers()[header::WWW_AUTHENTICATE],
+        format!("Bearer realm=\"{expected_origin}/v2/token\",service=\"peryx\"")
     );
 }
 

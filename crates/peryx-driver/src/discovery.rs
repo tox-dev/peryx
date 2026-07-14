@@ -50,15 +50,27 @@ impl BaseUrl {
     }
 
     #[must_use]
-    pub fn from_request(headers: &HeaderMap, uri: &Uri) -> Option<Self> {
+    pub fn from_request(headers: &HeaderMap, uri: &Uri, trusted_proxy: bool) -> Option<Self> {
         let authority = uri
             .authority()
             .map(axum::http::uri::Authority::as_str)
-            .or_else(|| header_first(headers, "x-forwarded-host"))
+            .or_else(|| {
+                if trusted_proxy {
+                    header_first(headers, "x-forwarded-host")
+                } else {
+                    None
+                }
+            })
             .or_else(|| header_one(headers, header::HOST))?;
         let scheme = uri
             .scheme_str()
-            .or_else(|| header_first(headers, "x-forwarded-proto"))
+            .or_else(|| {
+                if trusted_proxy {
+                    header_first(headers, "x-forwarded-proto")
+                } else {
+                    None
+                }
+            })
             .unwrap_or("http");
         Self::from_parts(scheme, authority).ok()
     }
@@ -210,7 +222,7 @@ mod tests {
             HeaderValue::from_static("packages.example, proxy.local"),
         );
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api")).unwrap();
+        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), true).unwrap();
         assert_eq!(
             base.join("/root/pypi/simple/"),
             "https://packages.example/root/pypi/simple/"
@@ -233,18 +245,28 @@ mod tests {
         if let Some(proto) = proto {
             headers.insert("x-forwarded-proto", HeaderValue::from_str(proto).unwrap());
         }
-        assert!(BaseUrl::from_request(&headers, &Uri::from_static("/+api")).is_none());
+        assert!(BaseUrl::from_request(&headers, &Uri::from_static("/+api"), true).is_none());
     }
 
     #[test]
     fn test_base_url_from_request_uses_host_header_without_proxy_headers() {
         let mut headers = HeaderMap::new();
         headers.insert("host", HeaderValue::from_static("packages.example"));
-        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api")).unwrap();
+        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), false).unwrap();
         assert_eq!(
             base.join("/root/pypi/simple/"),
             "http://packages.example/root/pypi/simple/"
         );
+    }
+
+    #[test]
+    fn test_base_url_from_request_ignores_untrusted_forwarded_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("packages.example"));
+        headers.insert("x-forwarded-host", HeaderValue::from_static("attacker.example"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), false).unwrap();
+        assert_eq!(base.join("/+api"), "http://packages.example/+api");
     }
 
     #[test]

@@ -109,10 +109,12 @@ enabled = true
 trusted_proxies = ["127.0.0.1/32", "10.42.0.0/16"]
 ```
 
-Add proxy addresses and exclude client networks. The edge proxy must replace caller-supplied `X-Forwarded-For`; each
-later trusted proxy appends its own peer. Peryx starts at the socket peer and selects the nearest address outside the
-configured networks. It ignores forwarding headers from direct callers and uses the socket peer when a trusted suffix
-contains malformed input.
+Add proxy addresses and exclude client networks. The edge proxy must replace caller-supplied `X-Forwarded-For`,
+`X-Forwarded-Host`, and `X-Forwarded-Proto`; each later trusted proxy appends its own peer. Peryx starts at the socket
+peer and selects the nearest address outside the configured networks. It uses the forwarded host and protocol in API
+links and OCI token challenges. Requests from other peers use the request URI or `Host`; a relative URI defaults to
+HTTP. This check applies even when the rate limiter is disabled. Peryx uses the socket peer when a trusted
+client-address suffix contains malformed input.
 
 Leave `trusted_proxies` empty when clients connect to peryx without a proxy. See
 [serve HTTPS](@/core/serve-https.md#terminate-tls-at-a-reverse-proxy) for an nginx configuration that overwrites the
