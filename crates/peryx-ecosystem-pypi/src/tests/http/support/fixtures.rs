@@ -79,6 +79,7 @@ pub fn fixture_wheel_with_body_compression(version: &str, body: &[u8], compressi
         version,
         body,
         Some(format!("Metadata-Version: 2.1\nName: peryxpkg\nVersion: {version}\nRequires-Python: >=3.8\n").as_bytes()),
+        &[],
         compression,
     )
 }
@@ -187,12 +188,23 @@ pub fn metadata_central_directory_position(wheel: &[u8]) -> usize {
     panic!("metadata central directory entry not found");
 }
 pub fn fixture_wheel_with_body_and_metadata(version: &str, body: &[u8], metadata: Option<&[u8]>) -> Vec<u8> {
-    fixture_wheel_with_body_and_metadata_compression(version, body, metadata, zip::CompressionMethod::Deflated)
+    fixture_wheel_with_body_and_metadata_compression(version, body, metadata, &[], zip::CompressionMethod::Deflated)
+}
+/// A wheel carrying `license_files` where PEP 639 puts them, under `.dist-info/licenses/`.
+pub fn fixture_wheel_with_licenses(metadata: &[u8], license_files: &[&str]) -> Vec<u8> {
+    fixture_wheel_with_body_and_metadata_compression(
+        "1.0",
+        b"VALUE = 1\n",
+        Some(metadata),
+        license_files,
+        zip::CompressionMethod::Deflated,
+    )
 }
 fn fixture_wheel_with_body_and_metadata_compression(
     version: &str,
     body: &[u8],
     metadata: Option<&[u8]>,
+    license_files: &[&str],
     compression: zip::CompressionMethod,
 ) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -206,6 +218,11 @@ fn fixture_wheel_with_body_and_metadata_compression(
             entries.push((format!("{dist_info}/METADATA"), metadata.to_vec()));
         }
         entries.push((format!("{dist_info}/WHEEL"), wheel.to_vec()));
+        entries.extend(
+            license_files
+                .iter()
+                .map(|value| (format!("{dist_info}/licenses/{value}"), b"MIT\n".to_vec())),
+        );
         for (path, bytes) in &entries {
             zip.start_file(path, options).unwrap();
             zip.write_all(bytes).unwrap();

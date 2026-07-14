@@ -1,6 +1,7 @@
 //! Wheel structure: dist-info layout, WHEEL file, and entry points.
 
 use super::support::*;
+use rstest::rstest;
 
 #[test]
 fn test_prepare_rejects_invalid_wheel_structure() {
@@ -283,5 +284,34 @@ fn test_prepare_rejects_large_wheel_validation_members() {
             None,
         ),
         "flask-1.0.dist-info/entry_points.txt is 1048577 bytes, above the upload validation limit of 1048576 bytes",
+    );
+}
+
+#[test]
+fn test_prepare_accepts_wheel_carrying_declared_license_file() {
+    let bytes = wheel_with_license_files(&["LICENSE"], &["LICENSE"]);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000)
+            .unwrap()
+            .display_name,
+        "Flask"
+    );
+}
+
+#[rstest]
+#[case::no_license_files(&[])]
+#[case::other_license_file(&["NOTICE"])]
+fn test_prepare_rejects_wheel_missing_declared_license_file(#[case] present: &[&str]) {
+    let bytes = wheel_with_license_files(&["LICENSE"], present);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidLicenseFile {
+            value: "LICENSE".to_owned(),
+            reason: "the archive does not carry the declared file",
+        }
     );
 }

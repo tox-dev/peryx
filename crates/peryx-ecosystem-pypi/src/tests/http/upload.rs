@@ -674,8 +674,9 @@ async fn test_upload_metadata_form_fields_are_validated() {
         ("home_page", "https://example.test/home"),
         ("filetype", "bdist_wheel"),
     ];
-    let wheel = fixture_wheel_with_metadata(
+    let wheel = fixture_wheel_with_licenses(
         b"Metadata-Version: 2.4\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
+        &["LICENSE"],
     );
     let (content_type, body) = multipart_body(&fields, Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)));
     assert_eq!(
@@ -729,6 +730,25 @@ async fn test_upload_rejects_invalid_license_expression_when_form_omits_it() {
         )),
         StatusCode::BAD_REQUEST,
         "metadata License-Expression value \"MIT OR Bogus-1.0\" is not a known SPDX license identifier in its reference case",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_upload_rejects_license_file_missing_from_the_wheel() {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(
+                b"Metadata-Version: 2.4\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: LICENSE\n",
+            )
+            .as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        "invalid metadata License-File \"LICENSE\": the archive does not carry the declared file",
     )
     .await;
 }

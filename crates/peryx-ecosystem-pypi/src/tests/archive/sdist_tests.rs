@@ -152,7 +152,10 @@ fn test_validate_sdist_path_accepts_modern_layout_and_license_files() {
         ("pkg-1.0/LICENSE", b"MIT\n".as_slice()),
     ]));
 
-    assert_eq!(validate_sdist_path("pkg-1.0.tar.gz", file.path()).unwrap(), metadata);
+    let archive = validate_sdist_path("pkg-1.0.tar.gz", file.path()).unwrap();
+
+    assert_eq!(archive.metadata, metadata);
+    assert!(archive.missing_license_files.is_empty());
 }
 
 #[test]
@@ -335,7 +338,10 @@ fn test_validate_zip_sdist_path_extracts_pkg_info_from_modern_layout() {
         ("pkg-1.0/module.py", b"x = 1\n".as_slice()),
     ]));
 
-    assert_eq!(validate_zip_sdist_path("pkg-1.0.zip", file.path()).unwrap(), metadata);
+    let archive = validate_zip_sdist_path("pkg-1.0.zip", file.path()).unwrap();
+
+    assert_eq!(archive.metadata, metadata);
+    assert!(archive.missing_license_files.is_empty());
 }
 
 #[test]
@@ -348,7 +354,7 @@ fn test_validate_zip_sdist_path_accepts_hyphenated_project_name() {
     ]));
 
     assert_eq!(
-        validate_zip_sdist_path("my-pkg-1.0.zip", file.path()).unwrap(),
+        validate_zip_sdist_path("my-pkg-1.0.zip", file.path()).unwrap().metadata,
         metadata
     );
 }
@@ -411,7 +417,7 @@ fn test_validate_zip_sdist_path_rejects_unsafe_and_out_of_root_members() {
 }
 
 #[test]
-fn test_validate_sdist_path_rejects_missing_license_file_for_metadata_2_4() {
+fn test_validate_sdist_path_reports_license_file_missing_from_the_archive() {
     let file = temp_archive(&valid_sdist(&[
         (
             "pkg-1.0/PKG-INFO",
@@ -420,8 +426,10 @@ fn test_validate_sdist_path_rejects_missing_license_file_for_metadata_2_4() {
         ("pkg-1.0/pyproject.toml", b"[build-system]\n".as_slice()),
     ]));
 
-    assert!(matches!(
-        validate_sdist_path("pkg-1.0.tar.gz", file.path()),
-        Err(ArchiveError::Invalid(message)) if message == "invalid sdist: License-File \"LICENSE\" is missing from the sdist"
-    ));
+    assert_eq!(
+        validate_sdist_path("pkg-1.0.tar.gz", file.path())
+            .unwrap()
+            .missing_license_files,
+        ["LICENSE"]
+    );
 }

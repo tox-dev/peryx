@@ -5,6 +5,7 @@ pub(super) use std::io::Write as _;
 
 pub(super) use crate::CoreMetadata;
 pub(super) use crate::DistributionFilenameError;
+pub(super) use crate::{DistributionKind, parse_distribution_filename};
 pub(super) use base64::Engine as _;
 pub(super) use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 pub(super) use blake2::Blake2bVar;
@@ -69,16 +70,32 @@ pub(super) fn wheel_metadata(name: &str, version: &str) -> Vec<u8> {
 }
 
 pub(super) fn wheel_metadata_bytes(metadata: &[u8]) -> Vec<u8> {
+    wheel_metadata_bytes_with_licenses(metadata, &[])
+}
+
+/// A wheel carrying `license_files` where PEP 639 puts them, under `.dist-info/licenses/`.
+pub(super) fn wheel_metadata_bytes_with_licenses(metadata: &[u8], license_files: &[&str]) -> Vec<u8> {
     let wheel = b"Wheel-Version: 1.0\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
-    wheel_zip(
-        &[
-            ("Flask/__init__.py", b"VALUE = 1\n".as_slice()),
-            ("flask-1.0.dist-info/METADATA", metadata),
-            ("flask-1.0.dist-info/WHEEL", wheel.as_slice()),
-        ],
-        Some("flask-1.0.dist-info/RECORD"),
-        None,
-    )
+    let licenses: Vec<_> = license_files
+        .iter()
+        .map(|value| format!("flask-1.0.dist-info/licenses/{value}"))
+        .collect();
+    let mut entries: Vec<(&str, &[u8])> = vec![
+        ("Flask/__init__.py", b"VALUE = 1\n".as_slice()),
+        ("flask-1.0.dist-info/METADATA", metadata),
+        ("flask-1.0.dist-info/WHEEL", wheel.as_slice()),
+    ];
+    entries.extend(licenses.iter().map(|path| (path.as_str(), b"MIT\n".as_slice())));
+    wheel_zip(&entries, Some("flask-1.0.dist-info/RECORD"), None)
+}
+
+/// A wheel whose metadata declares `declared` and whose archive carries `present`.
+pub(super) fn wheel_with_license_files(declared: &[&str], present: &[&str]) -> Vec<u8> {
+    let mut metadata = "Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n".to_owned();
+    for value in declared {
+        writeln!(metadata, "License-File: {value}").unwrap();
+    }
+    wheel_metadata_bytes_with_licenses(metadata.as_bytes(), present)
 }
 
 pub(super) fn wheel_without_metadata() -> Vec<u8> {
@@ -206,26 +223,66 @@ pub(super) fn assert_wheel_invalid_for(filename: &str, bytes: &[u8], expected: &
 }
 
 pub(super) fn sdist_metadata(name: &str, version: &str, requires_python: &str) -> Vec<u8> {
+    let content =
+        format!("Metadata-Version: 2.2\nName: {name}\nVersion: {version}\nRequires-Python: {requires_python}\n");
+    sdist_tar_gz(&sdist_entries(content.as_bytes(), &[]))
+}
+
+/// An sdist declaring `License-File: LICENSE`, carrying the file at its project root only when
+/// `with_license`. `filename` picks the `.tar.gz` or `.zip` sdist format.
+pub(super) fn sdist_with_license(filename: &str, with_license: bool) -> Vec<u8> {
+    let metadata = b"Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-File: LICENSE\n";
+    let licenses: &[&str] = if with_license { &["LICENSE"] } else { &[] };
+    let entries = sdist_entries(metadata.as_slice(), licenses);
+    if parse_distribution_filename(filename).unwrap().kind == DistributionKind::SdistZip {
+        sdist_zip(&entries)
+    } else {
+        sdist_tar_gz(&entries)
+    }
+}
+
+fn sdist_entries<'a>(metadata: &'a [u8], license_files: &[&'a str]) -> Vec<(String, &'a [u8])> {
+    let mut entries = vec![
+        ("Flask-1.0/PKG-INFO".to_owned(), metadata),
+        (
+            "Flask-1.0/pyproject.toml".to_owned(),
+            b"[build-system]\nrequires = []\n".as_slice(),
+        ),
+    ];
+    entries.extend(
+        license_files
+            .iter()
+            .map(|value| (format!("Flask-1.0/{value}"), b"MIT\n".as_slice())),
+    );
+    entries
+}
+
+fn sdist_tar_gz(entries: &[(String, &[u8])]) -> Vec<u8> {
     let mut buf = Vec::new();
     {
-        let encoder = GzEncoder::new(&mut buf, Compression::default());
-        let mut tar = tar::Builder::new(encoder);
-        let content =
-            format!("Metadata-Version: 2.2\nName: {name}\nVersion: {version}\nRequires-Python: {requires_python}\n");
-        let mut header = tar::Header::new_gnu();
-        header.set_size(content.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append_data(&mut header, "Flask-1.0/PKG-INFO", content.as_bytes())
-            .unwrap();
-        let pyproject = b"[build-system]\nrequires = []\n";
-        let mut header = tar::Header::new_gnu();
-        header.set_size(pyproject.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append_data(&mut header, "Flask-1.0/pyproject.toml", pyproject.as_slice())
-            .unwrap();
+        let mut tar = tar::Builder::new(GzEncoder::new(&mut buf, Compression::default()));
+        for (path, bytes) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, path, *bytes).unwrap();
+        }
         tar.finish().unwrap();
+    }
+    buf
+}
+
+fn sdist_zip(entries: &[(String, &[u8])]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (path, bytes) in entries {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
     }
     buf
 }

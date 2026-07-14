@@ -155,12 +155,12 @@ fn import_file(
 // Reconcile a legacy sdist's last-dash name/version split against its authoritative PKG-INFO. A
 // non-sdist, an invalid archive, or unreadable metadata yields `None` so `prepare` reports the fault.
 fn sdist_pkg_info_identity(filename: &str, parsed: &DistributionFilename, path: &Path) -> Option<(String, Version)> {
-    let metadata = match parsed.kind {
+    let archive = match parsed.kind {
         DistributionKind::SdistTarGz => crate::archive::validate_sdist_path(filename, path).ok()?,
         DistributionKind::SdistZip => crate::archive::validate_zip_sdist_path(filename, path).ok()?,
         DistributionKind::Wheel => return None,
     };
-    let doc = parse_metadata(std::str::from_utf8(&metadata).ok()?);
+    let doc = parse_metadata(std::str::from_utf8(&archive.metadata).ok()?);
     Some((normalize_name(&doc.name), parse_version(&doc.version)?))
 }
 

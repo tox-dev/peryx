@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::io::{Read, Seek};
 use std::path::Path;
 
-use super::{ArchiveError, is_tar_gz, read_error, safe_member_name, strip_ascii_suffix_ignore_case};
+use super::{ArchiveError, ValidatedArchive, is_tar_gz, read_error, safe_member_name, strip_ascii_suffix_ignore_case};
 use crate::{DistributionKind, parse_distribution_filename};
 
 const MAX_SDIST_METADATA_BYTES: u64 = 16 * 1024 * 1024;
@@ -15,22 +15,24 @@ fn invalid_sdist(message: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::Invalid(format!("invalid sdist: {message}"))
 }
 
-/// Validate a PEP 625 `.tar.gz` sdist and return its exact `PKG-INFO` bytes.
+/// Validate a PEP 625 `.tar.gz` sdist and return its exact `PKG-INFO` bytes with the license files
+/// it declares but does not carry.
 ///
 /// # Errors
 /// Returns [`ArchiveError::InvalidSdist`] when required sdist structure or metadata is missing or
 /// inconsistent, and [`ArchiveError::Read`] when the staged file or tarball cannot be read.
-pub fn validate_sdist_path(filename: &str, path: &Path) -> Result<Vec<u8>, ArchiveError> {
+pub fn validate_sdist_path(filename: &str, path: &Path) -> Result<ValidatedArchive, ArchiveError> {
     let file = std::fs::File::open(path).map_err(read_error)?;
     validate_sdist_reader(filename, file)
 }
 
-/// Validate a PEP 527 `.zip` sdist and return its exact `PKG-INFO` bytes.
+/// Validate a PEP 527 `.zip` sdist and return its exact `PKG-INFO` bytes with the license files it
+/// declares but does not carry.
 ///
 /// # Errors
 /// Returns [`ArchiveError::InvalidSdist`] when required sdist structure or metadata is missing or
 /// inconsistent, and [`ArchiveError::Read`] when the staged file or ZIP cannot be read.
-pub fn validate_zip_sdist_path(filename: &str, path: &Path) -> Result<Vec<u8>, ArchiveError> {
+pub fn validate_zip_sdist_path(filename: &str, path: &Path) -> Result<ValidatedArchive, ArchiveError> {
     let file = std::fs::File::open(path).map_err(read_error)?;
     validate_zip_sdist_reader(filename, file)
 }
@@ -44,10 +46,10 @@ pub fn sdist_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>
     if !is_tar_gz(filename) {
         return Ok(None);
     }
-    validate_sdist_path(filename, path).map(Some)
+    validate_sdist_path(filename, path).map(|archive| Some(archive.metadata))
 }
 
-fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<Vec<u8>, ArchiveError> {
+fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<ValidatedArchive, ArchiveError> {
     let root = expected_sdist_root(filename, DistributionKind::SdistTarGz, ".tar.gz")?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
     let mut members = SdistMembers::new(root);
@@ -84,7 +86,7 @@ fn validate_sdist_reader(filename: &str, reader: impl Read) -> Result<Vec<u8>, A
     members.finish()
 }
 
-fn validate_zip_sdist_reader(filename: &str, reader: impl Read + Seek) -> Result<Vec<u8>, ArchiveError> {
+fn validate_zip_sdist_reader(filename: &str, reader: impl Read + Seek) -> Result<ValidatedArchive, ArchiveError> {
     let root = expected_sdist_root(filename, DistributionKind::SdistZip, ".zip")?;
     let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
     let mut members = SdistMembers::new(root);
@@ -171,7 +173,7 @@ impl SdistMembers {
         Ok(())
     }
 
-    fn finish(self) -> Result<Vec<u8>, ArchiveError> {
+    fn finish(self) -> Result<ValidatedArchive, ArchiveError> {
         if !self.pyproject {
             return Err(invalid_sdist(format!("missing required {}/pyproject.toml", self.root)));
         }
@@ -190,18 +192,17 @@ impl SdistMembers {
                 "PKG-INFO Metadata-Version {metadata_version_text} is older than the required 2.2"
             )));
         }
-        if metadata_version_at_least(metadata_version, (2, 4)) {
-            for license_file in doc.license_files {
-                let license_file = safe_sdist_member_name(&license_file)?;
-                let path = format!("{}/{}", self.root, license_file);
-                if !self.paths.contains(&path) {
-                    return Err(invalid_sdist(format!(
-                        "License-File {license_file:?} is missing from the sdist"
-                    )));
-                }
-            }
-        }
-        Ok(metadata)
+        // PEP 639 declares an sdist's license files relative to its project root, so one without a
+        // member there names a file the sdist does not ship. Upload validation rejects a malformed
+        // declared path on its own, so here one merely reads as missing.
+        Ok(ValidatedArchive {
+            missing_license_files: doc
+                .license_files
+                .into_iter()
+                .filter(|value| !self.paths.contains(&format!("{}/{value}", self.root)))
+                .collect(),
+            metadata,
+        })
     }
 }
 

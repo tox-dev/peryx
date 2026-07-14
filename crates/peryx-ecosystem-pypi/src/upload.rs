@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use md5::{Digest as _, Md5};
 use url::Url;
 
+use crate::archive::ValidatedArchive;
 use crate::{
     CoreMetadata, CoreMetadataDoc, DistributionFilename, DistributionFilenameError, DistributionKind, File, Provenance,
     Yanked, is_valid_name, normalize_name, normalize_name_cow, parse_distribution_filename, parse_metadata,
@@ -203,7 +204,10 @@ pub fn prepare(
         &staged.blake2_256,
         staged.blob.path(),
     )?;
-    let metadata = metadata_bytes(&parsed, &filename, staged.blob.path())?;
+    let ValidatedArchive {
+        metadata,
+        missing_license_files,
+    } = validate_archive(&parsed, &filename, staged.blob.path())?;
     let metadata_text = std::str::from_utf8(&metadata).map_err(|_| UploadError::InvalidMetadataUtf8)?;
     let metadata_doc = parse_metadata(metadata_text);
     let form_requires_python = form
@@ -213,6 +217,12 @@ pub fn prepare(
         .map(validate_requires_python)
         .transpose()?;
     validate_metadata_identity(&form, &metadata_doc, &normalized, &parsed_version)?;
+    if let Some(value) = missing_license_files.into_iter().next() {
+        return Err(UploadError::InvalidLicenseFile {
+            value,
+            reason: "the archive does not carry the declared file",
+        });
+    }
     let requires_python = metadata_doc
         .requires_python
         .map(validate_requires_python)
@@ -378,11 +388,11 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
-fn metadata_bytes(
+fn validate_archive(
     parsed: &DistributionFilename,
     filename: &str,
     path: &std::path::Path,
-) -> Result<Vec<u8>, UploadError> {
+) -> Result<ValidatedArchive, UploadError> {
     let validate = match parsed.kind {
         DistributionKind::Wheel => crate::archive::validate_wheel_path,
         DistributionKind::SdistTarGz => crate::archive::validate_sdist_path,

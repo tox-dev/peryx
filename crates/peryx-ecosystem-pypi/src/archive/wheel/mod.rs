@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek};
 use std::path::Path;
 
-use super::{ArchiveError, read_error, safe_member_name};
+use super::{ArchiveError, ValidatedArchive, read_error, safe_member_name};
 use crate::{DistributionKind, Version, normalize_name, parse_distribution_filename, parse_version};
 
 mod entry_points;
@@ -34,17 +34,18 @@ fn invalid_wheel(message: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::Invalid(format!("invalid wheel: {message}"))
 }
 
-/// Validate a wheel's required structure and return its exact `METADATA` bytes.
+/// Validate a wheel's required structure and return its exact `METADATA` bytes with the license
+/// files it declares but does not carry.
 ///
 /// # Errors
 /// Returns [`ArchiveError::InvalidWheel`] when required wheel metadata is missing or inconsistent,
 /// and [`ArchiveError::Read`] when the staged file or ZIP cannot be read.
-pub fn validate_wheel_path(filename: &str, path: &Path) -> Result<Vec<u8>, ArchiveError> {
+pub fn validate_wheel_path(filename: &str, path: &Path) -> Result<ValidatedArchive, ArchiveError> {
     let file = std::fs::File::open(path).map_err(read_error)?;
     validate_wheel_reader(filename, file)
 }
 
-fn validate_wheel_reader(filename: &str, reader: impl Read + Seek) -> Result<Vec<u8>, ArchiveError> {
+fn validate_wheel_reader(filename: &str, reader: impl Read + Seek) -> Result<ValidatedArchive, ArchiveError> {
     let expected = expected_wheel_dist_info(filename)?;
 
     let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
@@ -72,7 +73,21 @@ fn validate_wheel_reader(filename: &str, reader: impl Read + Seek) -> Result<Vec
         validate_entry_points(&entry_points)?;
     }
 
-    Ok(metadata)
+    Ok(ValidatedArchive {
+        missing_license_files: missing_license_files(&metadata, dist_info, &members.files),
+        metadata,
+    })
+}
+
+/// PEP 639 carries a wheel's license files under `licenses/` inside its `.dist-info` directory, so a
+/// `License-File` without a member there names a file the wheel does not ship. Upload validation
+/// rejects a malformed declared path on its own, so here one merely reads as missing.
+fn missing_license_files(metadata: &[u8], dist_info: &str, files: &BTreeMap<String, WheelMember>) -> Vec<String> {
+    crate::parse_metadata(&String::from_utf8_lossy(metadata))
+        .license_files
+        .into_iter()
+        .filter(|value| !files.contains_key(&format!("{dist_info}/licenses/{value}")))
+        .collect()
 }
 
 #[derive(Debug)]

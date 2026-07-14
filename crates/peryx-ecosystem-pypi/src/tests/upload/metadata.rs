@@ -152,8 +152,9 @@ fn test_prepare_rejects_metadata_field_mismatches() {
 }
 #[test]
 fn test_prepare_accepts_matching_metadata_form_fields() {
-    let bytes = wheel_metadata_bytes(
+    let bytes = wheel_metadata_bytes_with_licenses(
         b"Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nLicense-Expression: MIT\nLicense-File: LICENSE\nProvides-Extra: cli\nProject-URL: Source, https://example.test/source\nHome-Page: https://example.test/home\n",
+        &["LICENSE"],
     );
     let (_dir, staged) = staged_upload(&bytes);
     let mut form = staged_form(&bytes);
@@ -327,13 +328,11 @@ fn test_prepare_rejects_invalid_license_file(#[case] license_file: &str, #[case]
 }
 
 #[rstest]
-#[case::root("License-File: LICENSE\n")]
-#[case::nested("License-File: licenses/LICENSE.MIT\n")]
-#[case::multiple("License-File: licenses/LICENSE.MIT\nLicense-File: licenses/LICENSE.CC0\n")]
-fn test_prepare_accepts_valid_license_file(#[case] license_files: &str) {
-    let bytes = wheel_metadata_bytes(
-        format!("Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n{license_files}").as_bytes(),
-    );
+#[case::root(&["LICENSE"])]
+#[case::nested(&["licenses/LICENSE.MIT"])]
+#[case::multiple(&["licenses/LICENSE.MIT", "licenses/LICENSE.CC0"])]
+fn test_prepare_accepts_valid_license_file(#[case] license_files: &[&str]) {
+    let bytes = wheel_with_license_files(license_files, license_files);
     let (_dir, staged) = staged_upload(&bytes);
 
     assert_eq!(

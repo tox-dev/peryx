@@ -1,6 +1,7 @@
 //! Sdist and archive-content validation.
 
 use super::support::*;
+use rstest::rstest;
 
 #[test]
 fn test_prepare_accepts_valid_sdist() {
@@ -69,4 +70,37 @@ fn test_prepare_rejects_sdist_archive_read_errors() {
             "{filename}: {err:?}"
         );
     }
+}
+
+#[rstest]
+#[case::tar_gz("Flask-1.0.tar.gz")]
+#[case::zip("Flask-1.0.zip")]
+fn test_prepare_accepts_sdist_carrying_declared_license_file(#[case] filename: &str) {
+    let sdist = sdist_with_license(filename, true);
+    let (_dir, staged) = staged_upload(&sdist);
+    let mut form = full_form(filename);
+    form.filetype = Some("sdist".to_owned());
+
+    assert_eq!(
+        prepare(form, staged, "root/hosted", 1000).unwrap().display_name,
+        "Flask"
+    );
+}
+
+#[rstest]
+#[case::tar_gz("Flask-1.0.tar.gz")]
+#[case::zip("Flask-1.0.zip")]
+fn test_prepare_rejects_sdist_missing_declared_license_file(#[case] filename: &str) {
+    let sdist = sdist_with_license(filename, false);
+    let (_dir, staged) = staged_upload(&sdist);
+    let mut form = full_form(filename);
+    form.filetype = Some("sdist".to_owned());
+
+    assert_eq!(
+        prepare(form, staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidLicenseFile {
+            value: "LICENSE".to_owned(),
+            reason: "the archive does not carry the declared file",
+        }
+    );
 }
