@@ -60,8 +60,11 @@ jobs:
         include:
           - ecosystem: OCI
             package: peryx-ecosystem-oci
+            cargo_jobs: 2
           - ecosystem: PyPI
             package: peryx-ecosystem-pypi
+            # Two concurrent PyPI fat-LTO links exceed the standard ARM runner's memory.
+            cargo_jobs: 1
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -75,7 +78,7 @@ jobs:
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-codspeed@5.0.1
-      - run: cargo codspeed build --locked -j 2 -m simulation -p ${{ matrix.package }}
+      - run: cargo codspeed build --locked -j ${{ matrix.cargo_jobs }} -m simulation -p ${{ matrix.package }}
       - name: Record benchmark hashes
         run: sha256sum target/codspeed/analysis/${{ matrix.package }}/*
       - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
