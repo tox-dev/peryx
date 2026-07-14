@@ -51,8 +51,9 @@ repository, peryx sends a repository-scoped upstream `HEAD`, records the link af
 bytes. peryx returns `404 BLOB_UNKNOWN` when the target repository lacks the digest.
 
 peryx requires the source repository name and pull authorization for a cross-repository mount, then copies the source
-link to the target. A delete removes the target link. peryx reclaims the payload after the last repository link and
-manifest reference disappear.
+link to the target. For a delete, peryx removes the target link and leaves the shared content store unchanged.
+`cache purge orphaned-blobs` reclaims the payload after no installed ecosystem references it. The collector checks
+references a second time after its disk walk, so the collector preserves bytes that a concurrent publication references.
 
 ## Why an index tag can serve a single-platform image
 

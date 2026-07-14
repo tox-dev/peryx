@@ -93,6 +93,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"]
 tracing-appender = "0.2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 criterion = { package = "codspeed-criterion-compat", version = "5.0", default-features = false }
+stats_alloc = "0.1.10"
 statrs = "0.18"
 hdrhistogram = { version = "7.5", default-features = false }
 

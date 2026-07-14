@@ -142,6 +142,19 @@ peryx also serves a web interface on the same port. Open [http://127.0.0.1:4433/
 dashboard of the configured indexes and their request counters; the same numbers are
 [Prometheus](https://prometheus.io/) metrics at `/metrics`.
 
+## Reclaim deleted blobs
+
+peryx removes one repository link for OCI blob deletion and leaves the payload in its shared content store because
+another repository or ecosystem may reference the same digest. After you delete the image, inspect unreferenced bytes
+before removing them:
+
+```shell
+peryx cache purge orphaned-blobs
+peryx cache purge orphaned-blobs --yes
+```
+
+The first command prints a dry-run plan. The second unlinks blobs that no installed ecosystem references.
+
 ## Where next
 
 - [Pull a Docker Hub official image](@/ecosystems/oci/tutorials/hub-official-images.md): pull `ubuntu` through the cache

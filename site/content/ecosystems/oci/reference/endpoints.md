@@ -100,7 +100,8 @@ headers. A `Range: bytes=…` request produces `206` with `Content-Range`. peryx
 missing digest produces `404 BLOB_UNKNOWN`; a non-`sha256` digest produces `400 DIGEST_INVALID`.
 
 peryx removes this repository's link for `DELETE /v2/<name>/blobs/<digest>` and returns `202`. A missing link produces
-`404 BLOB_UNKNOWN`. peryx retains shared bytes while another repository or manifest references them.
+`404 BLOB_UNKNOWN`. peryx leaves the payload in the shared content store. `cache purge orphaned-blobs` removes it after
+each installed ecosystem driver reports no reference.
 
 ### Layer contents
 

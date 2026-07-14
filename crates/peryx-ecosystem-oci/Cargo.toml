@@ -49,6 +49,7 @@ tempfile.workspace = true
 wiremock.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
 rstest.workspace = true
+stats_alloc.workspace = true
 
 [[bench]]
 name = "version_check"

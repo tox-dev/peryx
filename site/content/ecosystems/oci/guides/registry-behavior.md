@@ -92,6 +92,20 @@ in `Location` with `202 Accepted` when the source lacks the digest or the bytes.
 You need pull access for a private source; peryx returns the source repository's `401` challenge when the credential may
 push the target but cannot pull `images/source/app`.
 
+## Reclaim unreferenced blob bytes
+
+peryx removes the target repository link for `DELETE /v2/<name>/blobs/<digest>` and returns `202 Accepted`. peryx keeps
+the content-addressed bytes so another repository or ecosystem can use the same digest. After deleting the related
+manifests and blob links, inspect the orphan candidates before unlinking them:
+
+```shell
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx --yes
+```
+
+The collector checks each installed ecosystem and retains a digest when another OCI repository or PyPI artifact
+references it.
+
 ## Cancel an in-progress upload
 
 A container push is a series of blob uploads, and an upload can be left half-done: a client crashes mid-layer, or a
