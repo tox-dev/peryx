@@ -46,6 +46,8 @@ mod tests;
 pub use error::{ErrorCode, error_response, gateway_error};
 pub use mirror::{MirrorMode, MirrorRow, mirror};
 pub use registry::OciRegistry;
+#[doc(hidden)]
+pub use registry::OciRegistryWithHasher;
 pub use search_oci::OciIndexer;
 pub use settings::{IndexSettings, LibraryPrefix};
 pub use store::referenced_blob_digests;

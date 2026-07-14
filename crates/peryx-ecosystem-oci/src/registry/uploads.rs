@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use peryx_driver::ServingState;
 
-impl OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when
     /// the `POST` carries a `digest`, otherwise a session the client fills with `PATCH`/`PUT`.
     pub(super) async fn start_upload(

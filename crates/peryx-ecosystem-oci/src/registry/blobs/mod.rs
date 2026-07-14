@@ -25,7 +25,7 @@ use peryx_policy::PolicyAction;
 use peryx_storage::blob::{BlobError, BlobStore, Digest, PendingBlob};
 use std::sync::Arc;
 
-impl OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     pub(super) async fn serve_blob(
         &self,
         state: &ServingState,

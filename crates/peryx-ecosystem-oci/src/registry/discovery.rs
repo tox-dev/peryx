@@ -10,7 +10,7 @@ use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_upstream::UpstreamClient;
 
-impl OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Serve the tag list. A lone online proxy passes upstream through verbatim; every other case
     /// (a hosted index, or a virtual index) unions its members' tags under the requested name, then
     /// applies the `n`/`last` pagination the spec defines.

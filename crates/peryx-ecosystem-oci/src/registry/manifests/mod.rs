@@ -19,7 +19,7 @@ use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
 use peryx_upstream::UpstreamClient;
 
-impl OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Serve a manifest by tag or digest. A virtual index walks its members hosted-first, so a hosted
     /// image shadows the same name upstream; a single hosted or proxy index is the one-member case.
     pub(super) async fn serve_manifest(

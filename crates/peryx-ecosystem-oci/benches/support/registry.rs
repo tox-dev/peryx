@@ -1,3 +1,4 @@
+use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use axum::Router;
@@ -6,6 +7,7 @@ use http::Request;
 use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::AppState;
+use peryx_ecosystem_oci::{OCI_LEXICON, OciIndexer, OciRegistryWithHasher};
 use peryx_http::router;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
@@ -24,7 +26,10 @@ pub fn runtime() -> Runtime {
         .unwrap()
 }
 
-pub fn seeded(runtime: &Runtime) -> (tempfile::TempDir, Router, String, String) {
+pub fn seeded<S>(runtime: &Runtime, registry: OciRegistryWithHasher<S>) -> (tempfile::TempDir, Router, String, String)
+where
+    S: BuildHasher + Default + Send + Sync + 'static,
+{
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
@@ -37,7 +42,8 @@ pub fn seeded(runtime: &Runtime) -> (tempfile::TempDir, Router, String, String) 
         acl: IndexAcl::upload_token(TOKEN.to_owned()),
     };
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], Arc::new(|| 1000));
-    peryx_ecosystem_oci::install(&mut state, std::collections::HashMap::new());
+    state.register_ecosystem(Arc::new(registry), Arc::new(OciIndexer));
+    state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
     let blob = vec![0x7fu8; 4096];
     let blob_digest = format!("sha256:{}", Digest::of(&blob).as_str());
     let app = router(Arc::new(state));

@@ -38,7 +38,9 @@ use peryx_storage::blob::PendingBlob;
 use peryx_storage::meta::MetaError;
 use peryx_upstream::UpstreamClient;
 use std::borrow::Cow;
+use std::collections::hash_map::RandomState;
 use std::collections::{HashSet, VecDeque};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 
 mod auth;
@@ -123,20 +125,23 @@ impl From<ServeError> for String {
 /// Holds one shared upstream fetcher over the process's stores, the per-index settings the
 /// composition root compiled, the in-progress blob uploads a hosted push accumulates across its
 /// `POST`/`PATCH`/`PUT` requests.
+pub type OciRegistry = OciRegistryWithHasher<RandomState>;
+
+#[doc(hidden)]
 #[derive(Default)]
-pub struct OciRegistry {
+pub struct OciRegistryWithHasher<S> {
     upstream: Upstream,
     settings: std::collections::HashMap<String, IndexSettings>,
     uploads: tokio::sync::Mutex<std::collections::HashMap<String, UploadSession>>,
-    blob_memberships: RwLock<BlobMembershipCache>,
+    blob_memberships: RwLock<BlobMembershipCache<S>>,
 }
 #[derive(Default)]
-struct BlobMembershipCache {
-    entries: HashSet<Arc<str>>,
+struct BlobMembershipCache<S> {
+    entries: HashSet<Arc<str>, S>,
     insertion_order: VecDeque<Arc<str>>,
     key_bytes: usize,
 }
-impl BlobMembershipCache {
+impl<S: BuildHasher> BlobMembershipCache<S> {
     fn remove(&mut self, key: &str) {
         if self.entries.remove(key) {
             self.key_bytes -= key.len();
@@ -177,7 +182,7 @@ struct UploadSession {
 /// whose last activity is older than this, so a client that starts uploads and abandons them cannot pin
 /// their file descriptors and temp files forever; dropping the session deletes its staged temp file.
 const UPLOAD_SESSION_TTL_SECS: i64 = 3600;
-impl OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Build the driver with its shared upstream client and each OCI index's settings, keyed by index
     /// name.
     #[must_use]
@@ -209,7 +214,7 @@ impl OciRegistry {
     }
 }
 #[async_trait]
-impl EcosystemDriver for OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRegistryWithHasher<S> {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
         peryx_core::Ecosystem::Oci
     }
@@ -354,7 +359,7 @@ impl EcosystemDriver for OciRegistry {
     }
 }
 
-impl OciRegistry {
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     async fn serve_request(&self, state: Arc<ServingState>, request: Request) -> Response {
         let method = request.method().clone();
         let (parts, body) = request.into_parts();
