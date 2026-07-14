@@ -19,6 +19,8 @@ use super::{ErrorMessage, copy_to_clipboard, human_size};
 use crate::data::load_project_view;
 use crate::markdown::{EXTERNAL_LINK_REL, is_safe_artifact_link, is_safe_link, render_description};
 use crate::model::{UiFile, UiProject, UiProjectView};
+#[cfg(feature = "hydrate")]
+use crate::url::browser_http_origin;
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_url, browse_index_url, browse_project_file_search_url,
     browse_ref_url, simple_index_url,
@@ -119,14 +121,13 @@ fn ProjectBody(
         .clone()
         .or_else(|| ui.versions.last().cloned())
         .unwrap_or_default();
-    let install = format!("uv pip install --index-url {} {}", simple_index_url(&route), ui.name);
     let description = meta.description.as_ref().map(render_description).unwrap_or_default();
     let summary = meta.summary.clone();
     view! {
         <header class="project-head">
             <h1>{ui.name.clone()} <span class="version">{latest}</span></h1>
             {summary.map(|summary| view! { <p class="summary">{summary}</p> })}
-            <InstallSnippet install />
+            <InstallSnippet index_url=simple_index_url(&route) project=ui.name.clone() />
         </header>
         <div class="project-grid">
             <div class="project-main">
@@ -144,14 +145,39 @@ fn ProjectBody(
 }
 
 #[component]
-fn InstallSnippet(install: String) -> impl IntoView {
-    let shown = install.clone();
+fn InstallSnippet(index_url: String, project: String) -> impl IntoView {
+    let (install, set_install) = signal(install_command("", &index_url, &project));
+    #[cfg(feature = "hydrate")]
+    {
+        Effect::new(move |_| {
+            if let Some(location) = web_sys::window().map(|window| window.location())
+                && let Ok(protocol) = location.protocol()
+                && let Ok(hostname) = location.hostname()
+                && let Ok(port) = location.port()
+                && let Some(origin) = browser_http_origin(&protocol, &hostname, &port)
+            {
+                set_install.set(install_command(&origin, &index_url, &project));
+            }
+        });
+    }
+    #[cfg(not(feature = "hydrate"))]
+    let _ = set_install;
     view! {
         <div class="install">
-            <code>{shown}</code>
-            <button class="copy" title="Copy" on:click=move |_| copy_to_clipboard(&install)>"copy"</button>
+            <code>{move || install.get()}</code>
+            <button class="copy" title="Copy" on:click=move |_| install.with_untracked(|command| copy_to_clipboard(command))>"copy"</button>
         </div>
     }
+}
+
+fn install_command(origin: &str, index_url: &str, project: &str) -> String {
+    let mut command = String::with_capacity(origin.len() + index_url.len() + project.len() + 32);
+    command.push_str("uv pip install --index-url ");
+    command.push_str(origin);
+    command.push_str(index_url);
+    command.push(' ');
+    command.push_str(project);
+    command
 }
 
 #[component]
