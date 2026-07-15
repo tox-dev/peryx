@@ -1,6 +1,7 @@
 mod acl_tests;
 mod basic_tests;
 mod token_tests;
+mod trusted_publisher_tests;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;

@@ -14,9 +14,14 @@
 //! [`Signer`] mints and verifies the audience-bound JWTs a token realm hands out. It lives here because
 //! the signing key is identity state, not protocol state: an ecosystem's token endpoint calls `mint`
 //! with the grants [`authorize`] approved and never sees the key.
+//!
+//! [`authorize_publish`] is the other way grants are approved: a CI job presents an OIDC identity token
+//! instead of a secret, and a configured [`TrustedPublisher`] turns its verified claims into the same
+//! grants `mint` signs — trusted publishing without a long-lived credential to rotate.
 
 mod acl;
 mod token;
+mod trusted_publisher;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -26,6 +31,7 @@ pub use acl::{
     authorize_all, authorize_exact_grants, authorize_grants,
 };
 pub use token::{Signer, TokenError};
+pub use trusted_publisher::{PublishClaims, PublishDenial, TrustedPublisher, authorize_publish};
 
 /// The user and password carried by an HTTP Basic `Authorization` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
