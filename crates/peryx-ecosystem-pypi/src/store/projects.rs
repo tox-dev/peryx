@@ -1,6 +1,6 @@
 use peryx_storage::meta::{DriverBatch, MetaError, MetaScanError, MetaStore};
 
-use super::{PROJECTS_PREFIX, file_key, index_key, metadata_key, project_key, project_status_key};
+use super::{PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key, project_key, project_status_key};
 
 /// Counts of metadata rows a project-cache purge plans or deletes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,6 +107,7 @@ pub fn delete_project_cache(
     let key = format!("{index}/{normalized}");
     let mut batch = DriverBatch::new();
     batch.delete(index_key(&key));
+    batch.delete(freshness_key(&key));
     batch.delete(project_key(index, normalized));
     batch.delete(project_status_key(index, normalized));
     for digest in file_digests {
@@ -121,7 +122,7 @@ pub fn delete_project_cache(
 
 #[cfg(test)]
 mod tests {
-    use super::{MetaStore, ProjectCachePurgeCounts, project_key};
+    use super::{MetaStore, ProjectCachePurgeCounts, freshness_key, project_key};
     use crate::store::PypiStore as _;
 
     fn store() -> (tempfile::TempDir, MetaStore) {
@@ -198,6 +199,26 @@ mod tests {
         assert!(meta.get_metadata(&metadata_digests[0]).unwrap().is_none());
         assert!(meta.get_project_status("pypi", "flask").unwrap().is_none());
         assert!(meta.list_projects("pypi").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_delete_project_cache_removes_the_freshness_overlay() {
+        let (_dir, meta) = store();
+        let record = crate::store::CachedIndex {
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 1,
+            content_type: None,
+            fresh_secs: None,
+            body: Vec::new(),
+        };
+        meta.put_index("pypi/flask", &record).unwrap();
+        meta.touch_index_freshness("pypi/flask", 42, Some(9)).unwrap();
+        assert!(meta.get_driver_value(&freshness_key("pypi/flask")).unwrap().is_some());
+
+        meta.delete_project_cache("pypi", "flask", &[], &[]).unwrap();
+
+        assert!(meta.get_driver_value(&freshness_key("pypi/flask")).unwrap().is_none());
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use peryx_storage::meta::{DriverBatch, MetaError, MetaScanError, MetaStore};
 
-use super::record::{CachedIndex, CachedIndexPage, ProjectStatusRecord};
+use super::record::{CachedIndex, CachedIndexPage, FreshnessOverlay, ProjectStatusRecord};
 use super::{
-    INDEX_PREFIX, file_key, file_source_value, index_key, metadata_key, metadata_value, project_key, project_status_key,
+    INDEX_PREFIX, file_key, file_source_value, freshness_key, index_key, metadata_key, metadata_value, project_key,
+    project_status_key,
 };
 
 /// Store everything a freshly fetched cached page produces in one transaction.
@@ -36,6 +37,7 @@ pub fn put_cached_page(
 ) -> Result<(), MetaError> {
     let mut batch = DriverBatch::new();
     batch.put(index_key(key), record.encode());
+    batch.delete(freshness_key(key));
     batch.put(project_key(index, normalized), display.as_bytes().to_vec());
     match (project_status, project_status_reason) {
         (None, None) => batch.delete(project_status_key(index, normalized)),
@@ -74,22 +76,61 @@ pub fn get_project_status(
         .transpose()?)
 }
 
-/// Store a cached index record under `key` (for example `root/pypi/flask`).
+/// Store a cached index record under `key` (for example `root/pypi/flask`), clearing any freshness
+/// overlay a prior `304` left: a fresh body carries its own fetch time, which the overlay must not
+/// shadow.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_index(meta: &MetaStore, key: &str, record: &CachedIndex) -> Result<(), MetaError> {
-    meta.put_driver_value(&index_key(key), &record.encode())
+    let mut batch = DriverBatch::new();
+    batch.put(index_key(key), record.encode());
+    batch.delete(freshness_key(key));
+    meta.commit_driver_batch(&batch, true)
 }
 
-/// Fetch a cached index record.
+/// Advance a cached page's freshness after a `304 Not Modified`: write the small overlay row alone,
+/// so the revalidation touches a header rather than rewriting the page body.
+///
+/// # Errors
+/// Returns a store error if the write fails.
+pub fn touch_index_freshness(
+    meta: &MetaStore,
+    key: &str,
+    fetched_at_unix: i64,
+    fresh_secs: Option<i64>,
+) -> Result<(), MetaError> {
+    let overlay = FreshnessOverlay {
+        fetched_at_unix,
+        fresh_secs,
+    };
+    let mut batch = DriverBatch::new();
+    batch.put(freshness_key(key), overlay.encode());
+    meta.commit_driver_batch(&batch, false)
+}
+
+/// Fetch a cached index record, with any freshness a later `304` advanced folded in over the body
+/// row's own timestamp.
 ///
 /// # Errors
 /// Returns a store error if the read fails or the stored bytes cannot be decoded.
 pub fn get_index(meta: &MetaStore, key: &str) -> Result<Option<CachedIndex>, MetaError> {
+    let Some(raw) = meta.get_driver_value(&index_key(key))? else {
+        return Ok(None);
+    };
+    let mut record = CachedIndex::decode(&raw)?;
+    if let Some(overlay) = read_overlay(meta, key)? {
+        record.fetched_at_unix = overlay.fetched_at_unix;
+        record.fresh_secs = overlay.fresh_secs;
+    }
+    Ok(Some(record))
+}
+
+/// The freshness overlay a `304` left for `key`, if any.
+fn read_overlay(meta: &MetaStore, key: &str) -> Result<Option<FreshnessOverlay>, MetaError> {
     Ok(meta
-        .get_driver_value(&index_key(key))?
-        .map(|raw| CachedIndex::decode(&raw))
+        .get_driver_value(&freshness_key(key))?
+        .map(|raw| FreshnessOverlay::decode(&raw))
         .transpose()?)
 }
 
@@ -105,11 +146,16 @@ pub fn get_index(meta: &MetaStore, key: &str) -> Result<Option<CachedIndex>, Met
 pub fn list_index_pages(meta: &MetaStore) -> Result<Vec<(String, i64, Option<i64>)>, MetaError> {
     let mut pages = Vec::new();
     for key in meta.driver_prefix_keys(INDEX_PREFIX)? {
-        let raw = meta
-            .get_driver_value(&key)?
-            .expect("a key from the prefix scan still has its value");
-        let (fetched_at, fresh_secs) = CachedIndex::decode_freshness(&raw)?;
-        pages.push((key[INDEX_PREFIX.len()..].to_owned(), fetched_at, fresh_secs));
+        let route = &key[INDEX_PREFIX.len()..];
+        let (fetched_at, fresh_secs) = if let Some(overlay) = read_overlay(meta, route)? {
+            (overlay.fetched_at_unix, overlay.fresh_secs)
+        } else {
+            let raw = meta
+                .get_driver_value(&key)?
+                .expect("a key from the prefix scan still has its value");
+            CachedIndex::decode_freshness(&raw)?
+        };
+        pages.push((route.to_owned(), fetched_at, fresh_secs));
     }
     Ok(pages)
 }
@@ -130,9 +176,14 @@ pub fn scan_index_pages<E>(
         let raw = meta
             .get_driver_value(&key)?
             .expect("a key from the prefix scan still has its value");
+        let mut summary = CachedIndex::summary(&raw).map_err(MetaError::from)?;
+        if let Some(overlay) = read_overlay(meta, &key[INDEX_PREFIX.len()..])? {
+            summary.fetched_at_unix = overlay.fetched_at_unix;
+            summary.fresh_secs = overlay.fresh_secs;
+        }
         visit(CachedIndexPage {
             key: key[INDEX_PREFIX.len()..].to_owned(),
-            summary: CachedIndex::summary(&raw).map_err(MetaError::from)?,
+            summary,
         })
         .map_err(MetaScanError::Visit)?;
     }
@@ -199,6 +250,77 @@ mod tests {
         updated.last_serial = Some(99);
         meta.put_index("k", &updated).unwrap();
         assert_eq!(meta.get_index("k").unwrap().unwrap().last_serial, Some(99));
+    }
+
+    #[test]
+    fn test_touch_index_freshness_advances_without_rewriting_the_body_row() {
+        let (_dir, meta) = store();
+        meta.put_index("pypi/flask", &record()).unwrap();
+        let body_row = meta.get_driver_value(&index_key("pypi/flask")).unwrap().unwrap();
+
+        meta.touch_index_freshness("pypi/flask", 1_800_000_000, Some(900))
+            .unwrap();
+
+        assert_eq!(
+            meta.get_driver_value(&index_key("pypi/flask")).unwrap().unwrap(),
+            body_row,
+            "a 304 rewrites the freshness overlay, not the page body row"
+        );
+        let refreshed = meta.get_index("pypi/flask").unwrap().unwrap();
+        assert_eq!(refreshed.fetched_at_unix, 1_800_000_000);
+        assert_eq!(refreshed.fresh_secs, Some(900));
+        assert_eq!(refreshed.body, record().body, "the served body is unchanged");
+        assert_eq!(refreshed.etag, record().etag);
+    }
+
+    #[test]
+    fn test_put_index_clears_a_stale_freshness_overlay() {
+        let (_dir, meta) = store();
+        meta.put_index("k", &record()).unwrap();
+        meta.touch_index_freshness("k", 9_999, Some(1)).unwrap();
+
+        let mut replaced = record();
+        replaced.fetched_at_unix = 2_000_000_000;
+        replaced.body = b"<html>new</html>".to_vec();
+        meta.put_index("k", &replaced).unwrap();
+
+        assert_eq!(
+            meta.get_index("k").unwrap().unwrap(),
+            replaced,
+            "a 200 replaces the body and its freshness; the overlay must not shadow it"
+        );
+    }
+
+    #[test]
+    fn test_list_index_pages_reflects_a_freshness_overlay() {
+        let (_dir, meta) = store();
+        meta.put_index("pypi/flask", &record()).unwrap();
+        meta.touch_index_freshness("pypi/flask", 1_900_000_000, Some(120))
+            .unwrap();
+        assert_eq!(
+            meta.list_index_pages().unwrap(),
+            vec![("pypi/flask".to_owned(), 1_900_000_000, Some(120))]
+        );
+    }
+
+    #[test]
+    fn test_scan_index_pages_reflects_a_freshness_overlay() {
+        let (_dir, meta) = store();
+        meta.put_index("pypi/flask", &record()).unwrap();
+        meta.touch_index_freshness("pypi/flask", 1_900_000_000, Some(120))
+            .unwrap();
+        let mut pages = Vec::new();
+        meta.scan_index_pages(|page| {
+            pages.push((
+                page.key,
+                page.summary.fetched_at_unix,
+                page.summary.fresh_secs,
+                page.summary.body_bytes,
+            ));
+            Ok::<(), std::io::Error>(())
+        })
+        .unwrap();
+        assert_eq!(pages, vec![("pypi/flask".to_owned(), 1_900_000_000, Some(120), 13)]);
     }
 
     #[test]

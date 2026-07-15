@@ -194,7 +194,9 @@ pub async fn stream_detail(
             let mut record = cached.ok_or(CacheError::Unavailable)?;
             record.fetched_at_unix = now;
             record.fresh_secs = head.max_age.or(record.fresh_secs);
-            state.meta.put_index(&key, &record)?;
+            state
+                .meta
+                .touch_index_freshness(&key, record.fetched_at_unix, record.fresh_secs)?;
             state.metrics.record(Event::Refresh {
                 route: mirror_route(&state, &cached_name),
                 project: project.clone(),

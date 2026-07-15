@@ -41,6 +41,36 @@ pub struct ProjectStatusRecord {
     pub reason: Option<String>,
 }
 
+/// The freshness fields a `304 Not Modified` advances: the fetch time and the granted lifetime.
+///
+/// A revalidation leaves the page body untouched, so these live in their own small row that a `304`
+/// rewrites on its own — the record's multi-megabyte body row stays put.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreshnessOverlay {
+    pub fetched_at_unix: i64,
+    #[serde(default)]
+    pub fresh_secs: Option<i64>,
+}
+
+impl FreshnessOverlay {
+    /// Encode to bytes for storage.
+    ///
+    /// # Panics
+    /// Never in practice: both fields are serializable.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("freshness overlay always serializes")
+    }
+
+    /// Decode from stored bytes.
+    ///
+    /// # Errors
+    /// Returns the serde error when `bytes` is not a valid encoding.
+    pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
 /// Marks the framed record encoding: a JSON header line, then the raw body bytes.
 const RECORD_PREFIX: &[u8] = b"peryx1\n";
 
@@ -147,7 +177,16 @@ impl CachedIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::{CachedIndex, CachedIndexSummary};
+    use super::{CachedIndex, CachedIndexSummary, FreshnessOverlay};
+
+    #[test]
+    fn test_freshness_overlay_encode_decode_roundtrips() {
+        let overlay = FreshnessOverlay {
+            fetched_at_unix: 1_800_000_000,
+            fresh_secs: Some(600),
+        };
+        assert_eq!(FreshnessOverlay::decode(&overlay.encode()).unwrap(), overlay);
+    }
 
     fn record() -> CachedIndex {
         CachedIndex {

@@ -22,6 +22,7 @@ pub use files::{
 };
 pub use index::{
     get_index, get_project_status, list_index_pages, put_cached_page, put_index, scan_index_pages, scan_index_records,
+    touch_index_freshness,
 };
 pub use journal::JournalEntry;
 pub use peryx_driver::serving::{IndexSummary, RecentUpload};
@@ -29,7 +30,7 @@ pub use projects::{
     ProjectCachePurgeCounts, count_project_cache_purge, delete_project_cache, get_project, list_projects, put_project,
     scan_project_records,
 };
-pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, ProjectStatusRecord};
+pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, FreshnessOverlay, ProjectStatusRecord};
 pub use summary::summarize_indexes;
 pub use uploads::{
     Guard, MetadataSibling, PublishedFile, UploadMutation, delete_override, delete_upload, list_overrides,
@@ -39,6 +40,9 @@ pub use uploads::{
 
 /// The former `index_document` table: cached simple-index pages, keyed by the caller's route key.
 const INDEX_PREFIX: &str = "pypi\u{0}i\u{0}";
+/// The freshness overlay a `304 Not Modified` writes: the fetch time and lifetime for a page whose
+/// body did not change, keyed by the same route key so a revalidation rewrites a header, not a body.
+const FRESHNESS_PREFIX: &str = "pypi\u{0}h\u{0}";
 /// The former `artifact_source` table: upstream source URLs, keyed by artifact digest.
 const FILE_PREFIX: &str = "pypi\u{0}f\u{0}";
 /// The former `metadata_sidecar` table: PEP 658 siblings, keyed by artifact digest.
@@ -54,6 +58,10 @@ const OVERRIDE_PREFIX: &str = "pypi\u{0}o\u{0}";
 
 fn index_key(key: &str) -> String {
     format!("{INDEX_PREFIX}{key}")
+}
+
+fn freshness_key(key: &str) -> String {
+    format!("{FRESHNESS_PREFIX}{key}")
 }
 
 fn file_key(sha256: &str) -> String {
@@ -105,6 +113,18 @@ pub trait PypiStore {
     /// # Errors
     /// Returns a store error if the write fails.
     fn put_index(&self, key: &str, record: &CachedIndex) -> Result<(), peryx_storage::meta::MetaError>;
+
+    /// Advance a cached page's freshness after a `304 Not Modified`, writing only the small overlay
+    /// row and leaving the page body untouched.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    fn touch_index_freshness(
+        &self,
+        key: &str,
+        fetched_at_unix: i64,
+        fresh_secs: Option<i64>,
+    ) -> Result<(), peryx_storage::meta::MetaError>;
 
     /// Fetch a cached index record.
     ///
@@ -417,6 +437,15 @@ pub trait PypiStore {
 impl PypiStore for peryx_storage::meta::MetaStore {
     fn put_index(&self, key: &str, record: &CachedIndex) -> Result<(), peryx_storage::meta::MetaError> {
         index::put_index(self, key, record)
+    }
+
+    fn touch_index_freshness(
+        &self,
+        key: &str,
+        fetched_at_unix: i64,
+        fresh_secs: Option<i64>,
+    ) -> Result<(), peryx_storage::meta::MetaError> {
+        index::touch_index_freshness(self, key, fetched_at_unix, fresh_secs)
     }
 
     fn get_index(&self, key: &str) -> Result<Option<CachedIndex>, peryx_storage::meta::MetaError> {
