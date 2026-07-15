@@ -28,6 +28,8 @@ pub struct CoreMetadataDoc {
     pub obsoletes_dist: Vec<String>,
     pub provides_extra: Vec<String>,
     pub classifiers: Vec<String>,
+    /// The field names the publisher marked `Dynamic`, kept as written and compared case-insensitively.
+    pub dynamic: Vec<String>,
     /// `(label, url)` pairs from `Project-URL` headers.
     pub project_urls: Vec<(String, String)>,
     pub home_page: Option<String>,
@@ -136,6 +138,7 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
             "obsoletes-dist" => doc.obsoletes_dist.push(value.to_owned()),
             "provides-extra" => doc.provides_extra.push(value.to_owned()),
             "classifier" => doc.classifiers.push(value.to_owned()),
+            "dynamic" => doc.dynamic.push(value.to_owned()),
             "project-url" => {
                 let (label, url) = value.split_once(',').unwrap_or(("", value));
                 doc.project_urls.push((label.trim().to_owned(), url.trim().to_owned()));

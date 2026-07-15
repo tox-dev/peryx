@@ -443,6 +443,48 @@ fn requirements_wheel(headers: &str) -> Vec<u8> {
 }
 
 #[rstest]
+#[case::name("Name", "is not allowed as a dynamic field")]
+#[case::version("Version", "is not allowed as a dynamic field")]
+#[case::metadata_version("Metadata-Version", "is not allowed as a dynamic field")]
+#[case::unknown("Made-Up", "is not a valid dynamic field")]
+fn test_prepare_rejects_invalid_dynamic_field(#[case] value: &str, #[case] reason: &'static str) {
+    let bytes = dynamic_wheel(value);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field: "Dynamic",
+            value: value.to_owned(),
+            reason,
+        }
+    );
+}
+
+#[rstest]
+#[case::repeatable("Requires-Dist")]
+#[case::single_use("Summary")]
+#[case::case_insensitive("requires-dist")]
+fn test_prepare_accepts_valid_dynamic_field(#[case] value: &str) {
+    let bytes = dynamic_wheel(value);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000)
+            .unwrap()
+            .display_name,
+        "Flask"
+    );
+}
+
+fn dynamic_wheel(field: &str) -> Vec<u8> {
+    wheel_metadata_bytes(
+        format!("Metadata-Version: 2.2\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nDynamic: {field}\n")
+            .as_bytes(),
+    )
+}
+
+#[rstest]
 #[case::parent("../LICENSE", "parent directory components are not allowed")]
 #[case::relative_parent("./../LICENSE", "parent directory components are not allowed")]
 #[case::unresolved_parent("licenses/../LICENSE", "parent directory components are not allowed")]
@@ -621,6 +663,13 @@ fn test_prepare_rejects_invalid_license_expression(#[case] expression: &str, #[c
     "LICENSE",
     "requires Metadata-Version 2.4 or later"
 )]
+#[case::dynamic(
+    "2.1",
+    "Dynamic: Requires-Dist",
+    "Dynamic",
+    "Requires-Dist",
+    "requires Metadata-Version 2.2 or later"
+)]
 fn test_prepare_rejects_field_older_than_its_introduction(
     #[case] metadata_version: &str,
     #[case] header: &str,
@@ -653,6 +702,7 @@ fn test_prepare_rejects_field_older_than_its_introduction(
 #[case::provides_extra("2.1", "Provides-Extra: cli")]
 #[case::license_expression("2.4", "License-Expression: MIT")]
 #[case::license_file("2.4", "License-File: LICENSE")]
+#[case::dynamic("2.2", "Dynamic: Requires-Dist")]
 #[case::document_v1_0(
     "1.0",
     "Summary: a web framework\nKeywords: web\nHome-Page: https://example.test\nAuthor: Pallets\nLicense: BSD-3-Clause"
