@@ -229,6 +229,44 @@ fn test_prepare_accepts_valid_project_url(#[case] label: &str, #[case] url: &str
 }
 
 #[rstest]
+#[case::home_page_javascript("Home-Page: javascript:alert(1)", "Home-page", "javascript:alert(1)")]
+#[case::home_page_scheme("Home-Page: ftp://example.test/pub", "Home-page", "ftp://example.test/pub")]
+#[case::download_url_javascript("Download-URL: javascript:alert(1)", "Download-URL", "javascript:alert(1)")]
+#[case::download_url_relative("Download-URL: /downloads/flask.whl", "Download-URL", "/downloads/flask.whl")]
+fn test_prepare_rejects_invalid_legacy_url(#[case] header: &str, #[case] field: &'static str, #[case] value: &str) {
+    let bytes = wheel_metadata_bytes(
+        format!("Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n{header}\n").as_bytes(),
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field,
+            value: value.to_owned(),
+            reason: "must be an HTTP or HTTPS URL",
+        }
+    );
+}
+
+#[rstest]
+#[case::home_page("Home-Page: https://example.test/home")]
+#[case::download_url("Download-URL: http://example.test/flask.whl")]
+fn test_prepare_accepts_valid_legacy_url(#[case] header: &str) {
+    let bytes = wheel_metadata_bytes(
+        format!("Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n{header}\n").as_bytes(),
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000)
+            .unwrap()
+            .display_name,
+        "Flask"
+    );
+}
+
+#[rstest]
 #[case::invalid_legacy_name(
     "Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nProvides-Extra: -dev\n",
     "-dev",

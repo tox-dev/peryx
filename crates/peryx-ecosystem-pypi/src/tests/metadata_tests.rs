@@ -133,6 +133,7 @@ fn test_parse_metadata_headers_and_body() {
                 Classifier: Development Status :: 4 - Beta\n\
                 Project-URL: Homepage, https://example.test\n\
                 Home-Page: https://legacy.example.test\n\
+                Download-URL: https://legacy.example.test/downloads\n\
                 Description-Content-Type: text/markdown\n\
                 \n\
                 # peryxpkg\n\nThe long description.";
@@ -158,6 +159,10 @@ fn test_parse_metadata_headers_and_body() {
         [("Homepage".to_owned(), "https://example.test".to_owned())]
     );
     assert_eq!(doc.home_page.as_deref(), Some("https://legacy.example.test"));
+    assert_eq!(
+        doc.download_url.as_deref(),
+        Some("https://legacy.example.test/downloads")
+    );
     assert_eq!(doc.description_content_type.as_deref(), Some("text/markdown"));
     assert!(doc.description.starts_with("# peryxpkg"));
 }

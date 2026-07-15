@@ -29,6 +29,7 @@ pub struct CoreMetadataDoc {
     /// `(label, url)` pairs from `Project-URL` headers.
     pub project_urls: Vec<(String, String)>,
     pub home_page: Option<String>,
+    pub download_url: Option<String>,
     /// The long description: the `Description` header or the document body.
     pub description: String,
     /// The `Description-Content-Type`, for example `text/markdown`.
@@ -136,6 +137,7 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
                 doc.project_urls.push((label.trim().to_owned(), url.trim().to_owned()));
             }
             "home-page" => doc.home_page = non_empty(value),
+            "download-url" => doc.download_url = non_empty(value),
             // Drop only the RFC 822 separator whitespace; the rest of the payload is the renderer's
             // to fold, so trimming its body would corrupt the description.
             "description" => raw.trim_start().clone_into(&mut doc.description),

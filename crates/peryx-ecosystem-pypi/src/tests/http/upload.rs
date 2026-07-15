@@ -655,6 +655,31 @@ async fn test_upload_rejects_invalid_requirement(#[case] header: &[u8], #[case] 
     .await;
 }
 
+#[rstest]
+#[case::home_page(
+    b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nHome-Page: javascript:alert(1)\n",
+    "metadata Home-page value \"javascript:alert(1)\" must be an HTTP or HTTPS URL"
+)]
+#[case::download_url(
+    b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nDownload-URL: /downloads/peryxpkg.whl\n",
+    "metadata Download-URL value \"/downloads/peryxpkg.whl\" must be an HTTP or HTTPS URL"
+)]
+#[tokio::test]
+async fn test_upload_rejects_invalid_legacy_url(#[case] metadata: &[u8], #[case] expected: &str) {
+    let h = harness().await;
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(metadata).as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        expected,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn test_upload_rejects_field_older_than_its_introduction() {
     let h = harness().await;

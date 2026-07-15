@@ -437,6 +437,7 @@ fn validate_metadata_identity(
     validate_provided_extras(metadata)?;
     validate_classifiers(metadata)?;
     validate_requirements(metadata)?;
+    validate_legacy_urls(metadata)?;
     compare_metadata_field(
         "Metadata-Version",
         form.metadata_version.as_deref(),
@@ -691,12 +692,37 @@ fn compare_metadata_list(field: &'static str, form: &[String], metadata: &[Strin
     }
 }
 
+/// Core Metadata defines `Home-page` and `Download-URL` as URLs, so peryx holds them to the same
+/// HTTP(S) policy it applies to `Project-URL`, as Warehouse does. This rejects `javascript:` and
+/// other non-web schemes the UI would otherwise strip to inert text.
+fn validate_legacy_urls(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
+    for (field, value) in [
+        ("Home-page", metadata.home_page.as_deref()),
+        ("Download-URL", metadata.download_url.as_deref()),
+    ] {
+        if let Some(value) = value
+            && !is_http_url(value)
+        {
+            return Err(UploadError::InvalidMetadataValue {
+                field,
+                value: value.to_owned(),
+                reason: "must be an HTTP or HTTPS URL",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_http_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
 fn compare_project_urls(form: &UploadForm, metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
-    if let Some((label, url)) = metadata.project_urls.iter().find(|(label, url)| {
-        label.is_empty()
-            || label.chars().count() > 32
-            || !Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
-    }) {
+    if let Some((label, url)) = metadata
+        .project_urls
+        .iter()
+        .find(|(label, url)| label.is_empty() || label.chars().count() > 32 || !is_http_url(url))
+    {
         return Err(UploadError::InvalidProjectUrl {
             label: label.clone(),
             url: url.clone(),

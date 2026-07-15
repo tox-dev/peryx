@@ -226,6 +226,39 @@ fn test_import_dir_reports_metadata_validation_reasons() {
     ));
 }
 
+#[rstest]
+#[case::home_page(
+    b"Metadata-Version: 2.4\nName: legacy\nVersion: 1.0\nHome-Page: javascript:alert(1)\n",
+    "metadata Home-page value \"javascript:alert(1)\" must be an HTTP or HTTPS URL"
+)]
+#[case::download_url(
+    b"Metadata-Version: 2.4\nName: legacy\nVersion: 1.0\nDownload-URL: /downloads/legacy.whl\n",
+    "metadata Download-URL value \"/downloads/legacy.whl\" must be an HTTP or HTTPS URL"
+)]
+fn test_import_dir_rejects_invalid_legacy_url(#[case] metadata: &[u8], #[case] reason: &str) {
+    let root = tempfile::tempdir().unwrap();
+    let import = root.path().join("import");
+    std::fs::create_dir(&import).unwrap();
+    std::fs::write(
+        import.join("legacy-1.0-py3-none-any.whl"),
+        wheel_with_metadata("legacy", "1.0", metadata),
+    )
+    .unwrap();
+    let config = Config {
+        data_dir: root.path().join("data"),
+        ..Config::default()
+    };
+
+    let mut out = Vec::new();
+    operator::import_dir(&config, "root/pypi", &import, &mut out).unwrap();
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains(&format!("legacy-1.0-py3-none-any.whl\tlegacy\t1.0\t{reason}")),
+        "{text}"
+    );
+}
+
 #[test]
 fn test_import_dir_rejects_malformed_metadata() {
     let root = tempfile::tempdir().unwrap();
