@@ -81,6 +81,19 @@ jobs:
       - run: cargo codspeed build --locked -j ${{ matrix.cargo_jobs }} -m simulation -p ${{ matrix.package }}
       - name: Record benchmark hashes
         run: sha256sum target/codspeed/analysis/${{ matrix.package }}/*
+      # CodSpeedHQ/action installs its valgrind .deb plus libc6-dbg via apt-get, fetched from
+      # ports.ubuntu.com on ARM. That install runs inside the action, so only apt's own retry
+      # config can harden it; pre-fetching libc6-dbg shrinks what the action must still download.
+      - name: Make apt resilient to mirror blips
+        run: |
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
+          for attempt in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y libc6-dbg && exit 0
+            echo "apt attempt $attempt failed; retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          echo "libc6-dbg install failed after 5 attempts"
+          exit 1
       - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           mode: simulation
