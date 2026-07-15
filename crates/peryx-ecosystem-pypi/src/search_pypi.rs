@@ -373,6 +373,9 @@ fn push_metadata(text: &mut String, metadata: &CoreMetadataDoc) {
             push_text(text, value);
         }
     }
+    for value in metadata.import_names.iter().chain(&metadata.import_namespaces) {
+        push_text(text, crate::metadata::import_parts(value).0);
+    }
     for (label, url) in &metadata.project_urls {
         push_text(text, label);
         push_text(text, url);

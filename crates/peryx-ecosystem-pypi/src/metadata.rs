@@ -30,6 +30,12 @@ pub struct CoreMetadataDoc {
     pub classifiers: Vec<String>,
     /// The field names the publisher marked `Dynamic`, kept as written and compared case-insensitively.
     pub dynamic: Vec<String>,
+    /// `Import-Name` values: import names the distribution exclusively provides, each optionally
+    /// suffixed `; private`. Empty until Core Metadata 2.5.
+    pub import_names: Vec<String>,
+    /// `Import-Namespace` values: import names the distribution shares with others (namespace
+    /// packages), each optionally suffixed `; private`. Empty until Core Metadata 2.5.
+    pub import_namespaces: Vec<String>,
     /// `(label, url)` pairs from `Project-URL` headers.
     pub project_urls: Vec<(String, String)>,
     pub home_page: Option<String>,
@@ -139,6 +145,8 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
             "provides-extra" => doc.provides_extra.push(value.to_owned()),
             "classifier" => doc.classifiers.push(value.to_owned()),
             "dynamic" => doc.dynamic.push(value.to_owned()),
+            "import-name" => doc.import_names.push(value.to_owned()),
+            "import-namespace" => doc.import_namespaces.push(value.to_owned()),
             "project-url" => {
                 let (label, url) = value.split_once(',').unwrap_or(("", value));
                 doc.project_urls.push((label.trim().to_owned(), url.trim().to_owned()));
@@ -202,6 +210,27 @@ fn non_empty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+/// Split an `Import-Name`/`Import-Namespace` value into its importable name and the marker after the
+/// optional semicolon, each trimmed. Core Metadata 2.5 defines only `private` as a marker.
+pub fn import_parts(value: &str) -> (&str, Option<&str>) {
+    match value.split_once(';') {
+        Some((name, marker)) => (name.trim(), Some(marker.trim())),
+        None => (value.trim(), None),
+    }
+}
+
+/// The public importable names of an `Import-Name`/`Import-Namespace` field: values stripped of their
+/// marker, dropping the private ones since those are not part of the public API. Order is preserved.
+fn public_imports(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|value| {
+            let (name, marker) = import_parts(value);
+            (marker != Some("private") && !name.is_empty()).then(|| name.to_owned())
+        })
+        .collect()
+}
+
 impl CoreMetadataDoc {
     /// Turn this `PyPI` core-metadata document into the neutral view model the web UI renders, mapping
     /// each header to a metadata-panel block the way a pypi.org project page presents it.
@@ -230,6 +259,18 @@ impl CoreMetadataDoc {
                 blocks.push(UiBlock::Chips {
                     label: label.to_owned(),
                     values: values.clone(),
+                });
+            }
+        }
+        for (label, values) in [
+            ("Import Names", &self.import_names),
+            ("Import Namespaces", &self.import_namespaces),
+        ] {
+            let names = public_imports(values);
+            if !names.is_empty() {
+                blocks.push(UiBlock::Chips {
+                    label: label.to_owned(),
+                    values: names,
                 });
             }
         }

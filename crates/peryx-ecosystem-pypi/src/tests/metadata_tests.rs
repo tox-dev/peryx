@@ -535,3 +535,47 @@ fn test_ui_meta_groups_classifiers_and_omits_the_block_when_none() {
             .any(|block| matches!(block, UiBlock::Groups { label, .. } if label == "Classifiers"))
     );
 }
+
+#[test]
+fn test_parse_metadata_collects_repeated_import_names_verbatim() {
+    let doc = parse_metadata(
+        "Metadata-Version: 2.5\nName: x\nVersion: 1\n\
+         Import-Name: foo\nImport-Name: foo.bar; private\n\
+         Import-Namespace: shared\nImport-Namespace: shared.plugins\n",
+    )
+    .unwrap();
+    assert_eq!(doc.import_names, ["foo", "foo.bar; private"]);
+    assert_eq!(doc.import_namespaces, ["shared", "shared.plugins"]);
+}
+
+#[rstest]
+#[case::public("foo.bar", &["foo.bar"])]
+#[case::marker_trimmed_and_dropped("foo ; private", &[])]
+#[case::empty("", &[])]
+fn test_ui_meta_shows_only_public_import_names(#[case] value: &str, #[case] expected: &[&str]) {
+    let doc = parse_metadata(&format!(
+        "Metadata-Version: 2.5\nName: x\nVersion: 1\nImport-Name: {value}\n"
+    ))
+    .unwrap();
+    let chip = doc.to_ui_meta().blocks.into_iter().find_map(|block| match block {
+        UiBlock::Chips { label, values } if label == "Import Names" => Some(values),
+        _ => None,
+    });
+    assert_eq!(chip.unwrap_or_default(), expected);
+}
+
+#[test]
+fn test_ui_meta_separates_import_names_from_namespaces() {
+    let doc =
+        parse_metadata("Metadata-Version: 2.5\nName: x\nVersion: 1\nImport-Name: foo\nImport-Namespace: shared\n")
+            .unwrap();
+    let blocks = doc.to_ui_meta().blocks;
+    assert!(blocks.contains(&UiBlock::Chips {
+        label: "Import Names".to_owned(),
+        values: vec!["foo".to_owned()],
+    }));
+    assert!(blocks.contains(&UiBlock::Chips {
+        label: "Import Namespaces".to_owned(),
+        values: vec!["shared".to_owned()],
+    }));
+}

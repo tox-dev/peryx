@@ -439,6 +439,7 @@ fn validate_metadata_identity(
     validate_requirements(metadata)?;
     validate_legacy_urls(metadata)?;
     validate_dynamic(metadata)?;
+    validate_import_names(metadata)?;
     compare_metadata_field(
         "Metadata-Version",
         form.metadata_version.as_deref(),
@@ -493,6 +494,7 @@ fn validate_field_introductions(metadata: &CoreMetadataDoc, declared: u8) -> Res
     const SINCE_2_1: (u8, &str) = (21, "requires Metadata-Version 2.1 or later");
     const SINCE_2_2: (u8, &str) = (22, "requires Metadata-Version 2.2 or later");
     const SINCE_2_4: (u8, &str) = (24, "requires Metadata-Version 2.4 or later");
+    const SINCE_2_5: (u8, &str) = (25, "requires Metadata-Version 2.5 or later");
 
     for (field, (since, reason), value) in [
         ("Classifier", SINCE_1_1, metadata.classifiers.first().map(Cow::from)),
@@ -542,6 +544,12 @@ fn validate_field_introductions(metadata: &CoreMetadataDoc, declared: u8) -> Res
         ),
         ("License-File", SINCE_2_4, metadata.license_files.first().map(Cow::from)),
         ("Dynamic", SINCE_2_2, metadata.dynamic.first().map(Cow::from)),
+        ("Import-Name", SINCE_2_5, metadata.import_names.first().map(Cow::from)),
+        (
+            "Import-Namespace",
+            SINCE_2_5,
+            metadata.import_namespaces.first().map(Cow::from),
+        ),
     ] {
         if let Some(value) = value
             && declared < since
@@ -686,6 +694,58 @@ fn validate_dynamic(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
         });
     }
     Ok(())
+}
+
+/// Core Metadata 2.5 lets `Import-Name` and `Import-Namespace` expose the import names a distribution
+/// provides. Each value is a dotted Python identifier (empty only for `Import-Name`, meaning no
+/// modules), optionally suffixed `; private`. A name given as both exclusive and shared is ambiguous,
+/// so the spec forbids it.
+fn validate_import_names(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
+    let mut exclusive: HashSet<&str> = HashSet::with_capacity(metadata.import_names.len());
+    for raw in &metadata.import_names {
+        exclusive.insert(validate_import_value("Import-Name", raw, true)?);
+    }
+    for raw in &metadata.import_namespaces {
+        let name = validate_import_value("Import-Namespace", raw, false)?;
+        if exclusive.contains(name) {
+            return Err(UploadError::InvalidMetadataValue {
+                field: "Import-Namespace",
+                value: raw.clone(),
+                reason: "is already declared exclusive by Import-Name",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_import_value<'a>(field: &'static str, raw: &'a str, allow_empty: bool) -> Result<&'a str, UploadError> {
+    let (name, marker) = crate::metadata::import_parts(raw);
+    let invalid = |reason| UploadError::InvalidMetadataValue {
+        field,
+        value: raw.to_owned(),
+        reason,
+    };
+    if marker.is_some_and(|marker| marker != "private") {
+        return Err(invalid("the only marker allowed after ';' is 'private'"));
+    }
+    if name.is_empty() {
+        return allow_empty.then_some(name).ok_or_else(|| invalid("must not be empty"));
+    }
+    if name.split('.').all(is_python_identifier) {
+        Ok(name)
+    } else {
+        Err(invalid("must be a dotted sequence of Python identifiers"))
+    }
+}
+
+/// Whether a name is a Python identifier. Peryx checks ASCII identifiers, as it does for project and
+/// extra names, since import names in published metadata are ASCII in practice.
+fn is_python_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
 fn compare_metadata_field(field: &'static str, form: Option<&str>, metadata: Option<&str>) -> Result<(), UploadError> {

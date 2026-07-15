@@ -284,6 +284,31 @@ async fn test_search_indexes_legacy_home_page() {
     assert_eq!(value["total"], 1);
     assert_eq!(value["results"][0]["normalized_name"], "legacy-home");
 }
+
+#[tokio::test]
+async fn test_search_indexes_import_names_without_markers() {
+    let h = harness().await;
+    put_uploaded_package_with_metadata(
+        &h.state,
+        "importable",
+        "Metadata-Version: 2.5\nName: importable\nVersion: 1.0\n\
+         Import-Name: veloximport; private\nImport-Namespace: shared_ns\n",
+        None,
+    );
+
+    for query in ["veloximport", "shared_ns"] {
+        let (status, _headers, body) = get(
+            &h.state,
+            &format!("/hosted/+search?q={query}&page_size=25"),
+            Some("application/json"),
+        )
+        .await;
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["total"], 1, "{query}");
+        assert_eq!(value["results"][0]["normalized_name"], "importable");
+    }
+}
 #[test]
 fn test_search_public_filter_labels_and_scan_errors() {
     let dir = tempfile::tempdir().unwrap();

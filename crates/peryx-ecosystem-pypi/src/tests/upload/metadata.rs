@@ -777,3 +777,109 @@ fn test_prepare_rejects_invalid_requires_python_and_clock() {
         UploadError::InvalidUploadTime
     );
 }
+
+#[rstest]
+#[case::hyphen(
+    "Import-Name: foo-bar\n",
+    "Import-Name",
+    "foo-bar",
+    "must be a dotted sequence of Python identifiers"
+)]
+#[case::leading_digit(
+    "Import-Name: 2fast\n",
+    "Import-Name",
+    "2fast",
+    "must be a dotted sequence of Python identifiers"
+)]
+#[case::empty_component(
+    "Import-Name: foo..bar\n",
+    "Import-Name",
+    "foo..bar",
+    "must be a dotted sequence of Python identifiers"
+)]
+#[case::empty_namespace("Import-Namespace: \n", "Import-Namespace", "", "must not be empty")]
+#[case::unknown_marker(
+    "Import-Name: foo; public\n",
+    "Import-Name",
+    "foo; public",
+    "the only marker allowed after ';' is 'private'"
+)]
+fn test_prepare_rejects_malformed_import_name(
+    #[case] header: &str,
+    #[case] field: &'static str,
+    #[case] value: &str,
+    #[case] reason: &'static str,
+) {
+    let bytes = wheel_metadata_bytes(format!("Metadata-Version: 2.5\nName: Flask\nVersion: 1.0\n{header}").as_bytes());
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field,
+            value: value.to_owned(),
+            reason,
+        }
+    );
+}
+
+#[test]
+fn test_prepare_rejects_import_name_declared_as_both_exclusive_and_namespace() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.5\nName: Flask\nVersion: 1.0\nImport-Name: shared\nImport-Namespace: shared\n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field: "Import-Namespace",
+            value: "shared".to_owned(),
+            reason: "is already declared exclusive by Import-Name",
+        }
+    );
+}
+
+#[test]
+fn test_prepare_rejects_import_name_before_metadata_2_5() {
+    let bytes = wheel_metadata_bytes(b"Metadata-Version: 2.4\nName: Flask\nVersion: 1.0\nImport-Name: foo\n");
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field: "Import-Name",
+            value: "foo".to_owned(),
+            reason: "requires Metadata-Version 2.5 or later",
+        }
+    );
+}
+
+#[test]
+fn test_prepare_accepts_valid_import_names_and_namespaces() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.5\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n\
+          Import-Name: flask\nImport-Name: flask.cli; private\nImport-Namespace: shared.plugins\n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+    let prepared = prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap();
+
+    let doc = crate::parse_metadata(std::str::from_utf8(&prepared.metadata).unwrap()).unwrap();
+    assert_eq!(doc.import_names, ["flask", "flask.cli; private"]);
+    assert_eq!(doc.import_namespaces, ["shared.plugins"]);
+}
+
+#[test]
+fn test_prepare_accepts_empty_import_name_for_a_project_without_modules() {
+    let bytes = wheel_metadata_bytes(
+        b"Metadata-Version: 2.5\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\nImport-Name: \n",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000)
+            .unwrap()
+            .display_name,
+        "Flask"
+    );
+}
