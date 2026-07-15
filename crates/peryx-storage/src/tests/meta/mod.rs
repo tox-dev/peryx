@@ -3,6 +3,7 @@ use crate::meta::MetaStore;
 mod driver_txn_tests;
 mod error_tests;
 mod integration_tests;
+mod job_tests;
 mod journal_tests;
 mod webhook_tests;
 

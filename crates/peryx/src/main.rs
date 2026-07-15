@@ -14,6 +14,7 @@ use tracing_subscriber::{Layer, Registry};
 use peryx::cli::{Cli, ConfigSnippetArgs};
 use peryx::config::{self, Config, LogConfig, LogFormat, LogSink};
 use peryx::{app, logging, operator};
+use peryx_storage::meta::{JobKind, JobOutcome, JobState, NewJobRun};
 
 // Requests alternate small JSON pages with wheel-sized streams; mimalloc keeps the
 // allocation-heavy transform path off the system allocator's locks.
@@ -95,6 +96,66 @@ fn syslog_layer(_format: LogFormat) -> anyhow::Result<BoxedLayer> {
     anyhow::bail!("the syslog log sink requires a Unix platform")
 }
 
+async fn background_maintenance(maintainer: &std::sync::Arc<peryx_driver::AppState>) {
+    let servings: Vec<_> = maintainer.drivers().cloned().collect();
+    // Reclaim first so an upstream stall cannot extend idle-resource deadlines.
+    for serving in &servings {
+        let ecosystem = serving.ecosystem();
+        let reclaimed = serving.reclaim_idle(maintainer.serving.clone()).await;
+        if reclaimed > 0 {
+            tracing::info!(ecosystem = %ecosystem, reclaimed, "idle resources reclaimed");
+        }
+    }
+    for serving in servings {
+        let ecosystem = serving.ecosystem();
+        let meta = &maintainer.serving.meta;
+        let job = meta
+            .start_job_run(NewJobRun {
+                kind: JobKind::CacheRefresh,
+                scope: ecosystem.as_str(),
+                started_at_unix: (maintainer.serving.clock)(),
+            })
+            .inspect_err(|err| tracing::error!(error = %err, "record job start"))
+            .ok();
+        let sweep = serving.refresh_stale(maintainer.serving.clone()).await;
+        let finished_at = (maintainer.serving.clock)();
+        let outcome = match &sweep {
+            Ok(sweep) => {
+                if sweep.checked > 0 {
+                    tracing::info!(
+                        ecosystem = %ecosystem,
+                        checked = sweep.checked,
+                        changed = sweep.changed,
+                        "background refresh sweep"
+                    );
+                }
+                JobOutcome {
+                    state: JobState::Succeeded,
+                    finished_at_unix: finished_at,
+                    items_processed: sweep.checked as u64,
+                    items_changed: sweep.changed as u64,
+                    error: None,
+                }
+            }
+            Err(err) => {
+                tracing::error!(ecosystem = %ecosystem, error = %err, "background refresh sweep failed");
+                JobOutcome {
+                    state: JobState::Failed,
+                    finished_at_unix: finished_at,
+                    items_processed: 0,
+                    items_changed: 0,
+                    error: Some(err.as_str()),
+                }
+            }
+        };
+        if let Some(id) = job
+            && let Err(err) = meta.finish_job_run(&id, outcome)
+        {
+            tracing::error!(error = %err, "record job finish");
+        }
+    }
+}
+
 fn run_server(config: &Config) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async {
@@ -112,32 +173,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                let servings: Vec<_> = maintainer.drivers().cloned().collect();
-                // Reclaim first so an upstream stall cannot extend idle-resource deadlines.
-                for serving in &servings {
-                    let ecosystem = serving.ecosystem();
-                    let reclaimed = serving.reclaim_idle(maintainer.serving.clone()).await;
-                    if reclaimed > 0 {
-                        tracing::info!(ecosystem = %ecosystem, reclaimed, "idle resources reclaimed");
-                    }
-                }
-                for serving in servings {
-                    let ecosystem = serving.ecosystem();
-                    match serving.refresh_stale(maintainer.serving.clone()).await {
-                        Ok(sweep) if sweep.checked > 0 => {
-                            tracing::info!(
-                                ecosystem = %ecosystem,
-                                checked = sweep.checked,
-                                changed = sweep.changed,
-                                "background refresh sweep"
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(err) => {
-                            tracing::error!(ecosystem = %ecosystem, error = %err, "background refresh sweep failed");
-                        }
-                    }
-                }
+                background_maintenance(&maintainer).await;
             }
         });
         let router = peryx::server::router_for(state);
