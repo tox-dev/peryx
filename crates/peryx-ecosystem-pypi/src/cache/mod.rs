@@ -150,11 +150,27 @@ fn release_flight(state: &ServingState, key: &str, guard: tokio::sync::OwnedMute
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
 }
 
+/// The stored cached record for `key`, or `None` when there is none or when its bytes no longer decode.
+///
+/// Corrupt bytes (a torn write, a format from a version that never shipped) leave a cache entry the
+/// read-through path cannot use. Treating it as a miss lets the caller refetch and overwrite it, so one
+/// bad row self-heals rather than wedging a project into permanent `500`s. A genuine store failure
+/// still propagates.
+fn cached_record(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
+    match state.meta.get_index(key) {
+        Err(peryx_storage::meta::MetaError::Decode(err)) => {
+            tracing::warn!(key, %err, "cached index record is undecodable; refetching");
+            Ok(None)
+        }
+        other => Ok(other?),
+    }
+}
+
 /// The cached raw page, when it is still within its freshness window: upstream's `Cache-Control`
 /// lifetime when it granted one, the configured fallback otherwise.
 pub(crate) fn fresh_cached(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
     let now = (state.clock)();
-    match state.meta.get_index(key)? {
+    match cached_record(state, key)? {
         Some(record) if now - record.fetched_at_unix < freshness(state, &record) => Ok(Some(record)),
         _ => Ok(None),
     }

@@ -439,6 +439,68 @@ async fn test_mirror_5xx_without_cache_is_bad_gateway() {
     let (status, ..) = get(&h.state, "/pypi/simple/flask/", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
+/// Overwrite the cached record for `key` with bytes that no longer decode, standing in for a torn
+/// write or a stored format from a version that never shipped. Find the row by the exact bytes just
+/// written, so the test hardcodes no private storage-key format.
+fn corrupt_cached_record(h: &Harness, key: &str) {
+    let record = CachedIndex {
+        etag: None,
+        last_serial: None,
+        fetched_at_unix: 1000,
+        content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+        fresh_secs: None,
+        body: Vec::new(),
+    };
+    h.state.meta.put_index(key, &record).unwrap();
+    let encoded = record.encode();
+    let raw_key = h
+        .state
+        .meta
+        .driver_prefix_keys("")
+        .unwrap()
+        .into_iter()
+        .find(|candidate| h.state.meta.get_driver_value(candidate).unwrap().as_deref() == Some(encoded.as_slice()))
+        .expect("the record just written is addressable");
+    h.state
+        .meta
+        .put_driver_value(&raw_key, b"{ not a decodable record")
+        .unwrap();
+    assert!(h.state.meta.get_index(key).is_err(), "the seeded record is undecodable");
+}
+#[tokio::test]
+async fn test_mirror_json_refetches_when_the_cached_record_is_undecodable() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, None).await;
+    corrupt_cached_record(&h, "pypi/flask");
+
+    let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str())));
+    assert!(
+        h.state.meta.get_index("pypi/flask").unwrap().is_some(),
+        "the fresh fetch overwrote the corrupt record"
+    );
+}
+#[tokio::test]
+async fn test_mirror_html_refetches_when_the_cached_record_is_undecodable() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask.whl", None).await;
+    corrupt_cached_record(&h, "pypi/flask");
+
+    let (status, headers, body) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
+    assert!(body.contains("<a href="));
+    assert!(
+        h.state.meta.get_index("pypi/flask").unwrap().is_some(),
+        "the fresh fetch overwrote the corrupt record"
+    );
+}
 #[tokio::test]
 async fn test_mirror_file_without_sha_is_kept() {
     let h = harness().await;
