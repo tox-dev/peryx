@@ -10,9 +10,68 @@ permissions:
   contents: read
 
 jobs:
+  # Path-based gating so a PR that only touches one ecosystem benches just that leg. bench_matrix is
+  # the dynamic `operations` matrix: both legs on non-PR events, otherwise only the affected ones.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      bench_matrix: ${{ steps.matrix.outputs.include }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'crates/peryx-core/**'
+              - 'crates/peryx-storage/**'
+              - 'crates/peryx-http/**'
+              - 'crates/peryx-driver/**'
+              - 'crates/peryx-identity/**'
+              - 'crates/peryx-policy/**'
+              - 'crates/peryx-index/**'
+              - 'crates/peryx-events/**'
+              - 'crates/peryx-upstream/**'
+              - 'crates/peryx-search/**'
+              - 'crates/peryx-replication/**'
+              - 'crates/peryx/**'
+              - 'crates/peryx-bench/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - '.github/workflows/**'
+            pypi:
+              - 'crates/peryx-ecosystem-pypi/**'
+            oci:
+              - 'crates/peryx-ecosystem-oci/**'
+      - id: matrix
+        env:
+          EVENT: ${{ github.event_name }}
+          SHARED: ${{ steps.filter.outputs.shared }}
+          OCI: ${{ steps.filter.outputs.oci }}
+          PYPI: ${{ steps.filter.outputs.pypi }}
+        run: |
+          # Two concurrent PyPI fat-LTO links exceed the standard ARM runner's memory, so PyPI links
+          # single-threaded.
+          oci='{"ecosystem":"OCI","package":"peryx-ecosystem-oci","cargo_jobs":2}'
+          pypi='{"ecosystem":"PyPI","package":"peryx-ecosystem-pypi","cargo_jobs":1}'
+          legs=()
+          if [ "$EVENT" != "pull_request" ]; then
+            legs=("$oci" "$pypi")
+          else
+            if [ "$OCI" = "true" ] || [ "$SHARED" = "true" ]; then legs+=("$oci"); fi
+            if [ "$PYPI" = "true" ] || [ "$SHARED" = "true" ]; then legs+=("$pypi"); fi
+          fi
+          IFS=,
+          echo "include=[${legs[*]}]" >> "$GITHUB_OUTPUT"
+
   base:
     name: Base benchmark
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.bench_matrix != '[]'
     concurrency:
       group: codspeed-base-${{ github.ref }}
       cancel-in-progress: true
@@ -48,8 +107,8 @@ jobs:
 
   operations:
     name: ${{ matrix.ecosystem }} operation benchmarks
-    needs: base
-    if: always() && (needs.base.result == 'success' || needs.base.result == 'skipped')
+    needs: [changes, base]
+    if: always() && (needs.base.result == 'success' || needs.base.result == 'skipped') && needs.changes.outputs.bench_matrix != '[]'
     concurrency:
       # GitHub left ARM jobs running after workflow-level cancellation in #280.
       group: codspeed-${{ matrix.ecosystem }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -57,14 +116,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - ecosystem: OCI
-            package: peryx-ecosystem-oci
-            cargo_jobs: 2
-          - ecosystem: PyPI
-            package: peryx-ecosystem-pypi
-            # Two concurrent PyPI fat-LTO links exceed the standard ARM runner's memory.
-            cargo_jobs: 1
+        include: ${{ fromJSON(needs.changes.outputs.bench_matrix) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -85,3 +137,23 @@ jobs:
         with:
           mode: simulation
           run: cargo codspeed run
+
+  # Required-status-check anchor: branch protection requires this job, not base/operations, because a
+  # skipped required check blocks merge on GitHub. Passes when every dependency succeeded or skipped;
+  # fails if any failed or was cancelled.
+  codspeed-gate:
+    if: always()
+    needs: [changes, base, operations]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify no required job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "dependency results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              failure|cancelled) echo "a required job reported: $result"; exit 1 ;;
+            esac
+          done
+          echo "all required jobs passed or were skipped"

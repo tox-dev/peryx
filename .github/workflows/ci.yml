@@ -16,7 +16,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path-based gating so a PR that only touches one ecosystem skips the others. On main and on
+  # non-PR events every job is forced to run via the `github.event_name != 'pull_request'` clause.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.filter.outputs.shared == 'true' || steps.filter.outputs.pypi == 'true' || steps.filter.outputs.oci == 'true' || steps.filter.outputs.web == 'true' }}
+      shared: ${{ steps.filter.outputs.shared }}
+      pypi: ${{ steps.filter.outputs.pypi }}
+      frontend_tests: ${{ steps.filter.outputs.frontend_tests }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'crates/peryx-core/**'
+              - 'crates/peryx-storage/**'
+              - 'crates/peryx-http/**'
+              - 'crates/peryx-driver/**'
+              - 'crates/peryx-identity/**'
+              - 'crates/peryx-policy/**'
+              - 'crates/peryx-index/**'
+              - 'crates/peryx-events/**'
+              - 'crates/peryx-upstream/**'
+              - 'crates/peryx-search/**'
+              - 'crates/peryx-replication/**'
+              - 'crates/peryx/**'
+              - 'crates/peryx-bench/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - '.github/workflows/**'
+            pypi:
+              - 'crates/peryx-ecosystem-pypi/**'
+            oci:
+              - 'crates/peryx-ecosystem-oci/**'
+            web:
+              - 'crates/peryx-web/**'
+            frontend_tests:
+              - 'tests/frontend/**'
+            docs:
+              - 'site/**'
+              - '.github/workflows/**'
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -27,6 +78,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +100,8 @@ jobs:
       - run: cargo nextest run --workspace --no-fail-fast
 
   coverage:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -71,6 +126,8 @@ jobs:
   # Hermetic end-to-end: real pip/uv drive a spawned peryx that proxies a local fixture index, so no
   # external network is touched. Proves downstream clients work through peryx on every PR.
   e2e:
+    needs: changes
+    if: needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -93,6 +150,8 @@ jobs:
 
   # The same client flows against the real pypi.org, to catch upstream drift.
   e2e-live:
+    needs: changes
+    if: needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -116,6 +175,8 @@ jobs:
   # The hydrated web UI, driven by Playwright: the wasm bundle is built with cargo-leptos and the
   # suite exercises search, the project page, the archive browser, and token-authenticated actions.
   frontend:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.frontend_tests == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     env:
       CARGO_LEPTOS_VERSION: "0.3.6"
@@ -150,6 +211,8 @@ jobs:
   # missing, so a changed diagram that was not re-rendered is caught here. Regenerate with
   # `npm --prefix site run render` (a git pre-commit hook does this automatically) and commit the result.
   docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -161,3 +224,23 @@ jobs:
           sudo mv zola /usr/local/bin/
       - run: zola --root site build
       - run: python3 site/scripts/inline_diagrams.py site/public
+
+  # Required-status-check anchor: branch protection requires this job, not the conditional ones above,
+  # because a skipped required check blocks merge on GitHub. Passes when every dependency succeeded or
+  # skipped; fails if any failed or was cancelled.
+  ci-gate:
+    if: always()
+    needs: [changes, lint, test, coverage, e2e, e2e-live, frontend, docs]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify no required job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "dependency results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              failure|cancelled) echo "a required job reported: $result"; exit 1 ;;
+            esac
+          done
+          echo "all required jobs passed or were skipped"

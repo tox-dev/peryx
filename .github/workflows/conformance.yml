@@ -18,8 +18,46 @@ env:
   DISTRIBUTION_SPEC_REF: fcfba1ec55526073f48b2f6d4e3d7eef410ddcbc
 
 jobs:
+  # Path-based gating: OCI conformance only runs when OCI or shared code changed (or on non-PR events).
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      oci: ${{ steps.filter.outputs.oci }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'crates/peryx-core/**'
+              - 'crates/peryx-storage/**'
+              - 'crates/peryx-http/**'
+              - 'crates/peryx-driver/**'
+              - 'crates/peryx-identity/**'
+              - 'crates/peryx-policy/**'
+              - 'crates/peryx-index/**'
+              - 'crates/peryx-events/**'
+              - 'crates/peryx-upstream/**'
+              - 'crates/peryx-search/**'
+              - 'crates/peryx-replication/**'
+              - 'crates/peryx/**'
+              - 'crates/peryx-bench/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - '.github/workflows/**'
+            oci:
+              - 'crates/peryx-ecosystem-oci/**'
+
   conformance:
     name: distribution-spec conformance
+    needs: changes
+    if: needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
