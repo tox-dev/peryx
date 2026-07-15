@@ -25,6 +25,7 @@ url.workspace = true
 [dev-dependencies]
 base64.workspace = true
 rstest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
