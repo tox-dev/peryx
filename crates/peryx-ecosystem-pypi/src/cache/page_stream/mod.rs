@@ -299,7 +299,7 @@ fn streaming_parts(
                 index.policy.clone(),
                 Vec::new(),
                 Vec::new(),
-                &std::collections::HashMap::new(),
+                &std::collections::BTreeMap::new(),
             ),
         ))),
         IndexKind::Hosted { .. } => Ok(None),
@@ -334,13 +334,13 @@ fn streaming_parts(
             let Some((cached, client, offline)) = cached else {
                 return Ok(None);
             };
-            let overrides: std::collections::HashMap<String, String> = match upload {
+            let overrides: std::collections::BTreeMap<String, String> = match upload {
                 Some(pos) => state
                     .meta
                     .list_overrides(&state.index_at(*pos).name, project)?
                     .into_iter()
                     .collect(),
-                None => std::collections::HashMap::new(),
+                None => std::collections::BTreeMap::new(),
             };
             Ok(Some((
                 cached,

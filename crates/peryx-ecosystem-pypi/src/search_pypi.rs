@@ -5,7 +5,7 @@
 //! the walk from an index's stored records to a project's searchable text is PyPI-shaped, so it sits
 //! behind the [`PackageIndexer`] seam here. A future ecosystem supplies its own indexer.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::policy::PypiPolicy;
 use crate::store::CachedIndex;
@@ -199,7 +199,7 @@ fn virtual_detail(
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
     let mut files = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
     for position in peryx_index::shadow_order(ctx.indexes, layers) {
@@ -246,8 +246,7 @@ fn apply_overrides(
     normalized: &str,
     files: &mut Vec<File>,
 ) -> Result<(), SearchError> {
-    let overrides: std::collections::HashMap<String, String> =
-        ctx.meta.list_overrides(hosted, normalized)?.into_iter().collect();
+    let overrides: BTreeMap<String, String> = ctx.meta.list_overrides(hosted, normalized)?.into_iter().collect();
     if overrides.is_empty() {
         return Ok(());
     }

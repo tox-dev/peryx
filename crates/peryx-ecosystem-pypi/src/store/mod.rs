@@ -217,7 +217,7 @@ pub trait PypiStore {
     fn get_metadata_digests<'a>(
         &self,
         artifact_sha256s: impl IntoIterator<Item = &'a str>,
-    ) -> Result<std::collections::HashMap<String, String>, peryx_storage::meta::MetaError>;
+    ) -> Result<std::collections::BTreeMap<String, String>, peryx_storage::meta::MetaError>;
 
     /// Visit raw PEP 658 metadata records, keyed by wheel digest.
     ///
@@ -516,7 +516,7 @@ impl PypiStore for peryx_storage::meta::MetaStore {
     fn get_metadata_digests<'a>(
         &self,
         artifact_sha256s: impl IntoIterator<Item = &'a str>,
-    ) -> Result<std::collections::HashMap<String, String>, peryx_storage::meta::MetaError> {
+    ) -> Result<std::collections::BTreeMap<String, String>, peryx_storage::meta::MetaError> {
         files::get_metadata_digests(self, artifact_sha256s)
     }
 

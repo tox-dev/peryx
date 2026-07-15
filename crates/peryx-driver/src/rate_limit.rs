@@ -1,7 +1,8 @@
 //! Local abuse controls for one peryx process.
 
-use std::collections::{HashMap, hash_map::RandomState};
-use std::hash::BuildHasher as _;
+use std::collections::HashMap;
+use std::collections::hash_map::{DefaultHasher, RandomState};
+use std::hash::{BuildHasher as _, BuildHasherDefault};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -131,7 +132,10 @@ impl RateLimitConfig {
 
 pub struct RateLimiter {
     config: RateLimitConfig,
-    buckets: Cache<BucketKey, Arc<Mutex<Window>>>,
+    // A fixed seed makes the bucket probe sequence independent of the per-process `RandomState` seed, so
+    // cachegrind benchmarks of rate-limited routes stop flip-flopping between two instruction counts. moka
+    // absorbs collisions and the cap is bounded, so a fixed seed costs no rate-limit accuracy.
+    buckets: Cache<BucketKey, Arc<Mutex<Window>>, BuildHasherDefault<DefaultHasher>>,
     principal_hasher: RandomState,
     allowed: RouteCounters,
     denied: RouteCounters,
@@ -143,7 +147,9 @@ impl RateLimiter {
         let capacity = config.max_clients.saturating_mul(RouteClass::COUNT).max(1);
         Self {
             config,
-            buckets: Cache::builder().max_capacity(capacity).build(),
+            buckets: Cache::builder()
+                .max_capacity(capacity)
+                .build_with_hasher(BuildHasherDefault::<DefaultHasher>::default()),
             principal_hasher: RandomState::new(),
             allowed: RouteCounters::default(),
             denied: RouteCounters::default(),

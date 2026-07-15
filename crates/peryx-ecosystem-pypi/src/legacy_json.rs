@@ -1,6 +1,6 @@
 //! The legacy `PyPI` JSON API shape, serialized from a resolved Simple API detail page.
 
-use std::collections::{BTreeMap as OrderedMap, HashSet};
+use std::collections::{BTreeMap as OrderedMap, BTreeSet};
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
@@ -162,7 +162,7 @@ fn latest_release_version(detail: &ProjectDetail) -> Option<String> {
 
 fn release_versions(detail: &ProjectDetail) -> Vec<String> {
     let mut versions: Vec<String> = detail.versions.clone();
-    let mut seen: HashSet<VersionKey> = detail.versions.iter().map(|version| version_key(version)).collect();
+    let mut seen: BTreeSet<VersionKey> = detail.versions.iter().map(|version| version_key(version)).collect();
     for file in &detail.files {
         let Some(version) = filename_version(&file.filename) else {
             continue;

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 
@@ -90,8 +90,8 @@ pub fn get_metadata(meta: &MetaStore, artifact_sha256: &str) -> Result<Option<(S
 pub fn get_metadata_digests<'a>(
     meta: &MetaStore,
     artifact_sha256s: impl IntoIterator<Item = &'a str>,
-) -> Result<HashMap<String, String>, MetaError> {
-    let mut metadata = HashMap::new();
+) -> Result<BTreeMap<String, String>, MetaError> {
+    let mut metadata = BTreeMap::new();
     for artifact_sha256 in artifact_sha256s {
         let Some(value) = meta
             .get_driver_value(&metadata_key(artifact_sha256))?
@@ -135,7 +135,7 @@ fn split_file_source(value: &str) -> Option<FileSource> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     use super::{FileSource, MetaStore, metadata_key};
     use crate::store::PypiStore as _;
@@ -188,7 +188,7 @@ mod tests {
 
         let digests = meta.get_metadata_digests(["missing", "broken", "wheelsha"]).unwrap();
 
-        assert_eq!(digests, HashMap::from([("wheelsha".to_owned(), "metasha".to_owned())]));
+        assert_eq!(digests, BTreeMap::from([("wheelsha".to_owned(), "metasha".to_owned())]));
     }
 
     #[test]

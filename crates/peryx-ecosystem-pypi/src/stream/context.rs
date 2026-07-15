@@ -1,6 +1,6 @@
 //! Building a [`PageContext`] from the virtual-index pieces and decoding overrides.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use peryx_policy::Policy;
 
@@ -10,17 +10,17 @@ use crate::{File, Yanked};
 /// Build a [`PageContext`] from the virtual-index pieces: hosted files shadow upstream filenames, hidden
 /// overrides drop files, yank overrides mark them.
 #[must_use]
-pub fn page_context<S: std::hash::BuildHasher>(
+pub fn page_context(
     route: &str,
     project: &str,
     policy: Policy,
     local_files: Vec<File>,
     local_versions: Vec<String>,
-    overrides: &HashMap<String, String, S>,
+    overrides: &BTreeMap<String, String>,
 ) -> PageContext {
-    let mut skip: HashSet<String> = local_files.iter().map(|file| file.filename.clone()).collect();
-    let mut hidden = HashSet::new();
-    let mut yanked = HashMap::new();
+    let mut skip: BTreeSet<String> = local_files.iter().map(|file| file.filename.clone()).collect();
+    let mut hidden = BTreeSet::new();
+    let mut yanked = BTreeMap::new();
     for (filename, kind) in overrides {
         match kind.as_str() {
             "hidden" => {
@@ -43,7 +43,7 @@ pub fn page_context<S: std::hash::BuildHasher>(
         skip,
         hidden,
         yanked,
-        known_metadata: HashMap::new(),
+        known_metadata: BTreeMap::new(),
     }
 }
 

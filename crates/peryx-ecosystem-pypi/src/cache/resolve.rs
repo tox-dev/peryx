@@ -1,6 +1,6 @@
 //! Read-path composition: resolve a project's detail and project list across an index's layers.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::policy::PypiPolicy as _;
 use crate::store::CachedIndex;
@@ -79,7 +79,7 @@ async fn virtual_detail(
     }))
     .await;
     let mut files = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
     let mut found = false;
@@ -148,8 +148,7 @@ async fn virtual_detail(
 
 /// Apply the `hidden`/`yanked` overrides stored on `hosted` to a merged file list.
 fn apply_overrides(state: &ServingState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
-    let overrides: std::collections::HashMap<String, String> =
-        state.meta.list_overrides(hosted, project)?.into_iter().collect();
+    let overrides: BTreeMap<String, String> = state.meta.list_overrides(hosted, project)?.into_iter().collect();
     if overrides.is_empty() {
         return Ok(());
     }
@@ -243,7 +242,7 @@ fn apply_project_status(detail: &mut ProjectDetail) {
 
 /// The pure serving transform for one file: peryx URL for content-addressable files, metadata
 /// claims kept only when verifiable by digest.
-fn present_file(mut file: File, route: &str, known_metadata: &std::collections::HashMap<String, String>) -> File {
+fn present_file(mut file: File, route: &str, known_metadata: &BTreeMap<String, String>) -> File {
     let Some(sha256) = file.hashes.get("sha256").cloned() else {
         file.clear_metadata();
         return file;
@@ -269,10 +268,7 @@ fn present_file(mut file: File, route: &str, known_metadata: &std::collections::
     file
 }
 
-pub(super) fn known_metadata(
-    state: &ServingState,
-    files: &[File],
-) -> Result<std::collections::HashMap<String, String>, CacheError> {
+pub(super) fn known_metadata(state: &ServingState, files: &[File]) -> Result<BTreeMap<String, String>, CacheError> {
     let artifact_sha256s = files
         .iter()
         .filter(|file| supports_generated_metadata(&file.filename) && file.metadata().is_absent())
@@ -346,7 +342,7 @@ fn collect_projects(state: &ServingState, index: &Index, names: &mut BTreeSet<St
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
 
     use crate::{Provenance, Yanked};
 
@@ -370,7 +366,7 @@ mod tests {
             provenance: Provenance::default(),
         };
 
-        let file = present_file(file, "pypi", &HashMap::from([(artifact.clone(), metadata.clone())]));
+        let file = present_file(file, "pypi", &BTreeMap::from([(artifact.clone(), metadata.clone())]));
 
         assert_eq!(file.url, local_file_url("pypi", &artifact, "pkg-1.0-py3-none-any.whl"));
         assert!(matches!(file.metadata(), CoreMetadata::Hashes(hashes) if hashes["sha256"] == metadata));
@@ -396,7 +392,7 @@ mod tests {
             provenance: Provenance::default(),
         };
 
-        let file = present_file(file, "pypi", &HashMap::new());
+        let file = present_file(file, "pypi", &BTreeMap::new());
 
         assert_eq!(file.url, local_file_url("pypi", &sha256, "pkg-1.0-py3-none-any.whl"));
         assert_eq!(file.hashes.get("md5").map(String::as_str), Some("deadbeef"));
@@ -419,7 +415,7 @@ mod tests {
             provenance: Provenance::default(),
         };
 
-        let file = present_file(file, "pypi", &HashMap::new());
+        let file = present_file(file, "pypi", &BTreeMap::new());
 
         assert_eq!(file.url, local_file_url("pypi", &sha256, "pkg-1.0-py3-none-any.whl"));
         assert_eq!(file.gpg_sig, None);
@@ -441,7 +437,7 @@ mod tests {
             provenance: Provenance::default(),
         };
 
-        let file = present_file(file, "pypi", &HashMap::new());
+        let file = present_file(file, "pypi", &BTreeMap::new());
 
         assert_eq!(file.url, "https://files.example/pkg-1.0.tar.gz");
         assert_eq!(file.gpg_sig, Some(true));
