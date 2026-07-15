@@ -184,3 +184,58 @@ async fn test_policy_rejects_upload_when_index_blocks_project(#[case] hosted: bo
     assert_eq!(denial["project"], "peryxpkg");
     assert_eq!(denial["rule"], "project-block-list");
 }
+#[tokio::test]
+async fn test_policy_rejects_upload_over_project_size_quota() {
+    let first = fixture_wheel_for("1.0");
+    let second = fixture_wheel_for("2.0");
+    let limit = (first.len() + second.len() - 1) as u64;
+    let quota_policy = policy(move |neutral, _pypi| neutral.max_project_size_bytes = Some(limit));
+    let h = harness_with_policies(true, true, Policy::default(), quota_policy, Policy::default()).await;
+
+    assert_eq!(upload_version(&h.state, "/root/pypi/", "1.0").await, StatusCode::OK);
+
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "peryxpkg"),
+        ("version", "2.0"),
+        ("filetype", "bdist_wheel"),
+    ];
+    let (ct, body) = multipart_body(&fields, Some(("peryxpkg-2.0-py3-none-any.whl", &second)));
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await;
+
+    let denial: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(denial["action"], "upload");
+    assert_eq!(denial["rule"], "max-project-size");
+    // The rejected release never reaches the served page.
+    let (_, _, detail) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    assert!(detail.contains("peryxpkg-1.0-py3-none-any.whl"));
+    assert!(!detail.contains("peryxpkg-2.0-py3-none-any.whl"));
+}
+#[tokio::test]
+async fn test_policy_accepts_upload_under_project_size_quota() {
+    let first = fixture_wheel_for("1.0");
+    let second = fixture_wheel_for("2.0");
+    let limit = (first.len() + second.len()) as u64;
+    let quota_policy = policy(move |neutral, _pypi| neutral.max_project_size_bytes = Some(limit));
+    let h = harness_with_policies(true, true, Policy::default(), quota_policy, Policy::default()).await;
+
+    assert_eq!(upload_version(&h.state, "/root/pypi/", "1.0").await, StatusCode::OK);
+    assert_eq!(upload_version(&h.state, "/root/pypi/", "2.0").await, StatusCode::OK);
+
+    let (_, _, detail) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    assert!(detail.contains("peryxpkg-1.0-py3-none-any.whl"));
+    assert!(detail.contains("peryxpkg-2.0-py3-none-any.whl"));
+}
+/// Re-uploading a file already at the limit stays idempotent: the quota counts the incoming bytes
+/// once, not on top of the record they replace.
+#[tokio::test]
+async fn test_policy_quota_allows_reupload_of_a_file_at_the_limit() {
+    let wheel = fixture_wheel_for("1.0");
+    let limit = wheel.len() as u64;
+    let quota_policy = policy(move |neutral, _pypi| neutral.max_project_size_bytes = Some(limit));
+    let h = harness_with_policies(true, true, Policy::default(), quota_policy, Policy::default()).await;
+
+    assert_eq!(upload_version(&h.state, "/root/pypi/", "1.0").await, StatusCode::OK);
+    assert_eq!(upload_version(&h.state, "/root/pypi/", "1.0").await, StatusCode::OK);
+}

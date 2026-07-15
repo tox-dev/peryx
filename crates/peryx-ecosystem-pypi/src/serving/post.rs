@@ -16,7 +16,7 @@ use peryx_events::metrics::Event;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_identity::{Action, Identity};
 use peryx_index::Index;
-use peryx_policy::PolicyAction;
+use peryx_policy::{PolicyAction, PolicyDenial};
 
 use crate::cache::{self, CacheError};
 use crate::policy::PypiPolicy;
@@ -134,6 +134,22 @@ async fn accept_upload(
         && let Some(block) = upload_policy_response(hosted, &prepared, &audit)
     {
         return block;
+    }
+    if let Some(limit) = [index.policy.max_project_size(), hosted.policy.max_project_size()]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        let incoming = prepared
+            .record
+            .file
+            .size
+            .expect("a prepared upload carries its byte size");
+        let existing = cache::project_upload_bytes(state, &hosted.name, &project, &filename);
+        if let Some(block) = upload_quota_response(existing, limit, &project, &filename, incoming, &index.route) {
+            emit_upload_status_event(&audit, &block);
+            return block.response;
+        }
     }
     if let Some(block) = upload_status_response(
         cache::project_status(state, index, &project).await,
@@ -296,6 +312,50 @@ pub(super) struct UploadStatusBlock {
     pub(super) reason: String,
 }
 
+/// Reject a hosted upload that would push a project's stored bytes past its `max_project_size` quota.
+/// `existing` is the project's current file total on the target store, read outside so a store error
+/// maps to the same failure response the other pre-commit checks return; the incoming file's own
+/// bytes are added to it. `None` means the upload fits and may proceed.
+fn upload_quota_response(
+    existing: Result<u64, CacheError>,
+    limit: u64,
+    project: &str,
+    filename: &str,
+    incoming: u64,
+    route: &str,
+) -> Option<UploadStatusBlock> {
+    match existing {
+        Ok(existing) => {
+            let total = existing.saturating_add(incoming);
+            (total > limit).then(|| {
+                let reason = format!("project size {total} would exceed limit {limit}");
+                let denial = PolicyDenial::new(
+                    PolicyAction::Upload,
+                    project,
+                    Some(filename),
+                    None,
+                    "max-project-size",
+                    "project_size",
+                    reason.clone(),
+                );
+                UploadStatusBlock {
+                    response: policy_denial_response(&denial),
+                    result: "denied",
+                    reason,
+                }
+            })
+        }
+        Err(err) => {
+            let reason = err.user_message();
+            Some(UploadStatusBlock {
+                response: cache_error_response(&err, CacheContext::upload(route, project)),
+                result: "failure",
+                reason,
+            })
+        }
+    }
+}
+
 pub(super) fn upload_status_response(
     result: Result<ProjectStatus, CacheError>,
     index: &str,
@@ -355,6 +415,29 @@ mod tests {
         assert_eq!(archived.reason, "project \"flask\" is archived; uploads are disabled");
 
         let failure = upload_status_response(Err(CacheError::Meta(meta_error())), "root/pypi", "flask").unwrap();
+        assert_eq!(failure.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(failure.result, "failure");
+        assert!(failure.reason.contains("metadata store error"));
+    }
+
+    #[test]
+    fn test_upload_quota_response_maps_limit_and_store_errors() {
+        assert!(upload_quota_response(Ok(4), 10, "flask", "flask-1.0.whl", 5, "root/pypi").is_none());
+
+        let over = upload_quota_response(Ok(6), 10, "flask", "flask-1.0.whl", 5, "root/pypi").unwrap();
+        assert_eq!(over.response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(over.result, "denied");
+        assert_eq!(over.reason, "project size 11 would exceed limit 10");
+
+        let failure = upload_quota_response(
+            Err(CacheError::Meta(meta_error())),
+            10,
+            "flask",
+            "flask-1.0.whl",
+            5,
+            "root/pypi",
+        )
+        .unwrap();
         assert_eq!(failure.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(failure.result, "failure");
         assert!(failure.reason.contains("metadata store error"));

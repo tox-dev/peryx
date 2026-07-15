@@ -26,6 +26,31 @@ pub fn store_upload(state: &ServingState, name: &str, prepared: PreparedUpload) 
     Ok(stored)
 }
 
+/// The total bytes a project's uploaded files already occupy on `hosted`, ignoring `filename`.
+///
+/// An accepted upload replaces the `filename` record in place rather than adding to it, so its
+/// bytes are excluded. Read before a hosted upload commits so a per-project size quota can reject
+/// one that would push the project past its limit.
+///
+/// # Errors
+/// Returns [`CacheError`] if the store read or a stored record's decode fails.
+pub fn project_upload_bytes(
+    state: &ServingState,
+    hosted: &str,
+    normalized: &str,
+    filename: &str,
+) -> Result<u64, CacheError> {
+    let mut total = 0_u64;
+    for (name, bytes) in state.meta.list_upload_entries(hosted, normalized)? {
+        if name == filename {
+            continue;
+        }
+        let uploaded: Uploaded = serde_json::from_slice(&bytes)?;
+        total = total.saturating_add(uploaded.file.size.unwrap_or(0));
+    }
+    Ok(total)
+}
+
 /// Copy one uploaded release from one hosted layer to another without touching blob bytes.
 ///
 /// # Errors
