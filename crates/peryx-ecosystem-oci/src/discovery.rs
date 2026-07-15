@@ -90,6 +90,10 @@ mod tests {
             ecosystem: "oci",
             kind: "virtual",
             layers: vec!["root/oci-store".to_owned()],
+            precedence: vec![peryx_driver::state::MemberDescription {
+                name: "root/oci-store".to_owned(),
+                role: "hosted",
+            }],
             uploads,
             volatile_deletes: false,
             upload_to: uploads.then(|| "root/oci-store".to_owned()),

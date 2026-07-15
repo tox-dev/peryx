@@ -371,3 +371,39 @@ async fn test_ui_member_is_404_for_an_unknown_route() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn test_status_reports_virtual_member_precedence_with_roles() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let indexes = vec![
+        index("store", Ecosystem::Pypi),
+        Index {
+            name: "combo".to_owned(),
+            route: "combo".to_owned(),
+            ecosystem: Ecosystem::Pypi,
+            kind: IndexKind::Virtual {
+                layers: vec![0],
+                upload: None,
+            },
+            policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
+        },
+    ];
+    let mut state = AppState::new(meta, blobs, 60, indexes);
+    state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
+    let app = crate::router(Arc::new(state));
+    let (status, document) = get_json(&app, "/+status").await;
+    assert_eq!(status, StatusCode::OK);
+    let combo = document["indexes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|index| index["name"] == "combo")
+        .unwrap();
+    assert_eq!(
+        combo["precedence"],
+        serde_json::json!([{"name": "store", "role": "hosted"}])
+    );
+}

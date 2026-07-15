@@ -37,6 +37,16 @@ pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<Stat
                 ("endpoint".to_owned(), serde_json::json!(endpoint)),
                 ("kind".to_owned(), serde_json::json!(index.kind)),
                 ("layers".to_owned(), serde_json::json!(index.layers)),
+                (
+                    "precedence".to_owned(),
+                    serde_json::json!(
+                        index
+                            .precedence
+                            .iter()
+                            .map(|member| serde_json::json!({"name": member.name, "role": member.role}))
+                            .collect::<Vec<_>>()
+                    ),
+                ),
                 ("uploads".to_owned(), serde_json::json!(index.uploads)),
                 ("volatile_deletes".to_owned(), serde_json::json!(index.volatile_deletes)),
                 ("upload_to".to_owned(), serde_json::json!(index.upload_to)),
