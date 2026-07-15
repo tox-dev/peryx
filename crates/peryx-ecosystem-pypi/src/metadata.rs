@@ -22,6 +22,8 @@ pub struct CoreMetadataDoc {
     pub maintainer: Option<String>,
     pub keywords: Vec<String>,
     pub requires_dist: Vec<String>,
+    pub provides_dist: Vec<String>,
+    pub obsoletes_dist: Vec<String>,
     pub provides_extra: Vec<String>,
     pub classifiers: Vec<String>,
     /// `(label, url)` pairs from `Project-URL` headers.
@@ -125,6 +127,8 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
                     .collect();
             }
             "requires-dist" => doc.requires_dist.push(value.to_owned()),
+            "provides-dist" => doc.provides_dist.push(value.to_owned()),
+            "obsoletes-dist" => doc.obsoletes_dist.push(value.to_owned()),
             "provides-extra" => doc.provides_extra.push(value.to_owned()),
             "classifier" => doc.classifiers.push(value.to_owned()),
             "project-url" => {

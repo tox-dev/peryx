@@ -633,6 +633,28 @@ async fn test_upload_invalid_project_url_is_bad_request() {
     .await;
 }
 
+#[rstest]
+#[case::requires_dist(b"Requires-Dist: !!!\n", "Requires-Dist")]
+#[case::provides_dist(b"Provides-Dist: !!!\n", "Provides-Dist")]
+#[case::obsoletes_dist(b"Obsoletes-Dist: !!!\n", "Obsoletes-Dist")]
+#[tokio::test]
+async fn test_upload_rejects_invalid_requirement(#[case] header: &[u8], #[case] field: &str) {
+    let h = harness().await;
+    let mut metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\n".to_vec();
+    metadata.extend_from_slice(header);
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(&metadata).as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        &format!("metadata {field} value \"!!!\" is not a valid dependency specifier"),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn test_upload_rejects_field_older_than_its_introduction() {
     let h = harness().await;

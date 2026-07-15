@@ -127,6 +127,8 @@ fn test_parse_metadata_headers_and_body() {
                 Keywords: cache,index,proxy\n\
                 Requires-Dist: requests>=2\n\
                 Requires-Dist: click; extra == \"cli\"\n\
+                Provides-Dist: virtual-package\n\
+                Obsoletes-Dist: OldName (<3.0)\n\
                 Provides-Extra: cli\n\
                 Classifier: Development Status :: 4 - Beta\n\
                 Project-URL: Homepage, https://example.test\n\
@@ -147,6 +149,8 @@ fn test_parse_metadata_headers_and_body() {
     assert_eq!(doc.maintainer.as_deref(), Some("Joe"));
     assert_eq!(doc.keywords, ["cache", "index", "proxy"]);
     assert_eq!(doc.requires_dist.len(), 2);
+    assert_eq!(doc.provides_dist, ["virtual-package"]);
+    assert_eq!(doc.obsoletes_dist, ["OldName (<3.0)"]);
     assert_eq!(doc.provides_extra, ["cli"]);
     assert_eq!(doc.classifiers, ["Development Status :: 4 - Beta"]);
     assert_eq!(

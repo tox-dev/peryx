@@ -31,6 +31,7 @@ serving = [
   "dep:md-5",
   "dep:csv",
   "dep:spdx",
+  "dep:pep508_rs",
   "dep:ammonia",
   "dep:pulldown-cmark",
   "dep:rst_parser",
@@ -81,6 +82,7 @@ blake2 = { workspace = true, optional = true }
 md-5 = { workspace = true, optional = true }
 csv = { workspace = true, optional = true }
 spdx = { workspace = true, optional = true }
+pep508_rs = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }

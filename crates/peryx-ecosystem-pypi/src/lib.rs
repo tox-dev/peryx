@@ -29,6 +29,8 @@ pub mod openapi;
 #[cfg(feature = "serving")]
 pub mod policy;
 #[cfg(feature = "serving")]
+mod requirement;
+#[cfg(feature = "serving")]
 pub mod search_pypi;
 #[cfg(feature = "serving")]
 pub mod serving;

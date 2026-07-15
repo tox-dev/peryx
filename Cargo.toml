@@ -67,6 +67,7 @@ clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 pep440_rs = "0.7"
+pep508_rs = "0.9"
 spdx = "0.13"
 tantivy = "0.26"
 tl = "0.7"

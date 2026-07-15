@@ -436,6 +436,7 @@ fn validate_metadata_identity(
     validate_license_expression(metadata)?;
     validate_provided_extras(metadata)?;
     validate_classifiers(metadata)?;
+    validate_requirements(metadata)?;
     compare_metadata_field(
         "Metadata-Version",
         form.metadata_version.as_deref(),
@@ -502,6 +503,16 @@ fn validate_field_introductions(metadata: &CoreMetadataDoc, declared: u8) -> Res
             "Requires-Dist",
             SINCE_1_2,
             metadata.requires_dist.first().map(Cow::from),
+        ),
+        (
+            "Provides-Dist",
+            SINCE_1_2,
+            metadata.provides_dist.first().map(Cow::from),
+        ),
+        (
+            "Obsoletes-Dist",
+            SINCE_1_2,
+            metadata.obsoletes_dist.first().map(Cow::from),
         ),
         (
             "Project-URL",
@@ -596,6 +607,26 @@ fn validate_classifiers(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
             value: value.clone(),
             reason,
         })?;
+    }
+    Ok(())
+}
+
+/// `Requires-Dist`, `Provides-Dist`, and `Obsoletes-Dist` share the PEP 508 requirement grammar, so
+/// one parser checks all three and the first malformed value reports its own field. Validation reads
+/// the grammar only; the declared text stays verbatim for display.
+fn validate_requirements(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
+    for (field, values) in [
+        ("Requires-Dist", &metadata.requires_dist),
+        ("Provides-Dist", &metadata.provides_dist),
+        ("Obsoletes-Dist", &metadata.obsoletes_dist),
+    ] {
+        for value in values {
+            crate::requirement::validate(value).map_err(|reason| UploadError::InvalidMetadataValue {
+                field,
+                value: value.clone(),
+                reason,
+            })?;
+        }
     }
     Ok(())
 }

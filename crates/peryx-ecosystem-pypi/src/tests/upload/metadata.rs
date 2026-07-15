@@ -351,6 +351,60 @@ fn classifier_wheel(classifiers: &str) -> Vec<u8> {
 }
 
 #[rstest]
+#[case::requires_dist("Requires-Dist: !!!", "Requires-Dist", "!!!")]
+#[case::provides_dist("Provides-Dist: !!!", "Provides-Dist", "!!!")]
+#[case::obsoletes_dist("Obsoletes-Dist: !!!", "Obsoletes-Dist", "!!!")]
+#[case::bad_specifier("Requires-Dist: requests>=", "Requires-Dist", "requests>=")]
+#[case::bad_marker("Requires-Dist: click; extra = \"cli\"", "Requires-Dist", "click; extra = \"cli\"")]
+fn test_prepare_rejects_invalid_requirement(#[case] header: &str, #[case] field: &'static str, #[case] value: &str) {
+    let bytes = requirements_wheel(header);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert_eq!(
+        prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap_err(),
+        UploadError::InvalidMetadataValue {
+            field,
+            value: value.to_owned(),
+            reason: "is not a valid dependency specifier",
+        }
+    );
+}
+
+#[rstest]
+#[case::plain("Requires-Dist: click")]
+#[case::version_specifier("Requires-Dist: requests >= 2.0, != 2.1")]
+#[case::extras("Requires-Dist: requests[security,socks] >= 2.0")]
+#[case::marker("Requires-Dist: click; extra == \"cli\"")]
+#[case::parenthesized_version("Obsoletes-Dist: OtherProject (<3.0)")]
+#[case::provides_marker("Provides-Dist: virtual_package; python_version >= \"3.4\"")]
+fn test_prepare_accepts_valid_requirement(#[case] header: &str) {
+    let bytes = requirements_wheel(header);
+    let (_dir, staged) = staged_upload(&bytes);
+
+    assert!(prepare(staged_form(&bytes), staged, "root/hosted", 1000).is_ok());
+}
+
+#[test]
+fn test_prepare_preserves_declared_requirement_text() {
+    let bytes = requirements_wheel(
+        "Requires-Dist: requests>=2\nProvides-Dist: virtual-package\nObsoletes-Dist: OldName (<3.0)",
+    );
+    let (_dir, staged) = staged_upload(&bytes);
+    let prepared = prepare(staged_form(&bytes), staged, "root/hosted", 1000).unwrap();
+    let doc = crate::parse_metadata(std::str::from_utf8(&prepared.metadata).unwrap()).unwrap();
+
+    assert_eq!(doc.requires_dist, ["requests>=2"]);
+    assert_eq!(doc.provides_dist, ["virtual-package"]);
+    assert_eq!(doc.obsoletes_dist, ["OldName (<3.0)"]);
+}
+
+fn requirements_wheel(headers: &str) -> Vec<u8> {
+    wheel_metadata_bytes(
+        format!("Metadata-Version: 2.1\nName: Flask\nVersion: 1.0\nRequires-Python: >=3.8\n{headers}\n").as_bytes(),
+    )
+}
+
+#[rstest]
 #[case::parent("../LICENSE", "parent directory components are not allowed")]
 #[case::relative_parent("./../LICENSE", "parent directory components are not allowed")]
 #[case::unresolved_parent("licenses/../LICENSE", "parent directory components are not allowed")]
@@ -480,6 +534,20 @@ fn test_prepare_rejects_invalid_license_expression(#[case] expression: &str, #[c
     "click",
     "requires Metadata-Version 1.2 or later"
 )]
+#[case::provides_dist(
+    "1.1",
+    "Provides-Dist: virtual-package",
+    "Provides-Dist",
+    "virtual-package",
+    "requires Metadata-Version 1.2 or later"
+)]
+#[case::obsoletes_dist(
+    "1.1",
+    "Obsoletes-Dist: OldName",
+    "Obsoletes-Dist",
+    "OldName",
+    "requires Metadata-Version 1.2 or later"
+)]
 #[case::project_url(
     "1.1",
     "Project-URL: Docs, https://example.test/docs",
@@ -540,6 +608,8 @@ fn test_prepare_rejects_field_older_than_its_introduction(
 #[case::maintainer("1.2", "Maintainer: Pallets")]
 #[case::requires_python("1.2", "Requires-Python: >=3.8")]
 #[case::requires_dist("1.2", "Requires-Dist: click")]
+#[case::provides_dist("1.2", "Provides-Dist: virtual-package")]
+#[case::obsoletes_dist("1.2", "Obsoletes-Dist: OldName (<3.0)")]
 #[case::project_url("1.2", "Project-URL: Docs, https://example.test/docs")]
 #[case::description_content_type("2.1", "Description-Content-Type: text/markdown")]
 #[case::provides_extra("2.1", "Provides-Extra: cli")]
