@@ -4,7 +4,7 @@ use peryx_policy::{Policy, PolicyConfig};
 
 use super::page_context;
 use crate::policy::{PackageType, PypiPolicyConfig, compile_rules};
-use crate::stream::{PageContext, PageTransformer, Registration, page_context as build_page_context};
+use crate::stream::{PageContext, PageTransformer, Registration, TransformError, page_context as build_page_context};
 use crate::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
 
 fn upstream_page() -> String {
@@ -676,4 +676,41 @@ fn test_local_file_yank_override_is_applied_like_the_buffered_path() {
     let (out, _) = transform(r#"{"name":"demo","files":[]}"#, context, 4096);
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!(detail.files[0].yanked, Yanked::Reason("bad build".to_owned()));
+}
+
+#[test]
+fn test_rejects_a_page_past_the_byte_limit() {
+    let mut transformer = PageTransformer::new(plain_context());
+    // Whitespace is a valid JSON lead-in that copies straight through, so the byte guard — not a
+    // parse error — is what has to stop the oversized page. 65 MiB in 1 MiB pushes clears the 64 MiB
+    // cap; a bounded loop fails cleanly if the guard is dropped, where an unbounded one would hang.
+    let chunk = vec![b' '; 1024 * 1024];
+    let mut result = Ok(Vec::new());
+    for _ in 0..65 {
+        result = transformer.push(&chunk);
+    }
+    let err = result.unwrap_err();
+    assert_eq!(err.to_string(), "upstream page exceeds the size or file-count limit");
+    assert!(matches!(err, TransformError::TooLarge));
+}
+
+#[test]
+fn test_rejects_a_page_with_too_many_files() {
+    // One element past the 500_000 cap, while the whole page stays far under the byte cap, so the
+    // file-count guard is the one that must fire.
+    let files = 500_001;
+    let mut page = String::with_capacity(files * 27 + 16);
+    page.push_str(r#"{"files":["#);
+    for index in 0..files {
+        if index > 0 {
+            page.push(',');
+        }
+        page.push_str(r#"{"filename":"a","url":"b"}"#);
+    }
+    page.push_str("]}");
+    let mut transformer = PageTransformer::new(plain_context());
+    assert!(matches!(
+        transformer.push(page.as_bytes()).unwrap_err(),
+        TransformError::TooLarge
+    ));
 }

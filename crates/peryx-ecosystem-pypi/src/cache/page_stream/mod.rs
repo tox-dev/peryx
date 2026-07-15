@@ -385,7 +385,9 @@ fn transform_error(err: crate::stream::TransformError) -> CacheError {
     match err {
         crate::stream::TransformError::Parse(err) => CacheError::Parse(err),
         crate::stream::TransformError::Simple(err) => CacheError::Simple(err),
-        crate::stream::TransformError::Truncated | crate::stream::TransformError::Trailing => CacheError::Unavailable,
+        crate::stream::TransformError::Truncated
+        | crate::stream::TransformError::Trailing
+        | crate::stream::TransformError::TooLarge => CacheError::Unavailable,
     }
 }
 
@@ -399,6 +401,10 @@ mod tests {
         assert!(matches!(transform_error(err.into()), CacheError::Parse(_)));
         assert!(matches!(
             transform_error(crate::stream::TransformError::Truncated),
+            CacheError::Unavailable
+        ));
+        assert!(matches!(
+            transform_error(crate::stream::TransformError::TooLarge),
             CacheError::Unavailable
         ));
     }

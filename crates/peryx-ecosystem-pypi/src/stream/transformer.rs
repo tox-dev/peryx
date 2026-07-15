@@ -10,6 +10,16 @@ use crate::policy::PypiPolicy;
 use crate::simple::absolutize;
 use crate::{CoreMetadata, File, parse_meta, to_json};
 
+/// The most raw bytes peryx will read from one upstream Simple page before refusing it. The biggest
+/// real project pages (botocore and friends) sit in the low single-digit MiB; a page an order of
+/// magnitude past that is pathological, and parsing it unbounded is the memory-exhaustion vector this
+/// guards against.
+const MAX_PAGE_BYTES: usize = 64 * 1024 * 1024;
+/// The most file entries peryx will transform from one upstream Simple page. Bytes alone do not bound
+/// per-element work: a page of many tiny file objects stays small yet still forces a parse, a policy
+/// check, and a registration each, so the element count is capped on its own.
+const MAX_PAGE_FILES: usize = 500_000;
+
 /// The transformer's lexer state, kept across chunk boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -59,6 +69,10 @@ pub struct PageTransformer {
     array_depth: u32,
     emitted_in_array: bool,
     registrations: Vec<Registration>,
+    /// Raw upstream bytes fed so far, checked against [`MAX_PAGE_BYTES`].
+    consumed: usize,
+    /// Upstream file elements captured so far, checked against [`MAX_PAGE_FILES`].
+    files_seen: usize,
 }
 
 impl PageTransformer {
@@ -83,6 +97,8 @@ impl PageTransformer {
             array_depth: 0,
             emitted_in_array: false,
             registrations: Vec::new(),
+            consumed: 0,
+            files_seen: 0,
             project_status: None,
             project_status_reason: None,
         }
@@ -113,8 +129,13 @@ impl PageTransformer {
     /// Transform one chunk of upstream bytes, returning the bytes to send downstream.
     ///
     /// # Errors
-    /// Returns [`TransformError::Parse`] when a captured element is not valid JSON.
+    /// Returns [`TransformError::Parse`] when a captured element is not valid JSON, or
+    /// [`TransformError::TooLarge`] once the page passes [`MAX_PAGE_BYTES`].
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<u8>, TransformError> {
+        self.consumed = self.consumed.saturating_add(chunk.len());
+        if self.consumed > MAX_PAGE_BYTES {
+            return Err(TransformError::TooLarge);
+        }
         let mut out = Vec::with_capacity(chunk.len() + 64);
         for &byte in chunk {
             self.step(byte, &mut out)?;
@@ -414,6 +435,10 @@ impl PageTransformer {
 
     /// Rewrite one captured upstream file object and emit it, unless it is shadowed or hidden.
     fn emit_file(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
+        self.files_seen += 1;
+        if self.files_seen > MAX_PAGE_FILES {
+            return Err(TransformError::TooLarge);
+        }
         let mut file: File = serde_json::from_slice(&self.capture)?;
         if self.project_is_quarantined() {
             return Ok(());

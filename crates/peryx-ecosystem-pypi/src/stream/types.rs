@@ -66,4 +66,6 @@ pub enum TransformError {
     Truncated,
     #[error("upstream page carries data after the document root")]
     Trailing,
+    #[error("upstream page exceeds the size or file-count limit")]
+    TooLarge,
 }
