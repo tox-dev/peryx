@@ -37,6 +37,12 @@ cargo llvm-cov nextest --workspace --ignore-filename-regex 'main\.rs' \
 Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on stable
 [Rust](https://www.rust-lang.org/) can reach compiler-generated branches (async expansions, drop glue).
 
+Run the suite with [nextest](https://nexte.st/), not `cargo test`. nextest gives each test its own process; `cargo test`
+runs a binary's tests as threads in one process. The web UI tests render Leptos pages, and Leptos drives a per-thread
+reactive graph through process-global arenas, so two page renders at once in one process deadlock on a lost wakeup —
+flaky under `cargo test`, impossible under nextest's isolation. The tests also cache the deterministic route table and
+serialize their own renders, so a stray `cargo test` no longer hangs; nextest stays the supported runner.
+
 ## End-to-end tests
 
 The e2e suite drives real pip, uv, and twine against a spawned peryx binary:

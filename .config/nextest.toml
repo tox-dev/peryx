@@ -1,0 +1,10 @@
+# nextest runs each test in its own process. That isolation is load-bearing here: Leptos server
+# rendering drives a per-thread reactive graph through process-global arenas, and running two page
+# renders at once in one process — which `cargo test` does — deadlocks on a lost wakeup. One test per
+# process keeps renders from overlapping, so the UI tests are reliable under nextest and flaky under
+# `cargo test`. See site/content/contributing/architecture.md.
+#
+# The timeout is a backstop: should any test ever wedge, it is killed and reported as a failure rather
+# than hanging the run forever. No honest test on this suite comes close to the limit.
+[profile.default]
+slow-timeout = { period = "90s", terminate-after = 2 }

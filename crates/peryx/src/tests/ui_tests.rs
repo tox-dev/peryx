@@ -494,11 +494,22 @@ async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
     get_authorized(router, uri, "").await
 }
 
+/// Leptos server rendering drives a per-thread reactive graph through process-global arenas, so two
+/// page renders at once in one process wedge on a lost wakeup. nextest runs each test in its own
+/// process and never hits this; `cargo test` runs a binary's tests as threads and would, so hold one
+/// render at a time. Route derivation is already serialized in `peryx_web` (`route_list`), which
+/// leaves rendering as the only shared step here.
+fn render_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(tokio::sync::Mutex::default)
+}
+
 async fn get_authorized(router: &axum::Router, uri: &str, authorization: &str) -> (StatusCode, String) {
     let mut request = Request::builder().uri(uri);
     if !authorization.is_empty() {
         request = request.header(header::AUTHORIZATION, authorization);
     }
+    let _render = render_gate().lock().await;
     let response = router
         .clone()
         .oneshot(request.body(Body::empty()).unwrap())

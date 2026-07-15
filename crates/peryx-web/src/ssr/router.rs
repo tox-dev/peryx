@@ -21,6 +21,15 @@ impl FromRef<UiState> for LeptosOptions {
     }
 }
 
+/// The route table leptos derives by walking `App`. It never varies, and deriving it runs the
+/// component, which the tests do from many threads at once while building throwaway routers, so
+/// derive it once behind a lock and hand back clones. A running server builds one router, so this
+/// costs it nothing.
+fn route_list() -> Vec<leptos_axum::AxumRouteListing> {
+    static ROUTES: std::sync::OnceLock<Vec<leptos_axum::AxumRouteListing>> = std::sync::OnceLock::new();
+    ROUTES.get_or_init(|| generate_route_list(App)).clone()
+}
+
 /// Build the UI router.
 ///
 /// The leptos routes (server-rendered, hydration-ready) plus the `/pkg` asset directory holding
@@ -30,7 +39,7 @@ pub fn ui_router(app: Arc<AppState>) -> Router {
     let options = leptos_options();
     let site_root = options.site_root.to_string();
     let state = UiState { options, app };
-    let routes = generate_route_list(App);
+    let routes = route_list();
     Router::new()
         .leptos_routes_with_context(
             &state,
