@@ -16,7 +16,9 @@ use url::Url;
 
 use crate::simple_client::{SimpleClientExt as _, SimpleResponse};
 
-use super::{CacheError, NEGATIVE_TTL_SECS, is_json, mirror_route, project_negative_key, upstream_permit};
+use super::{
+    CacheError, NEGATIVE_TTL_SECS, cached_record, is_json, mirror_route, project_negative_key, upstream_permit,
+};
 
 /// Fetch a page (buffered) and persist the raw body plus all file registrations in one transaction.
 /// Used by the non-streaming path: HTML upstreams, HTML clients, and internal consumers.
@@ -32,7 +34,7 @@ pub(super) async fn fetch_and_store(
 ) -> Result<Option<CachedIndex>, CacheError> {
     mirror_policy(state, name).check_project(PolicyAction::Cached, project)?;
     let now = (state.clock)();
-    let cached = state.meta.get_index(key)?;
+    let cached = cached_record(state, key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let route = mirror_route(state, name);
     let event_project = project.to_owned();

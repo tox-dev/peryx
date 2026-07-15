@@ -24,8 +24,8 @@ mod live;
 use live::FreshJsonStream;
 
 use super::{
-    CacheError, NEGATIVE_TTL_SECS, flight_gate, fresh_cached, freshness, is_json, mirror_route, persist_page,
-    project_negative_key, release_flight, upstream_permit,
+    CacheError, NEGATIVE_TTL_SECS, cached_record, flight_gate, fresh_cached, freshness, is_json, mirror_route,
+    persist_page, project_negative_key, release_flight, upstream_permit,
 };
 
 /// Persist a streamed page from what the transformer already extracted: no re-parse of the raw
@@ -155,7 +155,7 @@ pub async fn stream_detail(
     }
 
     let now = (state.clock)();
-    let cached = state.meta.get_index(&key)?;
+    let cached = cached_record(&state, &key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let permit = upstream_permit(&state, &cached_name).await?;
     let Ok(head) = client.head_project(&project, etag.as_deref()).await else {
