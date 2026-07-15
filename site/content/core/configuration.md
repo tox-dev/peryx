@@ -186,6 +186,7 @@ upload = "hosted"
 [index.policy]
 allow_projects = ["flask", "requests"]
 block_projects = ["bad-package"]
+protected_names = ["acme-secrets", "acme-*"]
 allow_versions = ">=1,<3"
 allow_package_types = ["wheel"]
 block_package_types = ["sdist"]
@@ -200,6 +201,7 @@ min_release_age_secs = 604800
 | ------------------------ | ----------------------------------------------------------------------------- |
 | `allow_projects`         | Only these normalized projects may be served, mirrored, or uploaded           |
 | `block_projects`         | These normalized projects are denied                                          |
+| `protected_names`        | Reserved names that never fall back upstream; exact or `prefix-*` namespace   |
 | `allow_versions`         | PEP 440 specifier set accepted for parsed distribution filenames              |
 | `allow_package_types`    | Accepted parsed file types: `wheel`, `sdist`                                  |
 | `block_package_types`    | Denied parsed file types: `wheel`, `sdist`                                    |
@@ -223,10 +225,16 @@ page with any retained file lacking `size` is denied by `max_project_size_bytes`
 Simple-page path so file lists and [PEP 691](https://peps.python.org/pep-0691/) `versions` are filtered together before
 peryx serves bytes.
 
-`allow_projects`, `block_projects`, `max_file_size_bytes`, and `max_project_size_bytes` are ecosystem-neutral and apply
-to an OCI index too, matching on image name and blob size: a blocked image is hidden on reads and refused on push, and a
-layer or manifest over the size limit is refused. The rest of the keys above cover version specifiers, package types,
-and wheel tags. These are Python-specific
+`protected_names` reserves private names against dependency confusion. peryx refuses a reserved name on the upstream
+mirror path only: a hosted member still serves it and accepts uploads for it, but a request the local members cannot
+answer fails instead of reaching the public index. That closes the gap a missing, renamed, or deleted local package
+would otherwise open. An entry is an exact name or a `prefix-*` namespace rule, both normalized like the incoming name
+before the comparison.
+
+`allow_projects`, `block_projects`, `protected_names`, `max_file_size_bytes`, and `max_project_size_bytes` are
+ecosystem-neutral and apply to an OCI index too, matching on image name and blob size: a blocked image is hidden on
+reads and refused on push, and a layer or manifest over the size limit is refused. The rest of the keys above cover
+version specifiers, package types, and wheel tags. These are Python-specific
 ([PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) versions, wheel/sdist types, wheel
 tags) and have no OCI counterpart, so they are implemented in the PyPI ecosystem crate and apply only to a PyPI index.
 Each ecosystem contributes its own matchers to the same neutral `[index.policy]` engine through a rule trait.

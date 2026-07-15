@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 pub struct PolicyConfig {
     pub allow_projects: Vec<String>,
     pub block_projects: Vec<String>,
+    pub protected_names: Vec<String>,
     pub max_file_size_bytes: Option<u64>,
     pub max_project_size_bytes: Option<u64>,
 }
@@ -29,6 +30,7 @@ impl PolicyConfig {
     pub const KEYS: &'static [&'static str] = &[
         "allow_projects",
         "block_projects",
+        "protected_names",
         "max_file_size_bytes",
         "max_project_size_bytes",
     ];
@@ -96,10 +98,59 @@ pub trait ArtifactRule: Send + Sync + fmt::Debug {
     fn check(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial>;
 }
 
+/// Names an operator reserves so a request for them never falls back to an upstream mirror. This is
+/// the dependency-confusion defense phrased as policy: a private project name resolves only from a
+/// hosted member, never from the public index that a typo, a deletion, or a rename would otherwise
+/// let answer it.
+///
+/// An entry is an exact normalized name (`acme-secrets`) or a namespace prefix ending in `*`
+/// (`acme-*`), so one rule can reserve a whole naming convention. Both are normalized through the
+/// ecosystem's own function, so `-`, `_`, and `.` spellings collapse the same way the incoming name
+/// does before it is compared.
+#[derive(Clone, Default, Debug)]
+struct ProtectedNames {
+    exact: BTreeSet<String>,
+    prefixes: BTreeSet<String>,
+}
+
+impl ProtectedNames {
+    fn compile(names: &[String], normalize: &impl Fn(&str) -> String) -> Self {
+        let mut exact = BTreeSet::new();
+        let mut prefixes = BTreeSet::new();
+        for name in names {
+            let prefix = name.strip_suffix('*');
+            let normalized = normalize(prefix.unwrap_or(name));
+            if prefix.is_some() {
+                prefixes.insert(normalized);
+            } else {
+                exact.insert(normalized);
+            }
+        }
+        Self { exact, prefixes }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.exact.is_empty() && self.prefixes.is_empty()
+    }
+
+    /// The rule that reserves `project`, formatted for a denial, or `None` when the name is free to
+    /// fall back upstream.
+    fn matched(&self, project: &str) -> Option<String> {
+        if self.exact.contains(project) {
+            return Some(project.to_owned());
+        }
+        self.prefixes
+            .iter()
+            .find(|prefix| project.starts_with(prefix.as_str()))
+            .map(|prefix| format!("{prefix}*"))
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct Policy {
     allow_projects: HashSet<String>,
     block_projects: HashSet<String>,
+    protected_names: ProtectedNames,
     max_file_size_bytes: Option<u64>,
     max_project_size_bytes: Option<u64>,
     rules: Vec<Arc<dyn ArtifactRule>>,
@@ -120,6 +171,7 @@ impl Policy {
         let policy = Self {
             allow_projects: normalize_all(&config.allow_projects),
             block_projects: normalize_all(&config.block_projects),
+            protected_names: ProtectedNames::compile(&config.protected_names, &normalize),
             max_file_size_bytes: config.max_file_size_bytes,
             max_project_size_bytes: config.max_project_size_bytes,
             rules: Vec::new(),
@@ -159,6 +211,7 @@ impl Policy {
     fn compute_active(&self) -> bool {
         !self.allow_projects.is_empty()
             || !self.block_projects.is_empty()
+            || !self.protected_names.is_empty()
             || self.max_file_size_bytes.is_some()
             || self.max_project_size_bytes.is_some()
             || !self.rules.is_empty()
@@ -171,9 +224,27 @@ impl Policy {
 
     /// Check whether a project name is allowed.
     ///
+    /// A [protected name](ProtectedNames) is denied only for [`PolicyAction::Cached`], the upstream
+    /// mirror path: a hosted member may still serve and accept uploads for it, but a request the local
+    /// members cannot satisfy is refused rather than answered from the public index.
+    ///
     /// # Errors
-    /// Returns a denial when the project misses an allow list or matches a block list.
+    /// Returns a denial when the project misses an allow list, matches a block list, or is protected
+    /// from upstream fallback.
     pub fn check_project(&self, action: PolicyAction, project: &str) -> Result<(), PolicyDenial> {
+        if action == PolicyAction::Cached
+            && let Some(rule) = self.protected_names.matched(project)
+        {
+            return Err(PolicyDenial::new(
+                action,
+                project,
+                None,
+                None,
+                "protected-name",
+                "project",
+                format!("project {project:?} is protected from upstream fallback by rule {rule:?}"),
+            ));
+        }
         if self.allow_projects.is_empty() || self.allow_projects.contains(project) {
             if !self.block_projects.contains(project) {
                 return Ok(());

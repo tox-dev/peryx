@@ -321,6 +321,7 @@ fn snapshot_policy(config: &PolicyConfig, ecosystem: &Table) -> anyhow::Result<T
     let PolicyConfig {
         allow_projects,
         block_projects,
+        protected_names,
         max_file_size_bytes,
         max_project_size_bytes,
     } = config;
@@ -332,6 +333,10 @@ fn snapshot_policy(config: &PolicyConfig, ecosystem: &Table) -> anyhow::Result<T
     policy.insert(
         "block_projects".to_owned(),
         Value::Array(block_projects.iter().cloned().map(Value::String).collect()),
+    );
+    policy.insert(
+        "protected_names".to_owned(),
+        Value::Array(protected_names.iter().cloned().map(Value::String).collect()),
     );
     if let Some(value) = max_file_size_bytes {
         policy.insert("max_file_size_bytes".to_owned(), Value::Integer((*value).try_into()?));

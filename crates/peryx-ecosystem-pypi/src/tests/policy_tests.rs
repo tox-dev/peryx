@@ -309,6 +309,23 @@ fn test_preview_detail_reports_file_and_project_size_denials() {
 }
 
 #[test]
+fn test_protected_name_blocks_upstream_across_pep503_spellings() {
+    let policy = policy(|neutral, _pypi| {
+        neutral.protected_names = vec!["Acme.Secrets".to_owned(), "acme_internal_*".to_owned()];
+    });
+
+    for spelling in ["acme-secrets", "Acme_Secrets", "acme.secrets", "acme-internal-db"] {
+        assert!(
+            policy
+                .check_project(PolicyAction::Cached, &crate::normalize_name(spelling))
+                .is_err(),
+            "{spelling} should not fall back upstream"
+        );
+    }
+    assert_eq!(policy.check_project(PolicyAction::Serve, "acme-secrets"), Ok(()));
+}
+
+#[test]
 fn test_compile_rejects_empty_wheel_tag() {
     let config = PypiPolicyConfig {
         allow_wheel_pythons: vec![String::new()],
