@@ -109,7 +109,7 @@ test("project server render keeps the relative install snippet", async ({ page }
 test("project install snippet uses the browser origin when copied", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await goto(page, PROJECT_URL);
-  const command = "uv pip install --index-url http://127.0.0.1:4455/root/pypi/simple/ veloxdemo";
+  const command = "uv pip install --index-url http://127.0.0.1:4455/root/pypi/simple/ veloxdemo==1.0.0";
   await expect(page.locator(".install code")).toHaveText(command);
   await page.locator(".install button.copy").click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);

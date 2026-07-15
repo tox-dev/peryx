@@ -129,11 +129,11 @@ fn ProjectBody(
     view! {
         <header class="project-head">
             <h1>
-                {ui.name.clone()} <span class="version">{latest}</span>
+                {ui.name.clone()} <span class="version">{latest.clone()}</span>
                 {status.map(|status| project_status_badge(*status))}
             </h1>
             {summary.map(|summary| view! { <p class="summary">{summary}</p> })}
-            <InstallSnippet index_url=simple_index_url(&route) project=ui.name.clone() />
+            <InstallSnippet index_url=simple_index_url(&route) project=ui.name.clone() version=latest />
         </header>
         <div class="project-grid">
             <div class="project-main">
@@ -163,8 +163,8 @@ fn project_status_badge(status: UiProjectStatus) -> impl IntoView {
 }
 
 #[component]
-fn InstallSnippet(index_url: String, project: String) -> impl IntoView {
-    let (install, set_install) = signal(install_command("", &index_url, &project));
+fn InstallSnippet(index_url: String, project: String, version: String) -> impl IntoView {
+    let (install, set_install) = signal(install_command("", &index_url, &project, &version));
     #[cfg(feature = "hydrate")]
     {
         Effect::new(move |_| {
@@ -174,7 +174,7 @@ fn InstallSnippet(index_url: String, project: String) -> impl IntoView {
                 && let Ok(port) = location.port()
                 && let Some(origin) = browser_http_origin(&protocol, &hostname, &port)
             {
-                set_install.set(install_command(&origin, &index_url, &project));
+                set_install.set(install_command(&origin, &index_url, &project, &version));
             }
         });
     }
@@ -188,14 +188,44 @@ fn InstallSnippet(index_url: String, project: String) -> impl IntoView {
     }
 }
 
-fn install_command(origin: &str, index_url: &str, project: &str) -> String {
-    let mut command = String::with_capacity(origin.len() + index_url.len() + project.len() + 32);
+fn install_command(origin: &str, index_url: &str, project: &str, version: &str) -> String {
+    let spec = if version.is_empty() {
+        shell_quote(project)
+    } else {
+        shell_quote(&format!("{project}=={version}"))
+    };
+    let mut command = String::with_capacity(origin.len() + index_url.len() + spec.len() + 32);
     command.push_str("uv pip install --index-url ");
     command.push_str(origin);
     command.push_str(index_url);
     command.push(' ');
-    command.push_str(project);
+    command.push_str(&spec);
     command
+}
+
+/// Single-quote a pip install target when it holds a shell-special character, the way pip and
+/// Warehouse render copyable snippets. A normalized name such as `flask`, or a pinned `flask==1.2`,
+/// stays bare; anything else (extras, epoch versions, whitespace) is quoted, with an embedded quote
+/// escaped as `'\''` so the copied command survives a paste into `sh`.
+fn shell_quote(spec: &str) -> String {
+    if spec.bytes().all(is_shell_safe) {
+        return spec.to_owned();
+    }
+    let mut quoted = String::with_capacity(spec.len() + 2);
+    quoted.push('\'');
+    for ch in spec.chars() {
+        if ch == '\'' {
+            quoted.push_str(r"'\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn is_shell_safe(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'=' | b'+' | b':' | b'@' | b'/' | b',')
 }
 
 #[component]
@@ -588,7 +618,42 @@ mod tests {
     use leptos::prelude::*;
     use rstest::rstest;
 
-    use super::{UiProjectStatus, project_status_badge};
+    use super::{UiProjectStatus, install_command, project_status_badge, shell_quote};
+
+    #[rstest]
+    #[case::plain("flask", "flask")]
+    #[case::normalized("ruamel.yaml-clib", "ruamel.yaml-clib")]
+    #[case::pinned_stays_bare("flask==1.2", "flask==1.2")]
+    #[case::extras("flask[async]", "'flask[async]'")]
+    #[case::whitespace("bad name", "'bad name'")]
+    #[case::epoch("pkg==1!2.0", "'pkg==1!2.0'")]
+    #[case::embedded_quote("o'hara", r"'o'\''hara'")]
+    fn test_shell_quote_wraps_only_targets_that_need_it(#[case] spec: &str, #[case] expected: &str) {
+        assert_eq!(shell_quote(spec), expected);
+    }
+
+    #[rstest]
+    #[case::bare_unpinned(
+        "http://host:8000",
+        "flask",
+        "",
+        "uv pip install --index-url http://host:8000/simple/ flask"
+    )]
+    #[case::pinned("", "flask", "1.2.3", "uv pip install --index-url /simple/ flask==1.2.3")]
+    #[case::quoted_and_pinned(
+        "",
+        "flask[async]",
+        "1.2.3",
+        "uv pip install --index-url /simple/ 'flask[async]==1.2.3'"
+    )]
+    fn test_install_command_quotes_and_pins_the_target(
+        #[case] origin: &str,
+        #[case] project: &str,
+        #[case] version: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(install_command(origin, "/simple/", project, version), expected);
+    }
 
     #[rstest]
     #[case::archived("archived")]
