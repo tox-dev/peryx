@@ -96,7 +96,7 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
     let (headers, body) = split_document(text);
     // A bit per SINGLE_USE_FIELDS entry: the repeat check allocates nothing.
     let mut seen: u16 = 0;
-    for (key, value) in unfold(headers)? {
+    for (key, raw) in unfold(headers)? {
         if let Some(index) = SINGLE_USE_FIELDS.iter().position(|field| *field == key) {
             let bit = 1 << index;
             if seen & bit != 0 {
@@ -104,7 +104,7 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
             }
             seen |= bit;
         }
-        let value = value.trim();
+        let value = raw.trim();
         match key.as_str() {
             "metadata-version" => doc.metadata_version = non_empty(value),
             "name" => value.clone_into(&mut doc.name),
@@ -132,13 +132,17 @@ pub fn parse_metadata(text: &str) -> Result<CoreMetadataDoc, MetadataError> {
                 doc.project_urls.push((label.trim().to_owned(), url.trim().to_owned()));
             }
             "home-page" => doc.home_page = non_empty(value),
-            "description" => value.clone_into(&mut doc.description),
+            // Drop only the RFC 822 separator whitespace; the rest of the payload is the renderer's
+            // to fold, so trimming its body would corrupt the description.
+            "description" => raw.trim_start().clone_into(&mut doc.description),
             "description-content-type" => doc.description_content_type = non_empty(value),
             _ => {}
         }
     }
+    // No description header: the body is the payload verbatim. Its leading indentation and trailing
+    // whitespace carry meaning (a Markdown code block, say), so the renderer folds them, not us.
     if doc.description.is_empty() {
-        body.trim().clone_into(&mut doc.description);
+        body.clone_into(&mut doc.description);
     }
     Ok(doc)
 }

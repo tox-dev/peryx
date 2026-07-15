@@ -175,6 +175,27 @@ fn test_parse_metadata_description_header_and_folding() {
     assert_eq!(doc.description, "first line continued here");
 }
 
+// The description reaches the renderer verbatim; a re-added trim would fail every case here.
+#[rstest]
+#[case::indented_first_line(
+    "Name: x\nVersion: 1\nDescription-Content-Type: text/markdown\n\n    print(\"hello\")\n",
+    "    print(\"hello\")\n"
+)]
+#[case::surrounding_whitespace("Name: x\nVersion: 1\n\n  \nbody\n  \n", "  \nbody\n  \n")]
+#[case::header_keeps_trailing("Name: x\nVersion: 1\nDescription: keep me  \n", "keep me  ")]
+fn test_parse_metadata_preserves_description_payload(#[case] text: &str, #[case] description: &str) {
+    assert_eq!(parse_metadata(text).unwrap().description, description);
+}
+
+#[test]
+fn test_ui_meta_renders_an_indented_first_line_as_a_code_block() {
+    let doc = parse_metadata("Name: x\nVersion: 1\nDescription-Content-Type: text/markdown\n\n    print(\"hello\")\n")
+        .unwrap();
+    let rendered = doc.to_ui_meta().description.expect("a described project renders one");
+    assert!(rendered.html.contains("<pre><code>"), "{}", rendered.html);
+    assert!(rendered.html.contains("print("), "{}", rendered.html);
+}
+
 #[test]
 fn test_parse_metadata_author_header_wins_over_email() {
     let text = "Name: x\nVersion: 1\nAuthor: Jane\nAuthor-email: jane@example.test\n";
@@ -328,11 +349,11 @@ fn test_parse_metadata_ignores_unknown_headers() {
 #[rstest]
 #[case::crlf_document(
     "Name: x\r\nVersion: 1\r\n\r\nDescription body.\r\nVersion: 2 in prose.\r\n",
-    "Description body.\r\nVersion: 2 in prose."
+    "Description body.\r\nVersion: 2 in prose.\r\n"
 )]
 #[case::crlf_body_below_lf_headers(
     "Name: x\nVersion: 1\n\nIntro.\r\n\r\nVersion: 2 in prose.\r\n",
-    "Intro.\r\n\r\nVersion: 2 in prose."
+    "Intro.\r\n\r\nVersion: 2 in prose.\r\n"
 )]
 fn test_parse_metadata_ends_the_header_block_at_the_first_empty_line(#[case] text: &str, #[case] description: &str) {
     let doc = parse_metadata(text).unwrap();
