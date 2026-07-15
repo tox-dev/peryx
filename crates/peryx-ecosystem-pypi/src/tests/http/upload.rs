@@ -700,6 +700,28 @@ async fn test_upload_rejects_field_older_than_its_introduction() {
 }
 
 #[rstest]
+#[case::forbidden_name("Name", "metadata Dynamic value \"Name\" is not allowed as a dynamic field")]
+#[case::forbidden_version("Version", "metadata Dynamic value \"Version\" is not allowed as a dynamic field")]
+#[case::unknown("Made-Up", "metadata Dynamic value \"Made-Up\" is not a valid dynamic field")]
+#[tokio::test]
+async fn test_upload_rejects_invalid_dynamic_field(#[case] field: &str, #[case] expected: &str) {
+    let h = harness().await;
+    let metadata =
+        format!("Metadata-Version: 2.2\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\nDynamic: {field}\n");
+    assert_upload_response(
+        &h,
+        &upload_fields(),
+        Some((
+            "peryxpkg-1.0-py3-none-any.whl",
+            fixture_wheel_with_metadata(metadata.as_bytes()).as_slice(),
+        )),
+        StatusCode::BAD_REQUEST,
+        expected,
+    )
+    .await;
+}
+
+#[rstest]
 #[case::missing_separator(
     b"Metadata-Version: 2.4\nName: peryxpkg\nmalformed header\nVersion: 1.0\nRequires-Python: >=3.8\n",
     "malformed artifact metadata: header line \"malformed header\" is missing a colon"

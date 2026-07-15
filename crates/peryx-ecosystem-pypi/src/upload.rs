@@ -438,6 +438,7 @@ fn validate_metadata_identity(
     validate_classifiers(metadata)?;
     validate_requirements(metadata)?;
     validate_legacy_urls(metadata)?;
+    validate_dynamic(metadata)?;
     compare_metadata_field(
         "Metadata-Version",
         form.metadata_version.as_deref(),
@@ -490,6 +491,7 @@ fn validate_field_introductions(metadata: &CoreMetadataDoc, declared: u8) -> Res
     const SINCE_1_1: (u8, &str) = (11, "requires Metadata-Version 1.1 or later");
     const SINCE_1_2: (u8, &str) = (12, "requires Metadata-Version 1.2 or later");
     const SINCE_2_1: (u8, &str) = (21, "requires Metadata-Version 2.1 or later");
+    const SINCE_2_2: (u8, &str) = (22, "requires Metadata-Version 2.2 or later");
     const SINCE_2_4: (u8, &str) = (24, "requires Metadata-Version 2.4 or later");
 
     for (field, (since, reason), value) in [
@@ -539,6 +541,7 @@ fn validate_field_introductions(metadata: &CoreMetadataDoc, declared: u8) -> Res
             metadata.license_expression.as_ref().map(Cow::from),
         ),
         ("License-File", SINCE_2_4, metadata.license_files.first().map(Cow::from)),
+        ("Dynamic", SINCE_2_2, metadata.dynamic.first().map(Cow::from)),
     ] {
         if let Some(value) = value
             && declared < since
@@ -628,6 +631,59 @@ fn validate_requirements(metadata: &CoreMetadataDoc) -> Result<(), UploadError> 
                 reason,
             })?;
         }
+    }
+    Ok(())
+}
+
+/// Core Metadata reserves `Name`, `Version`, and `Metadata-Version` as static, so `Dynamic` may not
+/// name them; every other value must be a recognized field name, matched case-insensitively without
+/// allocating so the parsed values stay cheap to look up later.
+fn validate_dynamic(metadata: &CoreMetadataDoc) -> Result<(), UploadError> {
+    const RESERVED: [&str; 3] = ["name", "version", "metadata-version"];
+    const DYNAMIC_FIELDS: [&str; 28] = [
+        "platform",
+        "supported-platform",
+        "summary",
+        "description",
+        "description-content-type",
+        "keywords",
+        "home-page",
+        "download-url",
+        "author",
+        "author-email",
+        "maintainer",
+        "maintainer-email",
+        "license",
+        "license-expression",
+        "license-file",
+        "classifier",
+        "requires-dist",
+        "requires-python",
+        "requires-external",
+        "project-url",
+        "provides-extra",
+        "provides-dist",
+        "obsoletes-dist",
+        "requires",
+        "provides",
+        "obsoletes",
+        "import-name",
+        "import-namespace",
+    ];
+    for value in &metadata.dynamic {
+        let matches = |field: &&str| value.eq_ignore_ascii_case(field);
+        let reason = if RESERVED.iter().any(matches) {
+            "is not allowed as a dynamic field"
+        } else if !DYNAMIC_FIELDS.iter().any(matches) {
+            "is not a valid dynamic field"
+        } else {
+            continue;
+        };
+        return Err(UploadError::InvalidMetadataValue {
+            field: "Dynamic",
+            value: value.clone(),
+            reason,
+        });
     }
     Ok(())
 }

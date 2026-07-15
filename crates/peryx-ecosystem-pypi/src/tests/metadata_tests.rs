@@ -133,6 +133,7 @@ fn test_parse_metadata_headers_and_body() {
                 Obsoletes-Dist: OldName (<3.0)\n\
                 Provides-Extra: cli\n\
                 Classifier: Development Status :: 4 - Beta\n\
+                Dynamic: Requires-Dist\n\
                 Project-URL: Homepage, https://example.test\n\
                 Home-Page: https://legacy.example.test\n\
                 Download-URL: https://legacy.example.test/downloads\n\
@@ -158,6 +159,7 @@ fn test_parse_metadata_headers_and_body() {
     assert_eq!(doc.obsoletes_dist, ["OldName (<3.0)"]);
     assert_eq!(doc.provides_extra, ["cli"]);
     assert_eq!(doc.classifiers, ["Development Status :: 4 - Beta"]);
+    assert_eq!(doc.dynamic, ["Requires-Dist"]);
     assert_eq!(
         doc.project_urls,
         [("Homepage".to_owned(), "https://example.test".to_owned())]
