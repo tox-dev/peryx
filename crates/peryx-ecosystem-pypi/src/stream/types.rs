@@ -1,6 +1,6 @@
 //! The per-request inputs and outputs of the streaming page transform.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use peryx_policy::Policy;
 use url::Url;
@@ -24,14 +24,14 @@ pub struct PageContext {
     /// Locally known versions, merged into the upstream version list.
     pub local_versions: Vec<String>,
     /// Filenames to drop: shadowed by a local file or hidden by an override.
-    pub skip: HashSet<String>,
+    pub skip: BTreeSet<String>,
     /// Filenames hidden by an override, a subset of `skip`; unlike `skip` it excludes plain local
     /// shadows, so a locally uploaded file carrying a hidden override can still be dropped.
-    pub hidden: HashSet<String>,
+    pub hidden: BTreeSet<String>,
     /// Filenames forced to the yanked state by an override.
-    pub yanked: HashMap<String, Yanked>,
+    pub yanked: BTreeMap<String, Yanked>,
     /// Generated metadata already cached by artifact sha256.
-    pub known_metadata: HashMap<String, String>,
+    pub known_metadata: BTreeMap<String, String>,
 }
 
 /// A file's upstream source recorded while transforming, persisted later in one batch.

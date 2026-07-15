@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use peryx_policy::{Policy, PolicyConfig};
 
@@ -37,7 +37,7 @@ fn transform_summary(page: &str, context: PageContext, chunk: usize) -> (String,
 }
 
 fn plain_context() -> PageContext {
-    page_context("root/pypi", Vec::new(), Vec::new(), &HashMap::new())
+    page_context("root/pypi", Vec::new(), Vec::new(), &BTreeMap::new())
 }
 
 fn policy(configure: impl FnOnce(&mut PypiPolicyConfig)) -> Policy {
@@ -125,7 +125,7 @@ fn test_rewrites_egg_urls_without_advertising_metadata() {
 #[test]
 fn test_injects_local_files_and_shadows_upstream() {
     let local = local_wheel("demo-2.0-py3-none-any.whl");
-    let context = page_context("root/pypi", vec![local], vec!["3.0".to_owned()], &HashMap::new());
+    let context = page_context("root/pypi", vec![local], vec!["3.0".to_owned()], &BTreeMap::new());
     let (out, _) = transform(&upstream_page(), context, 1);
     let detail = parse_detail(out.as_bytes()).unwrap();
     // The local file leads, the same-named upstream file is gone, others remain.
@@ -154,7 +154,7 @@ fn test_policy_filters_local_files() {
         policy,
         vec![local_wheel("demo-3.0-py3-none-any.whl")],
         Vec::new(),
-        &HashMap::new(),
+        &BTreeMap::new(),
     );
 
     let (out, registrations) = transform(r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[]}"#, context, 8);
@@ -169,7 +169,7 @@ fn test_policy_filters_upstream_files() {
     let policy = policy(|config| {
         config.block_package_types = vec![PackageType::Wheel];
     });
-    let context = build_page_context("root/pypi", "demo", policy, Vec::new(), Vec::new(), &HashMap::new());
+    let context = build_page_context("root/pypi", "demo", policy, Vec::new(), Vec::new(), &BTreeMap::new());
 
     let (out, registrations) = transform(&upstream_page(), context, 7);
 
@@ -181,7 +181,7 @@ fn test_policy_filters_upstream_files() {
 
 #[test]
 fn test_hidden_and_yank_overrides() {
-    let overrides = HashMap::from([
+    let overrides = BTreeMap::from([
         ("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned()),
         (
             "demo-2.0-py3-none-any.whl".to_owned(),
@@ -209,7 +209,7 @@ fn test_hidden_and_yank_overrides() {
 
 #[test]
 fn test_empty_reason_yank_override_yanks_without_reason() {
-    let overrides = HashMap::from([(
+    let overrides = BTreeMap::from([(
         "demo-2.0.tar.gz".to_owned(),
         r#"{"kind":"yanked","reason":""}"#.to_owned(),
     )]);
@@ -291,7 +291,7 @@ fn test_escapes_and_braces_inside_strings_survive() {
 #[test]
 fn test_versions_after_files_and_empty_files() {
     let page = r#"{"files":[],"versions":["2.0"],"name":"demo"}"#;
-    let context = page_context("r", Vec::new(), vec!["1.0".to_owned()], &HashMap::new());
+    let context = page_context("r", Vec::new(), vec!["1.0".to_owned()], &BTreeMap::new());
     let (out, registrations) = transform(page, context, 1);
     let value: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(value["versions"], serde_json::json!(["1.0", "2.0"]));
@@ -315,7 +315,7 @@ fn test_local_files_emitted_into_empty_upstream_array() {
         gpg_sig: None,
         provenance: Provenance::Absent,
     };
-    let (out, _) = transform(page, page_context("r", vec![local], Vec::new(), &HashMap::new()), 3);
+    let (out, _) = transform(page, page_context("r", vec![local], Vec::new(), &BTreeMap::new()), 3);
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!(detail.files.len(), 1);
 }
@@ -462,7 +462,7 @@ fn test_two_local_files_emit_with_separators() {
         "root/pypi",
         vec![local("3.0"), local("4.0")],
         Vec::new(),
-        &HashMap::new(),
+        &BTreeMap::new(),
     );
     let (out, _) = transform(r#"{"name":"demo","files":[]}"#, context, 4096);
     let detail = parse_detail(out.as_bytes()).unwrap();
@@ -649,7 +649,7 @@ fn test_metadata_sibling_lands_on_the_path_not_the_query() {
 
 #[test]
 fn test_local_file_hidden_override_is_dropped_like_the_buffered_path() {
-    let overrides = HashMap::from([("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned())]);
+    let overrides = BTreeMap::from([("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned())]);
     let context = page_context(
         "root/pypi",
         vec![local_wheel("demo-1.0-py3-none-any.whl")],
@@ -663,7 +663,7 @@ fn test_local_file_hidden_override_is_dropped_like_the_buffered_path() {
 
 #[test]
 fn test_local_file_yank_override_is_applied_like_the_buffered_path() {
-    let overrides = HashMap::from([(
+    let overrides = BTreeMap::from([(
         "demo-1.0-py3-none-any.whl".to_owned(),
         r#"{"kind":"yanked","reason":"bad build"}"#.to_owned(),
     )]);
