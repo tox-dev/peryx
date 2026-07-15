@@ -19,9 +19,10 @@ use super::resolve::resolve_detail;
 /// # Errors
 /// Returns [`CacheError`] if a blob write, store write, or encode fails.
 pub fn store_upload(state: &ServingState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
+    let project = prepared.normalized.clone();
     let stored = upload::store_prepared(&state.meta, &state.blobs, name, prepared)?;
     if stored {
-        state.bump_epoch();
+        state.invalidate_project(&project);
     }
     Ok(stored)
 }
@@ -72,7 +73,7 @@ pub fn promote_release(
         .meta
         .promote_files_checked(target, normalized, &display, &records, promote_conflict)?;
     if promoted > 0 {
-        state.bump_epoch();
+        state.invalidate_project(normalized);
     }
     Ok(promoted)
 }
@@ -126,7 +127,7 @@ pub async fn set_yanked(
         }
     }
     if changed > 0 {
-        state.bump_epoch();
+        state.invalidate_project(normalized);
     }
     Ok(changed)
 }
@@ -180,7 +181,7 @@ pub async fn remove_files(
         affected += 1;
     }
     if affected > 0 {
-        state.bump_epoch();
+        state.invalidate_project(normalized);
     }
     Ok(affected)
 }
@@ -209,7 +210,7 @@ pub fn restore_files(
         }
     }
     if restored > 0 {
-        state.bump_epoch();
+        state.invalidate_project(normalized);
     }
     Ok(restored)
 }

@@ -504,11 +504,12 @@ async fn serve_blob(
 /// Keep a rendered representation for as long as the page it was rendered from stays fresh.
 ///
 /// A miss costs the render again and nothing else, so a failure to cache is never a failure to serve.
-/// Keep a rendered page under the epoch that is current *now*, not the one the request started with.
+/// Keep a rendered page under the project epoch that is current *now*, not the one the request started
+/// with.
 ///
-/// Resolving a cold page fetches it from upstream and persists it, and persisting bumps the epoch. A
-/// key captured before that carries the old epoch, so the entry it writes is one no later reader can
-/// compute: the cache would fill and never hit.
+/// Resolving a cold page fetches it from upstream and persists it, and persisting bumps that project's
+/// epoch. A key captured before that carries the old epoch, so the entry it writes is one no later
+/// reader can compute: the cache would fill and never hit.
 fn remember_rendered(state: &ServingState, index: &Index, project: &str, variant: &str, body: &bytes::Bytes) {
     if let Ok(Some(expires_at)) = cache::rendered_expiry(state, index, project) {
         let key = state.hot_key(&index.route, project, variant);

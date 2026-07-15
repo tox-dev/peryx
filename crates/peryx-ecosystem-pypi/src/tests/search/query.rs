@@ -57,7 +57,7 @@ async fn test_search_reports_cached_detail_parse_errors() {
             &cached_index("{\"meta\":{\"api-version\":\"1.1\"},\"files\":"),
         )
         .unwrap();
-    h.state.bump_epoch();
+    h.state.bump_search_epoch();
 
     let (status, _headers, body) = get(&h.state, "/+search?q=broken&page_size=25", Some("application/json")).await;
 

@@ -309,6 +309,6 @@ pub fn persist_page(
             &metadata,
         )
         .map_err(CacheError::from)?;
-    state.bump_epoch();
+    state.invalidate_project(project);
     Ok(())
 }

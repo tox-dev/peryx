@@ -7,7 +7,7 @@
 //! long a page past its freshness window may still answer while the upstream is unreachable. Both live
 //! here so a `PyPI` page and an `OCI` manifest share one implementation rather than drifting apart.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 /// Per-key single-flight locks. Concurrent misses for one key take the same lock, so exactly one
@@ -51,23 +51,26 @@ pub const fn within_stale_bound(now: i64, max_stale_secs: i64, fetched_at: i64, 
     max_stale_secs == 0 || now.saturating_sub(fetched_at) < freshness_secs + max_stale_secs
 }
 
-/// The in-memory caches a cached (proxy) role serves from, and the mutation counter that retires them.
+/// The in-memory caches a cached (proxy) role serves from, and the per-project epochs that retire
+/// them.
 ///
-/// Every warm request is a lookup here; a mutation bumps the epoch so a stale hot page misses by key
-/// rather than being hunted down. The store fields are public so a driver can stream directly into
-/// them on the serve path; the methods cover the common gestures.
+/// Every warm request is a lookup here; a mutation bumps only the affected project's epoch, so a stale
+/// hot page misses by key while every other project keeps serving. The store fields are public so a
+/// driver can stream directly into them on the serve path; the methods cover the common gestures.
 pub struct ServingCache {
     /// Single-flight locks; see [`flight_gate`].
     pub inflight: Inflight,
-    /// Transformed page bytes paired with their unix expiry. Keys carry the mutation epoch, so a
-    /// mutation invalidates by key miss; the expiry honours each page's upstream lifetime, and moka's
-    /// own time-to-live is a coarse eviction backstop.
+    /// Transformed page bytes paired with their unix expiry. Keys carry their project's epoch, so a
+    /// mutation to that project invalidates by key miss; the expiry honours each page's upstream
+    /// lifetime, and moka's own time-to-live is a coarse eviction backstop.
     pub hot: moka::sync::Cache<String, (bytes::Bytes, i64)>,
     /// Short-lived upstream misses (key → unix expiry), kept apart from stored pages so a `404` adds
     /// no row to the persistent cache.
     pub negative: moka::sync::Cache<String, i64>,
-    /// Bumped by every mutation that changes what a page serves, retiring hot-cache keys.
-    pub epoch: std::sync::atomic::AtomicU64,
+    /// Per-project hot-cache epochs, bumped by every mutation that changes what one project serves.
+    /// Absent means epoch `0`. A `BTreeMap` keeps `hot_key`'s serve-path lookup free of `RandomState`,
+    /// so cachegrind instruction counts stay stable.
+    pub hot_epochs: Mutex<BTreeMap<String, u64>>,
 }
 
 impl ServingCache {
@@ -87,7 +90,7 @@ impl ServingCache {
                 ))
                 .build(),
             negative: moka::sync::Cache::builder().max_capacity(65_536).build(),
-            epoch: std::sync::atomic::AtomicU64::new(0),
+            hot_epochs: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -115,10 +118,20 @@ impl ServingCache {
     /// The hot-cache key for one representation of a page as served on `route` right now.
     ///
     /// `variant` separates the representations a page has (PEP 691 JSON, PEP 503 HTML, legacy JSON):
-    /// different bytes. The epoch makes a mutation invalidate them all at once.
+    /// different bytes. The project's epoch makes a mutation to it retire them all at once, while
+    /// leaving other projects' keys unchanged.
+    ///
+    /// # Panics
+    /// Panics if the epoch map's mutex was poisoned.
     #[must_use]
     pub fn hot_key(&self, route: &str, project: &str, variant: &str) -> String {
-        let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        let epoch = self
+            .hot_epochs
+            .lock()
+            .expect("hot epoch lock")
+            .get(project)
+            .copied()
+            .unwrap_or(0);
         format!("{route}\u{0}{project}\u{0}{variant}\u{0}{epoch}")
     }
 
@@ -140,9 +153,19 @@ impl ServingCache {
         self.negative.insert(key, expires_at);
     }
 
-    /// Retire every hot-cache entry after a mutation by advancing the epoch its keys carry.
-    pub fn bump_epoch(&self) {
-        self.epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// Retire a project's hot-cache entries after a mutation by advancing the epoch its keys carry.
+    /// Every other project's entries stay hittable, so one project's change does not cold-start the
+    /// rest.
+    ///
+    /// # Panics
+    /// Panics if the epoch map's mutex was poisoned.
+    pub fn invalidate_hot(&self, project: &str) {
+        *self
+            .hot_epochs
+            .lock()
+            .expect("hot epoch lock")
+            .entry(project.to_owned())
+            .or_default() += 1;
     }
 }
 

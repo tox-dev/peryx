@@ -29,9 +29,9 @@ impl ServingState {
         self.cache.remember_negative(key, (self.clock)() + ttl_secs);
     }
 
-    /// Invalidate rendered pages and search documents after a `PyPI` mutation.
-    pub fn bump_epoch(&self) {
-        self.cache.bump_epoch();
+    /// Invalidate one project's rendered pages and the search documents after a `PyPI` mutation.
+    pub fn invalidate_project(&self, project: &str) {
+        self.cache.invalidate_hot(project);
         self.bump_search_epoch();
     }
 

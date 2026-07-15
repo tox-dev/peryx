@@ -84,7 +84,7 @@ pub(super) fn put_uploaded_package_with_metadata(
         .put_upload("hosted", normalized, &filename, to_json(&uploaded).as_bytes())
         .unwrap();
     state.meta.put_project("hosted", normalized, normalized).unwrap();
-    state.bump_epoch();
+    state.bump_search_epoch();
 }
 
 pub(super) fn put_cached_package(

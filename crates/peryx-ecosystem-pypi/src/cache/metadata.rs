@@ -88,7 +88,7 @@ async fn write_generated_metadata(
     state
         .meta
         .put_metadata(artifact_sha256, GENERATED_METADATA_URL, metadata_sha256, &source)?;
-    state.bump_epoch();
+    state.invalidate_project(&crate::project_of_filename(artifact_filename));
     Ok(Bytes::from(bytes))
 }
 

@@ -33,8 +33,8 @@ async fn test_a_mutation_retires_the_cached_html_render() {
     let (_, _, before) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
     assert!(before.contains(Digest::of(b"wheel-v1").as_str()));
 
-    // Whatever the mutation was, it bumped the epoch the key carries. The next request may not answer
-    // with a page rendered before it.
+    // Whatever the mutation was, it bumped the epoch flask's key carries. The next request may not
+    // answer with a page rendered before it.
     let record = h.state.meta.get_index("pypi/flask").unwrap().unwrap();
     let body = detail_json(Digest::of(b"wheel-v2").as_str(), &file_url);
     h.state
@@ -47,10 +47,41 @@ async fn test_a_mutation_retires_the_cached_html_render() {
             },
         )
         .unwrap();
-    h.state.bump_epoch();
+    h.state.invalidate_project("flask");
 
     let (_, _, after) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
     assert!(after.contains(Digest::of(b"wheel-v2").as_str()), "{after}");
+}
+#[tokio::test]
+async fn test_a_mutation_spares_other_projects_cached_renders() {
+    // A per-project invalidation retires only the mutated project's key; a process-wide epoch bump
+    // would cold-start every other project's render too.
+    let h = harness().await;
+    let page = bytes::Bytes::from_static(b"render");
+    h.state.cache.store_hot(
+        h.state.hot_key("pypi", "flask", crate::cache::SIMPLE_HTML),
+        page.clone(),
+        2000,
+    );
+    h.state.cache.store_hot(
+        h.state.hot_key("pypi", "django", crate::cache::SIMPLE_HTML),
+        page.clone(),
+        2000,
+    );
+    h.state.cache.hot.run_pending_tasks();
+
+    h.state.invalidate_project("flask");
+
+    assert!(
+        h.state
+            .hot_fresh(&h.state.hot_key("pypi", "flask", crate::cache::SIMPLE_HTML))
+            .is_none()
+    );
+    assert_eq!(
+        h.state
+            .hot_fresh(&h.state.hot_key("pypi", "django", crate::cache::SIMPLE_HTML)),
+        Some(page)
+    );
 }
 #[tokio::test]
 async fn test_a_policy_filtered_page_still_serves_json() {

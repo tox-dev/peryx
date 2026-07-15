@@ -19,7 +19,7 @@ async fn test_search_rebuilds_after_delete() {
         .meta
         .delete_upload("hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl")
         .unwrap();
-    h.state.bump_epoch();
+    h.state.bump_search_epoch();
     let (status, _headers, body) = get(
         &h.state,
         "/hosted/+search?q=temporary&page_size=25",
