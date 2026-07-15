@@ -3597,6 +3597,7 @@ dependencies = [
 name = "peryx-ecosystem-pypi"
 version = "0.0.1"
 dependencies = [
+ "ammonia",
  "async-trait",
  "axum",
  "base64",
@@ -3623,8 +3624,11 @@ dependencies = [
  "peryx-search",
  "peryx-storage",
  "peryx-upstream",
+ "pulldown-cmark",
  "redb",
  "reqwest",
+ "rst_parser",
+ "rst_renderer",
  "rstest",
  "rustls",
  "serde",
@@ -3786,7 +3790,6 @@ dependencies = [
 name = "peryx-web"
 version = "0.0.1"
 dependencies = [
- "ammonia",
  "axum",
  "base64",
  "console_error_panic_hook",
@@ -3801,10 +3804,7 @@ dependencies = [
  "peryx-identity",
  "peryx-search",
  "peryx-storage",
- "pulldown-cmark",
  "regex",
- "rst_parser",
- "rst_renderer",
  "rstest",
  "send_wrapper",
  "serde",

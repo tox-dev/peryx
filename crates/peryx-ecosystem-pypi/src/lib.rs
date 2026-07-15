@@ -12,6 +12,8 @@ pub mod cache;
 #[cfg(feature = "serving")]
 mod classifier;
 #[cfg(feature = "serving")]
+mod description;
+#[cfg(feature = "serving")]
 pub mod discovery;
 mod filename;
 mod html;

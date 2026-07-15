@@ -31,6 +31,10 @@ serving = [
   "dep:md-5",
   "dep:csv",
   "dep:spdx",
+  "dep:ammonia",
+  "dep:pulldown-cmark",
+  "dep:rst_parser",
+  "dep:rst_renderer",
   "dep:reqwest",
   "dep:rustls",
   "dep:thiserror",
@@ -89,6 +93,10 @@ moka = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
+ammonia = { workspace = true, optional = true }
+pulldown-cmark = { workspace = true, optional = true }
+rst_parser = { workspace = true, optional = true }
+rst_renderer = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 time = { workspace = true, optional = true }

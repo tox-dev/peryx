@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 mod archive;
 mod conformance_tests;
+mod description_tests;
 mod fanout_tests;
 mod filename_tests;
 mod html_tests;

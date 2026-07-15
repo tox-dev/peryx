@@ -182,6 +182,40 @@ fn test_parse_metadata_author_header_wins_over_email() {
 }
 
 #[test]
+fn test_ui_meta_renders_the_description_and_chips() {
+    let doc = parse_metadata(
+        "Name: x\nVersion: 1\nKeywords: cache,proxy\nRequires-Dist: flask\n\
+         Description-Content-Type: text/markdown\n\n**bold**",
+    )
+    .unwrap();
+    let meta = doc.to_ui_meta();
+    let rendered = meta.description.expect("a described project renders one");
+    assert!(rendered.html.contains("<strong>bold</strong>"), "{}", rendered.html);
+    assert!(rendered.notice.is_none());
+    assert!(
+        meta.blocks
+            .iter()
+            .any(|block| matches!(block, UiBlock::Chips { label, .. } if label == "Keywords"))
+    );
+    assert!(
+        meta.blocks
+            .iter()
+            .any(|block| matches!(block, UiBlock::Chips { label, .. } if label == "Dependencies"))
+    );
+}
+
+#[test]
+fn test_ui_meta_leaves_no_rendered_description_without_one() {
+    assert!(
+        parse_metadata("Name: x\nVersion: 1\n")
+            .unwrap()
+            .to_ui_meta()
+            .description
+            .is_none()
+    );
+}
+
+#[test]
 fn test_parse_metadata_uses_license_expression_for_display_when_license_is_absent() {
     let doc = parse_metadata("Name: x\nVersion: 1\nLicense-Expression: MIT\n").unwrap();
     assert_eq!(doc.license, None);

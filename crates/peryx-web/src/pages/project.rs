@@ -17,7 +17,7 @@ use regex::Regex;
 
 use super::{ErrorMessage, copy_to_clipboard, human_size};
 use crate::data::load_project_view;
-use crate::markdown::{external_link_rel, is_safe_artifact_link, is_safe_link, render_description};
+use crate::markdown::{external_link_rel, is_safe_artifact_link, is_safe_link};
 use crate::model::{UiFile, UiProject, UiProjectView, UiRelease};
 #[cfg(feature = "hydrate")]
 use crate::url::browser_http_origin;
@@ -121,7 +121,7 @@ fn ProjectBody(
         .clone()
         .or_else(|| ui.versions.last().map(|release| release.version.clone()))
         .unwrap_or_default();
-    let description = meta.description.as_ref().map(render_description).unwrap_or_default();
+    let description = meta.description.clone().unwrap_or_default();
     let notice = description.notice;
     let summary = meta.summary.clone();
     let admin_versions = ui.versions.iter().map(|release| release.version.clone()).collect();

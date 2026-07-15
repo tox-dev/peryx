@@ -190,7 +190,7 @@ impl CoreMetadataDoc {
     /// each header to a metadata-panel block the way a pypi.org project page presents it.
     #[must_use]
     pub fn to_ui_meta(&self) -> peryx_core::UiMeta {
-        use peryx_core::{UiBlock, UiDescription, UiMeta};
+        use peryx_core::{UiBlock, UiMeta};
 
         let mut blocks = Vec::new();
         for (label, value) in [
@@ -240,11 +240,22 @@ impl CoreMetadataDoc {
         UiMeta {
             version: non_empty(&self.version),
             summary: self.summary.clone(),
-            description: non_empty(&self.description).map(|text| UiDescription {
-                text,
-                content_type: self.description_content_type.clone(),
-            }),
+            description: self.render_description(),
             blocks,
+        }
+    }
+
+    /// The description rendered to safe HTML, done here so the browser never runs the renderer. Only
+    /// the serving build carries the renderer; the format-core build leaves it unrendered.
+    fn render_description(&self) -> Option<peryx_core::RenderedDescription> {
+        #[cfg(feature = "serving")]
+        {
+            non_empty(&self.description)
+                .map(|text| crate::description::render(&text, self.description_content_type.as_deref()))
+        }
+        #[cfg(not(feature = "serving"))]
+        {
+            None
         }
     }
 }

@@ -20,6 +20,6 @@ pub use ecosystem::{Ecosystem, UnknownEcosystem};
 pub use lexicon::{Lexicon, LexiconRegistry};
 pub use role::Role;
 pub use view::{
-    UiArtifactRef, UiBlock, UiDescription, UiFile, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject,
+    RenderedDescription, UiArtifactRef, UiBlock, UiFile, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject,
     UiProjectView, UiRelease,
 };

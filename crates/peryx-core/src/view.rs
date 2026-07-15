@@ -23,18 +23,22 @@ pub struct UiMeta {
     pub version: Option<String>,
     /// A one-line summary shown under the title.
     pub summary: Option<String>,
-    /// The long description and how to render it.
-    pub description: Option<UiDescription>,
+    /// The long description rendered to sanitized HTML, produced on the server so the browser shows it
+    /// without running the renderer. Rendering reStructuredText in the browser can abort the
+    /// WebAssembly module on constructs the renderer never implemented, and that abort cannot be
+    /// caught there, so the render happens once, in the ecosystem driver, where a panic is recoverable.
+    pub description: Option<RenderedDescription>,
     /// The metadata-panel blocks, in display order. Each is a neutral presentation primitive an
     /// ecosystem filled; the page renders the vocabulary without knowing which format produced it.
     pub blocks: Vec<UiBlock>,
 }
 
-/// A long description and the content type that decides how it renders (markdown vs preformatted).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiDescription {
-    pub text: String,
-    pub content_type: Option<String>,
+/// A description rendered to safe HTML, with the message to show when rendering fell back to plain
+/// text. The ecosystem driver produces it so the renderer runs server-side, in one place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RenderedDescription {
+    pub html: String,
+    pub notice: Option<String>,
 }
 
 /// One block of a metadata panel: a presentation primitive keyed by shape, not by ecosystem.
