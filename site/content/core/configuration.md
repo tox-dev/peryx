@@ -193,6 +193,7 @@ allow_wheel_pythons = ["py3", "cp313"]
 block_wheel_platforms = ["win_amd64"]
 max_file_size_bytes = 104857600
 max_project_size_bytes = 1073741824
+min_release_age_secs = 604800
 ```
 
 | Key                      | Meaning                                                                       |
@@ -208,6 +209,14 @@ max_project_size_bytes = 1073741824
 | `block_wheel_platforms`  | Denied wheel platform tags                                                    |
 | `max_file_size_bytes`    | Maximum file size from the Simple API `size` field or from an uploaded file   |
 | `max_project_size_bytes` | Maximum sum of retained file sizes for one project detail page                |
+| `min_release_age_secs`   | Hide an upstream file until this many seconds past its `upload-time`          |
+
+`min_release_age_secs` quarantines fresh upstream releases: a file whose Simple API
+[`upload-time`](https://packaging.python.org/en/latest/specifications/simple-repository-api/#project-detail) is younger
+than the delay is hidden from the served page, giving operators a window to catch a malicious or mistaken upload before
+it reaches clients. A common baseline is a seven-day delay (`604800`). A file with no `upload-time` is hidden while the
+delay is set, since its age cannot be established. The clock is the serving clock, so the file appears once enough time
+passes. This is PyPI-specific and applies only to a PyPI index.
 
 File and project size rules require declared sizes. A file without `size` is denied by `max_file_size_bytes`; a project
 page with any retained file lacking `size` is denied by `max_project_size_bytes`. Active policies use the buffered

@@ -50,7 +50,7 @@ pub async fn resolve_detail(
         .map(|detail| {
             index
                 .policy
-                .apply_detail(PolicyAction::Serve, project, detail)
+                .apply_detail(PolicyAction::Serve, project, detail, Some((state.clock)()))
                 .map_err(CacheError::from)
         })
         .transpose()

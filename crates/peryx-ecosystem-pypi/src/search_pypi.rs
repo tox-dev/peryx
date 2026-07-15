@@ -115,7 +115,7 @@ fn cached_detail(
     }?;
     Ok(index
         .policy
-        .apply_detail(PolicyAction::Serve, normalized, detail)
+        .apply_detail(PolicyAction::Serve, normalized, detail, None)
         .unwrap_or_else(|_| empty_detail(normalized)))
 }
 

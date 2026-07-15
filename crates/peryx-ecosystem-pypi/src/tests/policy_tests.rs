@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use peryx_policy::{Policy, PolicyAction, PolicyConfig};
+use peryx_policy::{ArtifactFacts, Policy, PolicyAction, PolicyConfig};
 
 use crate::policy::{PackageType, PypiPolicy, PypiPolicyConfig, PypiPolicyError, compile_rules};
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
@@ -51,6 +51,7 @@ fn test_apply_detail_rejects_project_size_over_limit() {
                     file("demo-2.0-py3-none-any.whl", Some(5)),
                 ],
             },
+            None,
         )
         .unwrap_err();
 
@@ -201,6 +202,7 @@ fn test_apply_detail_accepts_project_size_under_limit() {
                     file("demo-2.0-py3-none-any.whl", Some(5)),
                 ],
             },
+            None,
         )
         .unwrap();
 
@@ -224,6 +226,7 @@ fn test_apply_detail_rejects_project_size_without_file_size() {
                 versions: vec!["1.0".to_owned()],
                 files: vec![file("demo-1.0-py3-none-any.whl", None)],
             },
+            None,
         )
         .unwrap_err();
 
@@ -251,6 +254,7 @@ fn test_apply_detail_clears_versions_when_no_file_versions_remain() {
                 versions: vec!["1.0".to_owned()],
                 files: vec![file("not-a-dist.whl", Some(1))],
             },
+            None,
         )
         .unwrap();
 
@@ -273,6 +277,7 @@ fn test_apply_detail_adds_missing_file_versions() {
                 versions: Vec::new(),
                 files: vec![file("demo-2.0-py3-none-any.whl", Some(1))],
             },
+            None,
         )
         .unwrap();
 
@@ -360,4 +365,178 @@ fn test_wheel_tag_rule_ignores_non_wheel_files() {
     policy
         .check_file(PolicyAction::Serve, "demo", &file("demo-1.0.tar.gz", Some(1)))
         .unwrap();
+}
+
+const WEEK_SECS: u64 = 604_800;
+const NOW: i64 = 1_768_003_200; // 2026-01-10T00:00:00Z
+
+fn delay_policy() -> Policy {
+    policy(|_neutral, pypi| pypi.min_release_age_secs = Some(WEEK_SECS))
+}
+
+fn aged_facts(upload_time: Option<i64>, now: Option<i64>) -> ArtifactFacts {
+    ArtifactFacts {
+        project: "demo".to_owned(),
+        filename: Some("demo-1.0-py3-none-any.whl".to_owned()),
+        upload_time,
+        now,
+        ..ArtifactFacts::default()
+    }
+}
+
+fn file_at(filename: &str, upload_time: &str) -> File {
+    File {
+        upload_time: Some(upload_time.to_owned()),
+        ..file(filename, Some(1))
+    }
+}
+
+#[test]
+fn test_release_delay_denies_a_release_inside_the_window() {
+    let denial = delay_policy()
+        .check_facts(PolicyAction::Serve, &aged_facts(Some(NOW - 100), Some(NOW)))
+        .unwrap_err();
+
+    assert_eq!(denial.rule, "release-delay");
+    assert_eq!(denial.field, "upload_time");
+    assert_eq!(
+        denial.to_string(),
+        "release is 100s old, within the 604800s upstream delay"
+    );
+}
+
+#[test]
+fn test_release_delay_denies_a_missing_upload_time() {
+    let denial = delay_policy()
+        .check_facts(PolicyAction::Serve, &aged_facts(None, Some(NOW)))
+        .unwrap_err();
+
+    assert_eq!(denial.rule, "release-delay");
+    assert_eq!(denial.to_string(), "release has no upstream upload time to age against");
+}
+
+#[test]
+fn test_release_delay_verdict_by_age_and_clock() {
+    struct Case {
+        label: &'static str,
+        upload_time: Option<i64>,
+        now: Option<i64>,
+        allowed: bool,
+    }
+    let cases = [
+        Case {
+            label: "aged past the window",
+            upload_time: Some(NOW - 604_801),
+            now: Some(NOW),
+            allowed: true,
+        },
+        // Eligible the instant the delay elapses.
+        Case {
+            label: "exactly at the window",
+            upload_time: Some(NOW - 604_800),
+            now: Some(NOW),
+            allowed: true,
+        },
+        Case {
+            label: "one second inside the window",
+            upload_time: Some(NOW - 604_799),
+            now: Some(NOW),
+            allowed: false,
+        },
+        // No serve clock: the delay cannot be evaluated, so the release passes.
+        Case {
+            label: "no serve clock",
+            upload_time: Some(NOW - 1),
+            now: None,
+            allowed: true,
+        },
+    ];
+
+    for case in cases {
+        assert_eq!(
+            delay_policy()
+                .check_facts(PolicyAction::Serve, &aged_facts(case.upload_time, case.now))
+                .is_ok(),
+            case.allowed,
+            "{}",
+            case.label,
+        );
+    }
+}
+
+#[test]
+fn test_release_delay_zero_age_stays_inactive() {
+    let policy = policy(|_neutral, pypi| pypi.min_release_age_secs = Some(0));
+    assert!(!policy.active());
+}
+
+#[test]
+fn test_release_delay_clamps_an_out_of_range_age() {
+    // A delay past i64 saturates to the max, so every real release stays quarantined.
+    let policy = policy(|_neutral, pypi| pypi.min_release_age_secs = Some(u64::MAX));
+    policy
+        .check_facts(PolicyAction::Serve, &aged_facts(Some(NOW - 1), Some(NOW)))
+        .unwrap_err();
+}
+
+#[test]
+fn test_apply_detail_hides_a_young_release_and_keeps_an_aged_one() {
+    let detail = delay_policy()
+        .apply_detail(
+            PolicyAction::Serve,
+            "demo",
+            ProjectDetail {
+                meta: Meta::default(),
+                name: "demo".to_owned(),
+                versions: vec!["1.0".to_owned(), "2.0".to_owned()],
+                files: vec![
+                    file_at("demo-1.0-py3-none-any.whl", "2026-01-01T00:00:00Z"),
+                    file_at("demo-2.0-py3-none-any.whl", "2026-01-08T00:00:00Z"),
+                ],
+            },
+            Some(NOW),
+        )
+        .unwrap();
+
+    let names: Vec<&str> = detail.files.iter().map(|file| file.filename.as_str()).collect();
+    assert_eq!(names, ["demo-1.0-py3-none-any.whl"]);
+    assert_eq!(detail.versions, ["1.0"]);
+}
+
+#[test]
+fn test_apply_detail_hides_a_release_with_an_unparseable_upload_time() {
+    let detail = delay_policy()
+        .apply_detail(
+            PolicyAction::Serve,
+            "demo",
+            ProjectDetail {
+                meta: Meta::default(),
+                name: "demo".to_owned(),
+                versions: vec!["1.0".to_owned()],
+                files: vec![file_at("demo-1.0-py3-none-any.whl", "not-a-timestamp")],
+            },
+            Some(NOW),
+        )
+        .unwrap();
+
+    assert!(detail.files.is_empty());
+}
+
+#[test]
+fn test_apply_detail_serves_a_young_release_without_a_clock() {
+    let detail = delay_policy()
+        .apply_detail(
+            PolicyAction::Serve,
+            "demo",
+            ProjectDetail {
+                meta: Meta::default(),
+                name: "demo".to_owned(),
+                versions: vec!["2.0".to_owned()],
+                files: vec![file_at("demo-2.0-py3-none-any.whl", "2026-01-08T00:00:00Z")],
+            },
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(detail.files.len(), 1);
 }

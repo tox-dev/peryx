@@ -28,6 +28,7 @@ pub struct PypiPolicyConfig {
     pub block_wheel_pythons: Vec<String>,
     pub allow_wheel_platforms: Vec<String>,
     pub block_wheel_platforms: Vec<String>,
+    pub min_release_age_secs: Option<u64>,
 }
 
 impl PypiPolicyConfig {
@@ -41,6 +42,7 @@ impl PypiPolicyConfig {
         "block_wheel_pythons",
         "allow_wheel_platforms",
         "block_wheel_platforms",
+        "min_release_age_secs",
     ];
 }
 
@@ -122,6 +124,11 @@ pub fn compile_rules(config: &PypiPolicyConfig) -> Result<Vec<Arc<dyn ArtifactRu
         &config.allow_wheel_platforms,
         &config.block_wheel_platforms,
     )?;
+    if let Some(secs) = config.min_release_age_secs.filter(|secs| *secs > 0) {
+        rules.push(Arc::new(ReleaseDelayRule {
+            min_age_secs: i64::try_from(secs).unwrap_or(i64::MAX),
+        }));
+    }
     Ok(rules)
 }
 
@@ -252,6 +259,42 @@ impl ArtifactRule for WheelTagRule {
     }
 }
 
+/// Quarantine a fresh upstream release: hide a file until it has aged past `min_age_secs`, the window
+/// an operator wants before a new upload can be served, to blunt a malicious or mistaken release.
+#[derive(Debug)]
+struct ReleaseDelayRule {
+    min_age_secs: i64,
+}
+
+impl ArtifactRule for ReleaseDelayRule {
+    fn check(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
+        // A path with no clock (catalog indexing, an upload check) cannot age a release, so it passes;
+        // the time-aware serve path supplies `now` and enforces the delay.
+        let Some(now) = facts.now else { return Ok(()) };
+        let Some(uploaded) = facts.upload_time else {
+            return Err(facts.denial(
+                action,
+                "release-delay",
+                "upload_time",
+                "release has no upstream upload time to age against".to_owned(),
+            ));
+        };
+        let age = now.saturating_sub(uploaded);
+        if age < self.min_age_secs {
+            return Err(facts.denial(
+                action,
+                "release-delay",
+                "upload_time",
+                format!(
+                    "release is {age}s old, within the {}s upstream delay",
+                    self.min_age_secs
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn package_mask(types: &[PackageType]) -> u8 {
     types.iter().fold(0, |mask, kind| mask | kind.mask())
 }
@@ -281,7 +324,9 @@ pub trait PypiPolicy {
     /// Returns a denial when the filename or known size matches a configured policy rule.
     fn check_download(&self, action: PolicyAction, filename: &str, size: Option<u64>) -> Result<(), PolicyDenial>;
 
-    /// Filter a project detail response through this policy.
+    /// Filter a project detail response through this policy. `now` is the serve clock as a Unix
+    /// timestamp, or `None` on a path with no clock (catalog indexing); a time-based rule such as the
+    /// release-age delay only applies when it is supplied.
     ///
     /// # Errors
     /// Returns a denial when project-wide rules reject the whole response.
@@ -290,6 +335,7 @@ pub trait PypiPolicy {
         action: PolicyAction,
         project: &str,
         detail: ProjectDetail,
+        now: Option<i64>,
     ) -> Result<ProjectDetail, PolicyDenial>;
 
     /// Filter a project list to the projects this policy allows.
@@ -314,14 +360,17 @@ impl PypiPolicy for Policy {
         action: PolicyAction,
         project: &str,
         mut detail: ProjectDetail,
+        now: Option<i64>,
     ) -> Result<ProjectDetail, PolicyDenial> {
         self.check_project(action, project)?;
         if !self.active() {
             return Ok(detail);
         }
-        detail
-            .files
-            .retain(|file| self.check_file(action, project, file).is_ok());
+        detail.files.retain(|file| {
+            let mut facts = facts_from_file(project, file);
+            facts.now = now;
+            self.check_facts(action, &facts).is_ok()
+        });
         if let Some(limit) = self.max_project_size() {
             apply_project_size_limit(action, project, limit, &detail)?;
         }
@@ -382,6 +431,8 @@ fn facts_from_file(project: &str, file: &File) -> ArtifactFacts {
         filename: Some(file.filename.clone()),
         version: parsed.as_ref().map(|parsed| parsed.version.to_string()),
         size: file.size,
+        upload_time: file.upload_time.as_deref().and_then(parse_upload_time),
+        now: None,
         attributes: parsed.as_ref().map(pypi_attributes).unwrap_or_default(),
     }
 }
@@ -395,8 +446,19 @@ fn facts_from_filename(filename: &str, size: Option<u64>) -> ArtifactFacts {
         filename: Some(filename.to_owned()),
         version: parsed.as_ref().map(|parsed| parsed.version.to_string()),
         size,
+        upload_time: None,
+        now: None,
         attributes: parsed.as_ref().map(pypi_attributes).unwrap_or_default(),
     }
+}
+
+/// Parse a Simple-API `upload-time` (RFC 3339, per PEP 700) into a Unix timestamp. A value without an
+/// offset, or otherwise unparseable, yields `None`, which the release-delay rule treats as a missing
+/// upload time.
+fn parse_upload_time(value: &str) -> Option<i64> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(time::OffsetDateTime::unix_timestamp)
 }
 
 fn pypi_attributes(parsed: &crate::DistributionFilename) -> Vec<(&'static str, String)> {

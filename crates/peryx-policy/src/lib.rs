@@ -45,6 +45,13 @@ pub struct ArtifactFacts {
     pub filename: Option<String>,
     pub version: Option<String>,
     pub size: Option<u64>,
+    /// The artifact's upstream publish time as a Unix timestamp, when the source declares one. A rule
+    /// that ages a release (a supply-chain quarantine) reads it; `None` means the source gave no time.
+    pub upload_time: Option<i64>,
+    /// The evaluation clock as a Unix timestamp, supplied by a time-aware serve path. A rule that needs
+    /// wall-clock time reads it; `None` means this path does not evaluate against a clock, so such a
+    /// rule passes rather than guess.
+    pub now: Option<i64>,
     pub attributes: Vec<(&'static str, String)>,
 }
 
