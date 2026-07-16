@@ -69,7 +69,7 @@ impl DriverBatch {
 }
 
 /// The metadata store.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MetaStore {
     db: Arc<Database>,
 }
