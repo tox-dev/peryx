@@ -24,8 +24,8 @@ use std::io::{Cursor, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -241,22 +241,70 @@ fn respond(mut socket: TcpStream, routes: &Routes) {
     let _ = socket.write_all(body);
 }
 
-struct PeryxProcess(Child);
+struct ServerSlots {
+    available: Mutex<usize>,
+    available_changed: Condvar,
+}
+
+impl ServerSlots {
+    const fn new(available: usize) -> Self {
+        Self {
+            available: Mutex::new(available),
+            available_changed: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> ServerPermit<'_> {
+        let mut available = self.available.lock().expect("server slots mutex poisoned");
+        while *available == 0 {
+            available = self
+                .available_changed
+                .wait(available)
+                .expect("server slots mutex poisoned");
+        }
+        *available -= 1;
+        drop(available);
+        ServerPermit { slots: self }
+    }
+}
+
+struct ServerPermit<'slots> {
+    slots: &'slots ServerSlots,
+}
+
+impl Drop for ServerPermit<'_> {
+    fn drop(&mut self) {
+        *self.slots.available.lock().expect("server slots mutex poisoned") += 1;
+        self.slots.available_changed.notify_one();
+    }
+}
+
+static SERVER_SLOTS: ServerSlots = ServerSlots::new(4);
+static SERVER_STARTUP: Mutex<()> = Mutex::new(());
+
+struct PeryxProcess {
+    child: Child,
+    _permit: ServerPermit<'static>,
+}
 
 impl PeryxProcess {
     fn spawn(command: &mut Command) -> Self {
-        Self(command.spawn().expect("spawn child process"))
+        let permit = SERVER_SLOTS.acquire();
+        Self {
+            child: command.spawn().expect("spawn child process"),
+            _permit: permit,
+        }
     }
 
     fn exited(&mut self) -> bool {
-        self.0.try_wait().expect("child status").is_some()
+        self.child.try_wait().expect("child status").is_some()
     }
 }
 
 impl Drop for PeryxProcess {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -291,6 +339,7 @@ impl Peryx {
              [index.policy]\n{policy_toml}"
         );
         std::fs::write(&config, config_toml).expect("write config");
+        let startup = SERVER_STARTUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for attempt in 0..10 {
             let port = free_port();
             // The server's own log lands next to its data, so a failing test can be diagnosed from
@@ -314,6 +363,7 @@ impl Peryx {
                 SERVER_STARTUP_TIMEOUT,
                 data.path(),
             ) {
+                drop(startup);
                 return Self { child, port, data };
             }
             eprintln!("peryx lost the race for port {port} (attempt {attempt}), retrying on a fresh port");
@@ -626,6 +676,31 @@ fn e2e_process_guard_reaps_startup_failures() {
         Duration::from_secs(5),
         data.path(),
     ));
+}
+
+#[test]
+fn e2e_server_slots_wait_until_a_permit_is_released() {
+    let slots = ServerSlots::new(1);
+    let permit = slots.acquire();
+    let (attempting_sender, attempting_receiver) = std::sync::mpsc::channel();
+    let (acquired_sender, acquired_receiver) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            attempting_sender.send(()).expect("report permit attempt");
+            let _permit = slots.acquire();
+            acquired_sender.send(()).expect("report acquired permit");
+        });
+        attempting_receiver.recv().expect("wait for permit attempt");
+        assert_eq!(
+            acquired_receiver.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(permit);
+        acquired_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("permit was not released");
+    });
 }
 
 #[test]
