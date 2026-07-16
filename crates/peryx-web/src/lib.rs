@@ -125,6 +125,7 @@ fn HeaderSearch() -> impl IntoView {
         },
     );
     let (last, set_last) = signal(Vec::<UiSearchResult>::new());
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     Effect::new(move |_| {
         if query.get().trim().chars().count() < 2 {
             set_last.set(Vec::new());
@@ -134,6 +135,8 @@ fn HeaderSearch() -> impl IntoView {
             set_last.set(results);
         }
     });
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
+    let _ = (set_last, suggestions);
     view! {
         <form class="header-search" method="get" action="/search">
             <input
@@ -206,7 +209,7 @@ fn ThemeToggle() -> impl IntoView {
 }
 
 fn toggle_theme() {
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         use wasm_bindgen::JsCast as _;
         let Some(window) = web_sys::window() else {
@@ -240,7 +243,7 @@ fn toggle_theme() {
 }
 
 /// The browser entry point: hydrate the server-rendered document.
-#[cfg(feature = "hydrate")]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
     console_error_panic_hook::set_once();

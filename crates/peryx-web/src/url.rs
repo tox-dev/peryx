@@ -11,7 +11,7 @@ pub(crate) fn simple_index_url(route: &str) -> String {
 }
 
 #[must_use]
-#[cfg(any(feature = "hydrate", test))]
+#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
 pub(crate) fn browser_http_origin(protocol: &str, hostname: &str, port: &str) -> Option<String> {
     if hostname.is_empty() || !matches!(protocol, "http:" | "https:") {
         return None;

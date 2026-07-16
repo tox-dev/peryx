@@ -116,7 +116,7 @@ fn ManifestBody(route: String, repo: String, reference: String, manifest: UiMani
 #[component]
 fn PullSnippet(route: String, repo: String, reference: String) -> impl IntoView {
     let (host, set_host) = signal("<host>".to_owned());
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         Effect::new(move |_| {
             if let Some(window) = web_sys::window()
@@ -127,7 +127,7 @@ fn PullSnippet(route: String, repo: String, reference: String) -> impl IntoView 
             }
         });
     }
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
     let _ = set_host;
     let suffix = format!("/{route}/{repo}:{reference}");
     let display = {

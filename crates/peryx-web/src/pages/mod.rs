@@ -30,14 +30,14 @@ pub use stats::Stats;
 /// Refresh the dashboard counters every few seconds once hydrated. Effects never run during server
 /// rendering, so this is inert in SSR output.
 fn start_refresh(snapshot: Resource<UiSnapshot>) {
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         use std::time::Duration;
         Effect::new(move |_| {
             set_interval(move || snapshot.refetch(), Duration::from_secs(5));
         });
     }
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
     {
         let _ = snapshot;
     }
@@ -88,13 +88,13 @@ fn ErrorMessage(message: String) -> impl IntoView {
 }
 
 fn copy_to_clipboard(text: &str) {
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         if let Some(window) = web_sys::window() {
             let _ = window.navigator().clipboard().write_text(text);
         }
     }
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
     {
         let _ = text;
     }

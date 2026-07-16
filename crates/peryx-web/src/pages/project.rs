@@ -19,7 +19,7 @@ use super::{ErrorMessage, copy_to_clipboard, human_size};
 use crate::data::load_project_view;
 use crate::markdown::{external_link_rel, is_safe_artifact_link, is_safe_link};
 use crate::model::{UiFile, UiProject, UiProjectStatus, UiProjectView, UiRelease};
-#[cfg(feature = "hydrate")]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 use crate::url::browser_http_origin;
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_url, browse_index_url, browse_project_file_search_url,
@@ -165,7 +165,7 @@ fn project_status_badge(status: UiProjectStatus) -> impl IntoView {
 #[component]
 fn InstallSnippet(index_url: String, project: String, version: String) -> impl IntoView {
     let (install, set_install) = signal(install_command("", &index_url, &project, &version));
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         Effect::new(move |_| {
             if let Some(location) = web_sys::window().map(|window| window.location())
@@ -178,7 +178,7 @@ fn InstallSnippet(index_url: String, project: String, version: String) -> impl I
             }
         });
     }
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
     let _ = set_install;
     view! {
         <div class="install">
@@ -243,25 +243,30 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
     let (matches, set_matches) = signal(initial_matches);
     let (error, set_error) = signal(initial_error);
     let total = files.len();
-    Effect::new(move |_| {
-        let search = FileSearch::from_query(&query.read());
-        if pattern.get_untracked() != search.pattern {
-            set_pattern.set(search.pattern);
-        }
-        if mode.get_untracked() != search.mode {
-            set_mode.set(search.mode);
-        }
-    });
-    Effect::new({
-        let files = files.clone();
-        move |_| match matching_file_indexes(&files, &pattern.get(), mode.get()) {
-            Ok(indexes) => {
-                set_error.set(None);
-                set_matches.set(indexes);
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+    {
+        Effect::new(move |_| {
+            let search = FileSearch::from_query(&query.read());
+            if pattern.get_untracked() != search.pattern {
+                set_pattern.set(search.pattern);
             }
-            Err(message) => set_error.set(Some(message)),
-        }
-    });
+            if mode.get_untracked() != search.mode {
+                set_mode.set(search.mode);
+            }
+        });
+        Effect::new({
+            let files = files.clone();
+            move |_| match matching_file_indexes(&files, &pattern.get(), mode.get()) {
+                Ok(indexes) => {
+                    set_error.set(None);
+                    set_matches.set(indexes);
+                }
+                Err(message) => set_error.set(Some(message)),
+            }
+        });
+    }
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
+    let _ = (set_matches, set_error);
     view! {
         <div class="file-filter">
             <input

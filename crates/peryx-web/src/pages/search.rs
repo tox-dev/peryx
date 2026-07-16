@@ -91,7 +91,7 @@ fn SearchForm(query: String, source_type: String, page_size: usize) -> impl Into
 }
 
 fn store_search_page_size(value: &str) {
-    #[cfg(feature = "hydrate")]
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         if let Some(window) = web_sys::window()
             && let Ok(Some(storage)) = window.local_storage()
@@ -99,7 +99,7 @@ fn store_search_page_size(value: &str) {
             let _ = storage.set_item("peryx.search.page_size", value);
         }
     }
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
     {
         let _ = value;
     }
