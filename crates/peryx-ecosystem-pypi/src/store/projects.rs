@@ -166,6 +166,7 @@ mod tests {
             "flask",
             "Flask",
             "pypi",
+            None,
             Some("archived"),
             Some("read only"),
             &[(file_digests[0].clone(), "https://files/flask.whl".to_owned(), Some(123))],

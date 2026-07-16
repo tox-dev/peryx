@@ -17,7 +17,7 @@ use peryx_upstream::UpstreamClient;
 
 use crate::simple_client::{SimpleClientExt as _, SimpleHead, SimpleResponse};
 
-use super::fetch::canonical_raw;
+use super::fetch::{canonical_raw, persist_page_from};
 use super::metadata::spawn_metadata_backfill;
 use super::resolve::{known_metadata, local_detail, resolve_detail, rewrite_urls};
 mod live;
@@ -25,7 +25,7 @@ use live::FreshJsonStream;
 
 use super::{
     CacheError, NEGATIVE_TTL_SECS, cached_record, flight_gate, fresh_cached, freshness, is_json, mirror_route,
-    persist_page, project_negative_key, release_flight, upstream_permit,
+    project_negative_key, release_flight, upstream_permit,
 };
 
 /// Persist a streamed page from what the transformer already extracted: no re-parse of the raw
@@ -37,6 +37,7 @@ fn persist_streamed(
     project: &str,
     record: &CachedIndex,
     summary: &PageSummary,
+    upstream: Option<&str>,
 ) -> Result<(), CacheError> {
     let registrations = if summary
         .project_status
@@ -69,6 +70,7 @@ fn persist_streamed(
             project,
             display,
             name,
+            upstream,
             summary.project_status.as_deref(),
             summary.project_status_reason.as_deref(),
             &files,
@@ -291,9 +293,11 @@ async fn buffer_html_page(
     let content_type = head.content_type.clone();
     let (etag, last_serial) = (head.etag.clone(), head.last_serial);
     let max_age = head.max_age;
+    let source = head.source.clone();
     let body = head.bytes().await?;
     let response = SimpleResponse {
         status: 200,
+        source,
         url,
         content_type,
         etag,
@@ -309,7 +313,7 @@ async fn buffer_html_page(
         fresh_secs: response.max_age,
         body: canonical_raw(project, &response)?,
     };
-    persist_page(state, key, cached_name, project, &record)?;
+    persist_page_from(state, key, cached_name, project, &record, response.source.as_deref())?;
     Ok(record)
 }
 

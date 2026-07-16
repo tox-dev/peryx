@@ -30,6 +30,7 @@ pub fn put_cached_page(
     normalized: &str,
     display: &str,
     source: &str,
+    upstream: Option<&str>,
     project_status: Option<&str>,
     project_status_reason: Option<&str>,
     files: &[(String, String, Option<u64>)],
@@ -50,7 +51,10 @@ pub fn put_cached_page(
         }
     }
     for (sha256, url, size) in files {
-        batch.put(file_key(sha256), file_source_value(url, source, *size).into_bytes());
+        batch.put(
+            file_key(sha256),
+            file_source_value(url, source, *size, upstream).into_bytes(),
+        );
     }
     for (wheel_sha256, url, metadata_sha256) in metadata {
         batch.put(
@@ -333,6 +337,7 @@ mod tests {
             "pkg",
             "Pkg",
             "pypi",
+            Some("mirror"),
             Some("archived"),
             Some("read only"),
             &[(
@@ -344,11 +349,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            meta.get_file_url("feedface").unwrap().unwrap().size,
-            Some(42),
-            "the file's size line round-trips"
-        );
+        let source = meta.get_file_url("feedface").unwrap().unwrap();
+        assert_eq!(source.size, Some(42), "the file's size line round-trips");
+        assert_eq!(source.upstream.as_deref(), Some("mirror"));
         assert_eq!(
             meta.get_project_status("pypi", "pkg")
                 .unwrap()
@@ -369,6 +372,7 @@ mod tests {
             "pkg",
             "Pkg",
             "pypi",
+            None,
             None,
             None,
             &[],

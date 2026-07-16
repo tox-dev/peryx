@@ -10,6 +10,8 @@ pub struct FileSource {
     pub url: String,
     pub source: String,
     pub size: Option<u64>,
+    /// The named routed upstream that advertised this artifact.
+    pub upstream: Option<String>,
 }
 
 /// Record the upstream URL a blob digest can be fetched from, and the name of the cached index it came
@@ -18,7 +20,7 @@ pub struct FileSource {
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_file_url(meta: &MetaStore, sha256: &str, url: &str, source: &str) -> Result<(), MetaError> {
-    let value = file_source_value(url, source, None);
+    let value = file_source_value(url, source, None, None);
     meta.put_driver_value(&file_key(sha256), value.as_bytes())
 }
 
@@ -125,11 +127,12 @@ pub fn scan_metadata_records<E>(
 }
 
 fn split_file_source(value: &str) -> Option<FileSource> {
-    let mut parts = value.splitn(3, '\n');
+    let mut parts = value.splitn(4, '\n');
     Some(FileSource {
         url: parts.next()?.to_owned(),
         source: parts.next()?.to_owned(),
         size: parts.next().and_then(|size| size.parse().ok()),
+        upstream: parts.next().filter(|upstream| !upstream.is_empty()).map(str::to_owned),
     })
 }
 
@@ -137,7 +140,7 @@ fn split_file_source(value: &str) -> Option<FileSource> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{FileSource, MetaStore, metadata_key};
+    use super::{FileSource, MetaStore, metadata_key, split_file_source};
     use crate::store::PypiStore as _;
 
     fn store() -> (tempfile::TempDir, MetaStore) {
@@ -158,6 +161,20 @@ mod tests {
                 url: "https://files.example/pkg.whl".to_owned(),
                 source: "pypi".to_owned(),
                 size: None,
+                upstream: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_file_source_without_size_keeps_routed_upstream() {
+        assert_eq!(
+            split_file_source("https://files.example/pkg.whl\npypi\n\nmirror"),
+            Some(FileSource {
+                url: "https://files.example/pkg.whl".to_owned(),
+                source: "pypi".to_owned(),
+                size: None,
+                upstream: Some("mirror".to_owned()),
             })
         );
     }

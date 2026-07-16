@@ -34,6 +34,7 @@ pub use resolve::{DetailPage, list_serial, resolve_detail, resolve_detail_page, 
 
 #[cfg(test)]
 pub(crate) use download::tail_download;
+#[cfg(test)]
 pub(crate) use fetch::persist_page;
 
 const NEGATIVE_TTL_SECS: i64 = 30;

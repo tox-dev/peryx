@@ -42,6 +42,7 @@ impl FreshJsonStream {
         let etag = self.head.etag.clone();
         let last_serial = self.head.last_serial;
         let max_age = self.head.max_age;
+        let upstream = self.head.source.clone();
         let base = self.head.url.clone();
         let mut context = self.context;
         context.base = Some(base.clone());
@@ -96,6 +97,7 @@ impl FreshJsonStream {
                         fetched_at: self.now,
                         fresh_secs: max_age,
                         base,
+                        upstream,
                         _permit: self.permit,
                     },
                     raw,
@@ -109,7 +111,7 @@ impl FreshJsonStream {
                 let expires_at =
                     record.fetched_at_unix + crate::cache::freshness_secs(self.state.ttl_secs, record.fresh_secs);
                 #[rustfmt::skip]
-                persist_streamed(&self.state, &self.key, &self.cached_name, &self.project, &record, &summary)?;
+                persist_streamed(&self.state, &self.key, &self.cached_name, &self.project, &record, &summary, upstream.as_deref())?;
                 spawn_metadata_backfill(self.state.clone(), self.route.clone(), &summary.registrations);
                 let bytes = Bytes::from(served);
                 self.state
@@ -257,6 +259,7 @@ struct LiveStream {
     fetched_at: i64,
     fresh_secs: Option<i64>,
     base: url::Url,
+    upstream: Option<String>,
     _permit: UpstreamPermit,
 }
 
@@ -323,10 +326,15 @@ fn live_stream(
                     let raw_len = record.body.len();
                     let registrations = summary.registrations.clone();
                     let persist_state = state.clone();
-                    let (key, cached, project) = (live.flight.key.clone(), live.cached.clone(), live.project.clone());
+                    let (key, cached, project, upstream) = (
+                        live.flight.key.clone(),
+                        live.cached.clone(),
+                        live.project.clone(),
+                        live.upstream.clone(),
+                    );
                     #[rustfmt::skip]
                     tokio::task::spawn_blocking(move || {
-                        if let Err(err) = persist_streamed(&persist_state, &key, &cached, &project, &record, &summary) { tracing::error!(error = ?err, %key, "page persist failed"); }
+                        if let Err(err) = persist_streamed(&persist_state, &key, &cached, &project, &record, &summary, upstream.as_deref()) { tracing::error!(error = ?err, %key, "page persist failed"); }
                     })
                     .await
                     .expect("page persist task never panics");
@@ -341,7 +349,14 @@ fn live_stream(
                         live.last_serial,
                     );
                     let elapsed_ms = started.elapsed().as_millis();
-                    tracing::debug!(key = %live.flight.key, bytes = raw_len, elapsed_ms, "page streamed from upstream");
+                    let upstream = live.upstream.as_deref().unwrap_or(&live.cached);
+                    tracing::debug!(
+                        key = %live.flight.key,
+                        upstream,
+                        bytes = raw_len,
+                        elapsed_ms,
+                        "page streamed from upstream"
+                    );
                     None
                 }
                 Some(Err(err)) => Some((

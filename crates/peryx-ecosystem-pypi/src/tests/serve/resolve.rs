@@ -247,6 +247,16 @@ async fn test_buffered_resolution_uses_the_upstream_route() {
 
     assert_eq!(detail.name, "flask");
     assert_eq!(second.received_requests().await.unwrap().len(), 1);
+    assert_eq!(
+        state
+            .meta
+            .get_file_url(Digest::of(b"wheel").as_str())
+            .unwrap()
+            .unwrap()
+            .upstream
+            .as_deref(),
+        Some("second")
+    );
 }
 
 #[tokio::test]

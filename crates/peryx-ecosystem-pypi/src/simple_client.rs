@@ -26,6 +26,8 @@ pub const ACCEPT_SIMPLE: &str =
 #[derive(Debug, Clone)]
 pub struct SimpleResponse {
     pub status: u16,
+    /// The configured source that answered a routed request; absent for a legacy single upstream.
+    pub source: Option<String>,
     /// The final URL fetched (after redirects), used as the base for resolving relative HTML links.
     pub url: Url,
     pub content_type: Option<String>,
@@ -41,6 +43,8 @@ pub struct SimpleResponse {
 #[derive(Debug)]
 pub struct SimpleHead {
     pub status: u16,
+    /// The configured source that answered a routed request; absent for a legacy single upstream.
+    pub source: Option<String>,
     /// The final URL fetched (after redirects), the base for resolving relative HTML links.
     pub url: Url,
     pub content_type: Option<String>,
@@ -117,7 +121,7 @@ impl SimpleClientExt for UpstreamRouter {
                 tracing::warn!(project, upstream = upstream.name(), "trying fallback");
                 continue;
             }
-            return result;
+            return attribute_source(upstream, result);
         }
     }
 
@@ -131,7 +135,7 @@ impl SimpleClientExt for UpstreamRouter {
                 tracing::warn!(upstream = upstream.name(), "upstream unavailable, trying fallback");
                 continue;
             }
-            return result;
+            return attribute_source(upstream, result);
         }
     }
 
@@ -145,9 +149,22 @@ impl SimpleClientExt for UpstreamRouter {
                 tracing::warn!(project, upstream = upstream.name(), "trying fallback");
                 continue;
             }
-            return result;
+            return attribute_source(upstream, result);
         }
     }
+}
+
+fn attribute_source<T: SimpleStatus>(
+    upstream: &NamedUpstream,
+    result: Result<T, UpstreamError>,
+) -> Result<T, UpstreamError> {
+    result.map(|mut response| {
+        let upstream = upstream.name().to_owned();
+        let status = response.status();
+        tracing::debug!(upstream, status, "upstream source answered");
+        response.set_source(upstream);
+        response
+    })
 }
 
 fn record_health<T: SimpleStatus>(upstream: &NamedUpstream, result: &Result<T, UpstreamError>) {
@@ -173,17 +190,26 @@ fn fallback_result<T: SimpleStatus>(result: &Result<T, UpstreamError>) -> bool {
 
 trait SimpleStatus {
     fn status(&self) -> u16;
+    fn set_source(&mut self, source: String);
 }
 
 impl SimpleStatus for SimpleResponse {
     fn status(&self) -> u16 {
         self.status
     }
+
+    fn set_source(&mut self, source: String) {
+        self.source = Some(source);
+    }
 }
 
 impl SimpleStatus for SimpleHead {
     fn status(&self) -> u16 {
         self.status
+    }
+
+    fn set_source(&mut self, source: String) {
+        self.source = Some(source);
     }
 }
 
@@ -196,6 +222,7 @@ async fn fetch_simple(client: &UpstreamClient, url: Url, etag: Option<&str>) -> 
             Ok(body) => {
                 return Ok(SimpleResponse {
                     status: head.status,
+                    source: head.source,
                     url: head.url,
                     content_type: head.content_type,
                     etag: head.etag,
@@ -225,6 +252,7 @@ fn simple_head(response: reqwest::Response) -> Result<SimpleHead, UpstreamError>
     }
     Ok(SimpleHead {
         status: response.status().as_u16(),
+        source: None,
         url: response.url().clone(),
         content_type,
         etag: header_str(headers, &ETAG),

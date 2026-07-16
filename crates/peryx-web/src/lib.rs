@@ -243,7 +243,7 @@ fn toggle_theme() {
 }
 
 /// The browser entry point: hydrate the server-rendered document.
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate", target_arch = "wasm32"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
     console_error_panic_hook::set_once();

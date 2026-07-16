@@ -67,6 +67,34 @@ async fn test_json_meta_preflight_streams_remainder() {
         });
     assert!(String::from_utf8(body).unwrap().contains(digest.as_str()));
 }
+
+#[tokio::test]
+async fn test_live_stream_records_the_routed_upstream() {
+    let server = MockServer::start().await;
+    let digest = Digest::of(b"wheel");
+    mount_json_page(
+        &server,
+        &detail_json(digest.as_str(), "https://example.invalid/files/flask.whl"),
+    )
+    .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let router = UpstreamRouter::new(vec![NamedUpstream::new("mirror", client.clone())]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_state(&dir, client, router);
+
+    assert!(stream_outcome(&state).await.into_iter().all(|chunk| chunk.is_ok()));
+    assert_eq!(
+        state
+            .meta
+            .get_file_url(digest.as_str())
+            .unwrap()
+            .unwrap()
+            .upstream
+            .as_deref(),
+        Some("mirror")
+    );
+}
+
 #[tokio::test]
 async fn test_json_meta_preflight_streams_without_remainder() {
     let (upstream, release) = split_project_upstream(br#"{"meta":{"api-version":"1.4"}"#.to_vec(), br"}".to_vec());

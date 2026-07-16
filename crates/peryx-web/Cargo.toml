@@ -28,7 +28,7 @@ ssr = [
     "dep:tokio",
 ]
 # The browser half: compiled to wasm32 by cargo-leptos, hydrates the server-rendered page.
-hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:gloo-net", "dep:base64", "dep:console_error_panic_hook", "dep:send_wrapper", "dep:web-sys"]
+hydrate = ["dep:wasm-bindgen", "dep:gloo-net", "dep:base64", "dep:console_error_panic_hook", "dep:send_wrapper", "dep:web-sys"]
 
 [dependencies]
 leptos.workspace = true
@@ -54,6 +54,9 @@ peryx-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+leptos = { workspace = true, features = ["hydrate"] }
 
 [dev-dependencies]
 rstest.workspace = true

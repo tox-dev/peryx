@@ -88,9 +88,17 @@ fn override_key(index: &str, normalized: &str, filename: &str) -> String {
     format!("{OVERRIDE_PREFIX}{index}/{normalized}/{filename}")
 }
 
-/// The `artifact_source` value: URL and source index newline-joined, with an optional size line.
-fn file_source_value(url: &str, source: &str, size: Option<u64>) -> String {
-    size.map_or_else(|| format!("{url}\n{source}"), |size| format!("{url}\n{source}\n{size}"))
+/// The `artifact_source` value: URL, source index, optional size, and optional routed upstream.
+fn file_source_value(url: &str, source: &str, size: Option<u64>, upstream: Option<&str>) -> String {
+    upstream.map_or_else(
+        || size.map_or_else(|| format!("{url}\n{source}"), |size| format!("{url}\n{source}\n{size}")),
+        |upstream| {
+            format!(
+                "{url}\n{source}\n{}\n{upstream}",
+                size.map_or_else(String::new, |size| size.to_string())
+            )
+        },
+    )
 }
 
 /// The `metadata_sidecar` value: URL, the sibling's own sha256, and the source index, newline-joined.
@@ -182,6 +190,7 @@ pub trait PypiStore {
         normalized: &str,
         display: &str,
         source: &str,
+        upstream: Option<&str>,
         project_status: Option<&str>,
         project_status_reason: Option<&str>,
         files: &[(String, String, Option<u64>)],
@@ -490,6 +499,7 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         normalized: &str,
         display: &str,
         source: &str,
+        upstream: Option<&str>,
         project_status: Option<&str>,
         project_status_reason: Option<&str>,
         files: &[(String, String, Option<u64>)],
@@ -503,6 +513,7 @@ impl PypiStore for peryx_storage::meta::MetaStore {
             normalized,
             display,
             source,
+            upstream,
             project_status,
             project_status_reason,
             files,

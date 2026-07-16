@@ -45,6 +45,7 @@ fn put_cached_page(data_dir: &Path, key: &str, name: &str, files: Vec<serde_json
             source,
             None,
             None,
+            None,
             &[],
             &[],
         )
@@ -567,6 +568,7 @@ async fn test_mirror_verify_reports_missing_blob() {
         "flask",
         "flask",
         "pypi",
+        None,
         None,
         None,
         &[(

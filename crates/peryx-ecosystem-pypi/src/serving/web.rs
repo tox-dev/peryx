@@ -106,7 +106,14 @@ fn collect_hosted_filenames(
 /// upstream file, the dependency-confusion order [`cache::resolve_detail`] merged the page by.
 fn apply_availability(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiProject) {
     for file in &mut ui.files {
-        file.availability = if hosted.contains(&file.filename) {
+        let hosted = hosted.contains(&file.filename);
+        let source = if hosted {
+            None
+        } else {
+            state.meta.get_file_url(&file.sha256).ok().flatten()
+        };
+        file.upstream = source.as_ref().and_then(|source| source.upstream.clone());
+        file.availability = if hosted {
             UiAvailability::Hosted
         } else if Digest::from_hex(&file.sha256).is_some_and(|digest| state.blobs.exists(&digest)) {
             UiAvailability::Cached

@@ -129,6 +129,9 @@ pub struct UiFile {
     pub yanked: bool,
     pub yanked_reason: Option<String>,
     pub has_metadata: bool,
+    /// The configured upstream source that advertised this artifact, when routing is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
     /// Whether the artifact is served from local storage (hosted or cached) or remains upstream-only.
     pub availability: UiAvailability,
 }
@@ -224,10 +227,12 @@ mod tests {
             yanked: false,
             yanked_reason: None,
             has_metadata: false,
+            upstream: Some("mirror".to_owned()),
             availability: UiAvailability::RemoteOnly,
         };
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains("\"availability\":\"remote_only\""), "{json}");
+        assert!(json.contains("\"upstream\":\"mirror\""), "{json}");
         assert_eq!(serde_json::from_str::<UiFile>(&json).unwrap(), file);
     }
 }

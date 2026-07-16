@@ -71,6 +71,7 @@ async fn test_routed_project_falls_back_on_retryable_status(#[case] status: u16)
     let response = route.fetch_project("flask", None).await.unwrap();
 
     assert_eq!(response.status, 200);
+    assert_eq!(response.source.as_deref(), Some("second"));
     assert!(response.url.as_str().starts_with(&second.uri()));
     assert_eq!(
         route.sources().map(NamedUpstream::health).collect::<Vec<_>>(),

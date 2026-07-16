@@ -377,6 +377,9 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
                 {file.yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
                 {file.yanked_reason.clone().map(|reason| view! { <span class="yank-reason">{reason}</span> })}
                 {file.has_metadata.then(|| view! { <span class="badge meta-badge">"metadata"</span> })}
+                {file.upstream.clone().map(|upstream| view! {
+                    <span class="badge" title="Upstream source">{upstream}</span>
+                })}
             </td>
         </tr>
     }
@@ -623,7 +626,9 @@ mod tests {
     use leptos::prelude::*;
     use rstest::rstest;
 
-    use super::{UiProjectStatus, install_command, project_status_badge, shell_quote};
+    use peryx_core::{UiAvailability, UiFile};
+
+    use super::{UiProjectStatus, file_row, install_command, project_status_badge, shell_quote};
 
     #[rstest]
     #[case::plain("flask", "flask")]
@@ -687,5 +692,28 @@ mod tests {
         assert!(html.contains(r#"class="status-reason""#), "{html}");
         assert!(html.contains("&lt;script&gt;pwn&lt;/script&gt;"), "{html}");
         assert!(!html.contains("<script>"), "{html}");
+    }
+
+    #[test]
+    fn test_file_row_names_the_routed_upstream() {
+        let html = file_row(
+            "pypi",
+            "flask",
+            &UiFile {
+                filename: "flask-1.0.whl".to_owned(),
+                url: "/pypi/files/aa/flask-1.0.whl".to_owned(),
+                sha256: "aa".repeat(32),
+                size: None,
+                upload_time: None,
+                yanked: false,
+                yanked_reason: None,
+                has_metadata: false,
+                upstream: Some("corporate".to_owned()),
+                availability: UiAvailability::RemoteOnly,
+            },
+        )
+        .to_html();
+        assert!(html.contains(r#"title="Upstream source""#), "{html}");
+        assert!(html.contains(">corporate</span>"), "{html}");
     }
 }
