@@ -258,6 +258,7 @@ async fn test_mirror_sync_uses_routed_source_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let first = MockServer::start().await;
     let second = MockServer::start().await;
+    let artifacts = MockServer::start().await;
     let wheel = b"wheel from the second source".to_vec();
     let metadata = b"Metadata-Version: 2.1\nName: flask\n".to_vec();
     Mock::given(method("GET"))
@@ -276,18 +277,20 @@ async fn test_mirror_sync_uses_routed_source_credentials() {
         .expect(1)
         .mount(&second)
         .await;
-    for (path, body) in [
-        ("/files/flask-1.0-py3-none-any.whl", wheel.clone()),
-        ("/files/flask-1.0-py3-none-any.whl.metadata", metadata.clone()),
-    ] {
-        Mock::given(method("GET"))
-            .and(wiremock::matchers::path(path))
-            .and(match_header("authorization", "Bearer second-token"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
-            .expect(1)
-            .mount(&second)
-            .await;
-    }
+    Mock::given(method("GET"))
+        .and(path("/files/flask-1.0-py3-none-any.whl.metadata"))
+        .and(match_header("authorization", "Bearer second-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(metadata.clone()))
+        .expect(1)
+        .mount(&second)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask-1.0-py3-none-any.whl"))
+        .and(match_header("authorization", "Bearer second-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.clone()))
+        .expect(1)
+        .mount(&artifacts)
+        .await;
     let mut config = mirror_config(dir.path(), &format!("{}/simple/", first.uri()));
     let IndexKind::Cached { routing, .. } = &mut config.indexes[0].kind else {
         panic!("expected cached index");
@@ -297,6 +300,7 @@ async fn test_mirror_sync_uses_routed_source_credentials() {
             UpstreamConfig {
                 name: "first".to_owned(),
                 url: format!("{}/simple/", first.uri()),
+                artifact_url: None,
                 username: None,
                 password: None,
                 token: None,
@@ -304,6 +308,7 @@ async fn test_mirror_sync_uses_routed_source_credentials() {
             UpstreamConfig {
                 name: "second".to_owned(),
                 url: format!("{}/simple/", second.uri()),
+                artifact_url: Some(artifacts.uri()),
                 username: None,
                 password: None,
                 token: Some(SecretSource::Literal("second-token".to_owned())),

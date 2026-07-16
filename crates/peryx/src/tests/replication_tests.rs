@@ -376,6 +376,7 @@ fn test_replica_runtime_disables_local_writers() {
         upstreams: vec![UpstreamConfig {
             name: "primary".to_owned(),
             url: "https://packages.example/simple/".to_owned(),
+            artifact_url: None,
             username: Some("replica".to_owned()),
             password: Some(SecretSource::File("missing-routed-upstream-password".into())),
             token: None,

@@ -16,7 +16,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use peryx_ecosystem_oci::LibraryPrefix;
 
 use crate::config::{
-    AuthConfig, Config, IndexConfig, IndexKind, ReplicationConfig, SecretSource, WebhookConfig, WebhookSecret,
+    AuthConfig, Config, IndexConfig, IndexKind, ReplicationConfig, SecretSource, UpstreamConfig, UpstreamRoutingConfig,
+    WebhookConfig, WebhookSecret,
 };
 use crate::server::{build_index_settings, build_indexes, build_router, build_state, upstream_auth};
 
@@ -102,6 +103,27 @@ fn replication_replica() -> ReplicationConfig {
         poll_interval: Duration::from_secs(1),
         page_size: NonZeroUsize::MIN,
     }
+}
+
+fn routed(metadata: &str, artifact: Option<&str>) -> IndexConfig {
+    let mut index = cached("pypi", "https://primary.example/simple/");
+    let IndexKind::Cached { routing, .. } = &mut index.kind else {
+        panic!("expected a cached index");
+    };
+    *routing = Some(Box::new(UpstreamRoutingConfig {
+        upstreams: vec![UpstreamConfig {
+            name: "primary".to_owned(),
+            url: metadata.to_owned(),
+            artifact_url: artifact.map(str::to_owned),
+            username: None,
+            password: None,
+            token: None,
+        }],
+        fallback: true,
+        protected: Vec::new(),
+        pins: std::collections::BTreeMap::new(),
+    }));
+    index
 }
 
 #[tokio::test]
@@ -512,6 +534,19 @@ fn test_build_router_data_dir_error() {
     };
     let err = build_router(&config).unwrap_err();
     assert!(err.to_string().contains("create data directory"));
+}
+
+#[rstest]
+#[case::metadata("not a url", None)]
+#[case::artifact("https://metadata.example/simple/", Some("not a url"))]
+fn test_build_state_rejects_invalid_routed_source_urls(#[case] metadata: &str, #[case] artifact: Option<&str>) {
+    let dir = tempfile::tempdir().unwrap();
+
+    let Err(err) = build_state(&config_with(&dir, vec![routed(metadata, artifact)])) else {
+        panic!("invalid routed source URL succeeded");
+    };
+
+    assert!(err.to_string().contains("build cached index pypi"), "{err}");
 }
 
 #[rstest]

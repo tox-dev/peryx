@@ -1,4 +1,7 @@
-use crate::{NamedUpstream, RouteError, UpstreamClient, UpstreamHealth, UpstreamRouter};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use crate::{ArtifactClient, NamedUpstream, RouteError, UpstreamClient, UpstreamError, UpstreamHealth, UpstreamRouter};
 
 fn upstream(name: &str) -> NamedUpstream {
     NamedUpstream::new(
@@ -120,4 +123,144 @@ fn test_upstream_router_rejects_an_unknown_pin_source() {
             upstream: "missing".to_owned(),
         }
     );
+}
+
+#[tokio::test]
+async fn test_artifact_client_falls_back_for_range_reads() {
+    let origin = MockServer::start().await;
+    let mirror = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/mirror/files/pkg.whl"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", "5"),
+        )
+        .expect(1)
+        .mount(&origin)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror/files/pkg.whl"))
+        .and(header("range", "bytes=1-3"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .and(header("range", "bytes=1-3"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 1-3/5")
+                .set_body_bytes(b"hee".to_vec()),
+        )
+        .expect(1)
+        .mount(&origin)
+        .await;
+    let source = NamedUpstream::new(
+        "origin",
+        UpstreamClient::new(&format!("{}/simple/", origin.uri())).unwrap(),
+    )
+    .with_artifact_mirror(UpstreamClient::new(&format!("{}/mirror/", mirror.uri())).unwrap(), true);
+    let artifacts = source.artifacts();
+    let url = format!("{}/files/pkg.whl?signature=origin", origin.uri());
+
+    assert!(artifacts.may_support_ranges());
+    assert_eq!(artifacts.head_file_for_range(&url).await.unwrap().len, 5);
+    assert_eq!(&artifacts.fetch_range(&url, 1, 3).await.unwrap()[..], b"hee");
+
+    artifacts.disable_ranges();
+    assert!(!artifacts.may_support_ranges());
+}
+
+#[tokio::test]
+async fn test_artifact_client_reads_ranges_from_mirror() {
+    let mirror = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", "5"),
+        )
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.whl"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 1-3/5")
+                .set_body_bytes(b"hee".to_vec()),
+        )
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    let source = NamedUpstream::new("origin", UpstreamClient::new("https://origin.example/simple/").unwrap())
+        .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
+    let artifacts = source.artifacts();
+
+    assert_eq!(
+        artifacts
+            .head_file_for_range("https://origin.example/files/pkg.whl")
+            .await
+            .unwrap()
+            .len,
+        5
+    );
+    assert_eq!(
+        &artifacts
+            .fetch_range("https://origin.example/files/pkg.whl", 1, 3)
+            .await
+            .unwrap()[..],
+        b"hee"
+    );
+}
+
+#[tokio::test]
+async fn test_artifact_client_does_not_fallback_range_reads_when_disabled() {
+    let mirror = MockServer::start().await;
+    for request_method in ["HEAD", "GET"] {
+        Mock::given(method(request_method))
+            .and(path("/files/pkg.whl"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&mirror)
+            .await;
+    }
+    let source = NamedUpstream::new("origin", UpstreamClient::new("https://origin.example/simple/").unwrap())
+        .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
+    let artifacts = source.artifacts();
+    let url = "https://origin.example/files/pkg.whl";
+
+    assert!(artifacts.head_file_for_range(url).await.is_err());
+    assert!(artifacts.fetch_range(url, 1, 3).await.is_err());
+}
+
+#[tokio::test]
+async fn test_artifact_client_rejects_an_invalid_advertised_url() {
+    let client = UpstreamClient::new("https://origin.example/simple/").unwrap();
+    let source = NamedUpstream::new("origin", client)
+        .with_artifact_mirror(UpstreamClient::new("https://mirror.example/").unwrap(), true);
+
+    let Err(err) = source.artifacts().stream_bytes("not a url").await else {
+        panic!("invalid URL produced a stream");
+    };
+
+    assert!(matches!(err, UpstreamError::Url(_)));
+}
+
+#[test]
+fn test_direct_artifact_client_uses_origin_range_state() {
+    let client = UpstreamClient::new("https://origin.example/simple/").unwrap();
+    let artifacts = ArtifactClient::from(client);
+    assert!(artifacts.may_support_ranges());
+    artifacts.disable_ranges();
+    assert!(!artifacts.may_support_ranges());
 }

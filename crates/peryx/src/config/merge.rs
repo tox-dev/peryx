@@ -287,6 +287,7 @@ fn classify_upstream(index: &str, raw: RawUpstream) -> Result<UpstreamConfig, Co
     Ok(UpstreamConfig {
         name: raw.name,
         url: raw.url,
+        artifact_url: raw.artifact_url,
         username: raw.username,
         password: secret_source(raw.password, raw.password_file).map_err(|reason| ConfigError::Index {
             name: index.to_owned(),

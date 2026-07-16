@@ -303,6 +303,7 @@ flask = "public"
 [[index.upstream]]
 name = "internal"
 url = "https://packages.example/simple/"
+artifact_url = "https://artifacts.example/"
 password_file = "/run/secrets/internal-password"
 
 [[index.upstream]]

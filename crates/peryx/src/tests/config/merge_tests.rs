@@ -239,6 +239,7 @@ flask = "public"
 [[index.upstream]]
 name = "internal"
 url = "https://packages.example/simple/"
+artifact_url = "https://artifacts.example/packages/"
 username = "reader"
 password_file = "/run/secrets/internal-password"
 
@@ -267,6 +268,10 @@ token = "bearer"
         )
     );
     assert!(!routing.fallback);
+    assert_eq!(
+        routing.upstreams[0].artifact_url.as_deref(),
+        Some("https://artifacts.example/packages/")
+    );
     assert_eq!(routing.protected, ["Internal.Pkg"]);
     assert_eq!(routing.pins.get("flask").map(String::as_str), Some("public"));
     assert_eq!(

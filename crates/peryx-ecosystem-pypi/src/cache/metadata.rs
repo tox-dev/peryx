@@ -8,7 +8,9 @@ use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
 use peryx_storage::blob::Digest;
-use peryx_upstream::{RangeError, UpstreamClient};
+#[cfg(test)]
+use peryx_upstream::UpstreamClient;
+use peryx_upstream::{ArtifactClient, RangeError};
 
 mod central_dir;
 use central_dir::{
@@ -17,7 +19,9 @@ use central_dir::{
 };
 
 use super::download::file_path;
-use super::{CacheError, NEGATIVE_TTL_SECS, is_tar_gz, is_wheel, source_client, upstream_permit};
+use super::{
+    CacheError, NEGATIVE_TTL_SECS, is_tar_gz, is_wheel, source_artifact_client, source_client, upstream_permit,
+};
 
 /// Fetch a URL through its recorded upstream client, reusing that source's authentication.
 async fn fetch_from_source(
@@ -155,7 +159,7 @@ async fn generated_wheel_metadata_by_range(
     if !is_wheel(filename) {
         return Ok(None);
     }
-    let (client, offline) = source_client(state, source_name, upstream)?;
+    let (client, offline) = source_artifact_client(state, source_name, upstream)?;
     if offline {
         return Err(CacheError::OfflineMissing("metadata"));
     }
@@ -183,7 +187,7 @@ enum RemoteMetadata {
 }
 
 async fn wheel_metadata_by_range(
-    client: &UpstreamClient,
+    client: &ArtifactClient,
     url: &str,
     filename: &str,
 ) -> Result<RemoteMetadata, RangeError> {
@@ -242,7 +246,7 @@ async fn wheel_metadata_by_range(
     }
 }
 
-async fn zip_data_start(client: &UpstreamClient, url: &str, local_header_offset: u64) -> Result<u64, RangeError> {
+async fn zip_data_start(client: &ArtifactClient, url: &str, local_header_offset: u64) -> Result<u64, RangeError> {
     let header = client
         .fetch_range(url, local_header_offset, local_header_offset + 29)
         .await?;
@@ -351,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wheel_metadata_by_range_rejects_invalid_names_before_fetch() {
-        let client = UpstreamClient::new("https://pypi.org/simple/").unwrap();
+        let client = ArtifactClient::from(UpstreamClient::new("https://pypi.org/simple/").unwrap());
 
         assert!(matches!(
             wheel_metadata_by_range(&client, "https://example.invalid/pkg.zip", "pkg-1.0.zip").await,

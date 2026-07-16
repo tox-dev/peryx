@@ -308,14 +308,25 @@ fn build_upstream_routes(configs: &[IndexConfig]) -> anyhow::Result<Vec<(String,
                 .upstreams
                 .iter()
                 .map(|upstream| {
-                    build_upstream_client(
+                    let client = build_upstream_client(
                         &index.name,
                         &upstream.url,
                         upstream.username.as_deref(),
                         upstream.password.as_ref(),
                         upstream.token.as_ref(),
-                    )
-                    .map(|client| NamedUpstream::new(&upstream.name, client))
+                    )?;
+                    let named = NamedUpstream::new(&upstream.name, client);
+                    let Some(artifact_url) = &upstream.artifact_url else {
+                        return Ok(named);
+                    };
+                    let mirror = build_upstream_client(
+                        &index.name,
+                        artifact_url,
+                        upstream.username.as_deref(),
+                        upstream.password.as_ref(),
+                        upstream.token.as_ref(),
+                    )?;
+                    Ok(named.with_artifact_mirror(mirror, routing.fallback))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let driver = drivers()

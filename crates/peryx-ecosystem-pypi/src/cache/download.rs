@@ -12,7 +12,7 @@ use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_storage::blob::Digest;
 
-use super::{CacheError, flight_gate, release_flight, source_client, upstream_permit};
+use super::{CacheError, flight_gate, release_flight, source_artifact_client, source_client, upstream_permit};
 
 /// Resolve a file to a hosted blob path. A cache miss is fetched through the same streaming path as
 /// downloads, so the archive inspector never buffers the whole artifact in memory.
@@ -162,7 +162,7 @@ async fn start_download(
         .meta
         .get_file_url(digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
-    let (client, offline) = source_client(state, &source.source, source.upstream.as_deref())?;
+    let (client, offline) = source_artifact_client(state, &source.source, source.upstream.as_deref())?;
     if offline {
         return Err(CacheError::OfflineMissing("file"));
     }
@@ -180,7 +180,7 @@ async fn start_download(
             body,
             pending,
             sender,
-            (route, filename),
+            (route, filename, source.upstream),
             permit,
         )
         .await;
@@ -225,7 +225,7 @@ async fn pump_download(
     body: impl futures_util::Stream<Item = Result<Bytes, peryx_upstream::UpstreamError>> + Send + 'static,
     mut pending: peryx_storage::blob::PendingBlob,
     sender: tokio::sync::watch::Sender<DownloadProgress>,
-    served_as: (String, String),
+    served_as: (String, String, Option<String>),
     permit: UpstreamPermit,
 ) {
     let started = std::time::Instant::now();
@@ -244,11 +244,12 @@ async fn pump_download(
     drop(permit);
     let bytes = sender.borrow().flushed;
     let elapsed_ms = started.elapsed().as_millis();
+    let (route, filename, upstream) = served_as;
+    let upstream = upstream.as_deref().unwrap_or("");
     #[rustfmt::skip]
-    tracing::debug!(digest = digest.as_str(), bytes, elapsed_ms, "blob transfer ended");
+    tracing::debug!(digest = digest.as_str(), upstream, bytes, elapsed_ms, "blob transfer ended");
     if outcome.is_err() {
         tracing::warn!(digest = digest.as_str(), "blob persist rejected");
-        let (route, filename) = served_as;
         let project = project_of_filename(&filename);
         state.metrics.record(Event::BlobRejected { route, project });
     }

@@ -32,8 +32,11 @@ async fn test_file_download_fetches_verifies_and_caches() {
 #[case::digest_mismatch(b"wrong bytes", false)]
 #[tokio::test]
 async fn test_routed_file_download_verifies_the_advertising_source(#[case] artifact: &[u8], #[case] valid: bool) {
+    let logs = LogCapture::default();
+    let _guard = logs.install();
     let first = MockServer::start().await;
     let second = MockServer::start().await;
+    let artifact_server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .respond_with(ResponseTemplate::new(404))
@@ -48,7 +51,7 @@ async fn test_routed_file_download_verifies_the_advertising_source(#[case] artif
         .and(match_header("authorization", "Bearer second-token"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(artifact.to_vec()))
         .expect(1)
-        .mount(&second)
+        .mount(&artifact_server)
         .await;
     let primary = UpstreamClient::new(&format!("{}/simple/", first.uri())).unwrap();
     let upstream_router = UpstreamRouter::new(vec![
@@ -60,6 +63,10 @@ async fn test_routed_file_download_verifies_the_advertising_source(#[case] artif
                 Auth::Bearer("second-token".to_owned()),
             )
             .unwrap(),
+        )
+        .with_artifact_mirror(
+            UpstreamClient::with_auth(&artifact_server.uri(), Auth::Bearer("second-token".to_owned())).unwrap(),
+            true,
         ),
     ])
     .unwrap();
@@ -88,6 +95,63 @@ async fn test_routed_file_download_verifies_the_advertising_source(#[case] artif
         }
         assert!(!state.blobs.exists(&digest));
         assert_eq!(state.metrics.index_totals()["pypi"].base.rejected, 1);
+    }
+    let event = logs
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|event| field(event, "message") == Some("blob transfer ended"))
+        .unwrap_or_else(|| panic!("{}", logs.text()));
+    assert_eq!(field(&event, "upstream"), Some("second"));
+}
+
+#[rstest]
+#[case::fallback(true, StatusCode::OK, 1)]
+#[case::no_fallback(false, StatusCode::BAD_GATEWAY, 0)]
+#[tokio::test]
+async fn test_artifact_mirror_honors_repository_fallback(
+    #[case] fallback: bool,
+    #[case] expected_status: StatusCode,
+    #[case] origin_requests: u64,
+) {
+    let origin = MockServer::start().await;
+    let mirror = MockServer::start().await;
+    let wheel = b"wheelcontent";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl?origin=1", origin.uri());
+    mount_detail(&origin, digest.as_str(), &file_url, None).await;
+    Mock::given(method("GET"))
+        .and(path("/packages/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.to_vec()))
+        .expect(origin_requests)
+        .mount(&origin)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", origin.uri())).unwrap();
+    let upstream = NamedUpstream::new("origin", client.clone()).with_artifact_mirror(
+        UpstreamClient::new(&format!("{}/packages/", mirror.uri())).unwrap(),
+        fallback,
+    );
+    let upstream_router = UpstreamRouter::new(vec![upstream]).unwrap().with_fallback(fallback);
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_state(&dir, client, upstream_router);
+
+    get(&state, "/pypi/simple/flask/", Some("application/json")).await;
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&state, &uri, None).await;
+
+    assert_eq!(status, expected_status);
+    if fallback {
+        assert_eq!(body, "wheelcontent");
+        assert!(state.blobs.exists(&digest));
+    } else {
+        assert!(body.contains("upstream returned 404 Not Found"));
+        assert!(!state.blobs.exists(&digest));
     }
 }
 #[tokio::test]

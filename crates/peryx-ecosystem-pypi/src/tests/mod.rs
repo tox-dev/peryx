@@ -45,7 +45,7 @@ fn install_global_subscriber() {
     INSTALLED.get_or_init(|| {
         tracing_subscriber::fmt()
             .json()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_writer(ThreadLocalWriter)
             .init();
     });

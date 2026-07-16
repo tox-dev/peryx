@@ -257,6 +257,7 @@ pub enum IndexKind {
 pub struct UpstreamConfig {
     pub name: String,
     pub url: String,
+    pub artifact_url: Option<String>,
     pub username: Option<String>,
     pub password: Option<SecretSource>,
     pub token: Option<SecretSource>,

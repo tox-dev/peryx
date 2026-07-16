@@ -204,6 +204,7 @@ pub struct RawIndex {
 pub struct RawUpstream {
     pub name: String,
     pub url: String,
+    pub artifact_url: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub password_file: Option<PathBuf>,

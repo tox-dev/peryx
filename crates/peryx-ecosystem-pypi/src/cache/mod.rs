@@ -13,7 +13,7 @@ use peryx_driver::rate_limit::UpstreamPermit;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyDenial;
-use peryx_upstream::UpstreamClient;
+use peryx_upstream::{ArtifactClient, UpstreamClient};
 
 mod download;
 mod fetch;
@@ -313,6 +313,24 @@ fn source_client(
         .map(|source| source.client().clone())
         .ok_or(CacheError::FileNotFound)?;
     Ok((client, offline))
+}
+
+fn source_artifact_client(
+    state: &ServingState,
+    source: &str,
+    upstream: Option<&str>,
+) -> Result<(ArtifactClient, bool), CacheError> {
+    let (client, offline) = source_client(state, source, None)?;
+    let Some(upstream) = upstream else {
+        return Ok((ArtifactClient::from(client), offline));
+    };
+    let artifacts = state
+        .upstream_routes
+        .get(source)
+        .and_then(|router| router.source(upstream))
+        .map(|source| source.artifacts().clone())
+        .ok_or(CacheError::FileNotFound)?;
+    Ok((artifacts, offline))
 }
 
 #[cfg(test)]
