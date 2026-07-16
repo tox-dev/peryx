@@ -357,6 +357,14 @@ fn main() -> anyhow::Result<()> {
             let config = resolve_config(command.runtime_args())?;
             app::policy(&config, &command, &mut std::io::stdout())
         }
+        peryx::cli::Command::Writer(command) => {
+            let config = resolve_config(command.runtime_args())?;
+            match command {
+                peryx::cli::WriterCommand::Promote(args) => {
+                    operator::promote_writer(&config, &args.replacement, &mut std::io::stdout())
+                }
+            }
+        }
         peryx::cli::Command::Prefetch(command) => {
             let config = resolve_config(command.runtime_args())?;
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

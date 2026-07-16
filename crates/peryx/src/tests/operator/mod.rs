@@ -3,6 +3,7 @@ mod import_tests;
 mod integration_tests;
 mod restore_tests;
 mod verify_tests;
+mod writer_tests;
 
 use std::collections::BTreeMap;
 

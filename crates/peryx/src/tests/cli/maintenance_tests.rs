@@ -1,7 +1,26 @@
 use std::path::PathBuf;
 
 use super::parse;
-use crate::cli::{BackupCommand, Command, PolicyCommand};
+use crate::cli::{BackupCommand, Command, PolicyCommand, WriterCommand};
+
+#[test]
+fn test_parse_writer_promote() {
+    let cli = parse(&["peryx", "writer", "promote", "writer-b", "--config", "peryx.toml"]);
+    let Command::Writer(WriterCommand::Promote(args)) = cli.command else {
+        panic!("expected writer promote");
+    };
+    assert_eq!(args.runtime.config, Some(PathBuf::from("peryx.toml")));
+    assert_eq!(args.replacement, "writer-b");
+}
+
+#[test]
+fn test_writer_commands_expose_runtime_args() {
+    let cli = parse(&["peryx", "writer", "promote", "writer-b", "--data-dir", "/writer"]);
+    let Command::Writer(command) = cli.command else {
+        panic!("expected writer promote");
+    };
+    assert_eq!(command.runtime_args().data_dir, Some(PathBuf::from("/writer")));
+}
 
 #[test]
 fn test_parse_backup_commands() {

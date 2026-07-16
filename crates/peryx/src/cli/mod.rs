@@ -20,6 +20,7 @@ pub use index::{IndexCommand, IndexListArgs, IndexShowArgs};
 pub use maintenance::SelfCommand;
 pub use maintenance::{
     BackupCommand, BackupCreateArgs, BackupVerifyArgs, ImportDirArgs, PolicyCommand, PolicyDryRunArgs, RestoreArgs,
+    WriterCommand, WriterPromoteArgs,
 };
 pub use mirror::{PrefetchCommand, PrefetchOptions, PrefetchPlanArgs, PrefetchSyncArgs, PrefetchVerifyArgs};
 pub use snippet::{ConfigSnippetArgs, SnippetFormat};
@@ -78,6 +79,9 @@ pub enum Command {
     /// Preview index policy decisions against cached records.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Inspect and change the single-writer identity.
+    #[command(subcommand)]
+    Writer(WriterCommand),
     /// Plan, sync, and verify a cached index's mirror working set.
     #[command(subcommand, name = "mirror")]
     Prefetch(PrefetchCommand),

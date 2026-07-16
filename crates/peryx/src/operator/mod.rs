@@ -16,11 +16,13 @@ mod import;
 mod restore;
 mod snapshot;
 mod verify;
+mod writer;
 
 pub use backup::backup_create;
 pub use import::import_dir;
 pub use restore::restore;
 pub use verify::backup_verify;
+pub use writer::promote_writer;
 
 const BACKUP_FORMAT: u32 = 1;
 const BUFFER_BYTES: usize = 1024 * 1024;

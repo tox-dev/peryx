@@ -16,6 +16,7 @@ fn runtime(cli: Cli) -> RuntimeArgs {
         Command::Restore(_) => panic!("restore takes explicit data-dir args"),
         Command::ImportDir(_) => panic!("import-dir carries nested runtime args"),
         Command::Policy(_) => panic!("policy commands carry nested runtime args"),
+        Command::Writer(_) => panic!("writer commands carry nested runtime args"),
         Command::Prefetch(_) => panic!("prefetch commands carry nested runtime args"),
         other @ Command::Openapi => panic!("no runtime args on {other:?}"),
         #[cfg(feature = "self-update")]

@@ -6,6 +6,32 @@ use clap::{Args, Subcommand};
 
 use super::RuntimeArgs;
 
+/// Single-writer failover commands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum WriterCommand {
+    /// Replace the configured writer identity after stopping the active writer.
+    Promote(WriterPromoteArgs),
+}
+
+impl WriterCommand {
+    #[must_use]
+    pub const fn runtime_args(&self) -> &RuntimeArgs {
+        match self {
+            Self::Promote(args) => &args.runtime,
+        }
+    }
+}
+
+/// Options for manual writer promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct WriterPromoteArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Identity that will become the writer.
+    pub replacement: String,
+}
+
 /// Index policy commands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PolicyCommand {
