@@ -39,6 +39,15 @@ pub fn render_legacy_json(
     version: Option<&str>,
     metadata: Option<&CoreMetadataDoc>,
 ) -> Option<String> {
+    render_legacy_json_with_serial(detail, version, metadata, None)
+}
+
+pub fn render_legacy_json_with_serial(
+    detail: &ProjectDetail,
+    version: Option<&str>,
+    metadata: Option<&CoreMetadataDoc>,
+    last_serial: Option<u64>,
+) -> Option<String> {
     let selected_version = match version {
         Some(version) => Some(find_release_version(detail, version)?),
         None => latest_release_version(detail),
@@ -48,7 +57,7 @@ pub fn render_legacy_json(
         "info".to_owned(),
         legacy_info(detail, selected_version.as_deref(), metadata),
     );
-    response.insert("last_serial".to_owned(), json!(0));
+    response.insert("last_serial".to_owned(), json!(last_serial.unwrap_or_default()));
     if version.is_none() {
         response.insert("releases".to_owned(), legacy_releases(detail));
     }

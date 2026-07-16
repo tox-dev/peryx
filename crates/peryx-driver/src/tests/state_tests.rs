@@ -64,7 +64,7 @@ fn test_hot_cache_budget_of_zero_retains_nothing() {
     let (_dir, state) = state_with_budget(0);
     state.cache.hot.insert(
         "root/pypi\u{0}numpy".to_owned(),
-        (Bytes::from_static(b"page"), i64::MAX),
+        (Bytes::from_static(b"page"), i64::MAX, None),
     );
     state.cache.hot.run_pending_tasks();
     assert_eq!(state.cache.hot.get("root/pypi\u{0}numpy"), None);

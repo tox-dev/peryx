@@ -82,10 +82,13 @@ fn persist_streamed(
 /// How a simple-page request gets its bytes.
 pub enum PageOutcome {
     /// The full transformed document, from the hot cache or a warm raw page.
-    Ready(Bytes),
+    Ready(Bytes, Option<u64>),
     /// A live upstream fetch, transformed chunk by chunk as it arrives. The raw body tees into the
     /// page cache and the transformed body into the hot cache when the stream completes.
-    Streaming(futures_util::stream::BoxStream<'static, Result<Bytes, std::io::Error>>),
+    Streaming(
+        futures_util::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+        Option<u64>,
+    ),
     /// The project does not exist upstream.
     NotFound,
     /// Not streamable here (several cached layers, or no cached); the buffered path serves it.
@@ -119,8 +122,8 @@ pub async fn stream_detail(
     // A hot hit is a lookup and a memcpy; take it before the per-request work in `streaming_parts`
     // (upstream client build, upload/override scans, page context). Only a page that already streamed
     // through the transform path can be hot, so this never shadows a Fallback the miss path would pick.
-    if let Some(bytes) = state.hot_fresh(&hot_key) {
-        return Ok(PageOutcome::Ready(bytes));
+    if let Some((bytes, last_serial)) = state.hot_fresh_versioned(&hot_key) {
+        return Ok(PageOutcome::Ready(bytes, last_serial));
     }
 
     let Some((cached_name, client, offline, context)) = streaming_parts(&state, index, &project)? else {
@@ -132,7 +135,7 @@ pub async fn stream_detail(
         return offline_page(&state, &key, &hot_key, context);
     }
     if let Some(record) = fresh_cached(&state, &key)? {
-        return Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?));
+        return transform_whole(&state, &hot_key, &record, context);
     }
     if state.negative_fresh(&project_negative_key(&key)) {
         return Ok(missing_upstream_outcome(&context));
@@ -140,18 +143,18 @@ pub async fn stream_detail(
     // Serve stale before taking the flight gate so concurrent hits do not queue; the spawned refresh
     // coalesces itself.
     if let Some(record) = super::stale_servable(&state, &key)? {
-        let bytes = transform_whole(&state, &hot_key, &record, context)?;
         let _ = spawn_revalidation(state.clone(), key, cached_name, project, client);
-        return Ok(PageOutcome::Ready(bytes));
+        return transform_whole(&state, &hot_key, &record, context);
     }
 
     let gate = flight_gate(&state, &key);
     let guard = gate.lock_owned().await;
-    if let Some(bytes) = state.hot_fresh(&state.hot_key(&route, &project, super::SIMPLE_JSON)) {
-        return Ok(PageOutcome::Ready(bytes));
+    if let Some((bytes, last_serial)) = state.hot_fresh_versioned(&state.hot_key(&route, &project, super::SIMPLE_JSON))
+    {
+        return Ok(PageOutcome::Ready(bytes, last_serial));
     }
     if let Some(record) = fresh_cached(&state, &key)? {
-        return Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?));
+        return transform_whole(&state, &hot_key, &record, context);
     }
     if state.negative_fresh(&project_negative_key(&key)) {
         release_flight(&state, &key, guard);
@@ -198,7 +201,7 @@ pub async fn stream_detail(
                 changed: false,
             });
             release_flight(&state, &key, guard);
-            Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?))
+            transform_whole(&state, &hot_key, &record, context)
         }
         404 => {
             state.remember_negative(project_negative_key(&key), NEGATIVE_TTL_SECS);
@@ -208,7 +211,7 @@ pub async fn stream_detail(
         200 => {
             let record = buffer_html_page(&state, &key, &cached_name, &project, now, head).await?;
             release_flight(&state, &key, guard);
-            Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?))
+            transform_whole(&state, &hot_key, &record, context)
         }
         _ => {
             release_flight(&state, &key, guard);
@@ -223,10 +226,10 @@ fn offline_page(
     hot_key: &str,
     context: crate::stream::PageContext,
 ) -> Result<PageOutcome, CacheError> {
-    match state.meta.get_index(key)? {
-        Some(record) => Ok(PageOutcome::Ready(transform_whole(state, hot_key, &record, context)?)),
-        None => Ok(PageOutcome::Fallback),
-    }
+    state.meta.get_index(key)?.map_or_else(
+        || Ok(PageOutcome::Fallback),
+        |record| transform_whole(state, hot_key, &record, context),
+    )
 }
 
 /// Fetch and persist the project page for `position`, then return the served detail model.
@@ -242,9 +245,9 @@ pub async fn materialize_detail(
     project: String,
 ) -> Result<Option<ProjectDetail>, CacheError> {
     match stream_detail(state.clone(), position, project.clone()).await? {
-        PageOutcome::Ready(_) | PageOutcome::Fallback => {}
+        PageOutcome::Ready(_, _) | PageOutcome::Fallback => {}
         PageOutcome::NotFound => return Ok(None),
-        PageOutcome::Streaming(mut stream) => {
+        PageOutcome::Streaming(mut stream, _) => {
             use futures_util::StreamExt as _;
             while let Some(chunk) = stream.next().await {
                 chunk.map_err(|err| CacheError::Stream(err.to_string()))?;
@@ -383,7 +386,7 @@ fn transform_whole(
     hot_key: &str,
     record: &CachedIndex,
     mut context: crate::stream::PageContext,
-) -> Result<Bytes, CacheError> {
+) -> Result<PageOutcome, CacheError> {
     let detail = parse_detail(&record.body)?;
     context.known_metadata = known_metadata(state, &detail.files)?;
     let mut transformer = PageTransformer::new(context);
@@ -395,8 +398,10 @@ fn transform_whole(
     out.shrink_to_fit();
     let bytes = Bytes::from(out);
     let expires_at = record.fetched_at_unix + freshness(state, record);
-    state.cache.store_hot(hot_key.to_owned(), bytes.clone(), expires_at);
-    Ok(bytes)
+    state
+        .cache
+        .store_hot_versioned(hot_key.to_owned(), bytes.clone(), expires_at, record.last_serial);
+    Ok(PageOutcome::Ready(bytes, record.last_serial))
 }
 
 /// Refresh a stale-but-served page against upstream in the background, coalesced by the same

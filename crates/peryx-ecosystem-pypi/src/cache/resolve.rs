@@ -16,6 +16,14 @@ use peryx_upstream::UpstreamClient;
 use super::fetch::fetch_and_store;
 use super::{CacheError, flight_gate, fresh_cached, project_negative_key, supports_generated_metadata};
 
+/// A resolved project page and the source serial that produced it, when the index has one serial stream.
+pub struct DetailPage {
+    /// The project data served to the client.
+    pub detail: ProjectDetail,
+    /// The upstream or local journal serial represented by `detail`.
+    pub last_serial: Option<u64>,
+}
+
 /// Resolve one project's detail across a virtual index's layers, first-match, returning `None` when
 /// no layer has the project.
 ///
@@ -27,33 +35,55 @@ pub async fn resolve_detail(
     project: &str,
     serve_route: &str,
 ) -> Result<Option<ProjectDetail>, CacheError> {
+    Ok(resolve_detail_page(state, index, project, serve_route)
+        .await?
+        .map(|page| page.detail))
+}
+
+/// Resolve a project's detail with the serial represented by that page.
+///
+/// # Errors
+/// Returns [`CacheError`] on policy denial, store failure, invalid cached data, or an upstream error without fallback.
+pub async fn resolve_detail_page(
+    state: &ServingState,
+    index: &Index,
+    project: &str,
+    serve_route: &str,
+) -> Result<Option<DetailPage>, CacheError> {
     index.policy.check_project(PolicyAction::Serve, project)?;
-    let detail = match &index.kind {
+    let page = match &index.kind {
         IndexKind::Cached { client, offline } => {
-            let Some(mut detail) = cached_detail(state, &index.name, &index.route, client, *offline, project).await?
+            let Some(mut page) = cached_detail(state, &index.name, &index.route, client, *offline, project).await?
             else {
                 return Ok(None);
             };
-            rewrite_urls(&mut detail, serve_route);
-            Some(detail)
+            rewrite_urls(&mut page.detail, serve_route);
+            Some(page)
         }
         IndexKind::Hosted { .. } => {
             let Some(mut detail) = local_detail(state, &index.name, project)? else {
                 return Ok(None);
             };
             rewrite_urls(&mut detail, serve_route);
-            Some(detail)
+            Some(DetailPage {
+                detail,
+                last_serial: Some(state.meta.current_serial()?),
+            })
         }
-        IndexKind::Virtual { layers, upload } => virtual_detail(state, layers, *upload, project, serve_route).await?,
+        IndexKind::Virtual { layers, upload } => virtual_detail(state, layers, *upload, project, serve_route)
+            .await?
+            .map(|detail| DetailPage {
+                detail,
+                last_serial: None,
+            }),
     };
-    detail
-        .map(|detail| {
-            index
-                .policy
-                .apply_detail(PolicyAction::Serve, project, detail, Some((state.clock)()))
-                .map_err(CacheError::from)
-        })
-        .transpose()
+    page.map(|mut page| {
+        page.detail = index
+            .policy
+            .apply_detail(PolicyAction::Serve, project, page.detail, Some((state.clock)()))?;
+        Ok(page)
+    })
+    .transpose()
 }
 
 /// Merge the layers of a virtual index: first match per filename wins, versions are unioned. Overrides
@@ -181,16 +211,16 @@ async fn cached_detail(
     client: &UpstreamClient,
     offline: bool,
     project: &str,
-) -> Result<Option<ProjectDetail>, CacheError> {
+) -> Result<Option<DetailPage>, CacheError> {
     let key = format!("{name}/{project}");
     if offline {
         return match state.meta.get_index(&key)? {
-            Some(record) => Ok(Some(raw_to_detail(state, route, &record)?)),
+            Some(record) => Ok(Some(raw_to_page(state, route, &record)?)),
             None => Err(CacheError::OfflineMissing("project page")),
         };
     }
     if let Some(record) = fresh_cached(state, &key)? {
-        return Ok(Some(raw_to_detail(state, route, &record)?));
+        return Ok(Some(raw_to_page(state, route, &record)?));
     }
     if state.negative_fresh(&project_negative_key(&key)) {
         return Ok(None);
@@ -200,7 +230,7 @@ async fn cached_detail(
     let _guard = gate.lock().await;
     // Whoever held the gate first has stored the page by now; everyone else serves it from cache.
     if let Some(record) = fresh_cached(state, &key)? {
-        return Ok(Some(raw_to_detail(state, route, &record)?));
+        return Ok(Some(raw_to_page(state, route, &record)?));
     }
     if state.negative_fresh(&project_negative_key(&key)) {
         return Ok(None);
@@ -209,9 +239,16 @@ async fn cached_detail(
     let result = fetch_and_store(state, &key, name, project, client).await;
     state.cache.forget_flight(&key);
     match result? {
-        Some(record) => Ok(Some(raw_to_detail(state, route, &record)?)),
+        Some(record) => Ok(Some(raw_to_page(state, route, &record)?)),
         None => Ok(None),
     }
+}
+
+fn raw_to_page(state: &ServingState, route: &str, record: &CachedIndex) -> Result<DetailPage, CacheError> {
+    Ok(DetailPage {
+        detail: raw_to_detail(state, route, record)?,
+        last_serial: record.last_serial,
+    })
 }
 
 /// Turn a raw cached page into the detail served on `route`: parse, drop unverifiable metadata
@@ -331,6 +368,17 @@ pub fn resolve_list(state: &ServingState, index: &Index) -> Result<ProjectList, 
         meta: Meta::default(),
         projects: names.into_iter().map(|name| ProjectListEntry { name }).collect(),
     }))
+}
+
+/// Return the stable serial for a project list, omitting indexes whose layers have no combined serial model.
+///
+/// # Errors
+/// Returns [`CacheError`] when the local serial cannot be read.
+pub fn list_serial(state: &ServingState, index: &Index) -> Result<Option<u64>, CacheError> {
+    match &index.kind {
+        IndexKind::Hosted { .. } => Ok(Some(state.meta.current_serial()?)),
+        IndexKind::Cached { .. } | IndexKind::Virtual { .. } => Ok(None),
+    }
 }
 
 fn collect_projects(state: &ServingState, index: &Index, names: &mut BTreeSet<String>) -> Result<(), CacheError> {

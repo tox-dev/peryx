@@ -114,6 +114,47 @@ async fn test_upload_direct_to_local_route() {
     assert_eq!(status, StatusCode::OK);
     assert!(detail.contains("peryxpkg"));
 }
+#[rstest]
+#[case::list("/hosted/simple/")]
+#[case::detail("/hosted/simple/peryxpkg/")]
+#[tokio::test]
+async fn test_hosted_simple_response_emits_local_serial(#[case] uri: &str) {
+    let h = harness().await;
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+
+    let (status, headers, _) = get(&h.state, uri, Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("x-pypi-last-serial").unwrap(), "1");
+}
+#[tokio::test]
+async fn test_hosted_simple_serial_advances_after_mutation() {
+    let h = harness().await;
+    assert_eq!(upload_version(&h.state, "/hosted/", "1.0").await, StatusCode::OK);
+    let (_, first_headers, _) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+
+    assert_eq!(upload_version(&h.state, "/hosted/", "2.0").await, StatusCode::OK);
+    let (_, second_headers, _) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+
+    assert_eq!(first_headers.get("x-pypi-last-serial").unwrap(), "1");
+    assert_eq!(second_headers.get("x-pypi-last-serial").unwrap(), "2");
+}
+#[tokio::test]
+async fn test_virtual_simple_response_omits_uncombined_serial() {
+    let h = harness().await;
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+
+    let (status, headers, _) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("x-pypi-last-serial").is_none());
+}
 #[tokio::test]
 async fn test_upload_accepts_file_above_default_body_limit() {
     let h = harness().await;

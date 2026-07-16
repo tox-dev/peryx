@@ -39,7 +39,7 @@ async fn test_small_json_page_without_meta_completes_during_preflight() {
         .await
         .unwrap();
     let bytes = match outcome {
-        PageOutcome::Ready(bytes) => bytes,
+        PageOutcome::Ready(bytes, _) => bytes,
         outcome => panic!("expected a ready outcome, got {}", matches_name(&outcome)),
     };
     assert_eq!(bytes, Bytes::from_static(br#"{"name":"flask"}"#));
@@ -85,7 +85,7 @@ async fn test_json_meta_preflight_streams_without_remainder() {
         .await
         .unwrap();
     release.send(()).unwrap();
-    let PageOutcome::Streaming(stream) = outcome else {
+    let PageOutcome::Streaming(stream, _) = outcome else {
         panic!("expected a streaming outcome, got {}", matches_name(&outcome));
     };
     let body = stream
@@ -203,7 +203,7 @@ async fn test_client_disconnect_releases_the_inflight_entry() {
             acl: IndexAcl::default(),
         }]
     });
-    let PageOutcome::Streaming(stream) = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+    let PageOutcome::Streaming(stream, _) = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap()
     else {
@@ -257,7 +257,7 @@ async fn test_live_stream_buffers_quarantined_files_before_meta() {
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap();
-    let PageOutcome::Ready(bytes) = outcome else {
+    let PageOutcome::Ready(bytes, _) = outcome else {
         panic!("expected a ready outcome, got {}", matches_name(&outcome));
     };
     let detail = crate::parse_detail(&bytes).unwrap();
@@ -289,7 +289,7 @@ async fn test_live_stream_buffers_downloadable_files_before_meta() {
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap();
-    let PageOutcome::Ready(bytes) = outcome else {
+    let PageOutcome::Ready(bytes, _) = outcome else {
         panic!("expected a ready outcome, got {}", matches_name(&outcome));
     };
     let detail = crate::parse_detail(&bytes).unwrap();
@@ -322,7 +322,7 @@ async fn test_transform_whole_withholds_quarantined_files_before_meta() {
     let outcome = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap();
-    let PageOutcome::Ready(bytes) = outcome else {
+    let PageOutcome::Ready(bytes, _) = outcome else {
         panic!("expected a ready outcome, got {}", matches_name(&outcome));
     };
     let detail = crate::parse_detail(&bytes).unwrap();

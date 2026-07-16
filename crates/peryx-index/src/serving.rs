@@ -63,7 +63,7 @@ pub struct ServingCache {
     /// Transformed page bytes paired with their unix expiry. Keys carry their project's epoch, so a
     /// mutation to that project invalidates by key miss; the expiry honours each page's upstream
     /// lifetime, and moka's own time-to-live is a coarse eviction backstop.
-    pub hot: moka::sync::Cache<String, (bytes::Bytes, i64)>,
+    pub hot: moka::sync::Cache<String, (bytes::Bytes, i64, Option<u64>)>,
     /// Short-lived upstream misses (key → unix expiry), kept apart from stored pages so a `404` adds
     /// no row to the persistent cache.
     pub negative: moka::sync::Cache<String, i64>,
@@ -82,7 +82,7 @@ impl ServingCache {
             inflight: Inflight::default(),
             hot: moka::sync::Cache::builder()
                 .max_capacity(hot_cache_bytes)
-                .weigher(|key: &String, (value, _): &(bytes::Bytes, i64)| {
+                .weigher(|key: &String, (value, _, _): &(bytes::Bytes, i64, Option<u64>)| {
                     u32::try_from(key.len() + value.len()).unwrap_or(u32::MAX)
                 })
                 .time_to_live(std::time::Duration::from_secs(
@@ -106,13 +106,25 @@ impl ServingCache {
     /// A hot-cache entry still within its freshness window at `now`; an expired entry misses.
     #[must_use]
     pub fn hot_fresh(&self, key: &str, now: i64) -> Option<bytes::Bytes> {
-        let (bytes, expires_at) = self.hot.get(key)?;
+        let (bytes, expires_at, _) = self.hot.get(key)?;
         (now < expires_at).then_some(bytes)
+    }
+
+    /// A fresh hot-cache entry with the source revision attached by its driver.
+    #[must_use]
+    pub fn hot_fresh_versioned(&self, key: &str, now: i64) -> Option<(bytes::Bytes, Option<u64>)> {
+        let (bytes, expires_at, revision) = self.hot.get(key)?;
+        (now < expires_at).then_some((bytes, revision))
     }
 
     /// Store `bytes` as the hot representation of `key` until `expires_at`.
     pub fn store_hot(&self, key: String, bytes: bytes::Bytes, expires_at: i64) {
-        self.hot.insert(key, (bytes, expires_at));
+        self.hot.insert(key, (bytes, expires_at, None));
+    }
+
+    /// Store bytes with the source revision that produced them.
+    pub fn store_hot_versioned(&self, key: String, bytes: bytes::Bytes, expires_at: i64, revision: Option<u64>) {
+        self.hot.insert(key, (bytes, expires_at, revision));
     }
 
     /// The hot-cache key for one representation of a page as served on `route` right now.

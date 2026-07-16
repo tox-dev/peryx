@@ -99,6 +99,36 @@ async fn test_legacy_project_json_serves_releases_from_simple_detail() {
     );
 }
 #[tokio::test]
+async fn test_legacy_project_json_preserves_upstream_serial() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pypi-last-serial", "42")
+                .set_body_raw(
+                    detail_json(digest.as_str(), &file_url).into_bytes(),
+                    "application/vnd.pypi.simple.v1+json",
+                ),
+        )
+        .mount(&h.server)
+        .await;
+
+    let (cold_status, cold_headers, cold_body) = get(&h.state, "/pypi/flask/json", None).await;
+    let (hot_status, hot_headers, hot_body) = get(&h.state, "/pypi/flask/json", None).await;
+
+    let cold_legacy: serde_json::Value = serde_json::from_str(&cold_body).unwrap();
+    let hot_legacy: serde_json::Value = serde_json::from_str(&hot_body).unwrap();
+    assert_eq!(cold_status, StatusCode::OK);
+    assert_eq!(cold_headers.get("x-pypi-last-serial").unwrap(), "42");
+    assert_eq!(cold_legacy["last_serial"], 42);
+    assert_eq!(hot_status, StatusCode::OK);
+    assert_eq!(hot_headers.get("x-pypi-last-serial").unwrap(), "42");
+    assert_eq!(hot_legacy["last_serial"], 42);
+}
+#[tokio::test]
 async fn test_legacy_release_json_serves_one_version_without_releases() {
     let h = harness().await;
     let digest = Digest::of(b"sdist");

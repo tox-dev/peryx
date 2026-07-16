@@ -12,6 +12,12 @@ impl ServingState {
         self.cache.hot_fresh(key, (self.clock)())
     }
 
+    /// A fresh hot-cache entry and the source revision attached by its driver.
+    #[must_use]
+    pub fn hot_fresh_versioned(&self, key: &str) -> Option<(Bytes, Option<u64>)> {
+        self.cache.hot_fresh_versioned(key, (self.clock)())
+    }
+
     /// The hot-cache key for one representation of a page as served on `route` right now.
     #[must_use]
     pub fn hot_key(&self, route: &str, project: &str, variant: &str) -> String {

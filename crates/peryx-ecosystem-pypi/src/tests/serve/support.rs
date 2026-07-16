@@ -87,15 +87,15 @@ pub(super) async fn stream_outcome(state: &Arc<AppState>) -> Vec<Result<Bytes, s
         .await
         .unwrap()
     {
-        PageOutcome::Streaming(stream) => stream.collect().await,
+        PageOutcome::Streaming(stream, _) => stream.collect().await,
         outcome => panic!("expected a streaming outcome, got {}", matches_name(&outcome)),
     }
 }
 
 pub(super) fn matches_name(outcome: &PageOutcome) -> &'static str {
     match outcome {
-        PageOutcome::Ready(_) => "Ready",
-        PageOutcome::Streaming(_) => "Streaming",
+        PageOutcome::Ready(_, _) => "Ready",
+        PageOutcome::Streaming(_, _) => "Streaming",
         PageOutcome::NotFound => "NotFound",
         PageOutcome::Fallback => "Fallback",
     }

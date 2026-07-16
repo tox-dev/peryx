@@ -10,41 +10,55 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_policy::PolicyDenial;
 
-use crate::cache::CacheError;
-use crate::{ProjectDetail, ProjectList, render_index_html, to_json};
+use crate::cache::{CacheError, DetailPage};
+use crate::{ProjectList, render_index_html, to_json};
 
 use super::{Format, MIME_HTML, MIME_JSON, MIME_LEGACY_JSON};
 
 /// Map a project-list result to a negotiated response. Sync so every arm is directly testable.
-pub fn index_response(result: Result<ProjectList, CacheError>, format: Format, index: &str) -> Response {
-    let list = match result {
-        Ok(list) => list,
+pub fn index_response(result: Result<(ProjectList, Option<u64>), CacheError>, format: Format, index: &str) -> Response {
+    let (list, last_serial) = match result {
+        Ok(page) => page,
         Err(err) => return cache_error_response(&err, CacheContext::list(index)),
     };
     let vary = (header::VARY, "Accept");
-    match format {
+    let response = match format {
         Format::Json => ([(header::CONTENT_TYPE, MIME_JSON), vary], to_json(&list)).into_response(),
         Format::Html => ([(header::CONTENT_TYPE, MIME_HTML), vary], render_index_html(&list)).into_response(),
-    }
+    };
+    with_last_serial(response, last_serial)
+}
+
+pub(super) fn json_bytes_response(body: impl IntoResponse, last_serial: Option<u64>) -> Response {
+    with_last_serial(
+        ([(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")], body).into_response(),
+        last_serial,
+    )
 }
 
 /// Serve an already-rendered PEP 503 page, from the hot cache or from the render that just filled it.
-pub(super) fn html_bytes_response(body: bytes::Bytes) -> Response {
-    ([(header::CONTENT_TYPE, MIME_HTML), (header::VARY, "Accept")], body).into_response()
+pub(super) fn html_bytes_response(body: bytes::Bytes, last_serial: Option<u64>) -> Response {
+    with_last_serial(
+        ([(header::CONTENT_TYPE, MIME_HTML), (header::VARY, "Accept")], body).into_response(),
+        last_serial,
+    )
 }
 
 /// Serve an already-rendered legacy JSON document.
-pub(super) fn legacy_bytes_response(body: bytes::Bytes) -> Response {
-    ([(header::CONTENT_TYPE, MIME_LEGACY_JSON)], body).into_response()
+pub(super) fn legacy_bytes_response(body: bytes::Bytes, last_serial: Option<u64>) -> Response {
+    with_last_serial(
+        ([(header::CONTENT_TYPE, MIME_LEGACY_JSON)], body).into_response(),
+        last_serial,
+    )
 }
 
 /// The PEP 691 JSON representation of a project, or the status its resolution earned.
 ///
 /// Only JSON: the HTML render is served (and cached) by the route, because rendering it twice to
 /// discover which of the two representations was asked for is the cost this cache exists to remove.
-pub fn detail_response(result: Result<Option<ProjectDetail>, CacheError>, index: &str, project: &str) -> Response {
-    let detail = match result {
-        Ok(Some(detail)) => detail,
+pub fn detail_response(result: Result<Option<DetailPage>, CacheError>, index: &str, project: &str) -> Response {
+    let page = match result {
+        Ok(Some(page)) => page,
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
@@ -64,15 +78,18 @@ pub fn detail_response(result: Result<Option<ProjectDetail>, CacheError>, index:
             return cache_error_response(&err, CacheContext::project(index, project));
         }
     };
-    (
-        [(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")],
-        to_json(&detail),
+    with_last_serial(
+        (
+            [(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")],
+            to_json(&page.detail),
+        )
+            .into_response(),
+        page.last_serial,
     )
-        .into_response()
 }
 
 pub(super) fn legacy_json_response(
-    result: Result<Option<ProjectDetail>, CacheError>,
+    result: Result<Option<DetailPage>, CacheError>,
     index: &str,
     project: &str,
     version: Option<&str>,
@@ -102,6 +119,16 @@ pub(super) fn legacy_json_response(
             cache_error_response(&err, CacheContext::project(index, project))
         }
     }
+}
+
+fn with_last_serial(mut response: Response, last_serial: Option<u64>) -> Response {
+    if let Some(last_serial) = last_serial {
+        response.headers_mut().insert(
+            axum::http::HeaderName::from_static("x-pypi-last-serial"),
+            HeaderValue::from_str(&last_serial.to_string()).expect("a u64 is a valid header value"),
+        );
+    }
+    response
 }
 
 /// Map a file-bytes result to a response. Sync so every arm is directly unit-testable.

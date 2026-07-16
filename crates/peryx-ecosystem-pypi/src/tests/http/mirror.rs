@@ -24,6 +24,35 @@ async fn test_mirror_detail_json_rewrites_file_url_and_caches() {
     let (status2, ..) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     assert_eq!(status2, StatusCode::OK);
 }
+#[rstest]
+#[case::json("application/json")]
+#[case::html("text/html")]
+#[tokio::test]
+async fn test_mirror_detail_preserves_upstream_serial_when_cold_and_hot(#[case] accept: &str) {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pypi-last-serial", "42")
+                .set_body_raw(
+                    detail_json(digest.as_str(), &file_url).into_bytes(),
+                    "application/vnd.pypi.simple.v1+json",
+                ),
+        )
+        .mount(&h.server)
+        .await;
+
+    let (cold_status, cold_headers, _) = get(&h.state, "/pypi/simple/flask/", Some(accept)).await;
+    let (hot_status, hot_headers, _) = get(&h.state, "/pypi/simple/flask/", Some(accept)).await;
+
+    assert_eq!(cold_status, StatusCode::OK);
+    assert_eq!(cold_headers.get("x-pypi-last-serial").unwrap(), "42");
+    assert_eq!(hot_status, StatusCode::OK);
+    assert_eq!(hot_headers.get("x-pypi-last-serial").unwrap(), "42");
+}
 /// A JSON upstream serving `file_url` must content-address the file on peryx's own route and record
 /// `expected_source` as the blob's absolute origin, whatever shape the upstream URL took.
 async fn assert_mirror_json_resolves(file_url: &str, expected_source: impl FnOnce(&str) -> String) {

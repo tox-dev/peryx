@@ -30,7 +30,7 @@ pub use mutate::{
     set_yanked, store_upload,
 };
 pub use page_stream::{PageOutcome, materialize_detail, stream_detail};
-pub use resolve::{resolve_detail, resolve_list};
+pub use resolve::{DetailPage, list_serial, resolve_detail, resolve_detail_page, resolve_list};
 
 #[cfg(test)]
 pub(crate) use download::tail_download;

@@ -76,31 +76,34 @@ impl FreshJsonStream {
                 raw,
                 served,
                 pending,
-            } => Ok(PageOutcome::Streaming(live_stream(
-                self.state.clone(),
-                LiveStream {
-                    body,
-                    transformer: *transformer,
-                    flight: FlightGuard {
-                        state: self.state,
-                        key: self.key,
-                        guard: Some(self.guard),
+            } => Ok(PageOutcome::Streaming(
+                live_stream(
+                    self.state.clone(),
+                    LiveStream {
+                        body,
+                        transformer: *transformer,
+                        flight: FlightGuard {
+                            state: self.state,
+                            key: self.key,
+                            guard: Some(self.guard),
+                        },
+                        hot_key: self.hot_key,
+                        route: self.route,
+                        cached: self.cached_name,
+                        project: self.project,
+                        etag,
+                        last_serial,
+                        fetched_at: self.now,
+                        fresh_secs: max_age,
+                        base,
+                        _permit: self.permit,
                     },
-                    hot_key: self.hot_key,
-                    route: self.route,
-                    cached: self.cached_name,
-                    project: self.project,
-                    etag,
-                    last_serial,
-                    fetched_at: self.now,
-                    fresh_secs: max_age,
-                    base,
-                    _permit: self.permit,
-                },
-                raw,
-                served,
-                pending,
-            ))),
+                    raw,
+                    served,
+                    pending,
+                ),
+                last_serial,
+            )),
             JsonPreflight::Complete { raw, served, summary } => {
                 let record = build_record(raw, &base, etag, last_serial, max_age, self.now);
                 let expires_at =
@@ -109,9 +112,11 @@ impl FreshJsonStream {
                 persist_streamed(&self.state, &self.key, &self.cached_name, &self.project, &record, &summary)?;
                 spawn_metadata_backfill(self.state.clone(), self.route.clone(), &summary.registrations);
                 let bytes = Bytes::from(served);
-                self.state.cache.store_hot(self.hot_key, bytes.clone(), expires_at);
+                self.state
+                    .cache
+                    .store_hot_versioned(self.hot_key, bytes.clone(), expires_at, last_serial);
                 release_flight(&self.state, &self.key, self.guard);
-                Ok(PageOutcome::Ready(bytes))
+                Ok(PageOutcome::Ready(bytes, last_serial))
             }
         }
     }
@@ -329,10 +334,11 @@ fn live_stream(
                     // The hot page goes live only after the persist lands: a concurrent client that
                     // serves this page from the hot cache and immediately requests a file must find
                     // that file's registration.
-                    state.cache.store_hot(
+                    state.cache.store_hot_versioned(
                         live.hot_key.clone(),
                         Bytes::from(std::mem::take(&mut served)),
                         expires_at,
+                        live.last_serial,
                     );
                     let elapsed_ms = started.elapsed().as_millis();
                     tracing::debug!(key = %live.flight.key, bytes = raw_len, elapsed_ms, "page streamed from upstream");

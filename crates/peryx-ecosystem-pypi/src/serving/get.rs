@@ -26,9 +26,9 @@ use crate::policy::PypiPolicy;
 use super::inspect::inspect_route;
 use super::response::{
     CacheContext, cache_error_response, detail_response, file_response, html_bytes_response, index_response,
-    legacy_bytes_response, legacy_json_response, policy_denial_response,
+    json_bytes_response, legacy_bytes_response, legacy_json_response, policy_denial_response,
 };
-use super::{Format, METADATA_FAMILY, MIME_JSON, negotiate, path_error_response, safe_filename};
+use super::{Format, METADATA_FAMILY, negotiate, path_error_response, safe_filename};
 
 /// `GET /{route}/...` serves the project list, project detail, or a file/metadata download for the
 /// index the neutral router already resolved to `position`. The peryx-owned `+api`/`+search` routes run
@@ -71,16 +71,23 @@ async fn pypi_get(
                 || cache::LEGACY_JSON.to_owned(),
                 |version| format!("{}/{version}", cache::LEGACY_JSON),
             );
-            if let Some(bytes) = state.hot_fresh(&state.hot_key(&index.route, &target.project, &variant)) {
-                return legacy_bytes_response(bytes);
+            if let Some((bytes, last_serial)) =
+                state.hot_fresh_versioned(&state.hot_key(&index.route, &target.project, &variant))
+            {
+                return legacy_bytes_response(bytes, last_serial);
             }
-            let detail = cache::resolve_detail(state, index, &target.project, &index.route).await;
+            let detail = cache::resolve_detail_page(state, index, &target.project, &index.route).await;
             if let Ok(Some(found)) = &detail
-                && let Some(body) = crate::render_legacy_json(found, target.version.as_deref(), None)
+                && let Some(body) = crate::legacy_json::render_legacy_json_with_serial(
+                    &found.detail,
+                    target.version.as_deref(),
+                    None,
+                    found.last_serial,
+                )
             {
                 let body = bytes::Bytes::from(body);
-                remember_rendered(state, index, &target.project, &variant, &body);
-                return legacy_bytes_response(body);
+                remember_rendered(state, index, &target.project, &variant, &body, found.last_serial);
+                return legacy_bytes_response(body, found.last_serial);
             }
             return legacy_json_response(detail, &index.route, &target.project, target.version.as_deref());
         }
@@ -91,7 +98,7 @@ async fn pypi_get(
         return simple_slash_redirect(uri, rest, "simple/");
     }
     if rest == "simple/" {
-        return index_response(cache::resolve_list(state, index), negotiate(headers), &index.route);
+        return simple_index_response(state, index, headers);
     }
     if let Some(project) = rest
         .strip_prefix("simple/")
@@ -107,15 +114,11 @@ async fn pypi_get(
         });
         if matches!(negotiate(headers), Format::Json) {
             match cache::stream_detail(state.clone(), position, normalized.clone()).await {
-                Ok(PageOutcome::Ready(bytes)) => {
-                    return ([(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")], bytes).into_response();
+                Ok(PageOutcome::Ready(bytes, last_serial)) => {
+                    return json_bytes_response(bytes, last_serial);
                 }
-                Ok(PageOutcome::Streaming(stream)) => {
-                    return (
-                        [(header::CONTENT_TYPE, MIME_JSON), (header::VARY, "Accept")],
-                        axum::body::Body::from_stream(stream),
-                    )
-                        .into_response();
+                Ok(PageOutcome::Streaming(stream, last_serial)) => {
+                    return json_bytes_response(axum::body::Body::from_stream(stream), last_serial);
                 }
                 Ok(PageOutcome::NotFound) => {
                     return (StatusCode::NOT_FOUND, "project not found").into_response();
@@ -132,18 +135,20 @@ async fn pypi_get(
         let index = state.index_at(position);
         let format = negotiate(headers);
         if matches!(format, Format::Html) {
-            if let Some(bytes) = state.hot_fresh(&state.hot_key(&index.route, &normalized, cache::SIMPLE_HTML)) {
-                return html_bytes_response(bytes);
+            if let Some((bytes, last_serial)) =
+                state.hot_fresh_versioned(&state.hot_key(&index.route, &normalized, cache::SIMPLE_HTML))
+            {
+                return html_bytes_response(bytes, last_serial);
             }
-            let detail = cache::resolve_detail(state, index, &normalized, &index.route).await;
+            let detail = cache::resolve_detail_page(state, index, &normalized, &index.route).await;
             if let Ok(Some(found)) = &detail {
-                let body = bytes::Bytes::from(crate::render_detail_html(found));
-                remember_rendered(state, index, &normalized, cache::SIMPLE_HTML, &body);
-                return html_bytes_response(body);
+                let body = bytes::Bytes::from(crate::render_detail_html(&found.detail));
+                remember_rendered(state, index, &normalized, cache::SIMPLE_HTML, &body, found.last_serial);
+                return html_bytes_response(body, found.last_serial);
             }
             return detail_response(detail, &index.route, &normalized);
         }
-        let detail = cache::resolve_detail(state, index, &normalized, &index.route).await;
+        let detail = cache::resolve_detail_page(state, index, &normalized, &index.route).await;
         return detail_response(detail, &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
@@ -153,6 +158,12 @@ async fn pypi_get(
         return inspect_route(state.clone(), index.route.clone(), target, uri.query()).await;
     }
     not_found()
+}
+
+fn simple_index_response(state: &ServingState, index: &Index, headers: &HeaderMap) -> Response {
+    let list = cache::resolve_list(state, index)
+        .and_then(|list| cache::list_serial(state, index).map(|last_serial| (list, last_serial)));
+    index_response(list, negotiate(headers), &index.route)
 }
 
 /// PEP 503 canonical Simple URLs end in a slash; a request that drops it is redirected rather than
@@ -510,9 +521,18 @@ async fn serve_blob(
 /// Resolving a cold page fetches it from upstream and persists it, and persisting bumps that project's
 /// epoch. A key captured before that carries the old epoch, so the entry it writes is one no later
 /// reader can compute: the cache would fill and never hit.
-fn remember_rendered(state: &ServingState, index: &Index, project: &str, variant: &str, body: &bytes::Bytes) {
+fn remember_rendered(
+    state: &ServingState,
+    index: &Index,
+    project: &str,
+    variant: &str,
+    body: &bytes::Bytes,
+    last_serial: Option<u64>,
+) {
     if let Ok(Some(expires_at)) = cache::rendered_expiry(state, index, project) {
         let key = state.hot_key(&index.route, project, variant);
-        state.cache.store_hot(key, body.clone(), expires_at);
+        state
+            .cache
+            .store_hot_versioned(key, body.clone(), expires_at, last_serial);
     }
 }
