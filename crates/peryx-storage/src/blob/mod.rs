@@ -14,8 +14,14 @@ mod error;
 mod store;
 
 pub use backend::BlobBackend;
-pub use error::{BlobError, BlobScanError};
+pub use error::{BlobError, BlobOperation, BlobScanError};
 pub use store::{BlobEntry, BlobStore, PendingBlob, StagedBlob};
+
+/// Metadata returned without fetching a blob's contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobMetadata {
+    pub bytes: u64,
+}
 
 /// A sha256 digest rendered as lowercase hex.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

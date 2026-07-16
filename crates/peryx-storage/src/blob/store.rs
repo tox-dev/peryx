@@ -1,10 +1,11 @@
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, Write as _};
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
 use super::error::{BlobError, BlobScanError};
-use super::{Digest, sync_parent, to_hex};
+use super::{BlobMetadata, Digest, sync_parent, to_hex};
 
 /// Settle a no-clobber move of a freshly written temp blob into its content-addressed `dest`.
 ///
@@ -110,6 +111,46 @@ impl BlobStore {
     /// failure.
     pub fn read(&self, digest: &Digest) -> Result<Vec<u8>, BlobError> {
         std::fs::read(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))
+    }
+
+    /// Return a blob's byte length without reading its contents, or `None` when it is absent.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] if the path exists but its metadata cannot be read.
+    pub fn head(&self, digest: &Digest) -> Result<Option<BlobMetadata>, BlobError> {
+        match std::fs::metadata(self.path_for(digest)) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(BlobMetadata { bytes: metadata.len() })),
+            Ok(_) => Ok(None),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(BlobError::Io(err)),
+        }
+    }
+
+    /// Read an end-exclusive byte range from a blob.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::NotFound`] if the blob is absent, [`BlobError::InvalidRange`] if the
+    /// range lies outside the blob, or [`BlobError::Io`] on a read failure.
+    pub fn read_range(&self, digest: &Digest, range: Range<u64>) -> Result<Vec<u8>, BlobError> {
+        let mut file = std::fs::File::open(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))?;
+        let bytes = file.metadata()?.len();
+        let invalid = || BlobError::InvalidRange {
+            digest: digest.as_str().to_owned(),
+            start: range.start,
+            end: range.end,
+            bytes,
+        };
+        if range.start > range.end || range.end > bytes {
+            return Err(invalid());
+        }
+        #[cfg(target_pointer_width = "64")]
+        let range_len = usize::try_from(range.end - range.start).unwrap_or(usize::MAX);
+        #[cfg(not(target_pointer_width = "64"))]
+        let range_len = usize::try_from(range.end - range.start).map_err(|_| invalid())?;
+        file.seek(std::io::SeekFrom::Start(range.start))?;
+        let mut result = vec![0; range_len];
+        file.take(range_len as u64).read_exact(&mut result)?;
+        Ok(result)
     }
 
     /// Visit blob files under the content-addressed tree without collecting the store.
