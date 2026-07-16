@@ -1,7 +1,7 @@
 use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use super::error::MetaError;
-use super::{DRIVER_KV, DriverBatch, JOURNAL, MetaStore, SERIAL, SERIAL_KEY};
+use super::{DRIVER_KV, DriverBatch, DriverMutation, JOURNAL, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
 
 impl MetaStore {
     /// Store a driver-owned value under `key`. The store treats both as opaque bytes.
@@ -98,7 +98,9 @@ impl MetaStore {
     /// next serial and is written in the same transaction, in order, so a batch that changes many
     /// files records one entry per file and a replica observes every one. An empty list commits the
     /// rows alone, for a change no replica reconciles. Returning an error from `body` drops the
-    /// transaction, so a rejected precondition leaves the store untouched.
+    /// transaction, so a rejected precondition leaves the store untouched. The final journal entry
+    /// carries the transaction's final row values, so a page boundary cannot expose partial row
+    /// changes from a multi-entry commit.
     ///
     /// # Errors
     /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
@@ -143,11 +145,18 @@ impl MetaStore {
                 return Err(MetaError::ReplicaSerialConflict { expected, actual }.into());
             }
         }
-        let (value, journal) = {
+        let (value, journal, mutations) = {
             let mut driver = DriverTxn {
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
+                touched: std::collections::BTreeSet::new(),
             };
-            body(&mut driver)?
+            let (value, journal) = body(&mut driver)?;
+            let mutations = if journal.is_empty() {
+                Vec::new()
+            } else {
+                driver.mutations().map_err(E::from)?
+            };
+            (value, journal, mutations)
         };
         if !journal.is_empty() {
             let mut serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
@@ -159,6 +168,13 @@ impl MetaStore {
             for entry in &journal {
                 next += 1;
                 journal_table.insert(next, entry.as_slice()).map_err(MetaError::from)?;
+            }
+            if !mutations.is_empty() {
+                let encoded = serde_json::to_vec(&mutations).map_err(MetaError::from)?;
+                txn.open_table(JOURNAL_MUTATIONS)
+                    .map_err(MetaError::from)?
+                    .insert(next, encoded.as_slice())
+                    .map_err(MetaError::from)?;
             }
             serials.insert(SERIAL_KEY, next).map_err(MetaError::from)?;
         }
@@ -173,6 +189,7 @@ impl MetaStore {
 /// and stage writes atomically. Keys and values stay opaque bytes the store never interprets.
 pub struct DriverTxn<'txn> {
     table: redb::Table<'txn, &'static str, &'static [u8]>,
+    touched: std::collections::BTreeSet<String>,
 }
 
 impl DriverTxn<'_> {
@@ -225,12 +242,23 @@ impl DriverTxn<'_> {
         Ok(())
     }
 
+    /// Stage a process-local value that replicas must not copy.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn put_local(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
+        self.table.insert(key, value)?;
+        Ok(())
+    }
+
     /// Preserve insert-versus-replace information while staging a write.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn upsert(&mut self, key: &str, value: &[u8]) -> Result<bool, MetaError> {
-        Ok(self.table.insert(key, value)?.is_none())
+        let inserted = self.table.insert(key, value)?.is_none();
+        self.touched.insert(key.to_owned());
+        Ok(inserted)
     }
 
     /// Stage a removal of `key`, reporting whether it was present.
@@ -238,6 +266,25 @@ impl DriverTxn<'_> {
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn remove(&mut self, key: &str) -> Result<bool, MetaError> {
-        Ok(self.table.remove(key)?.is_some())
+        let removed = self.table.remove(key)?.is_some();
+        if removed {
+            self.touched.insert(key.to_owned());
+        }
+        Ok(removed)
+    }
+
+    fn mutations(&self) -> Result<Vec<DriverMutation>, MetaError> {
+        self.touched
+            .iter()
+            .map(|key| {
+                Ok(self.get(key)?.map_or_else(
+                    || DriverMutation::Delete { key: key.clone() },
+                    |value| DriverMutation::Put {
+                        key: key.clone(),
+                        value,
+                    },
+                ))
+            })
+            .collect()
     }
 }

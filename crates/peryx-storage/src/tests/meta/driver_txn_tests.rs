@@ -46,6 +46,37 @@ fn test_commit_driver_txn_allocates_a_serial_for_each_journal_entry() {
 }
 
 #[test]
+fn test_commit_driver_txn_records_final_row_changes_on_the_last_serial() {
+    let (_dir, store) = super::store();
+    store.put_driver_value("delete", b"old").unwrap();
+
+    store
+        .commit_driver_txn(|txn| {
+            txn.put("put", b"first")?;
+            txn.put("put", b"final")?;
+            txn.remove("delete")?;
+            txn.put_local("local", b"private")?;
+            Ok::<_, MetaError>(((), vec![b"one".to_vec(), b"two".to_vec()]))
+        })
+        .unwrap();
+
+    let records = store.journal_after(0, 10).unwrap();
+    assert!(records[0].mutations.is_empty());
+    assert_eq!(
+        records[1].mutations,
+        vec![
+            crate::meta::DriverMutation::Delete {
+                key: "delete".to_owned(),
+            },
+            crate::meta::DriverMutation::Put {
+                key: "put".to_owned(),
+                value: b"final".to_vec(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn test_commit_driver_txn_without_a_journal_leaves_the_serial_untouched() {
     let (_dir, store) = super::store();
     store.put_driver_value("k", b"old").unwrap();
