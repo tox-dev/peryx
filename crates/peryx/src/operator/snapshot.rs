@@ -15,7 +15,7 @@ use toml::{Table, Value};
 
 use crate::config::{
     AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig,
-    PrefetchMode, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
+    PrefetchMode, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
 };
 
 #[derive(Serialize)]
@@ -36,6 +36,8 @@ struct SnapshotConfig<'a> {
     log: SnapshotLog<'a>,
     rate_limit: SnapshotRateLimit<'a>,
     auth: SnapshotAuth<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replication: Option<SnapshotReplication<'a>>,
 }
 
 #[derive(Serialize)]
@@ -181,6 +183,27 @@ struct SnapshotAuth<'a> {
     default_anonymous_read: bool,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "role", rename_all = "lowercase")]
+enum SnapshotReplication<'a> {
+    Primary {
+        source: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_file: Option<&'a Path>,
+    },
+    Replica {
+        upstream: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_file: Option<&'a Path>,
+        poll_interval_secs: u64,
+        page_size: usize,
+    },
+}
+
 pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
     let Config {
         host,
@@ -196,6 +219,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         log,
         rate_limit,
         auth,
+        replication,
     } = config;
     let LogConfig {
         level,
@@ -235,8 +259,38 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
             token_ttl_secs: *token_ttl_secs,
             default_anonymous_read: *default_anonymous_read,
         },
+        replication: snapshot_replication(replication.as_ref()),
     };
     Ok(toml::to_string_pretty(&snapshot)?)
+}
+
+fn snapshot_replication(replication: Option<&ReplicationConfig>) -> Option<SnapshotReplication<'_>> {
+    match replication {
+        Some(ReplicationConfig::Primary { source, token }) => {
+            let (token, token_file) = secret_parts(Some(token));
+            Some(SnapshotReplication::Primary {
+                source,
+                token,
+                token_file,
+            })
+        }
+        Some(ReplicationConfig::Replica {
+            upstream,
+            token,
+            poll_interval,
+            page_size,
+        }) => {
+            let (token, token_file) = secret_parts(Some(token));
+            Some(SnapshotReplication::Replica {
+                upstream,
+                token,
+                token_file,
+                poll_interval_secs: poll_interval.as_secs(),
+                page_size: page_size.get(),
+            })
+        }
+        None => None,
+    }
 }
 
 fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {

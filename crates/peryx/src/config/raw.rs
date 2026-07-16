@@ -67,6 +67,25 @@ pub struct PartialConfig {
     pub log: PartialLogConfig,
     pub rate_limit: PartialRateLimitConfig,
     pub auth: PartialAuthConfig,
+    pub replication: Option<RawReplication>,
+}
+
+/// One process replication role before secret and numeric validation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "role", rename_all = "lowercase", deny_unknown_fields)]
+pub enum RawReplication {
+    Primary {
+        source: String,
+        token: Option<String>,
+        token_file: Option<PathBuf>,
+    },
+    Replica {
+        upstream: String,
+        token: Option<String>,
+        token_file: Option<PathBuf>,
+        poll_interval_secs: Option<u64>,
+        page_size: Option<usize>,
+    },
 }
 
 /// The raw `[auth]` table: the signing key of peryx's token realm, and the defaults every index's

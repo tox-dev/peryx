@@ -3507,6 +3507,7 @@ dependencies = [
  "peryx-identity",
  "peryx-index",
  "peryx-policy",
+ "peryx-replication",
  "peryx-storage",
  "peryx-upstream",
  "peryx-web",

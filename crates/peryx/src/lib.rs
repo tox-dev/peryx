@@ -10,6 +10,7 @@ pub mod config;
 pub mod logging;
 pub mod operator;
 pub mod prefetch;
+pub mod replication;
 pub mod server;
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Overlay merging and raw-table classification: how a [`PartialConfig`] resolves onto defaults.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
@@ -12,12 +13,12 @@ use std::collections::HashSet;
 
 use super::ConfigError;
 use super::model::{
-    AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, LogConfig, SecretSource, TlsConfig, TokenConfig,
-    WebhookConfig, WebhookSecret,
+    AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
+    IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
-    RawTls, RawToken, RawWebhook,
+    RawReplication, RawTls, RawToken, RawWebhook,
 };
 
 impl Config {
@@ -60,7 +61,78 @@ impl Config {
         self.log = self.log.apply(partial.log);
         self.rate_limit = apply_rate_limit(self.rate_limit, partial.rate_limit);
         self.auth = self.auth.apply(partial.auth)?;
+        if let Some(replication) = partial.replication {
+            self.replication = Some(classify_replication(replication)?);
+        }
         Ok(self)
+    }
+}
+
+fn classify_replication(raw: RawReplication) -> Result<ReplicationConfig, ConfigError> {
+    let required_token = |token, token_file| {
+        let token = secret_source(token, token_file).map_err(|reason| ConfigError::Replication { reason })?;
+        match token {
+            Some(SecretSource::Literal(token)) if token.trim().is_empty() => Err(ConfigError::Replication {
+                reason: "`token` must not be empty",
+            }),
+            Some(token) => Ok(token),
+            None => Err(ConfigError::Replication {
+                reason: "role needs a `token` or a `token_file`",
+            }),
+        }
+    };
+    match raw {
+        RawReplication::Primary {
+            source,
+            token,
+            token_file,
+        } => {
+            if source.trim().is_empty() {
+                return Err(ConfigError::Replication {
+                    reason: "primary `source` must not be empty",
+                });
+            }
+            Ok(ReplicationConfig::Primary {
+                source,
+                token: required_token(token, token_file)?,
+            })
+        }
+        RawReplication::Replica {
+            upstream,
+            token,
+            token_file,
+            poll_interval_secs,
+            page_size,
+        } => {
+            if upstream.trim().is_empty() {
+                return Err(ConfigError::Replication {
+                    reason: "replica `upstream` must not be empty",
+                });
+            }
+            let poll_interval_secs = poll_interval_secs.unwrap_or(DEFAULT_REPLICA_POLL_INTERVAL_SECS);
+            if poll_interval_secs == 0 {
+                return Err(ConfigError::Replication {
+                    reason: "`poll_interval_secs` must be positive",
+                });
+            }
+            let page_size = page_size.unwrap_or(DEFAULT_REPLICA_PAGE_SIZE);
+            let Some(page_size) = std::num::NonZeroUsize::new(page_size) else {
+                return Err(ConfigError::Replication {
+                    reason: "`page_size` must be positive",
+                });
+            };
+            if page_size.get() > peryx_replication::DEFAULT_MAX_CHANGE_PAGE_SIZE {
+                return Err(ConfigError::Replication {
+                    reason: "`page_size` exceeds the primary limit",
+                });
+            }
+            Ok(ReplicationConfig::Replica {
+                upstream,
+                token: required_token(token, token_file)?,
+                poll_interval: Duration::from_secs(poll_interval_secs),
+                page_size,
+            })
+        }
     }
 }
 

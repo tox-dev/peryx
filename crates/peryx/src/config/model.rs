@@ -1,7 +1,9 @@
 //! The fully resolved configuration types and their defaults.
 
 use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
@@ -40,6 +42,25 @@ pub struct Config {
     pub log: LogConfig,
     pub rate_limit: RateLimitConfig,
     pub auth: AuthConfig,
+    pub replication: Option<ReplicationConfig>,
+}
+
+pub const DEFAULT_REPLICA_PAGE_SIZE: usize = 100;
+pub const DEFAULT_REPLICA_POLL_INTERVAL_SECS: u64 = 1;
+
+/// The process role for replication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicationConfig {
+    Primary {
+        source: String,
+        token: SecretSource,
+    },
+    Replica {
+        upstream: String,
+        token: SecretSource,
+        poll_interval: Duration,
+        page_size: NonZeroUsize,
+    },
 }
 
 /// The `[auth]` table: the settings every index's access rules share.
@@ -278,6 +299,7 @@ impl Default for Config {
             log: LogConfig::default(),
             rate_limit: RateLimitConfig::default(),
             auth: AuthConfig::default(),
+            replication: None,
         }
     }
 }

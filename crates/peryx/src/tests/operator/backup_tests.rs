@@ -55,11 +55,15 @@ fn test_backup_create_rejects_tampered_source_blob() {
 }
 
 #[rstest]
-#[case::manual("[tls]\ncert = \"/etc/peryx/tls.crt\"\nkey = \"/etc/peryx/tls.key\"")]
-#[case::acme(
-    "[acme]\ndomains = [\"packages.example.com\"]\ncontact = \"ops@example.com\"\ncache-dir = \"/var/cache/peryx/acme\"\nstaging = true"
+#[case::manual_primary(
+    "[tls]\ncert = \"/etc/peryx/tls.crt\"\nkey = \"/etc/peryx/tls.key\"",
+    "[replication]\nrole = \"primary\"\nsource = \"primary-a\"\ntoken = \"replication-token\""
 )]
-fn test_backup_config_round_trips_effective_settings(#[case] tls: &str) {
+#[case::acme_replica(
+    "[acme]\ndomains = [\"packages.example.com\"]\ncontact = \"ops@example.com\"\ncache-dir = \"/var/cache/peryx/acme\"\nstaging = true",
+    "[replication]\nrole = \"replica\"\nupstream = \"https://primary.example/\"\ntoken_file = \"/run/secrets/replication-token\"\npoll_interval_secs = 30\npage_size = 250"
+)]
+fn test_backup_config_round_trips_effective_settings(#[case] tls: &str, #[case] replication: &str) {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");
     std::fs::create_dir(&data_dir).unwrap();
@@ -75,6 +79,8 @@ hot_cache_bytes = 123456
 max_stale_secs = 321
 
 {tls}
+
+{replication}
 
 [log]
 level = "peryx=debug"

@@ -1,5 +1,6 @@
 //! Assembling the HTTP server from configuration.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -11,13 +12,15 @@ use peryx_driver::{AppState, DriverSet, Index, IndexKind};
 use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
-use peryx_identity::Signer;
+use peryx_identity::{Action, Signer};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::{Auth, UpstreamClient, redact_url};
 
-use crate::config::{AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, SecretSource, WebhookSecret};
+use crate::config::{
+    AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, ReplicationConfig, SecretSource, WebhookSecret,
+};
 
 /// Build the peryx router from configuration.
 ///
@@ -29,7 +32,9 @@ use crate::config::{AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, Se
 /// Returns an error if the data directory or stores cannot be opened, an upstream URL is invalid, or
 /// a virtual index references an unknown or non-hosted index.
 pub fn build_router(config: &Config) -> anyhow::Result<Router> {
-    Ok(router_for(build_state(config)?))
+    let state = build_state(config)?;
+    let replication = crate::replication::ReplicationRuntime::new(config, &state)?;
+    Ok(replication.mount(router_for(state)))
 }
 
 /// Open the stores and resolve the configured indexes into the shared application state, without
@@ -44,9 +49,24 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
-    let indexes = build_indexes(&config.indexes, &config.auth, config.offline || config.read_only)?;
-    let oci_settings = build_index_settings(&config.indexes)?;
-    let webhooks = build_webhooks(&config.indexes)?;
+    let replica = matches!(config.replication, Some(ReplicationConfig::Replica { .. }));
+    let configs = if replica {
+        let mut configs = config.indexes.clone();
+        make_replica_configs(&mut configs);
+        Cow::Owned(configs)
+    } else {
+        Cow::Borrowed(config.indexes.as_slice())
+    };
+    let mut indexes = build_indexes(&configs, &config.auth, config.offline || config.read_only || replica)?;
+    if replica {
+        for index in &mut indexes {
+            if let IndexKind::Virtual { upload, .. } = &mut index.kind {
+                *upload = None;
+            }
+        }
+    }
+    let oci_settings = build_index_settings(&configs)?;
+    let webhooks = build_webhooks(&configs)?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
         meta,
@@ -65,7 +85,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     .context(format!("open search index {}", search_path.display()))?;
     peryx_ecosystem_pypi::install(&mut state);
     peryx_ecosystem_oci::install(&mut state, oci_settings);
-    state.read_only = config.read_only;
+    state.read_only = config.read_only || replica;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
         if key.trim().is_empty() {
@@ -82,6 +102,30 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         peryx_events::webhook::kick(state.serving.clone());
     }
     Ok(state)
+}
+
+fn make_replica_configs(configs: &mut [IndexConfig]) {
+    for index in configs {
+        match &mut index.kind {
+            ConfigKind::Cached {
+                password,
+                token,
+                offline,
+                ..
+            } => {
+                *password = None;
+                *token = None;
+                *offline = true;
+            }
+            ConfigKind::Hosted { upload_token, .. } => *upload_token = None,
+            ConfigKind::Virtual { .. } => {}
+        }
+        index.tokens.retain_mut(|token| {
+            token.actions.retain(|action| *action == Action::Read);
+            !token.actions.is_empty()
+        });
+        index.webhooks.clear();
+    }
 }
 
 /// The full router over prepared state. The web UI mounts first: its routes (`/`, `/browse`,

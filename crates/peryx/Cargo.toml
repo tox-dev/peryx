@@ -41,6 +41,7 @@ peryx-ecosystem-oci.workspace = true
 async-trait.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true
+peryx-replication.workspace = true
 peryx-storage.workspace = true
 peryx-upstream.workspace = true
 peryx-http.workspace = true

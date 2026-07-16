@@ -17,12 +17,13 @@ pub use load::{from_env, from_file, from_toml};
 #[cfg(test)]
 pub(crate) use merge::classify_tls;
 pub use model::{
-    AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig,
-    PrefetchMode, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
+    AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
+    IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig,
+    TokenConfig, WebhookConfig, WebhookSecret,
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
-    RawPolicy, RawPrefetchConfig, RawTls, RawToken, RawWebhook,
+    RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawWebhook,
 };
 
 /// An error while assembling configuration.
@@ -42,6 +43,8 @@ pub enum ConfigError {
     },
     #[error("auth: {reason}")]
     Auth { reason: &'static str },
+    #[error("replication: {reason}")]
+    Replication { reason: &'static str },
     #[error("secret file {path} holds no secret")]
     EmptySecret { path: PathBuf },
     #[error("webhook {name}: {reason}")]

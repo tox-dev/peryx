@@ -8,6 +8,7 @@ mod load_tests;
 mod merge_tests;
 mod model_tests;
 mod raw_tests;
+mod replication_tests;
 
 pub(super) fn toml_config(text: &str) -> Config {
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();

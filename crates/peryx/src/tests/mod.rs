@@ -5,5 +5,6 @@ mod config;
 mod logging_tests;
 mod operator;
 mod prefetch;
+mod replication_tests;
 mod server_tests;
 mod ui_tests;
