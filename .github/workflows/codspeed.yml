@@ -31,19 +31,20 @@ jobs:
         id: filter
         with:
           filters: |
+            # Rust src/tests modules compile only under cfg(test), so they cannot affect benchmark binaries.
             shared:
-              - 'crates/peryx-core/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-storage/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-http/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-driver/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-identity/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-policy/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-index/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-events/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-upstream/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-search/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx-replication/{Cargo.toml,build.rs,src/**,benches/**}'
-              - 'crates/peryx/{Cargo.toml,build.rs,src/**,benches/**}'
+              - 'crates/peryx-core/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-storage/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-http/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-driver/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-identity/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-policy/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-index/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-events/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-upstream/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-search/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-replication/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -55,9 +56,9 @@ jobs:
             workflow:
               - '.github/workflows/codspeed.yml'
             pypi:
-              - 'crates/peryx-ecosystem-pypi/{Cargo.toml,build.rs,src/**,benches/**}'
+              - 'crates/peryx-ecosystem-pypi/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
             oci:
-              - 'crates/peryx-ecosystem-oci/{Cargo.toml,build.rs,src/**,benches/**}'
+              - 'crates/peryx-ecosystem-oci/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
       - id: matrix
         env:
           EVENT: ${{ github.event_name }}
