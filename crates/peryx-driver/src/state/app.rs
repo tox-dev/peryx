@@ -20,6 +20,12 @@ use peryx_search::PackageSearch;
 /// tests.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
+/// A process-level component that contributes Prometheus text exposition.
+pub trait PrometheusSource: Send + Sync {
+    /// Append complete metric families to `body`.
+    fn write_metrics(&self, body: &mut String);
+}
+
 /// Everything a serving handler needs, and nothing about *which* ecosystems are installed.
 ///
 /// An ecosystem driver receives an `Arc<ServingState>`, so it can read the stores, the caches and the
@@ -89,6 +95,29 @@ pub struct AppState {
     /// ecosystem driver's paths at startup and installs it here, so this neutral crate carries no
     /// format-specific API description, only a minimal stub until the binary sets the real one.
     pub(super) openapi: std::sync::Arc<str>,
+    pub(super) prometheus: Mutex<Vec<Arc<dyn PrometheusSource>>>,
+}
+
+impl AppState {
+    /// Register process metrics that are not owned by an ecosystem driver.
+    pub fn register_prometheus(&self, source: Arc<dyn PrometheusSource>) {
+        self.prometheus
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(source);
+    }
+
+    /// Append every registered process metric family to `body`.
+    pub fn write_process_metrics(&self, body: &mut String) {
+        for source in self
+            .prometheus
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            source.write_metrics(body);
+        }
+    }
 }
 
 impl std::ops::Deref for AppState {

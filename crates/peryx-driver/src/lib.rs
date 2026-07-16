@@ -23,7 +23,8 @@ pub mod state;
 
 pub use driver_set::DriverSet;
 pub use state::{
-    AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind, ServingState,
+    AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind, PrometheusSource,
+    ServingState,
 };
 
 /// A `404 Not Found` with a plain body, the answer for a path no index or artifact owns.

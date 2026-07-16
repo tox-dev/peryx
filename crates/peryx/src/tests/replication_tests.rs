@@ -69,6 +69,17 @@ fn primary_stores() -> (tempfile::TempDir, MetaStore, BlobStore) {
     (dir, meta, blobs)
 }
 
+async fn get(router: &Router, path: &str) -> (StatusCode, Vec<u8>) {
+    let response = router
+        .clone()
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, body)
+}
+
 #[tokio::test]
 async fn test_primary_runtime_mounts_authenticated_routes() {
     let dir = tempfile::tempdir().unwrap();
@@ -142,6 +153,83 @@ async fn test_replica_runtime_waits_after_a_sync_error() {
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
 
     assert_eq!(runtime.sync_cycle().await, Some(true));
+    let router = runtime.mount(router_for(state));
+    let (status, body) = get(&router, "/+replication/v1/health").await;
+    let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(health["status"], "error");
+    let (_, body) = get(&router, "/metrics").await;
+    assert!(
+        String::from_utf8(body)
+            .unwrap()
+            .contains("peryx_replication_sync_errors_total 1\n")
+    );
+}
+
+#[tokio::test]
+async fn test_replica_health_starts_unready() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(&dir, Some(replica_config("https://primary.example/", 10)));
+    let state = build_state(&config).unwrap();
+    let runtime = ReplicationRuntime::new(&config, &state).unwrap();
+    let router = runtime.mount(router_for(state));
+
+    let (status, body) = get(&router, "/+replication/v1/health").await;
+    let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        health,
+        serde_json::json!({"status": "starting", "serial": 0, "primary_serial": null, "lag": null})
+    );
+    let (_, body) = get(&router, "/metrics").await;
+    let metrics = String::from_utf8(body).unwrap();
+    assert!(metrics.contains("peryx_replication_caught_up 0\n"));
+    assert!(metrics.contains("peryx_replication_serial 0\n"));
+    assert!(!metrics.contains("peryx_replication_primary_serial "));
+}
+
+#[tokio::test]
+async fn test_replica_health_and_metrics_track_catch_up() {
+    let (_primary_dir, primary_meta, primary_blobs) = primary_stores();
+    primary_meta
+        .commit_driver_txn(|_| {
+            Ok::<_, peryx_storage::meta::MetaError>(((), vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]))
+        })
+        .unwrap();
+    let server = TestServer::start(primary_router("primary-a", TOKEN, primary_meta, primary_blobs).unwrap()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(&dir, Some(replica_config(&server.url, 2)));
+    let state = build_state(&config).unwrap();
+    let runtime = ReplicationRuntime::new(&config, &state).unwrap();
+    let router = runtime.mount(router_for(state));
+
+    assert_eq!(runtime.sync_cycle().await, Some(false));
+    let (status, body) = get(&router, "/+replication/v1/health").await;
+    let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        health,
+        serde_json::json!({"status": "catching_up", "serial": 2, "primary_serial": 3, "lag": 1})
+    );
+    let (_, body) = get(&router, "/metrics").await;
+    let metrics = String::from_utf8(body).unwrap();
+    assert!(metrics.contains("peryx_replication_changes_total 2\n"));
+    assert!(metrics.contains("peryx_replication_primary_serial 3\n"));
+    assert!(metrics.contains("peryx_replication_lag 1\n"));
+
+    assert_eq!(runtime.sync_cycle().await, Some(true));
+    let (status, body) = get(&router, "/+replication/v1/health").await;
+    let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        health,
+        serde_json::json!({"status": "caught_up", "serial": 3, "primary_serial": 3, "lag": 0})
+    );
+    let (_, body) = get(&router, "/metrics").await;
+    let metrics = String::from_utf8(body).unwrap();
+    assert!(metrics.contains("peryx_replication_caught_up 1\n"));
+    assert!(metrics.contains("peryx_replication_changes_total 3\n"));
+    assert!(metrics.contains("peryx_replication_lag 0\n"));
 }
 
 #[tokio::test]
@@ -156,6 +244,7 @@ async fn test_disabled_runtime_mounts_no_routes_or_task() {
     let router = runtime.mount(router_for(state));
     assert!(runtime.start().is_none());
     let response = router
+        .clone()
         .oneshot(
             Request::get("/+replication/v1/changes?after=0&limit=10")
                 .body(Body::empty())
@@ -164,6 +253,8 @@ async fn test_disabled_runtime_mounts_no_routes_or_task() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let (_, body) = get(&router, "/metrics").await;
+    assert!(!String::from_utf8(body).unwrap().contains("peryx_replication_"));
 }
 
 #[test]
