@@ -12,13 +12,12 @@ mod metadata;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use peryx_ecosystem_pypi::{
-    parse_detail, parse_detail_html, parse_distribution_filename, parse_index, parse_index_html, parse_metadata,
-    render_detail_html, render_index_html, to_json,
+    parse_detail, parse_detail_html, parse_distribution_filename, parse_index, parse_metadata, render_detail_html,
+    to_json,
 };
 use url::Url;
 
 use detail::project_detail;
-use index::index_list;
 use metadata::METADATA;
 
 const SMALL: usize = 3;
@@ -38,14 +37,9 @@ fn bench_parse(criterion: &mut Criterion) {
             bencher.iter(|| parse_detail_html("flask", std::hint::black_box(&html), &base).unwrap());
         });
     }
-    let list = index_list(LARGE);
-    let index_json = to_json(&list).into_bytes();
-    let index_html = render_index_html(&list);
+    let index_json = to_json(&index::index_list(LARGE)).into_bytes();
     group.bench_function("index_json", |bencher| {
         bencher.iter(|| parse_index(std::hint::black_box(&index_json)).unwrap());
-    });
-    group.bench_function("index_html", |bencher| {
-        bencher.iter(|| parse_index_html(std::hint::black_box(&index_html), &base).unwrap());
     });
     group.bench_function("metadata", |bencher| {
         bencher.iter(|| parse_metadata(std::hint::black_box(METADATA)).unwrap());

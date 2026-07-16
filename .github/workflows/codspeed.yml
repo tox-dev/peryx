@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
           filters: |
@@ -64,10 +64,10 @@ jobs:
           OCI: ${{ steps.filter.outputs.oci }}
           PYPI: ${{ steps.filter.outputs.pypi }}
         run: |
-          # thin LTO (set on the operations job) keeps the link within the standard ARM runner's
-          # memory, so both ecosystems build in parallel.
-          oci='{"ecosystem":"OCI","package":"peryx-ecosystem-oci","cargo_jobs":2}'
-          pypi='{"ecosystem":"PyPI","package":"peryx-ecosystem-pypi","cargo_jobs":2}'
+          # The standard no-LTO benchmark profile keeps links short and within the standard ARM
+          # runner's memory, so both ecosystems build in parallel.
+          oci='{"ecosystem":"OCI","package":"peryx-ecosystem-oci","cargo_jobs":4}'
+          pypi='{"ecosystem":"PyPI","package":"peryx-ecosystem-pypi","cargo_jobs":4}'
           legs=()
           if [ "$EVENT" != "pull_request" ]; then
             legs=("$oci" "$pypi")
@@ -261,11 +261,10 @@ jobs:
       # generic aarch64 code path and a single malloc arena makes the measurement CPU-independent.
       # See CodSpeed's write-up on runner CPU variance (codspeed.io/blog/why-glibc-faster-github-actions).
       GLIBC_TUNABLES: glibc.cpu.name=generic:glibc.malloc.arena_max=1
-      # cargo codspeed builds with the release profile, whose fat LTO does a serial, memory-heavy,
-      # uncacheable whole-program link (~20 min, and the reason PyPI was pinned to -j 1). Override to
-      # thin LTO for the benchmark build only, so it parallelises, fits memory, and caches
-      # incrementally. Production and dist builds keep fat LTO; only relative measurement matters here.
-      CARGO_PROFILE_RELEASE_LTO: thin
+      # cargo codspeed builds with the release profile, whose project-wide fat LTO does a serial,
+      # memory-heavy whole-program link. Cargo's standard optimized benchmark profile disables LTO;
+      # use that here so changed sources remain quick to link. Production and dist builds keep LTO.
+      CARGO_PROFILE_RELEASE_LTO: "false"
       CODSPEED_SKIP_UPLOAD: >-
         ${{ github.event_name == 'pull_request' &&
             (needs.changes.outputs.workflow_changed == 'true' || needs.baseline.outputs.compatible != 'true') }}
@@ -273,21 +272,97 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Compute benchmark source key
+        id: source
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          git ls-files -s -- \
+            .cargo \
+            .github/codspeed \
+            .github/workflows/codspeed.yml \
+            ci/run-codspeed.sh \
+            crates \
+            Cargo.lock \
+            Cargo.toml \
+            rust-toolchain.toml \
+            | sha256sum \
+            | sed 's/ .*//' \
+            | xargs -I {} echo "key={}" >> "$GITHUB_OUTPUT"
+      # rust-cache removes workspace outputs before saving. That made an exact 848 MB cache hit
+      # recompile and relink every benchmark for eight minutes. Retain the complete CodSpeed target;
+      # source-specific keys make main reruns immediate, while pull requests restore the newest main
+      # artifacts for incremental builds without filling the cache with merge-ref-only archives.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: benchmark-cache
         with:
-          shared-key: codspeed-v2
-          cache-bin: false
-          cache-on-failure: true
-          cache-workspace-crates: true
+          path: |
+            /usr/local/cargo/git
+            /usr/local/cargo/registry
+            target
+          key: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
+          restore-keys: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-
       - run: ci/run-codspeed.sh ${{ matrix.package }} ${{ matrix.cargo_jobs }}
+        env:
+          GH_MATRIX: ${{ toJSON(matrix) }}
+          GH_STRATEGY: ${{ toJSON(strategy) }}
+      - name: Save benchmark cache
+        if: github.ref == 'refs/heads/main' && steps.benchmark-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/local/cargo/git
+            /usr/local/cargo/registry
+            target
+          key: ${{ steps.benchmark-cache.outputs.cache-primary-key }}
+
+  analysis:
+    name: CodSpeed analysis
+    if: always()
+    needs: [changes, baseline, operations]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Verify the aggregate analysis
+        env:
+          EXPECT_ANALYSIS: >-
+            ${{ github.event_name == 'pull_request' &&
+                needs.changes.outputs.bench_matrix != '[]' &&
+                needs.changes.outputs.workflow_changed != 'true' &&
+                needs.baseline.outputs.compatible == 'true' &&
+                needs.operations.result == 'success' }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$EXPECT_ANALYSIS" != true ]]; then
+            echo "No uploaded pull-request analysis is expected."
+            exit 0
+          fi
+
+          for attempt in {1..60}; do
+            check=$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name == "CodSpeed Performance Analysis" and .app.slug == "codspeed-hq")] | sort_by(.started_at) | last // {}')
+            status=$(jq -r '.status // "missing"' <<< "$check")
+            if [[ "$status" == completed ]]; then
+              conclusion=$(jq -r '.conclusion' <<< "$check")
+              echo "CodSpeed analysis concluded: $conclusion"
+              [[ "$conclusion" == success ]]
+              exit
+            fi
+            echo "Waiting for aggregate CodSpeed analysis ($status, attempt $attempt/60)."
+            sleep 10
+          done
+          echo "CodSpeed did not complete its aggregate analysis within 10 minutes."
+          exit 1
 
   # Required-status-check anchor: branch protection requires this job, not base/operations, because a
   # skipped required check blocks merge on GitHub. Passes when every dependency succeeded or skipped;
   # fails if any failed or was cancelled.
   codspeed-gate:
     if: always()
-    needs: [changes, baseline, codspeed-image, operations]
+    needs: [changes, baseline, codspeed-image, operations, analysis]
     runs-on: ubuntu-24.04
     steps:
       - name: Verify no required job failed

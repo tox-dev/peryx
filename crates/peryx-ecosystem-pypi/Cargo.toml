@@ -129,6 +129,10 @@ name = "parse"
 harness = false
 
 [[bench]]
+name = "parse_index_html"
+harness = false
+
+[[bench]]
 name = "render"
 harness = false
 
