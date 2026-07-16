@@ -196,6 +196,51 @@ async fn test_replica_runtime_copies_primary_blobs() {
 }
 
 #[tokio::test]
+async fn test_replica_runtime_forwards_blobs_to_a_follower() {
+    let (_primary_dir, primary_meta, primary_blobs) = primary_stores();
+    let digest = primary_blobs.write(b"artifact").unwrap();
+    primary_meta
+        .commit_driver_txn(|txn| {
+            txn.reference_blob(digest.as_str(), 8);
+            Ok::<_, peryx_storage::meta::MetaError>(((), vec![b"upload".to_vec()]))
+        })
+        .unwrap();
+    let primary = TestServer::start(primary_router("primary-a", TOKEN, primary_meta, primary_blobs).unwrap()).await;
+    let replica_dir = tempfile::tempdir().unwrap();
+    let intermediate_config = config(&replica_dir, Some(replica_config(&primary.url, 10)));
+    let replica_state = build_state(&intermediate_config).unwrap();
+    assert_eq!(
+        ReplicationRuntime::new(&intermediate_config, &replica_state)
+            .unwrap()
+            .sync_cycle()
+            .await,
+        Some(true)
+    );
+    let replica = TestServer::start(
+        primary_router(
+            "replica-b",
+            TOKEN,
+            replica_state.meta.clone(),
+            replica_state.blobs.clone(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let follower_dir = tempfile::tempdir().unwrap();
+    let follower_config = config(&follower_dir, Some(replica_config(&replica.url, 10)));
+    let follower_state = build_state(&follower_config).unwrap();
+
+    assert_eq!(
+        ReplicationRuntime::new(&follower_config, &follower_state)
+            .unwrap()
+            .sync_cycle()
+            .await,
+        Some(true)
+    );
+    assert_eq!(follower_state.blobs.read(&digest).unwrap(), b"artifact");
+}
+
+#[tokio::test]
 async fn test_replica_runtime_waits_after_a_sync_error() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
