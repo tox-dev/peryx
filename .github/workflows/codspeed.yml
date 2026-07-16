@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: codspeed-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  group: codspeed-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Pull requests and merge groups build affected benchmark legs. Pushes and manual runs refresh the
@@ -91,7 +91,7 @@ jobs:
       github.event_name == 'pull_request' &&
       needs.changes.outputs.bench_matrix != '[]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
@@ -104,6 +104,7 @@ jobs:
       - name: Find compatible baseline
         id: baseline
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -111,26 +112,37 @@ jobs:
           set -euo pipefail
           echo "compatible=false" >> "$GITHUB_OUTPUT"
 
-          main_sha=$(gh api "repos/$GH_REPO/commits/$DEFAULT_BRANCH" --jq .sha) || exit 0
-          baseline_sha=$(
-            gh run list \
-              --repo "$GH_REPO" \
-              --workflow codspeed.yml \
-              --branch "$DEFAULT_BRANCH" \
-              --event push \
-              --status success \
-              --limit 1 \
-              --json headSha \
-              --jq '.[0].headSha'
-          ) || exit 0
-          if [[ -z "$baseline_sha" ]]; then
-            echo "No successful main benchmark is available."
+          for attempt in {1..90}; do
+            baseline=$(
+              gh run list \
+                --repo "$GH_REPO" \
+                --workflow codspeed.yml \
+                --branch "$DEFAULT_BRANCH" \
+                --commit "$BASE_SHA" \
+                --event push \
+                --limit 10 \
+                --json conclusion,createdAt,headSha,status,url \
+                --jq 'sort_by(.createdAt) | last // {}'
+            ) || exit 0
+            status=$(jq -r '.status // "missing"' <<< "$baseline")
+            if [[ "$status" == completed ]]; then
+              conclusion=$(jq -r '.conclusion' <<< "$baseline")
+              if [[ "$conclusion" != success ]]; then
+                echo "The exact base benchmark concluded: $conclusion"
+                exit 0
+              fi
+              echo "Found the exact base benchmark: $(jq -r '.url' <<< "$baseline")"
+              break
+            fi
+            echo "Waiting for the exact base benchmark ($status, attempt $attempt/90)."
+            sleep 10
+          done
+          if [[ "$status" != completed ]]; then
+            echo "The exact base benchmark did not complete within 15 minutes."
             exit 0
           fi
 
-          for revision in "$main_sha" "$baseline_sha"; do
-            git cat-file -e "$revision^{commit}" 2>/dev/null || git fetch --depth=1 origin "$revision"
-          done
+          git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --depth=1 origin "$BASE_SHA"
 
           runtime_id() {
             local revision=$1
@@ -148,12 +160,11 @@ jobs:
           }
 
           head_runtime=$(runtime_id HEAD)
-          main_runtime=$(runtime_id "$main_sha")
-          baseline_runtime=$(runtime_id "$baseline_sha")
-          if [[ "$head_runtime" == "$main_runtime" && "$main_runtime" == "$baseline_runtime" ]]; then
+          base_runtime=$(runtime_id "$BASE_SHA")
+          if [[ "$head_runtime" == "$base_runtime" ]]; then
             echo "compatible=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No compatible main benchmark is available; results will not be uploaded."
+            echo "The pull request changes the benchmark runtime; results will not be uploaded."
           fi
 
   codspeed-image:
