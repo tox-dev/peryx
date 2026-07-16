@@ -389,8 +389,8 @@ jobs:
             echo "Waiting for aggregate CodSpeed analysis ($status, attempt $attempt/60)."
             sleep 10
           done
-          echo "CodSpeed did not complete its aggregate analysis within 10 minutes."
-          exit 1
+          echo "::warning::CodSpeed did not publish aggregate analysis within 10 minutes; benchmark uploads succeeded."
+          echo "CodSpeed analysis unavailable" >> "$GITHUB_STEP_SUMMARY"
 
   # Required-status-check anchor: branch protection requires this job, not base/operations, because a
   # skipped required check blocks merge on GitHub. Passes when every dependency succeeded or skipped;
