@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -251,6 +253,7 @@ jobs:
         shell: bash
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: read
       id-token: write
       packages: read
@@ -266,8 +269,9 @@ jobs:
       # use that here so changed sources remain quick to link. Production and dist builds keep LTO.
       CARGO_PROFILE_RELEASE_LTO: "false"
       CODSPEED_SKIP_UPLOAD: >-
-        ${{ github.event_name == 'pull_request' &&
-            (needs.changes.outputs.workflow_changed == 'true' || needs.baseline.outputs.compatible != 'true') }}
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
+            (needs.changes.outputs.workflow_changed == 'true' ||
+             (github.event_name == 'pull_request' && needs.baseline.outputs.compatible != 'true')) }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -302,18 +306,31 @@ jobs:
             target
           key: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
           restore-keys: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-
-      # A fresh checkout gives unchanged sources new mtimes, so Cargo rebuilds workspace crates after an
-      # exact cache hit. The content-derived key makes it safe to age only exact-match sources; partial
-      # restores retain checkout mtimes so changed sources still rebuild.
-      - name: Preserve exact benchmark build
-        if: steps.benchmark-cache.outputs.cache-hit == 'true'
+      # Cargo uses mtimes for freshness. Age files only when their blobs match the cached manifest, so
+      # a pull request rebuilds changed sources while reusing every unaffected main-branch artifact.
+      - name: Preserve cached benchmark build
+        if: steps.benchmark-cache.outputs.cache-matched-key != ''
+        env:
+          CURRENT_KEY: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
+          RESTORED_KEY: ${{ steps.benchmark-cache.outputs.cache-matched-key }}
         run: |
-          git ls-files -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml \
-            | xargs -0 touch --date=@0 --
+          if [[ -f target/codspeed-sources ]]; then
+            comm -z -12 \
+              <(sort -z target/codspeed-sources) \
+              <(git ls-files -s -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml | sort -z) \
+              | cut -z -f2 \
+              | xargs -0 -r touch --date=@0 --
+          elif [[ "$RESTORED_KEY" == "$CURRENT_KEY" ]]; then
+            git ls-files -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml \
+              | xargs -0 touch --date=@0 --
+          fi
       - run: ci/run-codspeed.sh ${{ matrix.package }} ${{ matrix.cargo_jobs }}
         env:
           GH_MATRIX: ${{ toJSON(matrix) }}
           GH_STRATEGY: ${{ toJSON(strategy) }}
+      - name: Record benchmark sources
+        if: github.ref == 'refs/heads/main' && steps.benchmark-cache.outputs.cache-hit != 'true'
+        run: git ls-files -s -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml > target/codspeed-sources
       - name: Save benchmark cache
         if: github.ref == 'refs/heads/main' && steps.benchmark-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -323,7 +340,7 @@ jobs:
             /usr/local/cargo/registry/cache
             /usr/local/cargo/registry/index
             target
-          key: ${{ steps.benchmark-cache.outputs.cache-primary-key }}
+          key: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
 
   analysis:
     name: CodSpeed analysis
@@ -332,6 +349,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      actions: read
       checks: read
       contents: read
     steps:
@@ -339,22 +357,25 @@ jobs:
         env:
           ANALYSIS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           EXPECT_ANALYSIS: >-
-            ${{ github.event_name == 'pull_request' &&
+            ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
                 needs.changes.outputs.bench_matrix != '[]' &&
                 needs.changes.outputs.workflow_changed != 'true' &&
-                needs.baseline.outputs.compatible == 'true' &&
+                (github.event_name == 'merge_group' || needs.baseline.outputs.compatible == 'true') &&
                 needs.operations.result == 'success' }}
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if [[ "$EXPECT_ANALYSIS" != true ]]; then
             echo "No uploaded pull-request analysis is expected."
             exit 0
           fi
 
+          run_started_at=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq .created_at)
           for attempt in {1..60}; do
             check=$(gh api "repos/$GH_REPO/commits/$ANALYSIS_SHA/check-runs?per_page=100" \
-              --jq '[.check_runs[] | select(.name == "CodSpeed Performance Analysis" and .app.slug == "codspeed-hq")] | sort_by(.started_at) | last // {}')
+              | jq --arg started "$run_started_at" \
+                '[.check_runs[] | select(.name == "CodSpeed Performance Analysis" and .app.slug == "codspeed-hq" and .started_at >= $started)] | sort_by(.started_at) | last // {}')
             status=$(jq -r '.status // "missing"' <<< "$check")
             if [[ "$status" == completed ]]; then
               conclusion=$(jq -r '.conclusion' <<< "$check")

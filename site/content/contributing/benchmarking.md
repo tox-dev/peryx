@@ -73,8 +73,9 @@ keyed by the image definition. If the current Dockerfile has not been published,
 those results only with another run using the same definition.
 
 CodSpeed simulation does not measure kernel, filesystem, socket, or upstream latency. Use `peryx-bench` for those paths.
-For a host wall-clock microbenchmark, standard Criterion remains available, but its numbers are valid only on the same
-quiet machine under the same toolchain and power conditions:
+The OCI blob-serving benchmark reads the blob from disk inside each router request, so CodSpeed excludes it from CPU
+simulation. It remains available through standard Criterion, along with every CPU benchmark. Host wall-clock results are
+valid only on the same quiet machine under the same toolchain and power conditions:
 
 ```shell
 cargo bench --locked -p peryx-ecosystem-pypi

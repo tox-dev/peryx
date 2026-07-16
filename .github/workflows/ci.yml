@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
@@ -13,7 +15,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Path-based gating so a PR that only touches one ecosystem skips the others. On main and on

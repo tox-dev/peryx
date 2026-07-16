@@ -4,8 +4,12 @@ set -euo pipefail
 package=${1:?Rust package to benchmark}
 jobs=${2:-4}
 
+bench_args=()
 case "$package" in
-  peryx-ecosystem-oci | peryx-ecosystem-pypi) ;;
+  peryx-ecosystem-oci)
+    bench_args=(--bench manifest_by_digest --bench tags_list --bench version_check)
+    ;;
+  peryx-ecosystem-pypi) ;;
   *) echo "unsupported benchmark package: $package" >&2; exit 2 ;;
 esac
 
@@ -18,7 +22,7 @@ if [[ ${CODSPEED_FORCE_REBUILD:-false} == true ]]; then
     rebuilt=true
   fi
 fi
-cargo codspeed build --locked -j "$jobs" -m simulation -p "$package"
+cargo codspeed build --locked -j "$jobs" -m simulation -p "$package" "${bench_args[@]}"
 if [[ "$rebuilt" == true ]]; then
   printf '%s\n' "$CODSPEED_SOURCE_KEY" > "$marker"
 fi
@@ -27,4 +31,4 @@ codspeed_args=(run --mode simulation)
 if [[ ${CODSPEED_SKIP_UPLOAD:-false} == true ]]; then
   codspeed_args+=(--skip-upload)
 fi
-codspeed "${codspeed_args[@]}" -- cargo codspeed run -p "$package"
+codspeed "${codspeed_args[@]}" -- cargo codspeed run -p "$package" "${bench_args[@]}"

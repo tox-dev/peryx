@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,7 @@ permissions:
 
 concurrency:
   group: conformance-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The opencontainers/distribution-spec commit whose conformance suite peryx is tested against.
