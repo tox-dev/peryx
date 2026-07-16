@@ -2,6 +2,7 @@
 
 mod cache;
 mod index;
+mod job;
 mod maintenance;
 mod mirror;
 mod snippet;
@@ -16,6 +17,7 @@ pub use cache::{
     CacheRuntimeArgs,
 };
 pub use index::{IndexCommand, IndexListArgs, IndexShowArgs};
+pub use job::{JobCommand, JobListArgs, JobShowArgs};
 #[cfg(feature = "self-update")]
 pub use maintenance::SelfCommand;
 pub use maintenance::{
@@ -66,6 +68,9 @@ pub enum Command {
     /// List and inspect the configured indexes.
     #[command(subcommand)]
     Index(IndexCommand),
+    /// Inspect durable job-run history.
+    #[command(subcommand)]
+    Job(JobCommand),
     /// Inspect and maintain the on-disk cache.
     #[command(subcommand)]
     Cache(CacheCommand),

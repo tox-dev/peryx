@@ -13,6 +13,7 @@ use crate::config::Config;
 mod cache_tests;
 mod fsck_tests;
 mod indexes_tests;
+mod job_tests;
 mod policy_tests;
 mod purge_tests;
 

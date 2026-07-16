@@ -9,11 +9,13 @@ use crate::config::Config;
 mod cache;
 mod fsck;
 mod indexes;
+mod jobs;
 mod policy;
 mod purge;
 
 pub use cache::cache;
 pub use indexes::{config_snippet, index, init, init_data_dir};
+pub use jobs::job;
 pub use policy::policy;
 pub(crate) use purge::referenced_blob_digests;
 
