@@ -1,6 +1,6 @@
 //! Hosted-store mutations: uploads, promotion, yank/hide overrides, and project status.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::store::PypiStore as _;
 use crate::store::{Guard, UploadMutation};
@@ -68,6 +68,7 @@ pub fn promote_release(
 ) -> Result<usize, CacheError> {
     let mut matched = false;
     let mut records = Vec::new();
+    let mut blob_sizes = BTreeMap::new();
     for (filename, bytes) in state.meta.list_upload_entries(source, normalized)? {
         let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
         if !versions_match(&uploaded.version, version) {
@@ -80,6 +81,9 @@ pub fn promote_release(
             .get("sha256")
             .cloned()
             .ok_or_else(|| CacheError::MissingSha256(filename.clone()))?;
+        if let Some(size) = uploaded.file.size {
+            blob_sizes.insert(digest.clone(), size);
+        }
         uploaded.file.url = local_file_url(target_route, &digest, &filename);
         records.push((filename, digest, to_json(&uploaded).into_bytes()));
     }
@@ -94,9 +98,10 @@ pub fn promote_release(
         .meta
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
-    let promoted = state
-        .meta
-        .promote_files_checked(target, normalized, &display, &records, promote_conflict)?;
+    let promoted =
+        state
+            .meta
+            .promote_files_checked(target, normalized, &display, &records, &blob_sizes, promote_conflict)?;
     if promoted > 0 {
         state.invalidate_project(normalized);
     }

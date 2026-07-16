@@ -113,6 +113,32 @@ async fn test_promote_copies_release_records_without_copying_blobs() {
     assert!(metadata.contains("Name: peryxpkg"));
     assert_eq!(detail["files"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn test_promote_journals_the_artifact_reference() {
+    let h = promotion_harness().await;
+    let wheel = fixture_wheel();
+    let digest = upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &wheel).await;
+    let serial = h.state.meta.current_serial().unwrap();
+
+    let status = request(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        h.state.meta.journal_after(serial, 1).unwrap()[0].blobs,
+        vec![peryx_storage::meta::DriverBlobReference {
+            sha256: digest.as_str().to_owned(),
+            size: wheel.len() as u64,
+        }]
+    );
+}
+
 #[tokio::test]
 async fn test_promote_matches_source_by_pep440_equality() {
     let h = promotion_harness().await;

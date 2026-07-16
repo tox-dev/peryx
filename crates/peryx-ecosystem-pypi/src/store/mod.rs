@@ -333,7 +333,8 @@ pub trait PypiStore {
 
     /// Promote a release onto `index` — its records, project, and journal entry — admitting each
     /// `(filename, token, bytes)` only when `guard` accepts the target's current record inside the
-    /// write transaction. Returns how many files were written.
+    /// write transaction. Tokens in `blob_sizes` are recorded as blob references. Returns how many
+    /// files were written.
     ///
     /// # Errors
     /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
@@ -343,6 +344,7 @@ pub trait PypiStore {
         normalized: &str,
         display: &str,
         records: &[(String, String, Vec<u8>)],
+        blob_sizes: &std::collections::BTreeMap<String, u64>,
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E>;
 
@@ -630,9 +632,10 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         normalized: &str,
         display: &str,
         records: &[(String, String, Vec<u8>)],
+        blob_sizes: &std::collections::BTreeMap<String, u64>,
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E> {
-        uploads::promote_files_checked(self, index, normalized, display, records, guard)
+        uploads::promote_files_checked(self, index, normalized, display, records, blob_sizes, guard)
     }
 
     fn mutate_uploads<E: From<peryx_storage::meta::MetaError>>(

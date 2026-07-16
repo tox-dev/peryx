@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 
 use super::journal::JournalEntry;
@@ -118,10 +120,10 @@ pub fn put_upload(
 /// runs in it, so a concurrent upload to the target cannot land between the check and the copy.
 ///
 /// Each record is `(filename, token, bytes)`; `token` is opaque here and passed to `guard` to
-/// compare against the existing target row. `guard` returns [`Guard::Commit`] to copy the file,
-/// [`Guard::Skip`] to leave an identical target as it is, or an error to reject a conflict. Returns
-/// how many files were written; the project row and journal entry are recorded only when at least one
-/// was.
+/// compare against the existing target row. A token present in `blob_sizes` also records that blob
+/// on the promotion serial. `guard` returns [`Guard::Commit`] to copy the file, [`Guard::Skip`] to
+/// leave an identical target as it is, or an error to reject a conflict. Returns how many files were
+/// written; the project row and journal entry are recorded only when at least one was.
 ///
 /// # Errors
 /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
@@ -131,6 +133,7 @@ pub fn promote_files_checked<E: From<MetaError>>(
     normalized: &str,
     display: &str,
     records: &[(String, String, Vec<u8>)],
+    blob_sizes: &BTreeMap<String, u64>,
     guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
 ) -> Result<usize, E> {
     meta.commit_driver_txn(|txn| {
@@ -141,6 +144,9 @@ pub fn promote_files_checked<E: From<MetaError>>(
                 Guard::Skip => {}
                 Guard::Commit => {
                     txn.put(&key, record)?;
+                    if let Some(size) = blob_sizes.get(token) {
+                        txn.reference_blob(token, *size);
+                    }
                     written += 1;
                 }
             }
