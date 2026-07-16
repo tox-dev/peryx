@@ -1,5 +1,6 @@
-use peryx_storage::meta::{DriverBatch, MetaError, MetaScanError, MetaStore};
+use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 
+use super::journal::JournalEntry;
 use super::{PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key, project_key, project_status_key};
 
 /// Counts of metadata rows a project-cache purge plans or deletes.
@@ -94,6 +95,9 @@ pub fn count_project_cache_purge(
 
 /// Delete cached metadata rows for one project, in one transaction, reporting what was removed.
 ///
+/// The deletions and a `purge-project` journal entry commit together so replicas discard the same
+/// cached rows. A purge that finds nothing records no serial.
+///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_project_cache(
@@ -103,32 +107,86 @@ pub fn delete_project_cache(
     file_digests: &[String],
     metadata_digests: &[String],
 ) -> Result<ProjectCachePurgeCounts, MetaError> {
-    let counts = count_project_cache_purge(meta, index, normalized, file_digests, metadata_digests)?;
     let key = format!("{index}/{normalized}");
-    let mut batch = DriverBatch::new();
-    batch.delete(index_key(&key));
-    batch.delete(freshness_key(&key));
-    batch.delete(project_key(index, normalized));
-    batch.delete(project_status_key(index, normalized));
-    for digest in file_digests {
-        batch.delete(file_key(digest));
-    }
-    for digest in metadata_digests {
-        batch.delete(metadata_key(digest));
-    }
-    meta.commit_driver_batch(&batch, true)?;
-    Ok(counts)
+    meta.commit_driver_txn(|txn| {
+        let index_pages = usize::from(txn.remove(&index_key(&key))?);
+        let freshness_removed = txn.remove(&freshness_key(&key))?;
+        let project_records = usize::from(txn.remove(&project_key(index, normalized))?);
+        let project_status_records = usize::from(txn.remove(&project_status_key(index, normalized))?);
+        let mut file_url_records = 0;
+        for digest in file_digests {
+            file_url_records += usize::from(txn.remove(&file_key(digest))?);
+        }
+        let mut metadata_records = 0;
+        for digest in metadata_digests {
+            metadata_records += usize::from(txn.remove(&metadata_key(digest))?);
+        }
+        let counts = ProjectCachePurgeCounts {
+            index_pages,
+            project_records,
+            project_status_records,
+            file_url_records,
+            metadata_records,
+        };
+        let journal = if counts == ProjectCachePurgeCounts::default() && !freshness_removed {
+            Vec::new()
+        } else {
+            vec![serde_json::to_vec(&JournalEntry {
+                serial: 0,
+                action: "purge-project".to_owned(),
+                project: normalized.to_owned(),
+                version: None,
+                filename: None,
+            })?]
+        };
+        Ok((counts, journal))
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MetaStore, ProjectCachePurgeCounts, freshness_key, project_key};
-    use crate::store::PypiStore as _;
+    use super::{
+        JournalEntry, MetaStore, ProjectCachePurgeCounts, file_key, freshness_key, index_key, metadata_key,
+        project_key, project_status_key,
+    };
+    use crate::store::{CachedIndex, PypiStore as _};
+    use peryx_storage::meta::DriverMutation;
 
     fn store() -> (tempfile::TempDir, MetaStore) {
         let dir = tempfile::tempdir().unwrap();
         let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
         (dir, meta)
+    }
+
+    fn cached_index() -> CachedIndex {
+        CachedIndex {
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 1,
+            content_type: None,
+            fresh_secs: None,
+            body: Vec::new(),
+        }
+    }
+
+    fn put_project_cache(meta: &MetaStore, file_digest: &str, metadata_digest: &str) {
+        meta.put_cached_page(
+            "pypi/flask",
+            &cached_index(),
+            "pypi",
+            "flask",
+            "Flask",
+            "pypi",
+            Some("archived"),
+            Some("read only"),
+            &[(file_digest.to_owned(), "https://files/flask.whl".to_owned(), Some(123))],
+            &[(
+                metadata_digest.to_owned(),
+                "https://files/flask.whl.metadata".to_owned(),
+                "c".repeat(64),
+            )],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -149,33 +207,9 @@ mod tests {
     #[test]
     fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
         let (_dir, meta) = store();
-        let record = crate::store::CachedIndex {
-            etag: None,
-            last_serial: None,
-            fetched_at_unix: 1,
-            content_type: None,
-            fresh_secs: None,
-            body: Vec::new(),
-        };
         let file_digests = vec!["a".repeat(64)];
         let metadata_digests = vec!["b".repeat(64)];
-        meta.put_cached_page(
-            "pypi/flask",
-            &record,
-            "pypi",
-            "flask",
-            "Flask",
-            "pypi",
-            Some("archived"),
-            Some("read only"),
-            &[(file_digests[0].clone(), "https://files/flask.whl".to_owned(), Some(123))],
-            &[(
-                metadata_digests[0].clone(),
-                "https://files/flask.whl.metadata".to_owned(),
-                "c".repeat(64),
-            )],
-        )
-        .unwrap();
+        put_project_cache(&meta, &file_digests[0], &metadata_digests[0]);
 
         let expected = ProjectCachePurgeCounts {
             index_pages: 1,
@@ -204,21 +238,64 @@ mod tests {
     #[test]
     fn test_delete_project_cache_removes_the_freshness_overlay() {
         let (_dir, meta) = store();
-        let record = crate::store::CachedIndex {
-            etag: None,
-            last_serial: None,
-            fetched_at_unix: 1,
-            content_type: None,
-            fresh_secs: None,
-            body: Vec::new(),
-        };
-        meta.put_index("pypi/flask", &record).unwrap();
+        meta.put_index("pypi/flask", &cached_index()).unwrap();
         meta.touch_index_freshness("pypi/flask", 42, Some(9)).unwrap();
         assert!(meta.get_driver_value(&freshness_key("pypi/flask")).unwrap().is_some());
 
         meta.delete_project_cache("pypi", "flask", &[], &[]).unwrap();
 
         assert!(meta.get_driver_value(&freshness_key("pypi/flask")).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_project_cache_journals_every_removed_row() {
+        let (_dir, meta) = store();
+        let file_digest = "a".repeat(64);
+        let metadata_digest = "b".repeat(64);
+        put_project_cache(&meta, &file_digest, &metadata_digest);
+        meta.touch_index_freshness("pypi/flask", 2, Some(3)).unwrap();
+
+        meta.delete_project_cache(
+            "pypi",
+            "flask",
+            std::slice::from_ref(&file_digest),
+            std::slice::from_ref(&metadata_digest),
+        )
+        .unwrap();
+
+        let record = &meta.journal_after(0, 1).unwrap()[0];
+        assert_eq!(
+            serde_json::from_slice::<JournalEntry>(&record.payload).unwrap(),
+            JournalEntry {
+                serial: 0,
+                action: "purge-project".to_owned(),
+                project: "flask".to_owned(),
+                version: None,
+                filename: None,
+            }
+        );
+        assert_eq!(
+            record.mutations,
+            [
+                metadata_key(&metadata_digest),
+                file_key(&file_digest),
+                freshness_key("pypi/flask"),
+                index_key("pypi/flask"),
+                project_key("pypi", "flask"),
+                project_status_key("pypi", "flask"),
+            ]
+            .map(|key| DriverMutation::Delete { key })
+        );
+    }
+
+    #[test]
+    fn test_delete_missing_project_cache_journals_nothing() {
+        let (_dir, meta) = store();
+
+        let counts = meta.delete_project_cache("pypi", "flask", &[], &[]).unwrap();
+
+        assert_eq!(counts, ProjectCachePurgeCounts::default());
+        assert_eq!(meta.current_serial().unwrap(), 0);
     }
 
     #[test]
