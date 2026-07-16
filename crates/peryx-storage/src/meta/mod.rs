@@ -20,7 +20,7 @@ pub use analytics::AnalyticsHandle;
 pub use error::{MetaError, MetaScanError};
 pub use index::DriverTxn;
 pub use job::{JobKind, JobOutcome, JobRunRecord, JobState, NewJobRun};
-pub use journal::{DriverMutation, JournalRecord};
+pub use journal::{DriverBlobReference, DriverMutation, JournalRecord};
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
@@ -29,6 +29,7 @@ const WEBHOOK_DUE: TableDefinition<&str, &str> = TableDefinition::new("webhook_d
 const JOB_RUN: TableDefinition<&str, &[u8]> = TableDefinition::new("job_run");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("journal");
 const JOURNAL_MUTATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_mutations");
+const JOURNAL_BLOBS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_blobs");
 /// A neutral byte key-value table an ecosystem driver owns end to end: the store never interprets a
 /// key or value, so a format (OCI manifests and tags, say) serializes into its own namespace without
 /// the store growing format-specific tables.
@@ -91,6 +92,7 @@ impl MetaStore {
             txn.open_table(JOB_RUN)?;
             txn.open_table(JOURNAL)?;
             txn.open_table(JOURNAL_MUTATIONS)?;
+            txn.open_table(JOURNAL_BLOBS)?;
             txn.open_table(DRIVER_KV)?;
             txn.open_table(ANALYTICS)?;
         }

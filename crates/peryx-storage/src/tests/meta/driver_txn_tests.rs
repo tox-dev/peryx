@@ -56,6 +56,9 @@ fn test_commit_driver_txn_records_final_row_changes_on_the_last_serial() {
             txn.put("put", b"final")?;
             txn.remove("delete")?;
             txn.put_local("local", b"private")?;
+            txn.reference_blob("bbbb", 2);
+            txn.reference_blob("aaaa", 1);
+            txn.reference_blob("aaaa", 1);
             Ok::<_, MetaError>(((), vec![b"one".to_vec(), b"two".to_vec()]))
         })
         .unwrap();
@@ -71,6 +74,19 @@ fn test_commit_driver_txn_records_final_row_changes_on_the_last_serial() {
             crate::meta::DriverMutation::Put {
                 key: "put".to_owned(),
                 value: b"final".to_vec(),
+            },
+        ]
+    );
+    assert_eq!(
+        records[1].blobs,
+        vec![
+            crate::meta::DriverBlobReference {
+                sha256: "aaaa".to_owned(),
+                size: 1,
+            },
+            crate::meta::DriverBlobReference {
+                sha256: "bbbb".to_owned(),
+                size: 2,
             },
         ]
     );

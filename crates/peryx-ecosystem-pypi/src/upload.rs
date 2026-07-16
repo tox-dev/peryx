@@ -300,6 +300,7 @@ pub fn store_prepared(
         metadata,
         mut record,
     } = prepared;
+    let content_size = content.len();
     blobs.commit_staged(content)?;
     let metadata_digest = blobs.write(&metadata)?;
     let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
@@ -311,12 +312,14 @@ pub fn store_prepared(
             normalized: &normalized,
             display: &display_name,
             filename: &filename,
+            artifact_sha256: content_digest.as_str(),
+            artifact_size: content_size,
             record: &body,
             version: record.version.as_str(),
             metadata: Some(MetadataSibling {
-                artifact_sha256: content_digest.as_str(),
                 url: "uploaded",
                 metadata_sha256: metadata_digest.as_str(),
+                size: metadata.len() as u64,
                 source: name,
             }),
         },

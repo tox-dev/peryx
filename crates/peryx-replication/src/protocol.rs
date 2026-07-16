@@ -15,6 +15,15 @@ pub struct BlobReference {
     pub size: u64,
 }
 
+impl From<peryx_storage::meta::DriverBlobReference> for BlobReference {
+    fn from(reference: peryx_storage::meta::DriverBlobReference) -> Self {
+        Self {
+            sha256: reference.sha256,
+            size: reference.size,
+        }
+    }
+}
+
 /// One opaque metadata row mutation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]

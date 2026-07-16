@@ -165,6 +165,26 @@ async fn test_replica_runtime_copies_primary_metadata() {
 }
 
 #[tokio::test]
+async fn test_replica_runtime_copies_primary_blobs() {
+    let (_primary_dir, primary_meta, primary_blobs) = primary_stores();
+    let digest = primary_blobs.write(b"artifact").unwrap();
+    primary_meta
+        .commit_driver_txn(|txn| {
+            txn.reference_blob(digest.as_str(), 8);
+            Ok::<_, peryx_storage::meta::MetaError>(((), vec![b"upload".to_vec()]))
+        })
+        .unwrap();
+    let server = TestServer::start(primary_router("primary-a", TOKEN, primary_meta, primary_blobs).unwrap()).await;
+    let replica_dir = tempfile::tempdir().unwrap();
+    let config = config(&replica_dir, Some(replica_config(&server.url, 10)));
+    let state = build_state(&config).unwrap();
+    let runtime = ReplicationRuntime::new(&config, &state).unwrap();
+
+    assert_eq!(runtime.sync_cycle().await, Some(true));
+    assert_eq!(state.blobs.read(&digest).unwrap(), b"artifact");
+}
+
+#[tokio::test]
 async fn test_replica_runtime_waits_after_a_sync_error() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());

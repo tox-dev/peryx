@@ -4,7 +4,14 @@ use std::ops::Bound::{Excluded, Unbounded};
 use super::error::MetaError;
 use serde::{Deserialize, Serialize};
 
-use super::{JOURNAL, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
+use super::{JOURNAL, JOURNAL_BLOBS, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
+
+/// One content blob required by a journal transaction.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DriverBlobReference {
+    pub sha256: String,
+    pub size: u64,
+}
 
 /// One final driver row change committed with a journal transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +27,7 @@ pub struct JournalRecord {
     pub serial: u64,
     pub payload: Vec<u8>,
     pub mutations: Vec<DriverMutation>,
+    pub blobs: Vec<DriverBlobReference>,
 }
 
 impl MetaStore {
@@ -69,6 +77,7 @@ impl MetaStore {
             .map_or(0, |value| value.value());
         let journal = txn.open_table(JOURNAL)?;
         let mutations = txn.open_table(JOURNAL_MUTATIONS)?;
+        let blobs = txn.open_table(JOURNAL_BLOBS)?;
         let records = journal
             .range((Excluded(serial), Unbounded))?
             .take(limit)
@@ -79,6 +88,11 @@ impl MetaStore {
                     serial,
                     payload: payload.value().to_vec(),
                     mutations: mutations
+                        .get(serial)?
+                        .map(|value| serde_json::from_slice(value.value()))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    blobs: blobs
                         .get(serial)?
                         .map(|value| serde_json::from_slice(value.value()))
                         .transpose()?

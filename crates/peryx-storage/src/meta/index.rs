@@ -1,7 +1,10 @@
 use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use super::error::MetaError;
-use super::{DRIVER_KV, DriverBatch, DriverMutation, JOURNAL, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
+use super::{
+    DRIVER_KV, DriverBatch, DriverBlobReference, DriverMutation, JOURNAL, JOURNAL_BLOBS, JOURNAL_MUTATIONS, MetaStore,
+    SERIAL, SERIAL_KEY,
+};
 
 impl MetaStore {
     /// Store a driver-owned value under `key`. The store treats both as opaque bytes.
@@ -145,10 +148,11 @@ impl MetaStore {
                 return Err(MetaError::ReplicaSerialConflict { expected, actual }.into());
             }
         }
-        let (value, journal, mutations) = {
+        let (value, journal, mutations, blobs) = {
             let mut driver = DriverTxn {
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
                 touched: std::collections::BTreeSet::new(),
+                blobs: std::collections::BTreeSet::new(),
             };
             let (value, journal) = body(&mut driver)?;
             let mutations = if journal.is_empty() {
@@ -156,7 +160,12 @@ impl MetaStore {
             } else {
                 driver.mutations().map_err(E::from)?
             };
-            (value, journal, mutations)
+            let blobs = if journal.is_empty() {
+                Vec::new()
+            } else {
+                driver.blobs.into_iter().collect()
+            };
+            (value, journal, mutations, blobs)
         };
         if !journal.is_empty() {
             let mut serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
@@ -176,6 +185,13 @@ impl MetaStore {
                     .insert(next, encoded.as_slice())
                     .map_err(MetaError::from)?;
             }
+            if !blobs.is_empty() {
+                let encoded = serde_json::to_vec(&blobs).map_err(MetaError::from)?;
+                txn.open_table(JOURNAL_BLOBS)
+                    .map_err(MetaError::from)?
+                    .insert(next, encoded.as_slice())
+                    .map_err(MetaError::from)?;
+            }
             serials.insert(SERIAL_KEY, next).map_err(MetaError::from)?;
         }
         txn.commit().map_err(MetaError::from)?;
@@ -190,6 +206,7 @@ impl MetaStore {
 pub struct DriverTxn<'txn> {
     table: redb::Table<'txn, &'static str, &'static [u8]>,
     touched: std::collections::BTreeSet<String>,
+    blobs: std::collections::BTreeSet<DriverBlobReference>,
 }
 
 impl DriverTxn<'_> {
@@ -249,6 +266,14 @@ impl DriverTxn<'_> {
     pub fn put_local(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
         self.table.insert(key, value)?;
         Ok(())
+    }
+
+    /// Record content bytes that replicas need before committing this transaction.
+    pub fn reference_blob(&mut self, sha256: &str, size: u64) {
+        self.blobs.insert(DriverBlobReference {
+            sha256: sha256.to_owned(),
+            size,
+        });
     }
 
     /// Preserve insert-versus-replace information while staging a write.

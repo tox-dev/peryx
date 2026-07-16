@@ -314,15 +314,16 @@ fn test_http_primary_rejects_a_malformed_url() {
 async fn test_http_primary_fetches_changes_and_streams_blobs() {
     let stores = TestStores::new();
     stores.meta.put_driver_value("delete", b"old").unwrap();
+    let digest = stores.blobs.write(b"artifact").unwrap();
     stores
         .meta
         .commit_driver_txn(|txn| {
             txn.remove("delete")?;
             txn.put("pypi\0upload", b"record")?;
+            txn.reference_blob(digest.as_str(), 8);
             Ok::<_, peryx_storage::meta::MetaError>(((), vec![b"event".to_vec()]))
         })
         .unwrap();
-    let digest = stores.blobs.write(b"artifact").unwrap();
     let server = TestServer::start(Router::new().nest("/mirror", stores.router())).await;
     let primary = HttpPrimary::new(&format!("{}mirror", server.url), TOKEN).unwrap();
 
@@ -331,6 +332,13 @@ async fn test_http_primary_fetches_changes_and_streams_blobs() {
 
     assert_eq!(page.current_serial, 1);
     assert_eq!(page.changes[0].event, b"event");
+    assert_eq!(
+        page.changes[0].blobs,
+        vec![crate::BlobReference {
+            sha256: digest.as_str().to_owned(),
+            size: 8,
+        }]
+    );
     assert_eq!(
         page.changes[0].metadata,
         vec![

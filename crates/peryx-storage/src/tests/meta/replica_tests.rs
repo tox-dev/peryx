@@ -26,6 +26,7 @@ fn test_replica_txn_copies_rows_journal_and_serial() {
                 key: "pypi\0upload".to_owned(),
                 value: b"record".to_vec(),
             }],
+            blobs: Vec::new(),
         }]
     );
 }

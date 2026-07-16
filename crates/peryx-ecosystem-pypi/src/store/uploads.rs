@@ -5,12 +5,12 @@ use super::{OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, metadata_value, overri
 
 /// The PEP 658 metadata sibling recorded alongside a published file.
 pub struct MetadataSibling<'a> {
-    /// The artifact's own sha256, which keys the row.
-    pub artifact_sha256: &'a str,
     /// Where the sibling came from; `uploaded` for a file published here.
     pub url: &'a str,
     /// The sibling's sha256, so a later fetch can verify it.
     pub metadata_sha256: &'a str,
+    /// The sibling's byte length.
+    pub size: u64,
     /// The index that owns it.
     pub source: &'a str,
 }
@@ -25,6 +25,10 @@ pub struct PublishedFile<'a> {
     pub display: &'a str,
     /// The distribution filename.
     pub filename: &'a str,
+    /// The artifact's sha256.
+    pub artifact_sha256: &'a str,
+    /// The artifact's byte length.
+    pub artifact_size: u64,
     /// The serialized file record served on the project's page.
     pub record: &'a [u8],
     /// The release the file belongs to, recorded in the journal entry.
@@ -75,9 +79,11 @@ pub fn publish_file_if<E: From<MetaError>>(
     meta.commit_driver_txn(|txn| match guard(txn.get(&upload)?.as_deref())? {
         Guard::Skip => Ok((false, Vec::new())),
         Guard::Commit => {
+            txn.reference_blob(file.artifact_sha256, file.artifact_size);
             if let Some(sibling) = &file.metadata {
                 let value = metadata_value(sibling.url, sibling.metadata_sha256, sibling.source);
-                txn.put(&metadata_key(sibling.artifact_sha256), value.as_bytes())?;
+                txn.put(&metadata_key(file.artifact_sha256), value.as_bytes())?;
+                txn.reference_blob(sibling.metadata_sha256, sibling.size);
             }
             txn.put(&upload, file.record)?;
             txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
@@ -366,12 +372,14 @@ mod tests {
             normalized: "flask",
             display: "Flask",
             filename: "flask-1.0.whl",
+            artifact_sha256: "artifact-sha",
+            artifact_size: 8,
             record: b"record",
             version: "1.0",
             metadata: Some(MetadataSibling {
-                artifact_sha256: "artifact-sha",
                 url: "uploaded",
                 metadata_sha256: "metadata-sha",
+                size: 8,
                 source: "hosted",
             }),
         }
@@ -427,6 +435,28 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some(b"record".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_publish_file_if_records_artifact_and_metadata_blobs() {
+        let (_dir, meta) = store();
+
+        meta.publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
+            .unwrap();
+
+        assert_eq!(
+            meta.journal_after(0, 1).unwrap()[0].blobs,
+            vec![
+                peryx_storage::meta::DriverBlobReference {
+                    sha256: "artifact-sha".to_owned(),
+                    size: 8,
+                },
+                peryx_storage::meta::DriverBlobReference {
+                    sha256: "metadata-sha".to_owned(),
+                    size: 8,
+                },
+            ]
         );
     }
 
