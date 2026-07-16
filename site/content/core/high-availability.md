@@ -32,7 +32,7 @@ peryx serve --config peryx.toml --read-only
 
 The environment variable and command-line flag provide the same setting. Replica mode does not claim the configured
 writer identity, so a restored configuration may retain the source writer's identity. It disables upstream cache fills,
-webhook delivery, and background maintenance.
+webhook delivery, and background maintenance. A configured replication replica enforces the same writer-identity check.
 
 Populate each replica's data directory from a verified backup or an external replication system before routing traffic
 to it. Copy the metadata store and referenced blobs from the same point in time. peryx does not copy data between nodes

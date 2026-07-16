@@ -22,6 +22,7 @@ use crate::replication::ReplicationRuntime;
 use crate::server::{build_router, build_state, router_for};
 
 const TOKEN: &str = "replica-secret";
+const WRITER_IDENTITY: &str = "writer-a";
 
 struct TestServer {
     url: String,
@@ -49,8 +50,16 @@ impl Drop for TestServer {
 }
 
 fn config(dir: &tempfile::TempDir, replication: Option<ReplicationConfig>) -> Config {
+    let replica = matches!(replication, Some(ReplicationConfig::Replica { .. }));
+    if replica {
+        MetaStore::open(dir.path().join("peryx.redb"))
+            .unwrap()
+            .claim_writer_identity(WRITER_IDENTITY)
+            .unwrap();
+    }
     Config {
         data_dir: dir.path().to_path_buf(),
+        writer_identity: replica.then(|| WRITER_IDENTITY.to_owned()),
         replication,
         ..Config::default()
     }

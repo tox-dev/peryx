@@ -1,4 +1,6 @@
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -13,7 +15,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use peryx_ecosystem_oci::LibraryPrefix;
 
-use crate::config::{AuthConfig, Config, IndexConfig, IndexKind, SecretSource, WebhookConfig, WebhookSecret};
+use crate::config::{
+    AuthConfig, Config, IndexConfig, IndexKind, ReplicationConfig, SecretSource, WebhookConfig, WebhookSecret,
+};
 use crate::server::{build_index_settings, build_indexes, build_router, build_state, upstream_auth};
 
 fn config_with(dir: &tempfile::TempDir, indexes: Vec<IndexConfig>) -> Config {
@@ -89,6 +93,15 @@ fn claim_writer(dir: &tempfile::TempDir, identity: &str) {
         .unwrap()
         .claim_writer_identity(identity)
         .unwrap();
+}
+
+fn replication_replica() -> ReplicationConfig {
+    ReplicationConfig::Replica {
+        upstream: "https://writer.example/".to_owned(),
+        token: SecretSource::Literal("secret".to_owned()),
+        poll_interval: Duration::from_secs(1),
+        page_size: NonZeroUsize::MIN,
+    }
 }
 
 #[tokio::test]
@@ -227,12 +240,15 @@ fn test_build_state_makes_replica_upstreams_offline() {
     }));
 }
 
-#[test]
-fn test_build_state_rejects_a_replica_without_writer_identity() {
+#[rstest]
+#[case::read_only(false)]
+#[case::replication(true)]
+fn test_build_state_rejects_a_replica_without_writer_identity(#[case] configured_replication: bool) {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         data_dir: dir.path().to_path_buf(),
-        read_only: true,
+        read_only: !configured_replication,
+        replication: configured_replication.then(replication_replica),
         ..Config::default()
     };
 
@@ -247,15 +263,18 @@ fn test_build_state_rejects_a_replica_without_writer_identity() {
     assert!(!dir.path().join("peryx.redb").exists());
 }
 
-#[test]
-fn test_build_state_replica_does_not_claim_writer_identity() {
+#[rstest]
+#[case::read_only(false)]
+#[case::replication(true)]
+fn test_build_state_replica_does_not_claim_writer_identity(#[case] configured_replication: bool) {
     let dir = tempfile::tempdir().unwrap();
     claim_writer(&dir, "writer-a");
 
     let state = build_state(&Config {
         data_dir: dir.path().to_path_buf(),
         writer_identity: Some("writer-a".to_owned()),
-        read_only: true,
+        read_only: !configured_replication,
+        replication: configured_replication.then(replication_replica),
         ..Config::default()
     })
     .unwrap();
@@ -267,7 +286,11 @@ fn test_build_state_replica_does_not_claim_writer_identity() {
 #[rstest]
 #[case::missing(None, "None")]
 #[case::different(Some("writer-b"), "Some(\"writer-b\")")]
-fn test_build_state_rejects_a_replica_with_an_unmatched_writer(#[case] active: Option<&str>, #[case] expected: &str) {
+fn test_build_state_rejects_a_replica_with_an_unmatched_writer(
+    #[case] active: Option<&str>,
+    #[case] expected: &str,
+    #[values(false, true)] configured_replication: bool,
+) {
     let dir = tempfile::tempdir().unwrap();
     if let Some(active) = active {
         claim_writer(&dir, active);
@@ -275,7 +298,8 @@ fn test_build_state_rejects_a_replica_with_an_unmatched_writer(#[case] active: O
     let config = Config {
         data_dir: dir.path().to_path_buf(),
         writer_identity: Some("writer-a".to_owned()),
-        read_only: true,
+        read_only: !configured_replication,
+        replication: configured_replication.then(replication_replica),
         ..Config::default()
     };
 

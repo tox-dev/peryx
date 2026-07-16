@@ -49,7 +49,9 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
-    if config.read_only {
+    let configured_replica = matches!(config.replication, Some(ReplicationConfig::Replica { .. }));
+    let read_only = config.read_only || configured_replica;
+    if read_only {
         let active = meta.writer_identity().context("read metadata store writer identity")?;
         ensure!(
             active.as_deref() == config.writer_identity.as_deref(),
@@ -61,8 +63,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
             .with_context(|| format!("claim writer identity {identity:?}"))?;
     }
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
-    let replica = matches!(config.replication, Some(ReplicationConfig::Replica { .. }));
-    let configs = if replica {
+    let configs = if configured_replica {
         let mut configs = config.indexes.clone();
         make_replica_configs(&mut configs);
         Cow::Owned(configs)
@@ -70,8 +71,8 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         Cow::Borrowed(config.indexes.as_slice())
     };
     let upstream_routes = build_upstream_routes(&configs)?;
-    let mut indexes = build_indexes(&configs, &config.auth, config.offline || config.read_only || replica)?;
-    if replica {
+    let mut indexes = build_indexes(&configs, &config.auth, config.offline || read_only)?;
+    if configured_replica {
         for index in &mut indexes {
             if let IndexKind::Virtual { upload, .. } = &mut index.kind {
                 *upload = None;
@@ -99,7 +100,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     .context(format!("open search index {}", search_path.display()))?;
     peryx_ecosystem_pypi::install(&mut state);
     peryx_ecosystem_oci::install(&mut state, oci_settings);
-    state.read_only = config.read_only || replica;
+    state.read_only = read_only;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
         if key.trim().is_empty() {

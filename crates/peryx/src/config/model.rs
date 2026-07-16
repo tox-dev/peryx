@@ -75,9 +75,11 @@ impl Config {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
             }),
-            None if self.read_only => Err(ConfigError::WriterIdentity {
-                reason: "required in read replica mode",
-            }),
+            None if self.read_only || matches!(self.replication, Some(ReplicationConfig::Replica { .. })) => {
+                Err(ConfigError::WriterIdentity {
+                    reason: "required in read replica mode",
+                })
+            }
             _ => Ok(()),
         }
     }
