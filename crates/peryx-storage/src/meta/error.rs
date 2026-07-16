@@ -20,6 +20,19 @@ pub enum MetaError {
     ReplicaSerialConflict { expected: u64, actual: u64 },
 }
 
+/// A rejected writer-identity claim or promotion.
+#[derive(Debug, thiserror::Error)]
+pub enum WriterIdentityError {
+    #[error(transparent)]
+    Store(#[from] MetaError),
+    #[error("writer identity cannot be empty")]
+    Empty,
+    #[error("metadata store is claimed by writer {active:?}; refusing {requested:?}")]
+    Claimed { active: String, requested: String },
+    #[error("metadata store writer is {active:?}; expected {expected:?}")]
+    Changed { active: Option<String>, expected: String },
+}
+
 /// A metadata scan error: either the store failed or the visitor rejected one row.
 #[derive(Debug)]
 pub enum MetaScanError<E> {

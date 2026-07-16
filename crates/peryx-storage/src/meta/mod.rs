@@ -15,9 +15,10 @@ mod index;
 mod job;
 mod journal;
 mod webhook;
+mod writer;
 
 pub use analytics::AnalyticsHandle;
-pub use error::{MetaError, MetaScanError};
+pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use index::DriverTxn;
 pub use job::{JobKind, JobOutcome, JobRunRecord, JobState, NewJobRun};
 pub use journal::JournalRecord;
@@ -28,6 +29,7 @@ const WEBHOOK_DELIVERY: TableDefinition<&str, &[u8]> = TableDefinition::new("web
 const WEBHOOK_DUE: TableDefinition<&str, &str> = TableDefinition::new("webhook_due");
 const JOB_RUN: TableDefinition<&str, &[u8]> = TableDefinition::new("job_run");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("journal");
+const WRITER: TableDefinition<&str, &str> = TableDefinition::new("writer");
 /// A neutral byte key-value table an ecosystem driver owns end to end: the store never interprets a
 /// key or value, so a format (OCI manifests and tags, say) serializes into its own namespace without
 /// the store growing format-specific tables.
@@ -39,6 +41,7 @@ const SERIAL_KEY: &str = "serial";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
 const ANALYTICS_KEY: &str = "downloads";
+const WRITER_KEY: &str = "active";
 
 /// A set of driver-owned writes to apply in one transaction.
 ///
@@ -89,6 +92,7 @@ impl MetaStore {
             txn.open_table(WEBHOOK_DUE)?;
             txn.open_table(JOB_RUN)?;
             txn.open_table(JOURNAL)?;
+            txn.open_table(WRITER)?;
             txn.open_table(DRIVER_KV)?;
             txn.open_table(ANALYTICS)?;
         }
