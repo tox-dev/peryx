@@ -46,6 +46,7 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain*'
+            runner:
               - '.github/codspeed/**'
               - '.github/workflows/codspeed.yml'
               - 'ci/run-codspeed*.sh'
@@ -58,6 +59,7 @@ jobs:
       - id: matrix
         env:
           EVENT: ${{ github.event_name }}
+          RUNNER: ${{ steps.filter.outputs.runner }}
           SHARED: ${{ steps.filter.outputs.shared }}
           OCI: ${{ steps.filter.outputs.oci }}
           PYPI: ${{ steps.filter.outputs.pypi }}
@@ -69,9 +71,12 @@ jobs:
           legs=()
           if [ "$EVENT" != "pull_request" ]; then
             legs=("$oci" "$pypi")
+          elif [ "$SHARED" = "true" ]; then
+            legs=("$oci" "$pypi")
           else
-            if [ "$OCI" = "true" ] || [ "$SHARED" = "true" ]; then legs+=("$oci"); fi
-            if [ "$PYPI" = "true" ] || [ "$SHARED" = "true" ]; then legs+=("$pypi"); fi
+            if [ "$OCI" = "true" ]; then legs+=("$oci"); fi
+            if [ "$PYPI" = "true" ]; then legs+=("$pypi"); fi
+            if [ ${#legs[@]} -eq 0 ] && [ "$RUNNER" = "true" ]; then legs+=("$pypi"); fi
           fi
           IFS=,
           echo "include=[${legs[*]}]" >> "$GITHUB_OUTPUT"
@@ -232,7 +237,8 @@ jobs:
       # incrementally. Production and dist builds keep fat LTO; only relative measurement matters here.
       CARGO_PROFILE_RELEASE_LTO: thin
       # A workflow repair validates the runner but cannot compare against results from the old runtime.
-      CODSPEED_SKIP_UPLOAD: ${{ needs.changes.outputs.workflow_changed }}
+      CODSPEED_SKIP_UPLOAD: >-
+        ${{ github.event_name == 'pull_request' && needs.changes.outputs.workflow_changed == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
