@@ -219,6 +219,25 @@ fn test_build_state_makes_replica_upstreams_offline() {
 }
 
 #[test]
+fn test_build_state_replica_does_not_claim_writer_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    meta.claim_writer_identity("writer-a").unwrap();
+    drop(meta);
+
+    let state = build_state(&Config {
+        data_dir: dir.path().to_path_buf(),
+        writer_identity: Some("writer-b".to_owned()),
+        read_only: true,
+        ..Config::default()
+    })
+    .unwrap();
+
+    assert!(state.read_only);
+    assert_eq!(state.meta.writer_identity().unwrap().as_deref(), Some("writer-a"));
+}
+
+#[test]
 fn test_build_state_applies_upstream_concurrency() {
     let dir = tempfile::tempdir().unwrap();
     let mut pypi = cached("pypi", "https://pypi.org/simple/");

@@ -9,19 +9,20 @@ or `PERYX_*` environment variables, which override the file. Precedence is `defa
 
 ## Top level
 
-| Setting                   | Flag              | Environment             | TOML key          | Default      |
-| ------------------------- | ----------------- | ----------------------- | ----------------- | ------------ |
-| Bind host                 | `--host`          | `PERYX_HOST`            | `host`            | `127.0.0.1`  |
-| Bind port                 | `--port`          | `PERYX_PORT`            | `port`            | `4433`       |
-| Data directory            | `--data-dir`      | `PERYX_DATA_DIR`        | `data_dir`        | `peryx-data` |
-| Offline mode              | `--offline`       | `PERYX_OFFLINE`         | `offline`         | `false`      |
-| Read replica mode         | `--read-only`     | `PERYX_READ_ONLY`       | `read_only`       | `false`      |
-| Config file               | `--config` / `-c` | (n/a)                   | (n/a)             | (none)       |
-| Cache freshness (seconds) | (file/env only)   | `PERYX_CACHE_TTL_SECS`  | `cache_ttl_secs`  | `300`        |
-| Page cache budget (bytes) | (file/env only)   | `PERYX_HOT_CACHE_BYTES` | `hot_cache_bytes` | `268435456`  |
-| Stale-on-error bound (s)  | (file/env only)   | `PERYX_MAX_STALE_SECS`  | `max_stale_secs`  | `300`        |
-| Indexes                   | (file only)       | (n/a)                   | `[[index]]`       | (see below)  |
-| Rate limits               | (file only)       | (n/a)                   | `[rate_limit]`    | (see below)  |
+| Setting                   | Flag                | Environment             | TOML key          | Default      |
+| ------------------------- | ------------------- | ----------------------- | ----------------- | ------------ |
+| Bind host                 | `--host`            | `PERYX_HOST`            | `host`            | `127.0.0.1`  |
+| Bind port                 | `--port`            | `PERYX_PORT`            | `port`            | `4433`       |
+| Data directory            | `--data-dir`        | `PERYX_DATA_DIR`        | `data_dir`        | `peryx-data` |
+| Writer identity           | `--writer-identity` | `PERYX_WRITER_IDENTITY` | `writer_identity` | (none)       |
+| Offline mode              | `--offline`         | `PERYX_OFFLINE`         | `offline`         | `false`      |
+| Read replica mode         | `--read-only`       | `PERYX_READ_ONLY`       | `read_only`       | `false`      |
+| Config file               | `--config` / `-c`   | (n/a)                   | (n/a)             | (none)       |
+| Cache freshness (seconds) | (file/env only)     | `PERYX_CACHE_TTL_SECS`  | `cache_ttl_secs`  | `300`        |
+| Page cache budget (bytes) | (file/env only)     | `PERYX_HOT_CACHE_BYTES` | `hot_cache_bytes` | `268435456`  |
+| Stale-on-error bound (s)  | (file/env only)     | `PERYX_MAX_STALE_SECS`  | `max_stale_secs`  | `300`        |
+| Indexes                   | (file only)         | (n/a)                   | `[[index]]`       | (see below)  |
+| Rate limits               | (file only)         | (n/a)                   | `[rate_limit]`    | (see below)  |
 
 Environment variables sit between the file and flags: a `PERYX_*` value overrides the TOML file, and a flag overrides
 the variable. Only scalar settings are environment-configurable. The `[[index]]` topology and `[rate_limit]` block stay
@@ -60,6 +61,11 @@ Use `peryx mirror sync` before enabling offline mode on a machine that must run 
 `503 Service Unavailable`, disables upstream cache fills, webhook delivery, and background maintenance, and reports the
 replica role through `GET /+status`. Use this mode only with a data directory populated by backup restore or an external
 replication system.
+
+`writer_identity` enables the single-writer startup guard. A writer claims this value in the metadata store at startup;
+another configured identity cannot start against that store. Replica mode does not claim it, so a restored config
+snapshot may retain the writer's value while serving read-only. See [High availability](@/core/high-availability.md) for
+promotion.
 
 ## TLS
 

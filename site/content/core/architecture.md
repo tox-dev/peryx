@@ -257,8 +257,8 @@ way.
 
 ## Tradeoffs
 
-- **One process, local state.** No replication, no failover. A cache instance per site or cluster is the intended shape;
-  each warms independently.
+- **Local state, manual failover.** One writer may serve with read replicas, but an external system must copy the data
+  and operators perform [promotion](@/core/high-availability.md). peryx does not provide replication or leader election.
 - **The first request for anything pays upstream latency.** Streaming removes the buffering penalty, not the network. A
   cold cache behaves like pypi.org plus one hop until it has seen your working set once.
 - **redb has one writer.** Fine for an index server (reads dominate by orders of magnitude), wrong for a write-heavy
