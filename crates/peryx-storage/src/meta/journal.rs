@@ -43,18 +43,31 @@ impl MetaStore {
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn journal_after(&self, serial: u64, limit: usize) -> Result<Vec<JournalRecord>, MetaError> {
+        self.journal_page_after(serial, limit).map(|(_, records)| records)
+    }
+
+    /// Read the current serial and at most `limit` later journal records from one snapshot.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn journal_page_after(&self, serial: u64, limit: usize) -> Result<(u64, Vec<JournalRecord>), MetaError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(JOURNAL)?;
-        table
+        let current = txn
+            .open_table(SERIAL)?
+            .get(SERIAL_KEY)?
+            .map_or(0, |value| value.value());
+        let records = txn
+            .open_table(JOURNAL)?
             .range((Excluded(serial), Unbounded))?
             .take(limit)
-            .map(|entry| {
+            .map(|entry| -> Result<JournalRecord, redb::StorageError> {
                 let (serial, payload) = entry?;
                 Ok(JournalRecord {
                     serial: serial.value(),
                     payload: payload.value().to_vec(),
                 })
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        Ok((current, records))
     }
 }
