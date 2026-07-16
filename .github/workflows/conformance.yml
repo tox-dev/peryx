@@ -45,12 +45,12 @@ jobs:
               - 'crates/peryx-search/**'
               - 'crates/peryx-replication/**'
               - 'crates/peryx/**'
-              - 'crates/peryx-bench/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain*'
-              - '.github/workflows/**'
+              - '.github/workflows/conformance.yml'
+              - 'ci/run-oci-conformance.sh'
             oci:
               - 'crates/peryx-ecosystem-oci/**'
 
@@ -64,8 +64,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache-workspace-crates: true
       - name: Build peryx
-        run: cargo build --release --bin peryx
+        run: cargo build --bin peryx
       - name: Build the conformance suite
         # ubuntu-24.04 ships a recent Go; the suite builds with any 1.22+.
         run: |
@@ -74,4 +76,4 @@ jobs:
           cd "$RUNNER_TEMP/distribution-spec/conformance"
           go test -c -o "$RUNNER_TEMP/conformance.test"
       - name: Run conformance against peryx
-        run: ci/run-oci-conformance.sh ./target/release/peryx "$RUNNER_TEMP/conformance.test"
+        run: ci/run-oci-conformance.sh ./target/debug/peryx "$RUNNER_TEMP/conformance.test"

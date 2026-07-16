@@ -92,6 +92,9 @@ enum Mode {
     Ab {
         /// The git ref (commit, tag, or branch) to compare the working tree against.
         base: String,
+        /// Measure the working tree before the base, so a second run can expose order-dependent drift.
+        #[arg(long)]
+        head_first: bool,
     },
 }
 
@@ -101,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let http = reqwest::Client::builder().build()?;
     match cli.mode.clone() {
-        Some(Mode::Ab { base }) => ab(&base, &cli, &http).await,
+        Some(Mode::Ab { base, head_first }) => ab(&base, head_first, &cli, &http).await,
         Some(Mode::VsRest) | None => {
             ensure_peryx_built()?;
             run_suite(&cli, &http).await
@@ -128,12 +131,15 @@ async fn run_suite(cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
 /// share the methodology; a base commit's own harness would use different estimators and make the
 /// comparison meaningless.
 ///
-/// The two runs are sequential, so slow thermal drift is not fully cancelled; the gate's noise
-/// threshold and the per-metric spread guard against reading drift as a regression.
-async fn ab(base_ref: &str, cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
+/// The two runs are sequential, so slow thermal drift is not fully cancelled. `head_first` reverses
+/// their order for a confirming run; the gate also rejects noisy metrics.
+async fn ab(base_ref: &str, head_first: bool, cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
     let mut suite = cli.clone();
     if suite.only.is_empty() {
         "peryx".clone_into(&mut suite.only);
+    }
+    if !suite.skip.iter().any(|part| part == "machine") {
+        suite.skip.push("machine".to_owned());
     }
     suite.mode = None;
     ensure_peryx_built()?;
@@ -141,21 +147,39 @@ async fn ab(base_ref: &str, cli: &Cli, http: &reqwest::Client) -> anyhow::Result
     let base_binary = build_base(base_ref)?;
     let saved = save_report()?;
 
-    println!("== measuring base ({base_ref}) ==");
-    run_with_binary(&base_binary, &suite, http).await?;
     let base_report = report::repo_root().join("target").join("bench-base-report.toml");
-    std::fs::copy(report::report_path(), &base_report)?;
-
-    println!("== measuring working tree ==");
-    run_with_binary(&head_binary, &suite, http).await?;
+    let head_report = report::repo_root().join("target").join("bench-head-report.toml");
+    if head_first {
+        measure("working tree", &head_binary, &head_report, &suite, http).await?;
+        measure(&format!("base ({base_ref})"), &base_binary, &base_report, &suite, http).await?;
+        std::fs::copy(&head_report, report::report_path())?;
+    } else {
+        measure(&format!("base ({base_ref})"), &base_binary, &base_report, &suite, http).await?;
+        measure("working tree", &head_binary, &head_report, &suite, http).await?;
+    }
     let regressed = compare::against(&base_report)?;
 
     restore_report(saved)?;
-    let _ = std::fs::remove_file(&base_report);
+    for report in [base_report, head_report] {
+        let _ = std::fs::remove_file(report);
+    }
     remove_worktree()?;
     if regressed {
         bail!("peryx regressed against {base_ref}");
     }
+    Ok(())
+}
+
+async fn measure(
+    label: &str,
+    binary: &std::path::Path,
+    destination: &std::path::Path,
+    cli: &Cli,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
+    println!("== measuring {label} ==");
+    run_with_binary(binary, cli, http).await?;
+    std::fs::copy(report::report_path(), destination)?;
     Ok(())
 }
 

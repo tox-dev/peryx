@@ -26,8 +26,14 @@ prints a per-metric verdict aggregated with the geometric mean and gates only th
 peryx does not control dominates any row that fetches from a real upstream:
 
 ```shell
-cargo run --release -p peryx-bench -- ab <base-commit>
+cargo run --release -p peryx-bench -- --rounds 7 ab <base-commit>
+cargo run --release -p peryx-bench -- --rounds 7 ab <base-commit> --head-first
 ```
+
+Run both orders on the same machine. A result that changes with the order is thermal or background-load drift, not a
+regression. Keep the machine on AC power, close other CPU and disk work, and compare the two revisions without changing
+the compiler, dependency lockfile, power mode, or host. The harness reports the median, coefficient of variation,
+min-max range, and outliers; it excludes a noisy metric from the gate instead of treating it as evidence.
 
 ## OCI runs need Docker and a mirror
 
@@ -45,13 +51,38 @@ marks them network-bound and keeps them out of the regression gate:
 cargo run --release -p peryx-bench -- --ecosystem oci --mirror
 ```
 
-## Price one request, per ecosystem
+## Run the same CPU benchmarks locally and in CI
 
-The runs above time a whole client against a real network. The [criterion](https://github.com/bheisler/criterion.rs)
-suites price a single request served in process through the full router, with no socket and no upstream, from a warm
-store:
+GitHub Actions uses CodSpeed's CPU simulation because shared-runner wall time changes with host load and CPU model. The
+simulation counts the work performed by the benchmark on a simulated CPU. It runs once, excludes time spent inside
+system calls, and is therefore suited to the in-process parser, renderer, and router benchmarks rather than the
+end-to-end network workloads above.
+
+The local runner uses the immutable CI image when its Dockerfile definition has been published. The image pins Ubuntu,
+Rust, cargo-codspeed, the CodSpeed CLI, and CodSpeed's Valgrind fork; the runner also uses the CI workspace path, thin
+LTO, generic glibc CPU routines, and one malloc arena. On an ARM64 host with Docker:
 
 ```shell
-cargo bench -p peryx-ecosystem-pypi --bench operations
-cargo bench -p peryx-ecosystem-oci --bench operations
+ci/run-codspeed-local.sh login
+ci/run-codspeed-local.sh peryx-ecosystem-pypi
+ci/run-codspeed-local.sh peryx-ecosystem-oci
 ```
+
+`login` is needed once and stores the CodSpeed credential in a Docker volume. Build artifacts use a separate volume
+keyed by the image definition. If the current Dockerfile has not been published, the runner builds it locally; compare
+those results only with another run using the same definition.
+
+CodSpeed simulation does not measure kernel, filesystem, socket, or upstream latency. Use `peryx-bench` for those paths.
+For a host wall-clock microbenchmark, standard Criterion remains available, but its numbers are valid only on the same
+quiet machine under the same toolchain and power conditions:
+
+```shell
+cargo bench --locked -p peryx-ecosystem-pypi
+cargo bench --locked -p peryx-ecosystem-oci
+```
+
+The methodology follows [CodSpeed's CPU simulation guidance](https://codspeed.io/docs/instruments/cpu), its
+[variance controls](https://codspeed.io/docs/instruments/cpu/reducing-variance),
+[Criterion's measurement guidance](https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html),
+and the
+[Google Benchmark interleaving rationale](https://github.com/google/benchmark/blob/main/docs/random_interleaving.md).

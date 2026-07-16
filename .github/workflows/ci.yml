@@ -52,7 +52,7 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain*'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
             pypi:
               - 'crates/peryx-ecosystem-pypi/**'
             oci:
@@ -63,7 +63,7 @@ jobs:
               - 'tests/frontend/**'
             docs:
               - 'site/**'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
 
   lint:
     needs: changes
@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26, windows-2025]
+        os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
     # Homebrew (pulled in by taiki-e/install-action on macOS) warns about the runner's pre-installed
     # aws/tap unless tap-trust checks are disabled.
@@ -94,10 +94,69 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: test
+          add-rust-environment-hash-key: false
+          cache-on-failure: true
+          cache-workspace-crates: true
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --no-fail-fast
+
+  test-windows-build:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: test
+          add-rust-environment-hash-key: false
+          cache-on-failure: true
+          cache-workspace-crates: true
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nextest-windows
+          path: nextest-archive.tar.zst
+          compression-level: 0
+          retention-days: 1
+
+  test-windows:
+    needs: [changes, test-windows-build]
+    if: needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request'
+    env:
+      INSTA_WORKSPACE_ROOT: ${{ github.workspace }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: nextest-windows
+      - run: >
+          cargo-nextest nextest run --archive-file nextest-archive.tar.zst --workspace-remap . --partition slice:${{ matrix.shard }}/2 --no-fail-fast
 
   coverage:
     needs: changes
@@ -230,7 +289,7 @@ jobs:
   # skipped; fails if any failed or was cancelled.
   ci-gate:
     if: always()
-    needs: [changes, lint, test, coverage, e2e, e2e-live, frontend, docs]
+    needs: [changes, lint, test, test-windows-build, test-windows, coverage, e2e, e2e-live, frontend, docs]
     runs-on: ubuntu-24.04
     steps:
       - name: Verify no required job failed

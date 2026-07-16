@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: codspeed-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Path-based gating so a PR that only touches one ecosystem benches just that leg. bench_matrix is
   # the dynamic `operations` matrix: both legs on non-PR events, otherwise only the affected ones.
@@ -37,12 +41,13 @@ jobs:
               - 'crates/peryx-search/**'
               - 'crates/peryx-replication/**'
               - 'crates/peryx/**'
-              - 'crates/peryx-bench/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain*'
-              - '.github/workflows/**'
+              - '.github/codspeed/**'
+              - '.github/workflows/codspeed.yml'
+              - 'ci/run-codspeed*.sh'
             pypi:
               - 'crates/peryx-ecosystem-pypi/**'
             oci:
@@ -105,10 +110,82 @@ jobs:
             sleep 15
           done
 
+  codspeed-image:
+    name: CodSpeed runtime image
+    needs: changes
+    if: needs.changes.outputs.bench_matrix != '[]'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      available: ${{ steps.image.outputs.available }}
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve immutable runtime image
+        id: image
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/peryx-codspeed
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          definition=$(sha256sum .github/codspeed/Dockerfile | cut -d ' ' -f 1)
+          tag="$IMAGE:definition-$definition"
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+          if [[ "$digest" == sha256:* ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT" == pull_request ]] && git cat-file -e "$BASE_SHA:.github/codspeed/Dockerfile"; then
+            base_definition=$(git show "$BASE_SHA:.github/codspeed/Dockerfile" | sha256sum | cut -d ' ' -f 1)
+            if [[ "$definition" == "$base_definition" ]]; then
+              echo "The runtime image for this reviewed definition is unavailable."
+              exit 1
+            fi
+          fi
+
+          build=(
+            docker buildx build
+            --file .github/codspeed/Dockerfile
+            --platform linux/arm64
+            --tag "$tag"
+            --label "org.opencontainers.image.revision=$GITHUB_SHA"
+          )
+          if [[ "$EVENT" == pull_request ]]; then
+            "${build[@]}" --load .
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          "${build[@]}" --provenance=mode=max --sbom=true --push .
+          for attempt in {1..5}; do
+            digest=$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            [[ "$digest" == sha256:* ]] && break
+            sleep $((attempt * 2))
+          done
+          [[ "$digest" == sha256:* ]]
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
   operations:
     name: ${{ matrix.ecosystem }} operation benchmarks
-    needs: [changes, base]
-    if: always() && (needs.base.result == 'success' || needs.base.result == 'skipped') && needs.changes.outputs.bench_matrix != '[]'
+    needs: [changes, base, codspeed-image]
+    if: >-
+      always() &&
+      (needs.base.result == 'success' || needs.base.result == 'skipped') &&
+      needs.codspeed-image.result == 'success' &&
+      needs.codspeed-image.outputs.available == 'true' &&
+      needs.changes.outputs.bench_matrix != '[]'
     concurrency:
       # GitHub left ARM jobs running after workflow-level cancellation in #280.
       group: codspeed-${{ matrix.ecosystem }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -118,10 +195,19 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.changes.outputs.bench_matrix) }}
     runs-on: ubuntu-24.04-arm
+    container:
+      image: ${{ needs.codspeed-image.outputs.image }} # zizmor: ignore[unpinned-images] output is digest-pinned
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
+      packages: read
     env:
       # GitHub hands out heterogeneous ARM CPUs for ubuntu-24.04-arm. glibc then picks CPU-specific
       # memcpy/memset/malloc paths per runner, so cachegrind (simulation mode) measures the same
@@ -138,41 +224,20 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          # Cache the workspace crates too, not just dependencies: with thin LTO the benchmark build
-          # is incremental, so a warm cache skips most of the recompile.
+          cache-bin: false
+          cache-on-failure: true
           cache-workspace-crates: true
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-codspeed@5.0.1
-      - run: cargo codspeed build --locked -j ${{ matrix.cargo_jobs }} -m simulation -p ${{ matrix.package }}
-      - name: Record benchmark hashes
-        run: sha256sum target/codspeed/analysis/${{ matrix.package }}/*
-      # CodSpeedHQ/action installs its valgrind .deb plus libc6-dbg via apt-get, fetched from
-      # ports.ubuntu.com on ARM. That install runs inside the action, so only apt's own retry
-      # config can harden it; pre-fetching libc6-dbg shrinks what the action must still download.
-      - name: Make apt resilient to mirror blips
-        run: |
-          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
-          for attempt in 1 2 3 4 5; do
-            sudo apt-get update && sudo apt-get install -y libc6-dbg && exit 0
-            echo "apt attempt $attempt failed; retrying in $((attempt * 5))s"
-            sleep $((attempt * 5))
-          done
-          echo "libc6-dbg install failed after 5 attempts"
-          exit 1
-      - uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
-        with:
-          mode: simulation
-          run: cargo codspeed run
+      - run: ci/run-codspeed.sh ${{ matrix.package }} ${{ matrix.cargo_jobs }}
 
   # Required-status-check anchor: branch protection requires this job, not base/operations, because a
   # skipped required check blocks merge on GitHub. Passes when every dependency succeeded or skipped;
   # fails if any failed or was cancelled.
   codspeed-gate:
     if: always()
-    needs: [changes, base, operations]
+    needs: [changes, base, codspeed-image, operations]
     runs-on: ubuntu-24.04
     steps:
       - name: Verify no required job failed

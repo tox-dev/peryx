@@ -129,10 +129,7 @@ pub async fn stream_detail(
 
     let key = format!("{cached_name}/{project}");
     if offline {
-        return match state.meta.get_index(&key)? {
-            Some(record) => Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?)),
-            None => Ok(PageOutcome::Fallback),
-        };
+        return offline_page(&state, &key, &hot_key, context);
     }
     if let Some(record) = fresh_cached(&state, &key)? {
         return Ok(PageOutcome::Ready(transform_whole(&state, &hot_key, &record, context)?));
@@ -140,10 +137,8 @@ pub async fn stream_detail(
     if state.negative_fresh(&project_negative_key(&key)) {
         return Ok(missing_upstream_outcome(&context));
     }
-    // Stale-while-revalidate: a stale-but-present page answers now while one background task refreshes
-    // it, so a resolver never waits on the network for a page peryx already holds. This runs before
-    // the flight gate on purpose — concurrent stale hits each serve their bytes instead of queuing,
-    // and the coalescing lives inside the spawned task, which takes the gate or skips.
+    // Serve stale before taking the flight gate so concurrent hits do not queue; the spawned refresh
+    // coalesces itself.
     if let Some(record) = super::stale_servable(&state, &key)? {
         let bytes = transform_whole(&state, &hot_key, &record, context)?;
         let _ = spawn_revalidation(state.clone(), key, cached_name, project, client);
@@ -219,6 +214,18 @@ pub async fn stream_detail(
             release_flight(&state, &key, guard);
             Ok(PageOutcome::Fallback)
         }
+    }
+}
+
+fn offline_page(
+    state: &ServingState,
+    key: &str,
+    hot_key: &str,
+    context: crate::stream::PageContext,
+) -> Result<PageOutcome, CacheError> {
+    match state.meta.get_index(key)? {
+        Some(record) => Ok(PageOutcome::Ready(transform_whole(state, hot_key, &record, context)?)),
+        None => Ok(PageOutcome::Fallback),
     }
 }
 
