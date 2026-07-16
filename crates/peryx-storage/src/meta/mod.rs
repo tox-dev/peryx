@@ -5,15 +5,18 @@
 //! serial counter and cache records get snapshot-isolated reads without a global lock.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use redb::{Database, TableDefinition};
 
+mod analytics;
 mod error;
 mod index;
 mod job;
 mod journal;
 mod webhook;
 
+pub use analytics::AnalyticsHandle;
 pub use error::{MetaError, MetaScanError};
 pub use index::DriverTxn;
 pub use job::{JobKind, JobOutcome, JobRunRecord, JobState, NewJobRun};
@@ -28,9 +31,13 @@ const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("journal");
 /// key or value, so a format (OCI manifests and tags, say) serializes into its own namespace without
 /// the store growing format-specific tables.
 const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
+/// The persisted download-usage aggregates, held as one opaque snapshot blob the metrics aggregator
+/// owns; see [`AnalyticsHandle`].
+const ANALYTICS: TableDefinition<&str, &[u8]> = TableDefinition::new("analytics");
 const SERIAL_KEY: &str = "serial";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
+const ANALYTICS_KEY: &str = "downloads";
 
 /// A set of driver-owned writes to apply in one transaction.
 ///
@@ -63,7 +70,7 @@ impl DriverBatch {
 /// The metadata store.
 #[derive(Debug)]
 pub struct MetaStore {
-    db: Database,
+    db: Arc<Database>,
 }
 
 impl MetaStore {
@@ -81,9 +88,10 @@ impl MetaStore {
             txn.open_table(WEBHOOK_DUE)?;
             txn.open_table(JOB_RUN)?;
             txn.open_table(DRIVER_KV)?;
+            txn.open_table(ANALYTICS)?;
         }
         txn.commit()?;
-        Ok(Self { db })
+        Ok(Self { db: Arc::new(db) })
     }
 
     /// Open an existing database without creating files or tables.
@@ -92,7 +100,7 @@ impl MetaStore {
     /// Returns a store error if the database cannot be opened.
     pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, MetaError> {
         Ok(Self {
-            db: Database::open(path)?,
+            db: Arc::new(Database::open(path)?),
         })
     }
 }

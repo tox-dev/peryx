@@ -273,6 +273,7 @@ impl AppState {
                 IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
             })
             .collect::<Vec<_>>();
+        let metrics = Metrics::start_durable(meta.analytics());
         Self {
             serving: std::sync::Arc::new(super::app::ServingState {
                 meta,
@@ -284,7 +285,7 @@ impl AppState {
                 indexes,
                 cache: peryx_index::ServingCache::new(hot_cache_bytes, ttl_secs),
                 downloads: Mutex::new(HashMap::new()),
-                metrics: Metrics::start(),
+                metrics,
                 search,
                 rate_limits: RateLimiter::new(rate_limit),
                 upstream_limits: UpstreamLimits::new(upstream_limits),

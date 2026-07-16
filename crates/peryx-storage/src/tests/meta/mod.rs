@@ -1,5 +1,6 @@
 use crate::meta::MetaStore;
 
+mod analytics_tests;
 mod driver_txn_tests;
 mod error_tests;
 mod integration_tests;

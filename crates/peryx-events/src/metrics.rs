@@ -18,6 +18,7 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use peryx_core::Role;
+use peryx_storage::meta::AnalyticsHandle;
 
 /// One request-path observation.
 #[derive(Debug, Clone)]
@@ -165,6 +166,27 @@ pub struct IndexStats {
 /// The whole tree, index route at the top.
 pub type StatsTree = HashMap<String, IndexStats>;
 
+/// One persisted file's usage: enough to rebuild the download and byte totals at every level, since
+/// each download increments its file, project, and index together.
+#[derive(Debug, Serialize, Deserialize)]
+struct FileDownloadRow {
+    route: String,
+    project: String,
+    filename: String,
+    downloads: u64,
+    bytes: u64,
+}
+
+/// The durable slice of the tree: per-file download counts and bytes.
+///
+/// Only usage data survives a restart. The operational counters (pages, uploads, cache refreshes,
+/// upstream errors) are live gauges the process rebuilds as it serves, so persisting them would
+/// carry stale operational state across restarts without answering a usage question.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct DownloadSnapshot {
+    files: Vec<FileDownloadRow>,
+}
+
 /// The recording half handed to request handlers: a clone-cheap sender plus the shared snapshot.
 #[derive(Clone)]
 pub struct Metrics {
@@ -173,18 +195,41 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Start the aggregator thread and return the recorder.
+    /// Start an ephemeral aggregator whose counters live only as long as the process.
     ///
     /// # Panics
     /// Panics if the OS refuses to spawn the aggregator thread.
     #[must_use]
     pub fn start() -> Self {
+        Self::spawn(None)
+    }
+
+    /// Start an aggregator with durable download usage: restore the persisted snapshot into the
+    /// initial tree, and rewrite it after every batch that recorded a download, so download and byte
+    /// totals survive a restart. Persistence runs on the aggregator thread, never the request path.
+    ///
+    /// # Panics
+    /// Panics if the OS refuses to spawn the aggregator thread.
+    #[must_use]
+    pub fn start_durable(store: AnalyticsHandle) -> Self {
+        Self::spawn(Some(store))
+    }
+
+    fn spawn(store: Option<AnalyticsHandle>) -> Self {
         let (sender, receiver) = channel();
-        let tree = Arc::new(RwLock::new(StatsTree::new()));
+        let mut initial = StatsTree::new();
+        if let Some(snapshot) = store
+            .as_ref()
+            .and_then(|store| store.load().ok().flatten())
+            .and_then(|bytes| serde_json::from_slice::<DownloadSnapshot>(&bytes).ok())
+        {
+            restore_downloads(&mut initial, snapshot);
+        }
+        let tree = Arc::new(RwLock::new(initial));
         let sink = Arc::clone(&tree);
         std::thread::Builder::new()
             .name("peryx-metrics".to_owned())
-            .spawn(move || aggregate(&receiver, &sink))
+            .spawn(move || aggregate(&receiver, &sink, store.as_ref()))
             .expect("spawn metrics thread");
         Self { sender, tree }
     }
@@ -238,15 +283,60 @@ impl Metrics {
     }
 }
 
-/// The aggregator loop: drain events until every sender is gone.
-fn aggregate(receiver: &Receiver<Event>, tree: &Arc<RwLock<StatsTree>>) {
+/// The aggregator loop: drain events until every sender is gone, persisting the download snapshot
+/// after each batch that changed it. Serializing happens under the lock (cheap); the durable write
+/// happens after releasing it, so a slow disk never stalls the aggregator's readers.
+fn aggregate(receiver: &Receiver<Event>, tree: &Arc<RwLock<StatsTree>>, store: Option<&AnalyticsHandle>) {
     while let Ok(event) = receiver.recv() {
-        let mut tree = tree.write().expect("metrics lock");
-        apply(&mut tree, event);
-        // Batch whatever else is already queued under the same lock acquisition.
-        while let Ok(event) = receiver.try_recv() {
+        let mut dirty = matches!(&event, Event::Download { .. });
+        let pending = {
+            let mut tree = tree.write().expect("metrics lock");
             apply(&mut tree, event);
+            // Batch whatever else is already queued under the same lock acquisition.
+            while let Ok(event) = receiver.try_recv() {
+                dirty |= matches!(&event, Event::Download { .. });
+                apply(&mut tree, event);
+            }
+            (dirty && store.is_some())
+                .then(|| serde_json::to_vec(&snapshot_downloads(&tree)).expect("serialize metrics snapshot"))
+        };
+        if let (Some(store), Some(bytes)) = (store, pending) {
+            let _ = store.save(&bytes);
         }
+    }
+}
+
+/// Flatten the tree's per-file download counters into a persistable snapshot.
+fn snapshot_downloads(tree: &StatsTree) -> DownloadSnapshot {
+    let files = tree
+        .iter()
+        .flat_map(|(route, index)| {
+            index.projects.iter().flat_map(move |(project, stats)| {
+                stats.files.iter().map(move |(filename, file)| FileDownloadRow {
+                    route: route.clone(),
+                    project: project.clone(),
+                    filename: filename.clone(),
+                    downloads: file.downloads,
+                    bytes: file.bytes,
+                })
+            })
+        })
+        .collect();
+    DownloadSnapshot { files }
+}
+
+/// Fold a restored snapshot back into a fresh tree, rebuilding every download and byte total.
+fn restore_downloads(tree: &mut StatsTree, snapshot: DownloadSnapshot) {
+    for row in snapshot.files {
+        let index = tree.entry(row.route).or_default();
+        index.totals.base.downloads += row.downloads;
+        index.totals.base.bytes += row.bytes;
+        let project = index.projects.entry(row.project).or_default();
+        project.totals.base.downloads += row.downloads;
+        project.totals.base.bytes += row.bytes;
+        let file = project.files.entry(row.filename).or_default();
+        file.downloads += row.downloads;
+        file.bytes += row.bytes;
     }
 }
 
@@ -327,5 +417,83 @@ fn apply(tree: &mut StatsTree, event: Event) {
             index.totals.base.rejected += 1;
             index.projects.entry(project).or_default().totals.base.rejected += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use peryx_storage::meta::{AnalyticsHandle, MetaStore};
+
+    use super::{DownloadSnapshot, Event, Metrics};
+
+    fn store() -> (tempfile::TempDir, MetaStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+        (dir, meta)
+    }
+
+    fn settle(done: impl Fn() -> bool) {
+        // The aggregator runs on its own thread; poll until the last event lands.
+        let settled = (0..500).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            done()
+        });
+        assert!(settled, "metrics aggregator never settled");
+    }
+
+    fn persisted_downloads(store: &AnalyticsHandle) -> Option<u64> {
+        let bytes = store.load().unwrap()?;
+        let snapshot: DownloadSnapshot = serde_json::from_slice(&bytes).unwrap();
+        Some(snapshot.files.iter().map(|file| file.downloads).sum())
+    }
+
+    fn download(route: &str, project: &str, filename: &str, bytes: u64) -> Event {
+        Event::Download {
+            route: route.into(),
+            project: project.into(),
+            filename: filename.into(),
+            bytes,
+        }
+    }
+
+    #[test]
+    fn test_durable_downloads_survive_a_restart() {
+        let (_dir, meta) = store();
+        let filename = "pandas-3.0-py3-none-any.whl";
+        let metrics = Metrics::start_durable(meta.analytics());
+        metrics.record(Event::Page {
+            route: "root/pypi".into(),
+            project: "pandas".into(),
+        });
+        metrics.record(download("root/pypi", "pandas", filename, 100));
+        metrics.record(download("root/pypi", "pandas", filename, 50));
+        settle(|| persisted_downloads(&meta.analytics()) == Some(2));
+        drop(metrics);
+
+        let restarted = Metrics::start_durable(meta.analytics());
+        let totals = restarted.index_totals();
+        let index = &totals["root/pypi"];
+        assert_eq!(index.base.downloads, 2);
+        assert_eq!(index.base.bytes, 150);
+        let files = restarted.drill(Some("root/pypi"), Some("pandas"));
+        assert_eq!(files["files"][filename]["downloads"], 2);
+        assert_eq!(files["files"][filename]["bytes"], 150);
+    }
+
+    #[test]
+    fn test_batches_without_a_download_persist_nothing() {
+        let (_dir, meta) = store();
+        let metrics = Metrics::start_durable(meta.analytics());
+        metrics.record(Event::Page {
+            route: "pypi".into(),
+            project: "flask".into(),
+        });
+        settle(|| {
+            metrics
+                .index_totals()
+                .get("pypi")
+                .is_some_and(|totals| totals.base.pages == 1)
+        });
+        assert_eq!(persisted_downloads(&meta.analytics()), None);
     }
 }
