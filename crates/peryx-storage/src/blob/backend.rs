@@ -1,5 +1,9 @@
+use std::future::Future;
+use std::ops::Range;
+
+use super::BlobMetadata;
 use super::Digest;
-use super::error::BlobError;
+use super::error::{BlobError, BlobOperation};
 use super::store::BlobStore;
 
 /// A content-addressed blob storage backend.
@@ -9,71 +13,104 @@ use super::store::BlobStore;
 /// ([`BlobStore`]) covers local disk and any mounted filesystem (NFS needs no separate code, it is
 /// just a different mount), and an S3-compatible object-store backend is a future implementation.
 ///
-/// Backends are dispatched **statically**: the running store is one concrete type today, and becomes a
-/// small enum matched per call once a second backend exists, never a boxed trait object on the
-/// request path. So routing blob reads and writes through this trait costs nothing over calling the
-/// filesystem store directly.
-///
-/// Streaming staged writes and on-disk range serving remain [`BlobStore`]-specific for now; they
-/// generalize alongside the object-store backend, whose multipart upload and range-get shape the
-/// backend-agnostic contract.
-pub trait BlobBackend {
-    /// Whether a blob with this digest is stored.
-    fn exists(&self, digest: &Digest) -> bool;
+/// The contract owns request inputs and returns `Send` futures so network backends can perform I/O
+/// without blocking an executor thread. Callers can use static dispatch or wrap a fixed set of
+/// backends in an enum without allocating a boxed trait object per request.
+pub trait BlobBackend: Send + Sync {
+    /// Store bytes at their immutable digest key.
+    ///
+    /// # Errors
+    /// Returns [`BlobError`] if the bytes do not match `digest` or the backend cannot store them.
+    fn put(&self, digest: Digest, bytes: Vec<u8>) -> impl Future<Output = Result<(), BlobError>> + Send;
 
-    /// Read a whole blob by digest.
+    /// Read a whole blob.
     ///
     /// # Errors
     /// Returns [`BlobError`] if the blob is missing or cannot be read.
-    fn read(&self, digest: &Digest) -> Result<Vec<u8>, BlobError>;
+    fn get(&self, digest: Digest) -> impl Future<Output = Result<Vec<u8>, BlobError>> + Send;
 
-    /// Store bytes and return their digest. Immutable: writing an already-stored digest is a no-op.
+    /// Return a blob's metadata without reading its contents.
     ///
     /// # Errors
-    /// Returns [`BlobError`] if the bytes cannot be written.
-    fn write(&self, bytes: &[u8]) -> Result<Digest, BlobError>;
+    /// Returns [`BlobError`] if the backend cannot determine whether the blob exists.
+    fn head(&self, digest: Digest) -> impl Future<Output = Result<Option<BlobMetadata>, BlobError>> + Send;
 
-    /// Store bytes whose digest must equal `expected`.
+    /// Read an end-exclusive byte range.
     ///
     /// # Errors
-    /// Returns [`BlobError`] on a digest mismatch or a write failure.
-    fn write_verified(&self, bytes: &[u8], expected: &Digest) -> Result<(), BlobError>;
+    /// Returns [`BlobError`] if the blob is missing, the range is invalid, or the read fails.
+    fn range(&self, digest: Digest, range: Range<u64>) -> impl Future<Output = Result<Vec<u8>, BlobError>> + Send;
 
     /// Re-hash a stored blob and report whether it still matches its digest.
     ///
     /// # Errors
     /// Returns [`BlobError`] if the blob is missing or cannot be read.
-    fn verify(&self, digest: &Digest) -> Result<bool, BlobError>;
+    fn verify(&self, digest: Digest) -> impl Future<Output = Result<bool, BlobError>> + Send;
 
     /// Delete a blob, returning whether it existed.
     ///
     /// # Errors
     /// Returns [`BlobError`] if the blob exists but cannot be removed.
-    fn remove(&self, digest: &Digest) -> Result<bool, BlobError>;
+    fn delete(&self, digest: Digest) -> impl Future<Output = Result<bool, BlobError>> + Send;
 }
 
 impl BlobBackend for BlobStore {
-    fn exists(&self, digest: &Digest) -> bool {
-        Self::exists(self, digest)
+    async fn put(&self, digest: Digest, bytes: Vec<u8>) -> Result<(), BlobError> {
+        run(self.clone(), digest, BlobOperation::Put, move |store, digest| {
+            store.write_verified(&bytes, &digest)
+        })
+        .await
     }
 
-    fn read(&self, digest: &Digest) -> Result<Vec<u8>, BlobError> {
-        Self::read(self, digest)
+    async fn get(&self, digest: Digest) -> Result<Vec<u8>, BlobError> {
+        run(self.clone(), digest, BlobOperation::Get, |store, digest| {
+            store.read(&digest)
+        })
+        .await
     }
 
-    fn write(&self, bytes: &[u8]) -> Result<Digest, BlobError> {
-        Self::write(self, bytes)
+    async fn head(&self, digest: Digest) -> Result<Option<BlobMetadata>, BlobError> {
+        run(self.clone(), digest, BlobOperation::Head, |store, digest| {
+            store.head(&digest)
+        })
+        .await
     }
 
-    fn write_verified(&self, bytes: &[u8], expected: &Digest) -> Result<(), BlobError> {
-        Self::write_verified(self, bytes, expected)
+    async fn range(&self, digest: Digest, range: Range<u64>) -> Result<Vec<u8>, BlobError> {
+        run(self.clone(), digest, BlobOperation::Range, move |store, digest| {
+            store.read_range(&digest, range)
+        })
+        .await
     }
 
-    fn verify(&self, digest: &Digest) -> Result<bool, BlobError> {
-        Self::verify(self, digest)
+    async fn verify(&self, digest: Digest) -> Result<bool, BlobError> {
+        run(self.clone(), digest, BlobOperation::Verify, |store, digest| {
+            store.verify(&digest)
+        })
+        .await
     }
 
-    fn remove(&self, digest: &Digest) -> Result<bool, BlobError> {
-        Self::remove(self, digest)
+    async fn delete(&self, digest: Digest) -> Result<bool, BlobError> {
+        run(self.clone(), digest, BlobOperation::Delete, |store, digest| {
+            store.remove(&digest)
+        })
+        .await
     }
+}
+
+async fn run<T, E>(
+    store: BlobStore,
+    digest: Digest,
+    operation: BlobOperation,
+    action: impl FnOnce(BlobStore, Digest) -> Result<T, E> + Send + 'static,
+) -> Result<T, BlobError>
+where
+    T: Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let error_digest = digest.clone();
+    tokio::task::spawn_blocking(move || action(store, digest))
+        .await
+        .expect("filesystem blob task must not panic")
+        .map_err(|source| BlobError::backend("filesystem", operation, &error_digest, source))
 }

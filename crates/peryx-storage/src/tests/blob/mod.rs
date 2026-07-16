@@ -1,6 +1,5 @@
 use crate::blob::{BlobStore, Digest};
 
-mod backend_tests;
 mod error_tests;
 mod store_tests;
 

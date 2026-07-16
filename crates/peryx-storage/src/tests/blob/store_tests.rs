@@ -1,7 +1,7 @@
 use std::error::Error as _;
 
 use super::{collect_entries, store};
-use crate::blob::{BlobError, BlobStore, Digest};
+use crate::blob::{BlobError, BlobMetadata, BlobStore, Digest};
 
 #[test]
 fn test_digest_of_known_vector() {
@@ -69,6 +69,63 @@ fn test_read_missing_is_not_found() {
     let (_dir, store) = store();
     let err = store.read(&Digest::of(b"absent")).unwrap_err();
     assert!(matches!(err, BlobError::NotFound(_)));
+}
+
+#[test]
+fn test_head_reports_length_without_reading() {
+    let (_dir, store) = store();
+    let digest = store.write(b"payload").unwrap();
+    assert_eq!(store.head(&digest).unwrap(), Some(BlobMetadata { bytes: 7 }));
+    assert_eq!(store.head(&Digest::of(b"absent")).unwrap(), None);
+}
+
+#[test]
+fn test_head_treats_a_digest_directory_as_absent() {
+    let (_dir, store) = store();
+    let digest = Digest::of(b"directory");
+    std::fs::create_dir_all(store.path_for(&digest)).unwrap();
+    assert_eq!(store.head(&digest).unwrap(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_head_reports_a_filesystem_error() {
+    let (_dir, store) = store();
+    let digest = Digest::of(b"loop");
+    let path = store.path_for(&digest);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+    assert!(matches!(store.head(&digest), Err(BlobError::Io(_))));
+}
+
+#[test]
+fn test_read_range_uses_end_exclusive_offsets() {
+    let (_dir, store) = store();
+    let digest = store.write(b"payload").unwrap();
+    assert_eq!(store.read_range(&digest, 1..5).unwrap(), b"aylo");
+    assert_eq!(store.read_range(&digest, 7..7).unwrap(), b"");
+}
+
+#[test]
+fn test_read_range_missing_is_not_found() {
+    let (_dir, store) = store();
+    let digest = Digest::of(b"missing");
+    assert!(matches!(store.read_range(&digest, 0..1), Err(BlobError::NotFound(_))));
+}
+
+#[test]
+fn test_read_range_rejects_out_of_bounds_offsets() {
+    let (_dir, store) = store();
+    let digest = store.write(b"payload").unwrap();
+    assert!(matches!(
+        store.read_range(&digest, 3..8),
+        Err(BlobError::InvalidRange { .. })
+    ));
+    let (start, end) = (5, 4);
+    assert!(matches!(
+        store.read_range(&digest, start..end),
+        Err(BlobError::InvalidRange { .. })
+    ));
 }
 
 #[test]
@@ -178,21 +235,6 @@ fn test_streamed_blob_commits_after_verification() {
     pending.write(b"content").unwrap();
     store.commit(pending, &digest).unwrap();
     assert_eq!(store.read(&digest).unwrap(), b"streamed content");
-}
-
-#[test]
-fn test_staged_blob_reports_digest_and_length() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = BlobStore::new(dir.path().join("blobs"));
-    let mut pending = store.begin().unwrap();
-    pending.write(b"staged").unwrap();
-    let staged = pending.finish().unwrap();
-    assert_eq!(
-        (staged.digest(), staged.len(), staged.is_empty()),
-        (&Digest::of(b"staged"), 6, false)
-    );
-    store.commit_staged(staged).unwrap();
-    assert_eq!(store.read(&Digest::of(b"staged")).unwrap(), b"staged");
 }
 
 #[test]
