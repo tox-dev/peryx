@@ -143,7 +143,7 @@ impl<'store> Replica<'store> {
                     }
                 }
             }
-            txn.put(REPLICA_STATE_KEY, &next_state)?;
+            txn.put_local(REPLICA_STATE_KEY, &next_state)?;
             Ok::<_, SyncError>(((), validated.journal))
         })?;
         Ok(SyncOutcome {

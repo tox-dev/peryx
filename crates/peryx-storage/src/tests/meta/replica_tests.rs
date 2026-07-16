@@ -7,7 +7,7 @@ fn test_replica_txn_copies_rows_journal_and_serial() {
     store
         .commit_replica_txn(0, |txn| {
             txn.put("pypi\0upload", b"record")?;
-            txn.put("replication\0state", b"1")?;
+            txn.put_local("replication\0state", b"1")?;
             Ok::<_, MetaError>(((), vec![b"event".to_vec()]))
         })
         .unwrap();
@@ -22,6 +22,10 @@ fn test_replica_txn_copies_rows_journal_and_serial() {
         vec![crate::meta::JournalRecord {
             serial: 1,
             payload: b"event".to_vec(),
+            mutations: vec![crate::meta::DriverMutation::Put {
+                key: "pypi\0upload".to_owned(),
+                value: b"record".to_vec(),
+            }],
         }]
     );
 }

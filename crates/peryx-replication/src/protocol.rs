@@ -37,6 +37,15 @@ impl MetadataMutation {
     }
 }
 
+impl From<peryx_storage::meta::DriverMutation> for MetadataMutation {
+    fn from(mutation: peryx_storage::meta::DriverMutation) -> Self {
+        match mutation {
+            peryx_storage::meta::DriverMutation::Put { key, value } => Self::Put { key, value },
+            peryx_storage::meta::DriverMutation::Delete { key } => Self::Delete { key },
+        }
+    }
+}
+
 /// A serial change with enough data for a replica to reproduce it without interpreting an
 /// ecosystem's metadata schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

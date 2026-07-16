@@ -2,13 +2,24 @@ use redb::{ReadableDatabase as _, ReadableTable as _};
 use std::ops::Bound::{Excluded, Unbounded};
 
 use super::error::MetaError;
-use super::{JOURNAL, MetaStore, SERIAL, SERIAL_KEY};
+use serde::{Deserialize, Serialize};
 
-/// One journal payload paired with its authoritative serial.
+use super::{JOURNAL, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
+
+/// One final driver row change committed with a journal transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "kebab-case")]
+pub enum DriverMutation {
+    Put { key: String, value: Vec<u8> },
+    Delete { key: String },
+}
+
+/// One journal payload paired with its authoritative serial and row changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalRecord {
     pub serial: u64,
     pub payload: Vec<u8>,
+    pub mutations: Vec<DriverMutation>,
 }
 
 impl MetaStore {
@@ -56,15 +67,22 @@ impl MetaStore {
             .open_table(SERIAL)?
             .get(SERIAL_KEY)?
             .map_or(0, |value| value.value());
-        let records = txn
-            .open_table(JOURNAL)?
+        let journal = txn.open_table(JOURNAL)?;
+        let mutations = txn.open_table(JOURNAL_MUTATIONS)?;
+        let records = journal
             .range((Excluded(serial), Unbounded))?
             .take(limit)
-            .map(|entry| -> Result<JournalRecord, redb::StorageError> {
+            .map(|entry| -> Result<JournalRecord, MetaError> {
                 let (serial, payload) = entry?;
+                let serial = serial.value();
                 Ok(JournalRecord {
-                    serial: serial.value(),
+                    serial,
                     payload: payload.value().to_vec(),
+                    mutations: mutations
+                        .get(serial)?
+                        .map(|value| serde_json::from_slice(value.value()))
+                        .transpose()?
+                        .unwrap_or_default(),
                 })
             })
             .collect::<Result<_, _>>()?;

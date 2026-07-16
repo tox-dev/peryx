@@ -218,7 +218,7 @@ async fn serve_changes(
                 .map(|record| Change {
                     serial: record.serial,
                     event: record.payload,
-                    metadata: Vec::new(),
+                    metadata: record.mutations.into_iter().map(Into::into).collect(),
                     blobs: Vec::new(),
                 })
                 .collect(),
