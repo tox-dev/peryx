@@ -1246,7 +1246,7 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
     meta.put_metadata(digest.as_str(), &file_url, sibling.as_str(), "pypi")
         .unwrap();
     meta.put_project("pypi", "flask", "Flask").unwrap();
-    meta.put_override("hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl", "yanked")
+    meta.put_override("hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl", "yanked", 0)
         .unwrap();
 
     assert!(

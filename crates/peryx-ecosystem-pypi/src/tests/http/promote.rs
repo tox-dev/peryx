@@ -1,6 +1,7 @@
 //! Promoting a release from one index to another.
 
 use super::support::*;
+use crate::store::read_journal_entries;
 
 #[tokio::test]
 async fn test_promote_requires_source_query() {
@@ -74,6 +75,7 @@ async fn test_promote_copies_release_records_without_copying_blobs() {
     );
     let blobs_before = blob_count(&h.state);
 
+    h.clock.store(2000, Ordering::Relaxed);
     let (status, body) = request_response(
         &h.state,
         "PUT",
@@ -112,6 +114,12 @@ async fn test_promote_copies_release_records_without_copying_blobs() {
     assert_eq!(metadata_status, StatusCode::OK);
     assert!(metadata.contains("Name: peryxpkg"));
     assert_eq!(detail["files"].as_array().unwrap().len(), 1);
+    let entry = read_journal_entries(&h.state.meta, 0, 10)
+        .unwrap()
+        .entries
+        .pop()
+        .unwrap();
+    assert_eq!((entry.action.as_str(), entry.submitted_at_unix), ("promote", 2000));
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@ async fn test_search_rebuilds_after_delete() {
 
     h.state
         .meta
-        .delete_upload("hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl")
+        .delete_upload("hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl", 0)
         .unwrap();
     h.state.bump_search_epoch();
     let (status, _headers, body) = get(

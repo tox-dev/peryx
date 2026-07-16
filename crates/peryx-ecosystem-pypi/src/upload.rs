@@ -157,6 +157,7 @@ pub struct PreparedUpload {
     pub content: StagedBlob,
     pub metadata: Vec<u8>,
     pub record: Uploaded,
+    pub submitted_at_unix: i64,
 }
 
 /// An error while committing a validated upload to storage.
@@ -277,6 +278,7 @@ pub fn prepare(
             file,
             trashed: None,
         },
+        submitted_at_unix: upload_time_unix,
     })
 }
 
@@ -299,6 +301,7 @@ pub fn store_prepared(
         content,
         metadata,
         mut record,
+        submitted_at_unix,
     } = prepared;
     let content_size = content.len();
     blobs.commit_staged(content)?;
@@ -316,6 +319,7 @@ pub fn store_prepared(
             artifact_size: content_size,
             record: &body,
             version: record.version.as_str(),
+            submitted_at_unix,
             metadata: Some(MetadataSibling {
                 url: "uploaded",
                 metadata_sha256: metadata_digest.as_str(),

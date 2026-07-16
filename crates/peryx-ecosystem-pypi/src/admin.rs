@@ -523,7 +523,8 @@ mod tests {
         seed_valid_page(&meta);
         meta.put_upload("pypi", "flask", "flask-1.0.whl", br#"{"version":"1.0"}"#)
             .unwrap();
-        meta.put_override("pypi", "flask", "flask-1.0.whl", "yanked").unwrap();
+        meta.put_override("pypi", "flask", "flask-1.0.whl", "yanked", 0)
+            .unwrap();
         let counts: std::collections::HashMap<String, u64> = cache_record_counts(&meta).unwrap().into_iter().collect();
         assert_eq!(counts["file_url_records"], 1);
         assert_eq!(counts["metadata_records"], 1);
@@ -566,7 +567,7 @@ mod tests {
         meta.put_driver_value("pypi\u{0}d\u{0}not-hex", b"u\nm\npypi").unwrap();
         meta.put_driver_value("pypi\u{0}p\u{0}pypi/flask", b"").unwrap();
         meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
-        meta.put_override("pypi", "flask", "flask-1.0.whl", "bogus").unwrap();
+        meta.put_override("pypi", "flask", "flask-1.0.whl", "bogus", 0).unwrap();
         let mut out = Vec::new();
         let problems = fsck_metadata(&meta, &blobs, &mut out).unwrap();
         assert_eq!(problems, 6, "{}", String::from_utf8_lossy(&out));

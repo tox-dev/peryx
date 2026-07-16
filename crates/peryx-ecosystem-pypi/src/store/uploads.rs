@@ -35,8 +35,26 @@ pub struct PublishedFile<'a> {
     pub record: &'a [u8],
     /// The release the file belongs to, recorded in the journal entry.
     pub version: &'a str,
+    /// When the upload was submitted, as Unix seconds.
+    pub submitted_at_unix: i64,
     /// The file's metadata sibling, when it has one.
     pub metadata: Option<MetadataSibling<'a>>,
+}
+
+/// Everything one release promotion writes to the store.
+pub struct PromotedRelease<'a> {
+    /// The hosted index the release lands on.
+    pub index: &'a str,
+    /// The project's normalized name, which keys its rows.
+    pub normalized: &'a str,
+    /// The project's display name.
+    pub display: &'a str,
+    /// The serialized file records and their artifact digests.
+    pub records: &'a [(String, String, Vec<u8>)],
+    /// The artifact size for each digest known to the promotion.
+    pub blob_sizes: &'a BTreeMap<String, u64>,
+    /// When the promotion was submitted, as Unix seconds.
+    pub submitted_at_unix: i64,
 }
 
 /// A precondition's verdict on a key's current value, decided inside the write transaction.
@@ -89,7 +107,13 @@ pub fn publish_file_if<E: From<MetaError>>(
             }
             txn.put(&upload, file.record)?;
             txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
-            let journal = journal_bytes("add-file", file.normalized, Some(file.version), Some(file.filename));
+            let journal = journal_bytes(
+                "add-file",
+                file.normalized,
+                Some(file.version),
+                Some(file.filename),
+                file.submitted_at_unix,
+            );
             Ok((true, vec![journal]))
         }
     })
@@ -129,22 +153,18 @@ pub fn put_upload(
 /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
 pub fn promote_files_checked<E: From<MetaError>>(
     meta: &MetaStore,
-    index: &str,
-    normalized: &str,
-    display: &str,
-    records: &[(String, String, Vec<u8>)],
-    blob_sizes: &BTreeMap<String, u64>,
+    release: &PromotedRelease<'_>,
     guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
 ) -> Result<usize, E> {
     meta.commit_driver_txn(|txn| {
         let mut written = 0;
-        for (filename, token, record) in records {
-            let key = upload_key(index, normalized, filename);
+        for (filename, token, record) in release.records {
+            let key = upload_key(release.index, release.normalized, filename);
             match guard(filename, token, txn.get(&key)?.as_deref())? {
                 Guard::Skip => {}
                 Guard::Commit => {
                     txn.put(&key, record)?;
-                    if let Some(size) = blob_sizes.get(token) {
+                    if let Some(size) = release.blob_sizes.get(token) {
                         txn.reference_blob(token, *size);
                     }
                     written += 1;
@@ -154,8 +174,18 @@ pub fn promote_files_checked<E: From<MetaError>>(
         if written == 0 {
             return Ok((0, Vec::new()));
         }
-        txn.put(&project_key(index, normalized), display.as_bytes())?;
-        Ok((written, vec![journal_bytes("promote", normalized, None, None)]))
+        let project = project_key(release.index, release.normalized);
+        txn.put(&project, release.display.as_bytes())?;
+        Ok((
+            written,
+            vec![journal_bytes(
+                "promote",
+                release.normalized,
+                None,
+                None,
+                release.submitted_at_unix,
+            )],
+        ))
     })
 }
 
@@ -181,6 +211,7 @@ pub fn mutate_uploads<E: From<MetaError>>(
     index: &str,
     normalized: &str,
     action: &str,
+    submitted_at_unix: i64,
     mut mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
 ) -> Result<usize, E> {
     let prefix = format!("{UPLOAD_PREFIX}{index}/{normalized}/");
@@ -197,7 +228,13 @@ pub fn mutate_uploads<E: From<MetaError>>(
                     txn.remove(&key)?;
                 }
             }
-            journal.push(journal_bytes(action, normalized, None, Some(filename)));
+            journal.push(journal_bytes(
+                action,
+                normalized,
+                None,
+                Some(filename),
+                submitted_at_unix,
+            ));
         }
         Ok((journal.len(), journal))
     })
@@ -231,12 +268,24 @@ pub fn list_upload_entries(
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-pub fn delete_upload(meta: &MetaStore, index: &str, normalized: &str, filename: &str) -> Result<bool, MetaError> {
+pub fn delete_upload(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+    filename: &str,
+    submitted_at_unix: i64,
+) -> Result<bool, MetaError> {
     meta.commit_driver_txn(|txn| {
         if txn.remove(&upload_key(index, normalized, filename))? {
             Ok((
                 true,
-                vec![journal_bytes("delete-file", normalized, None, Some(filename))],
+                vec![journal_bytes(
+                    "delete-file",
+                    normalized,
+                    None,
+                    Some(filename),
+                    submitted_at_unix,
+                )],
             ))
         } else {
             Ok((false, Vec::new()))
@@ -280,6 +329,7 @@ pub fn put_override(
     normalized: &str,
     filename: &str,
     kind: &str,
+    submitted_at_unix: i64,
 ) -> Result<(), MetaError> {
     let key = override_key(index, normalized, filename);
     meta.commit_driver_txn(|txn| {
@@ -288,7 +338,16 @@ pub fn put_override(
         }
         txn.put(&key, kind.as_bytes())?;
         let action = if kind == "hidden" { "hide" } else { "yank" };
-        Ok(((), vec![journal_bytes(action, normalized, None, Some(filename))]))
+        Ok((
+            (),
+            vec![journal_bytes(
+                action,
+                normalized,
+                None,
+                Some(filename),
+                submitted_at_unix,
+            )],
+        ))
     })
 }
 
@@ -300,7 +359,13 @@ pub fn put_override(
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-pub fn delete_override(meta: &MetaStore, index: &str, normalized: &str, filename: &str) -> Result<bool, MetaError> {
+pub fn delete_override(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+    filename: &str,
+    submitted_at_unix: i64,
+) -> Result<bool, MetaError> {
     let key = override_key(index, normalized, filename);
     meta.commit_driver_txn(|txn| {
         let Some(prior) = txn.get(&key)? else {
@@ -308,7 +373,16 @@ pub fn delete_override(meta: &MetaStore, index: &str, normalized: &str, filename
         };
         txn.remove(&key)?;
         let action = if prior == b"hidden" { "restore" } else { "unyank" };
-        Ok((true, vec![journal_bytes(action, normalized, None, Some(filename))]))
+        Ok((
+            true,
+            vec![journal_bytes(
+                action,
+                normalized,
+                None,
+                Some(filename),
+                submitted_at_unix,
+            )],
+        ))
     })
 }
 
@@ -348,9 +422,16 @@ pub fn scan_override_records<E>(
 
 /// Serialize a journal entry for the journaled batch primitive. `serial` is a placeholder: the
 /// store allocates the authoritative serial and returns it, so the value here is never read back.
-fn journal_bytes(action: &str, project: &str, version: Option<&str>, filename: Option<&str>) -> Vec<u8> {
+fn journal_bytes(
+    action: &str,
+    project: &str,
+    version: Option<&str>,
+    filename: Option<&str>,
+    submitted_at_unix: i64,
+) -> Vec<u8> {
     serde_json::to_vec(&JournalEntry {
         serial: 0,
+        submitted_at_unix,
         action: action.to_owned(),
         project: project.to_owned(),
         version: version.map(str::to_owned),
@@ -361,10 +442,13 @@ fn journal_bytes(action: &str, project: &str, version: Option<&str>, filename: O
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
-        Guard, MetaError, MetaStore, MetadataSibling, PublishedFile, UploadMutation, override_key, upload_key,
+        Guard, MetaError, MetaStore, MetadataSibling, PromotedRelease, PublishedFile, UploadMutation, override_key,
+        upload_key,
     };
-    use crate::store::PypiStore as _;
+    use crate::store::{PypiStore as _, read_journal_entries};
 
     fn store() -> (tempfile::TempDir, MetaStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -382,6 +466,7 @@ mod tests {
             artifact_size: 8,
             record: b"record",
             version: "1.0",
+            submitted_at_unix: 123,
             metadata: Some(MetadataSibling {
                 url: "uploaded",
                 metadata_sha256: "metadata-sha",
@@ -415,6 +500,10 @@ mod tests {
         );
         assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
         assert_eq!(meta.current_serial().unwrap(), 1, "the publish is journaled");
+        assert_eq!(
+            read_journal_entries(&meta, 0, 1).unwrap().entries[0].submitted_at_unix,
+            123
+        );
     }
 
     #[test]
@@ -502,6 +591,55 @@ mod tests {
     }
 
     #[test]
+    fn test_promote_files_checked_writes_the_release_project_and_journal() {
+        let (_dir, meta) = store();
+        let records = vec![(
+            "flask-1.0.whl".to_owned(),
+            "artifact-sha".to_owned(),
+            b"record".to_vec(),
+        )];
+        let blob_sizes = BTreeMap::from([("artifact-sha".to_owned(), 8)]);
+
+        let written = meta
+            .promote_files_checked(
+                &PromotedRelease {
+                    index: "hosted",
+                    normalized: "flask",
+                    display: "Flask",
+                    records: &records,
+                    blob_sizes: &blob_sizes,
+                    submitted_at_unix: 123,
+                },
+                |filename, digest, existing| {
+                    assert_eq!((filename, digest, existing), ("flask-1.0.whl", "artifact-sha", None));
+                    Ok::<_, MetaError>(Guard::Commit)
+                },
+            )
+            .unwrap();
+
+        assert_eq!(written, 1);
+        assert_eq!(
+            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
+                .unwrap()
+                .as_deref(),
+            Some(b"record".as_slice())
+        );
+        assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
+        let batch = meta.journal_after(0, 1).unwrap().pop().unwrap();
+        assert_eq!(
+            batch.blobs,
+            vec![peryx_storage::meta::DriverBlobReference {
+                sha256: "artifact-sha".to_owned(),
+                size: 8,
+            }]
+        );
+        assert_eq!(
+            read_journal_entries(&meta, 0, 1).unwrap().entries[0].submitted_at_unix,
+            123
+        );
+    }
+
+    #[test]
     fn test_scan_upload_records_visits_each_row() {
         let (_dir, meta) = store();
         meta.put_upload("hosted", "flask", "flask-1.0.whl", b"upload").unwrap();
@@ -520,7 +658,8 @@ mod tests {
     #[test]
     fn test_scan_override_records_visits_valid_and_skips_non_utf8() {
         let (_dir, meta) = store();
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden").unwrap();
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden", 123)
+            .unwrap();
         meta.put_driver_value(&override_key("hosted", "flask", "bad.whl"), &[0xff, 0xfe])
             .unwrap();
         let mut seen = Vec::new();
@@ -542,7 +681,7 @@ mod tests {
         meta.put_upload("hosted", "flask", "flask-2.0.whl", b"b").unwrap();
 
         let changed = meta
-            .mutate_uploads("hosted", "flask", "yank", |_filename, _record| {
+            .mutate_uploads("hosted", "flask", "yank", 123, |_filename, _record| {
                 Ok::<_, MetaError>(UploadMutation::Replace(b"yanked".to_vec()))
             })
             .unwrap();
@@ -562,7 +701,7 @@ mod tests {
         meta.put_upload("hosted", "flask", "flask-2.0.whl", b"b").unwrap();
 
         let changed = meta
-            .mutate_uploads("hosted", "flask", "delete-file", |filename, _record| {
+            .mutate_uploads("hosted", "flask", "delete-file", 123, |filename, _record| {
                 Ok::<_, MetaError>(if filename == "flask-1.0.whl" {
                     UploadMutation::Delete
                 } else {
@@ -590,7 +729,7 @@ mod tests {
         meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
 
         let changed = meta
-            .mutate_uploads("hosted", "flask", "yank", |_filename, _record| {
+            .mutate_uploads("hosted", "flask", "yank", 123, |_filename, _record| {
                 Ok::<_, MetaError>(UploadMutation::Keep)
             })
             .unwrap();
@@ -604,7 +743,7 @@ mod tests {
         let (_dir, meta) = store();
         meta.put_upload("hosted", "flask", "flask-1.0.whl", b"record").unwrap();
 
-        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl").unwrap();
+        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl", 123).unwrap();
 
         assert!(existed);
         assert!(
@@ -619,7 +758,7 @@ mod tests {
     fn test_delete_upload_of_a_missing_record_journals_nothing() {
         let (_dir, meta) = store();
 
-        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl").unwrap();
+        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl", 123).unwrap();
 
         assert!(!existed);
         assert_eq!(meta.current_serial().unwrap(), 0, "a no-op delete records no serial");
@@ -629,7 +768,8 @@ mod tests {
     fn test_put_override_hidden_journals_hide() {
         let (_dir, meta) = store();
 
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden").unwrap();
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden", 123)
+            .unwrap();
 
         assert_eq!(
             meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
@@ -644,7 +784,8 @@ mod tests {
     fn test_put_override_yanked_journals_yank() {
         let (_dir, meta) = store();
 
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked").unwrap();
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked", 123)
+            .unwrap();
 
         assert_eq!(
             meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
@@ -658,14 +799,20 @@ mod tests {
     #[test]
     fn test_put_override_that_repeats_the_current_value_journals_nothing() {
         let (_dir, meta) = store();
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked").unwrap();
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked", 123)
+            .unwrap();
 
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked").unwrap();
+        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked", 456)
+            .unwrap();
 
         assert_eq!(
             meta.current_serial().unwrap(),
             1,
             "re-recording an identical override allocates no second serial"
+        );
+        assert_eq!(
+            read_journal_entries(&meta, 0, 1).unwrap().entries[0].submitted_at_unix,
+            123
         );
     }
 
@@ -675,7 +822,7 @@ mod tests {
         meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"hidden")
             .unwrap();
 
-        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl").unwrap();
+        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl", 123).unwrap();
 
         assert!(existed);
         assert!(
@@ -692,7 +839,7 @@ mod tests {
         meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"yanked")
             .unwrap();
 
-        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl").unwrap();
+        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl", 123).unwrap();
 
         assert!(existed);
         assert!(
@@ -707,7 +854,7 @@ mod tests {
     fn test_delete_override_of_a_missing_file_journals_nothing() {
         let (_dir, meta) = store();
 
-        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl").unwrap();
+        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl", 123).unwrap();
 
         assert!(!existed);
         assert_eq!(meta.current_serial().unwrap(), 0, "a no-op reversal records no serial");

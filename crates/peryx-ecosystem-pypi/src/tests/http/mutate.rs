@@ -1,6 +1,7 @@
 //! Yank, unyank, delete and restore, and the admin routes that drive them.
 
 use super::support::*;
+use crate::store::read_journal_entries;
 
 #[tokio::test]
 async fn test_yank_and_unyank_and_delete() {
@@ -8,6 +9,7 @@ async fn test_yank_and_unyank_and_delete() {
     upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
 
     // Yank the version, then the file is served with the recorded reason.
+    h.clock.store(2000, Ordering::Relaxed);
     assert_eq!(
         request(
             &h.state,
@@ -22,6 +24,7 @@ async fn test_yank_and_unyank_and_delete() {
     assert!(yanked.contains("\"yanked\":\"bad build\""));
 
     // Un-yank via DELETE .../yank.
+    h.clock.store(3000, Ordering::Relaxed);
     assert_eq!(
         request(&h.state, "DELETE", "/root/pypi/peryxpkg/1.0/yank", Some(&upload_auth())).await,
         StatusCode::OK
@@ -30,12 +33,28 @@ async fn test_yank_and_unyank_and_delete() {
     assert!(!unyanked.contains("\"yanked\":true"));
 
     // Delete the whole project.
+    h.clock.store(4000, Ordering::Relaxed);
     assert_eq!(
         request(&h.state, "DELETE", "/root/pypi/peryxpkg/", Some(&upload_auth())).await,
         StatusCode::OK
     );
     let (status, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        read_journal_entries(&h.state.meta, 0, 10)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.action, entry.submitted_at_unix))
+            .collect::<Vec<_>>(),
+        [
+            ("add-file", 1000),
+            ("yank", 2000),
+            ("unyank", 3000),
+            ("delete-file", 4000)
+        ]
+        .map(|(action, submitted)| (action.to_owned(), submitted))
+    );
 }
 #[tokio::test]
 async fn test_delete_specific_version() {
@@ -212,6 +231,7 @@ async fn test_delete_and_restore_upstream_file_via_overlay() {
     let digest = Digest::of(b"wheel");
     mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
 
+    h.clock.store(2000, Ordering::Relaxed);
     let status = request(&h.state, "DELETE", "/root/pypi/flask/", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -222,10 +242,20 @@ async fn test_delete_and_restore_upstream_file_via_overlay() {
     assert!(cached.contains("flask-1.0-py3-none-any.whl"));
 
     // Restore brings the file back.
+    h.clock.store(3000, Ordering::Relaxed);
     let status = request(&h.state, "PUT", "/root/pypi/flask/restore", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::OK);
     let (_, _, restored) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
     assert!(restored.contains("flask-1.0-py3-none-any.whl"));
+    assert_eq!(
+        read_journal_entries(&h.state.meta, 0, 10)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.action, entry.submitted_at_unix))
+            .collect::<Vec<_>>(),
+        [("hide".to_owned(), 2000), ("restore".to_owned(), 3000)]
+    );
 }
 #[tokio::test]
 async fn test_delete_one_upstream_version_leaves_other() {
@@ -364,11 +394,11 @@ async fn test_restore_skips_yanked_overrides_and_other_versions() {
     let h = harness().await;
     h.state
         .meta
-        .put_override("hosted", "flask", "flask-1.0-py3-none-any.whl", "yanked")
+        .put_override("hosted", "flask", "flask-1.0-py3-none-any.whl", "yanked", 0)
         .unwrap();
     h.state
         .meta
-        .put_override("hosted", "flask", "flask-2.0-py3-none-any.whl", "hidden")
+        .put_override("hosted", "flask", "flask-2.0-py3-none-any.whl", "hidden", 0)
         .unwrap();
     // Restoring 1.0 touches nothing: its override is a yank, and the hidden file is another version.
     let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/restore", Some(&upload_auth())).await;

@@ -33,9 +33,9 @@ pub use projects::{
 pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, FreshnessOverlay, ProjectStatusRecord};
 pub use summary::summarize_indexes;
 pub use uploads::{
-    Guard, MetadataSibling, PublishedFile, UploadMutation, delete_override, delete_upload, list_overrides,
-    list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if, put_override, put_upload,
-    scan_override_records, scan_upload_records,
+    Guard, MetadataSibling, PromotedRelease, PublishedFile, UploadMutation, delete_override, delete_upload,
+    list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if, put_override,
+    put_upload, scan_override_records, scan_upload_records,
 };
 
 /// The former `index_document` table: cached simple-index pages, keyed by the caller's route key.
@@ -340,11 +340,7 @@ pub trait PypiStore {
     /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
     fn promote_files_checked<E: From<peryx_storage::meta::MetaError>>(
         &self,
-        index: &str,
-        normalized: &str,
-        display: &str,
-        records: &[(String, String, Vec<u8>)],
-        blob_sizes: &std::collections::BTreeMap<String, u64>,
+        release: &PromotedRelease<'_>,
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E>;
 
@@ -358,6 +354,7 @@ pub trait PypiStore {
         index: &str,
         normalized: &str,
         action: &str,
+        submitted_at_unix: i64,
         mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
     ) -> Result<usize, E>;
 
@@ -380,6 +377,7 @@ pub trait PypiStore {
         index: &str,
         normalized: &str,
         filename: &str,
+        submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
     /// Visit raw upload records, keyed by `{index}/{normalized}/{filename}`.
@@ -401,6 +399,7 @@ pub trait PypiStore {
         normalized: &str,
         filename: &str,
         kind: &str,
+        submitted_at_unix: i64,
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
     /// Remove a file's override, returning whether one existed.
@@ -412,6 +411,7 @@ pub trait PypiStore {
         index: &str,
         normalized: &str,
         filename: &str,
+        submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
     /// List the `(filename, kind)` overrides recorded for `normalized` on `index`.
@@ -628,14 +628,10 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 
     fn promote_files_checked<E: From<peryx_storage::meta::MetaError>>(
         &self,
-        index: &str,
-        normalized: &str,
-        display: &str,
-        records: &[(String, String, Vec<u8>)],
-        blob_sizes: &std::collections::BTreeMap<String, u64>,
+        release: &PromotedRelease<'_>,
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E> {
-        uploads::promote_files_checked(self, index, normalized, display, records, blob_sizes, guard)
+        uploads::promote_files_checked(self, release, guard)
     }
 
     fn mutate_uploads<E: From<peryx_storage::meta::MetaError>>(
@@ -643,9 +639,10 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         index: &str,
         normalized: &str,
         action: &str,
+        submitted_at_unix: i64,
         mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
     ) -> Result<usize, E> {
-        uploads::mutate_uploads(self, index, normalized, action, mutate)
+        uploads::mutate_uploads(self, index, normalized, action, submitted_at_unix, mutate)
     }
 
     fn list_upload_entries(
@@ -661,8 +658,9 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         index: &str,
         normalized: &str,
         filename: &str,
+        submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError> {
-        uploads::delete_upload(self, index, normalized, filename)
+        uploads::delete_upload(self, index, normalized, filename, submitted_at_unix)
     }
 
     fn scan_upload_records<E>(
@@ -678,8 +676,9 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         normalized: &str,
         filename: &str,
         kind: &str,
+        submitted_at_unix: i64,
     ) -> Result<(), peryx_storage::meta::MetaError> {
-        uploads::put_override(self, index, normalized, filename, kind)
+        uploads::put_override(self, index, normalized, filename, kind, submitted_at_unix)
     }
 
     fn delete_override(
@@ -687,8 +686,9 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         index: &str,
         normalized: &str,
         filename: &str,
+        submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError> {
-        uploads::delete_override(self, index, normalized, filename)
+        uploads::delete_override(self, index, normalized, filename, submitted_at_unix)
     }
 
     fn list_overrides(

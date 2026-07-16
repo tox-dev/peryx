@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::store::PypiStore as _;
-use crate::store::{Guard, UploadMutation};
+use crate::store::{Guard, PromotedRelease, UploadMutation};
 use crate::upload::{self, PreparedUpload, TrashInfo, Uploaded};
 use crate::{ProjectStatus, Yanked, file_matches_version, parse_distribution_filename, to_json, versions_match};
 use peryx_core::path::local_file_url;
@@ -98,10 +98,15 @@ pub fn promote_release(
         .meta
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
-    let promoted =
-        state
-            .meta
-            .promote_files_checked(target, normalized, &display, &records, &blob_sizes, promote_conflict)?;
+    let release = PromotedRelease {
+        index: target,
+        normalized,
+        display: &display,
+        records: &records,
+        blob_sizes: &blob_sizes,
+        submitted_at_unix: (state.clock)(),
+    };
+    let promoted = state.meta.promote_files_checked(&release, promote_conflict)?;
     if promoted > 0 {
         state.invalidate_project(normalized);
     }
@@ -144,15 +149,21 @@ pub async fn set_yanked(
     yanked: Yanked,
 ) -> Result<usize, CacheError> {
     let uploaded = upload_filenames(state, hosted, normalized)?;
-    let mut changed = yank_uploads(state, hosted, normalized, version, &yanked)?;
+    let submitted_at_unix = (state.clock)();
+    let mut changed = yank_uploads(state, hosted, normalized, version, &yanked, submitted_at_unix)?;
     for filename in served_filenames(state, index, normalized, version).await? {
         if uploaded.contains(&filename) {
             continue;
         }
         if let Some(value) = yank_override_value(&yanked)? {
-            state.meta.put_override(hosted, normalized, &filename, &value)?;
+            state
+                .meta
+                .put_override(hosted, normalized, &filename, &value, submitted_at_unix)?;
             changed += 1;
-        } else if state.meta.delete_override(hosted, normalized, &filename)? {
+        } else if state
+            .meta
+            .delete_override(hosted, normalized, &filename, submitted_at_unix)?
+        {
             changed += 1;
         }
     }
@@ -207,7 +218,9 @@ pub async fn remove_files(
         if uploaded.contains(&filename) {
             continue;
         }
-        state.meta.put_override(hosted, normalized, &filename, HIDDEN)?;
+        state
+            .meta
+            .put_override(hosted, normalized, &filename, HIDDEN, trash.deleted_at_unix)?;
         affected += 1;
     }
     if affected > 0 {
@@ -227,7 +240,8 @@ pub fn restore_files(
     normalized: &str,
     version: Option<&str>,
 ) -> Result<usize, CacheError> {
-    let mut restored = untrash_uploads(state, hosted, normalized, version)?;
+    let submitted_at_unix = (state.clock)();
+    let mut restored = untrash_uploads(state, hosted, normalized, version, submitted_at_unix)?;
     for (filename, kind) in state.meta.list_overrides(hosted, normalized)? {
         if kind != HIDDEN {
             continue;
@@ -235,7 +249,10 @@ pub fn restore_files(
         if version.is_some_and(|version| !file_matches_version(&filename, version)) {
             continue;
         }
-        if state.meta.delete_override(hosted, normalized, &filename)? {
+        if state
+            .meta
+            .delete_override(hosted, normalized, &filename, submitted_at_unix)?
+        {
             restored += 1;
         }
     }
@@ -342,9 +359,12 @@ fn trash_uploads(
     version: Option<&str>,
     trash: TrashContext<'_>,
 ) -> Result<usize, CacheError> {
-    state
-        .meta
-        .mutate_uploads(name, normalized, "delete-file", |_filename, bytes| {
+    state.meta.mutate_uploads(
+        name,
+        normalized,
+        "delete-file",
+        trash.deleted_at_unix,
+        |_filename, bytes| {
             let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
             if version.is_some_and(|version| !versions_match(&uploaded.version, version)) || uploaded.trashed.is_some()
             {
@@ -359,7 +379,8 @@ fn trash_uploads(
                 reason: trash.reason.map(str::to_owned),
             });
             Ok(UploadMutation::Replace(to_json(&uploaded).into_bytes()))
-        })
+        },
+    )
 }
 
 /// Clear the trashed marker off soft-deleted uploaded records, optionally limited to one version, so
@@ -369,10 +390,11 @@ fn untrash_uploads(
     name: &str,
     normalized: &str,
     version: Option<&str>,
+    submitted_at_unix: i64,
 ) -> Result<usize, CacheError> {
     state
         .meta
-        .mutate_uploads(name, normalized, "restore", |_filename, bytes| {
+        .mutate_uploads(name, normalized, "restore", submitted_at_unix, |_filename, bytes| {
             let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
             if uploaded.trashed.is_none() || version.is_some_and(|version| !versions_match(&uploaded.version, version))
             {
@@ -391,15 +413,19 @@ fn yank_uploads(
     normalized: &str,
     version: Option<&str>,
     yanked: &Yanked,
+    submitted_at_unix: i64,
 ) -> Result<usize, CacheError> {
     let action = if matches!(yanked, Yanked::No) { "unyank" } else { "yank" };
-    state.meta.mutate_uploads(name, normalized, action, |_filename, bytes| {
-        let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
-        if version.is_some_and(|version| !versions_match(&uploaded.version, version)) || uploaded.file.yanked == *yanked
-        {
-            return Ok(UploadMutation::Keep);
-        }
-        uploaded.file.yanked = yanked.clone();
-        Ok(UploadMutation::Replace(to_json(&uploaded).into_bytes()))
-    })
+    state
+        .meta
+        .mutate_uploads(name, normalized, action, submitted_at_unix, |_filename, bytes| {
+            let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
+            if version.is_some_and(|version| !versions_match(&uploaded.version, version))
+                || uploaded.file.yanked == *yanked
+            {
+                return Ok(UploadMutation::Keep);
+            }
+            uploaded.file.yanked = yanked.clone();
+            Ok(UploadMutation::Replace(to_json(&uploaded).into_bytes()))
+        })
 }

@@ -36,7 +36,7 @@ fn test_cache_fsck_reports_metadata_problems() {
         &uploaded_record_json(&Digest::of(b"missing")),
     )
     .unwrap();
-    meta.put_override("", "", "", "bad").unwrap();
+    meta.put_override("", "", "", "bad", 0).unwrap();
     drop(meta);
     let mut out = Vec::new();
     app::cache(&config, &fsck_command(), &mut out).unwrap();
@@ -89,7 +89,7 @@ fn test_cache_fsck_accepts_valid_upload_and_override() {
     let digest = blobs.write(b"pkg").unwrap();
     meta.put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
-    meta.put_override("hosted", "pkg", "pkg-1.0.whl", "hidden").unwrap();
+    meta.put_override("hosted", "pkg", "pkg-1.0.whl", "hidden", 0).unwrap();
     drop(meta);
     let mut out = Vec::new();
     app::cache(&config, &fsck_command(), &mut out).unwrap();

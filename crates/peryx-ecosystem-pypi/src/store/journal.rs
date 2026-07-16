@@ -14,6 +14,8 @@ use peryx_storage::meta::{MetaError, MetaStore};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalEntry {
     pub serial: u64,
+    #[serde(default)]
+    pub submitted_at_unix: i64,
     pub action: String,
     pub project: String,
     pub version: Option<String>,
@@ -63,6 +65,7 @@ mod tests {
     fn value(project: &str) -> Vec<u8> {
         serde_json::to_vec(&JournalEntry {
             serial: 999,
+            submitted_at_unix: 123,
             action: "add-file".to_owned(),
             project: project.to_owned(),
             version: Some("1.0".to_owned()),
@@ -85,6 +88,7 @@ mod tests {
                 entries: vec![
                     JournalEntry {
                         serial: 1,
+                        submitted_at_unix: 123,
                         action: "add-file".to_owned(),
                         project: "first".to_owned(),
                         version: Some("1.0".to_owned()),
@@ -92,6 +96,7 @@ mod tests {
                     },
                     JournalEntry {
                         serial: 2,
+                        submitted_at_unix: 123,
                         action: "add-file".to_owned(),
                         project: "second".to_owned(),
                         version: Some("1.0".to_owned()),
@@ -124,5 +129,25 @@ mod tests {
             .unwrap();
 
         assert!(matches!(read_journal_entries(&store, 0, 10), Err(MetaError::Decode(_))));
+    }
+
+    #[test]
+    fn test_read_journal_entries_defaults_an_older_timestamp() {
+        let (_dir, store) = store();
+        store
+            .commit_driver_txn(|_| {
+                Ok::<_, MetaError>((
+                    (),
+                    vec![
+                        br#"{"serial":0,"action":"add-file","project":"old","version":null,"filename":null}"#.to_vec(),
+                    ],
+                ))
+            })
+            .unwrap();
+
+        assert_eq!(
+            read_journal_entries(&store, 0, 1).unwrap().entries[0].submitted_at_unix,
+            0
+        );
     }
 }
