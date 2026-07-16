@@ -75,6 +75,12 @@ pub struct StatsQuery {
     project: Option<String>,
 }
 
+/// Pagination for the top-package usage view.
+#[derive(Debug, serde::Deserialize)]
+pub struct TopPackagesQuery {
+    limit: Option<usize>,
+}
+
 /// `GET /+stats`: usage counters aggregated off-thread, drillable: no parameters for per-index
 /// totals, `?index={route}` for its projects, `&project={name}` for its files.
 pub async fn stats(
@@ -83,6 +89,22 @@ pub async fn stats(
 ) -> Response {
     let tree = state.metrics.drill(query.index.as_deref(), query.project.as_deref());
     axum::Json(tree).into_response()
+}
+
+/// `GET /+analytics/top-packages`: durable project download totals across repositories.
+pub async fn top_packages(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<TopPackagesQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(25);
+    if !(1..=100).contains(&limit) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "limit must be between 1 and 100"})),
+        )
+            .into_response();
+    }
+    axum::Json(state.metrics.top_packages(limit)).into_response()
 }
 
 /// A neutral per-index counter family: name, help, the role it is scoped to (`None` = every role),

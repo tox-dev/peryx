@@ -104,6 +104,51 @@
         ]
       }
     },
+    "/+analytics/top-packages": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Most-downloaded packages",
+        "description": "Durable download counts and bytes grouped by repository and project. Results are ordered by downloads, bytes, repository, then project.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of projects to return, from 1 through 100; defaults to 25",
+            "required": false,
+            "example": 10
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The highest-usage projects",
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "bytes": 64733247,
+                    "downloads": 42,
+                    "project": "pandas",
+                    "repository": "pypi"
+                  }
+                ]
+              }
+            }
+          },
+          "400": {
+            "description": "The limit is outside the accepted range",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "limit must be between 1 and 100"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/+api": {
       "get": {
         "tags": [

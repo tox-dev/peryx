@@ -23,7 +23,7 @@ pub use dispatch::{dispatch_delete, dispatch_get, dispatch_post, dispatch_put, n
 pub use query::{search, search_error_response, search_response, search_response_offloaded};
 pub use status::{ReadinessQuery, StatusQuery, health, readiness, status};
 pub use ui::{ui_manifest, ui_member, ui_members, ui_project, ui_projects};
-pub use usage::{StatsQuery, ecosystem_summaries, family_descriptors, metrics, stats};
+pub use usage::{StatsQuery, TopPackagesQuery, ecosystem_summaries, family_descriptors, metrics, stats, top_packages};
 
 /// Map an authorization [`Denial`] to its HTTP answer: `403` when the credential is valid but holds no
 /// covering grant, `401` with a Basic challenge when the request could authenticate and did not.

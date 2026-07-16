@@ -40,6 +40,12 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
             PathItemBuilder::new().operation(HttpMethod::Get, stats()).build(),
         )
         .path(
+            "/+analytics/top-packages",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, top_packages())
+                .build(),
+        )
+        .path(
             "/metrics",
             PathItemBuilder::new().operation(HttpMethod::Get, metrics()).build(),
         )
@@ -275,6 +281,39 @@ fn stats() -> OperationBuilder {
                         })))
                         .build(),
                 ),
+        )
+}
+
+fn top_packages() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Most-downloaded packages"))
+        .description(Some(
+            "Durable download counts and bytes grouped by repository and project. Results are ordered by \
+             downloads, bytes, repository, then project.",
+        ))
+        .parameter(
+            ParameterBuilder::new()
+                .name("limit")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("Number of projects to return, from 1 through 100; defaults to 25"))
+                .example(Some(json!(10))),
+        )
+        .response(
+            "200",
+            api_json_response(
+                "The highest-usage projects",
+                json!([
+                    {"repository": "pypi", "project": "pandas", "downloads": 42, "bytes": 64_733_247}
+                ]),
+            ),
+        )
+        .response(
+            "400",
+            api_json_response(
+                "The limit is outside the accepted range",
+                json!({"error": "limit must be between 1 and 100"}),
+            ),
         )
 }
 

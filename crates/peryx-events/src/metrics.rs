@@ -121,6 +121,15 @@ pub struct EcosystemSummary {
     pub families: BTreeMap<String, u64>,
 }
 
+/// Durable download usage for one project in one repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PackageUsage {
+    pub repository: String,
+    pub project: String,
+    pub downloads: u64,
+    pub bytes: u64,
+}
+
 /// A driver's counter family as the dashboard needs it: the storage key, its human label, and the
 /// roles that report it.
 ///
@@ -249,6 +258,41 @@ impl Metrics {
         tree.iter()
             .map(|(route, stats)| (route.clone(), stats.totals.clone()))
             .collect()
+    }
+
+    /// Projects with the most downloads, ordered by count, bytes, repository, then project.
+    ///
+    /// # Panics
+    /// Panics if the aggregator thread panicked and poisoned the tree lock.
+    #[must_use]
+    pub fn top_packages(&self, limit: usize) -> Vec<PackageUsage> {
+        let mut packages: Vec<_> = {
+            let tree = self.tree.read().expect("metrics lock");
+            tree.iter()
+                .flat_map(|(repository, index)| {
+                    index
+                        .projects
+                        .iter()
+                        .filter(|(_, stats)| stats.totals.base.downloads > 0)
+                        .map(move |(project, stats)| PackageUsage {
+                            repository: repository.clone(),
+                            project: project.clone(),
+                            downloads: stats.totals.base.downloads,
+                            bytes: stats.totals.base.bytes,
+                        })
+                })
+                .collect()
+        };
+        packages.sort_by(|left, right| {
+            right
+                .downloads
+                .cmp(&left.downloads)
+                .then_with(|| right.bytes.cmp(&left.bytes))
+                .then_with(|| left.repository.cmp(&right.repository))
+                .then_with(|| left.project.cmp(&right.project))
+        });
+        packages.truncate(limit);
+        packages
     }
 
     /// The tree at the requested depth: everything, one index's projects, or one project's files.
@@ -424,7 +468,7 @@ fn apply(tree: &mut StatsTree, event: Event) {
 mod tests {
     use peryx_storage::meta::{AnalyticsHandle, MetaStore};
 
-    use super::{DownloadSnapshot, Event, Metrics};
+    use super::{DownloadSnapshot, Event, Metrics, PackageUsage};
 
     fn store() -> (tempfile::TempDir, MetaStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -495,5 +539,45 @@ mod tests {
                 .is_some_and(|totals| totals.base.pages == 1)
         });
         assert_eq!(persisted_downloads(&meta.analytics()), None);
+    }
+
+    #[test]
+    fn test_top_packages_are_ranked_and_limited() {
+        let metrics = Metrics::start();
+        metrics.record(Event::Page {
+            route: "empty".into(),
+            project: "page-only".into(),
+        });
+        metrics.record(download("b", "large", "large.whl", 30));
+        metrics.record(download("a", "small", "small.whl", 20));
+        metrics.record(download("a", "small", "small.whl", 20));
+        metrics.record(download("a", "alpha", "alpha.whl", 40));
+        metrics.record(download("a", "beta", "beta.whl", 40));
+        settle(|| metrics.top_packages(4).len() == 4);
+
+        assert_eq!(
+            metrics.top_packages(3),
+            [
+                PackageUsage {
+                    repository: "a".into(),
+                    project: "small".into(),
+                    downloads: 2,
+                    bytes: 40,
+                },
+                PackageUsage {
+                    repository: "a".into(),
+                    project: "alpha".into(),
+                    downloads: 1,
+                    bytes: 40,
+                },
+                PackageUsage {
+                    repository: "a".into(),
+                    project: "beta".into(),
+                    downloads: 1,
+                    bytes: 40,
+                },
+            ]
+        );
+        assert!(metrics.top_packages(0).is_empty());
     }
 }
