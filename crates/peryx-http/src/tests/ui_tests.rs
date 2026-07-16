@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use rstest::rstest;
 use tower::ServiceExt as _;
 
 use peryx_core::{Ecosystem, UiBlock, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject, UiProjectView};
@@ -178,6 +179,88 @@ async fn get_status(app: &axum::Router, uri: &str) -> StatusCode {
         .await
         .unwrap()
         .status()
+}
+
+fn read_only_app() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::new(meta, blobs, 60, vec![index("replica", Ecosystem::Pypi)]);
+    state.read_only = true;
+    (dir, crate::router(Arc::new(state)))
+}
+
+fn unavailable_app() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blob_path = dir.path().join("not-a-directory");
+    std::fs::write(&blob_path, b"x").unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(blob_path);
+    let mut cached = index("cached", Ecosystem::Pypi);
+    cached.kind = IndexKind::Cached {
+        client: peryx_upstream::UpstreamClient::new("https://example.invalid/simple/").unwrap(),
+        offline: true,
+    };
+    let state = AppState::new(meta, blobs, 60, vec![cached]);
+    (dir, crate::router(Arc::new(state)))
+}
+
+#[tokio::test]
+async fn test_replica_status_and_readiness_report_read_only_role() {
+    let (_dir, app) = read_only_app();
+    let (status, document) = get_json(&app, "/+status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(document["role"], "replica");
+    assert_eq!(document["health"]["serving_reads"], true);
+    assert_eq!(document["health"]["accepting_writes"], false);
+    assert_eq!(get_status(&app, "/+health").await, StatusCode::OK);
+    assert_eq!(get_status(&app, "/+ready").await, StatusCode::OK);
+    assert_eq!(
+        get_status(&app, "/+ready?writes=true").await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn test_health_reports_an_unavailable_blob_store_and_disabled_upstream() {
+    let (_dir, app) = unavailable_app();
+    let (status, document) = get_json(&app, "/+health").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(document["blob_store"], "unhealthy");
+    assert_eq!(get_status(&app, "/+ready").await, StatusCode::SERVICE_UNAVAILABLE);
+
+    let (status, document) = get_json(&app, "/+status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(document["health"]["upstreams"]["disabled"], 1);
+}
+
+#[rstest]
+#[case::post(axum::http::Method::POST)]
+#[case::put(axum::http::Method::PUT)]
+#[case::patch(axum::http::Method::PATCH)]
+#[case::delete(axum::http::Method::DELETE)]
+#[tokio::test]
+async fn test_replica_rejects_mutating_methods(#[case] method: axum::http::Method) {
+    let (_dir, app) = read_only_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri("/replica/project")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({
+            "error": "read_only_replica",
+            "message": "this replica does not accept mutations",
+        })
+    );
 }
 
 #[tokio::test]

@@ -3738,6 +3738,7 @@ dependencies = [
  "peryx-policy",
  "peryx-search",
  "peryx-storage",
+ "peryx-upstream",
  "redb",
  "rstest",
  "serde",

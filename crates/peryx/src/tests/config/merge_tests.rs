@@ -100,6 +100,7 @@ fn test_apply_overlays_only_present_fields() {
             host: Some("0.0.0.0".to_owned()),
             port: Some(9000),
             offline: Some(true),
+            read_only: Some(true),
             cache_ttl_secs: Some(60),
             hot_cache_bytes: Some(1_048_576),
             max_stale_secs: Some(30),
@@ -109,6 +110,7 @@ fn test_apply_overlays_only_present_fields() {
     assert_eq!(merged.host, "0.0.0.0");
     assert_eq!(merged.port, 9000);
     assert!(merged.offline);
+    assert!(merged.read_only);
     assert_eq!(merged.cache_ttl_secs, 60);
     assert_eq!(merged.hot_cache_bytes, 1_048_576);
     assert_eq!(merged.max_stale_secs, 30);

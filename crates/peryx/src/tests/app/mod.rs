@@ -152,6 +152,7 @@ pub(super) fn runtime_args() -> RuntimeArgs {
         port: None,
         data_dir: None,
         offline: false,
+        read_only: false,
         log_level: None,
         verbose: 0,
         log_format: None,

@@ -30,6 +30,7 @@ async fn test_fetch_bytes_reports_request_failures() {
     let err = client.fetch_bytes("ftp://example.invalid/pkg.whl").await.unwrap_err();
 
     assert_eq!(err.user_message(), "upstream request failed");
+    assert_eq!(client.reachability().as_str(), "unreachable");
 }
 
 #[tokio::test]

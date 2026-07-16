@@ -302,5 +302,14 @@ async fn test_warm_reaches_the_upstream_host() {
         .mount(&server)
         .await;
     let client = simple_client(&server);
+    assert_eq!(client.reachability().as_str(), "unknown");
     client.warm().await;
+    assert_eq!(client.reachability().as_str(), "reachable");
+}
+
+#[tokio::test]
+async fn test_warm_records_an_unreachable_upstream_host() {
+    let client = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    client.warm().await;
+    assert_eq!(client.reachability().as_str(), "unreachable");
 }

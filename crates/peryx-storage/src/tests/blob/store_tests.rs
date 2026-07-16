@@ -129,6 +129,24 @@ fn test_read_range_rejects_out_of_bounds_offsets() {
 }
 
 #[test]
+fn test_health_check_creates_and_reads_the_store_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("blobs");
+    let store = BlobStore::new(&root);
+    store.health_check().unwrap();
+    assert!(root.is_dir());
+}
+
+#[test]
+fn test_health_check_rejects_a_file_as_the_store_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("not-a-directory");
+    std::fs::write(&root, b"x").unwrap();
+    let store = BlobStore::new(root);
+    assert!(matches!(store.health_check(), Err(BlobError::Io(_))));
+}
+
+#[test]
 fn test_scan_reports_blob_entries() {
     let (_dir, store) = store();
     let digest = store.write(b"payload").unwrap();

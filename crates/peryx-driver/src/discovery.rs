@@ -167,6 +167,8 @@ pub fn index_envelope(index: Value) -> Value {
 fn service_urls(base: Option<&BaseUrl>) -> Value {
     json!({
         "api": link(base, "/+api"),
+        "health": link(base, "/+health"),
+        "readiness": link(base, "/+ready"),
         "status": link(base, "/+status"),
         "stats": link(base, "/+stats"),
         "openapi": link(base, "/api-docs/openapi.json"),

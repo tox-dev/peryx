@@ -112,6 +112,22 @@ fn test_build_state_opens_configured_data_dir() {
 }
 
 #[test]
+fn test_build_state_makes_replica_upstreams_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&Config {
+        data_dir: dir.path().to_path_buf(),
+        read_only: true,
+        ..Config::default()
+    })
+    .unwrap();
+    assert!(state.read_only);
+    assert!(state.indexes.iter().all(|index| match &index.kind {
+        peryx_driver::IndexKind::Cached { offline, .. } => *offline,
+        peryx_driver::IndexKind::Hosted { .. } | peryx_driver::IndexKind::Virtual { .. } => true,
+    }));
+}
+
+#[test]
 fn test_build_state_applies_upstream_concurrency() {
     let dir = tempfile::tempdir().unwrap();
     let mut pypi = cached("pypi", "https://pypi.org/simple/");

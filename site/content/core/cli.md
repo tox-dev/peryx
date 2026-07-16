@@ -27,13 +27,14 @@ peryx <COMMAND>
 
 ## `serve` and `init` options
 
-| Flag                | Meaning                                         | Default      |
-| ------------------- | ----------------------------------------------- | ------------ |
-| `--config <path>`   | TOML configuration file                         | (none)       |
-| `--host <addr>`     | Bind address                                    | `127.0.0.1`  |
-| `--port <port>`     | Bind port                                       | `4433`       |
-| `--data-dir <path>` | Data directory (redb store and blob cache)      | `peryx-data` |
-| `--offline`         | Serve configured cached indexes from cache only | `false`      |
+| Flag                | Meaning                                                   | Default      |
+| ------------------- | --------------------------------------------------------- | ------------ |
+| `--config <path>`   | TOML configuration file                                   | (none)       |
+| `--host <addr>`     | Bind address                                              | `127.0.0.1`  |
+| `--port <port>`     | Bind port                                                 | `4433`       |
+| `--data-dir <path>` | Data directory (redb store and blob cache)                | `peryx-data` |
+| `--offline`         | Serve configured cached indexes from cache only           | `false`      |
+| `--read-only`       | Serve as a replica and reject client mutations with `503` | `false`      |
 
 ### Logging
 

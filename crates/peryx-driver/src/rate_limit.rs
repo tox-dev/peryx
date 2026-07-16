@@ -452,7 +452,15 @@ pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     let path = path.trim_start_matches('/');
     if matches!(
         path,
-        "" | "+api" | "+api/" | "+status" | "+acl" | "+stats" | "metrics" | "api-docs/openapi.json"
+        "" | "+api"
+            | "+api/"
+            | "+status"
+            | "+health"
+            | "+ready"
+            | "+acl"
+            | "+stats"
+            | "metrics"
+            | "api-docs/openapi.json"
     ) || matches!(path, "stats" | "admin/status")
         || path.ends_with("/+api")
         || path.contains("/+api/")

@@ -44,7 +44,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
-    let indexes = build_indexes(&config.indexes, &config.auth, config.offline)?;
+    let indexes = build_indexes(&config.indexes, &config.auth, config.offline || config.read_only)?;
     let oci_settings = build_index_settings(&config.indexes)?;
     let webhooks = build_webhooks(&config.indexes)?;
     let search_path = config.data_dir.join("search-v1");
@@ -65,6 +65,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     .context(format!("open search index {}", search_path.display()))?;
     peryx_ecosystem_pypi::install(&mut state);
     peryx_ecosystem_oci::install(&mut state, oci_settings);
+    state.read_only = config.read_only;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
         if key.trim().is_empty() {
@@ -77,7 +78,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     }
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
-    if !state.webhooks.is_empty() {
+    if !state.read_only && !state.webhooks.is_empty() {
         peryx_events::webhook::kick(state.serving.clone());
     }
     Ok(state)

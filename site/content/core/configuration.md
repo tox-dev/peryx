@@ -15,6 +15,7 @@ or `PERYX_*` environment variables, which override the file. Precedence is `defa
 | Bind port                 | `--port`          | `PERYX_PORT`            | `port`            | `4433`       |
 | Data directory            | `--data-dir`      | `PERYX_DATA_DIR`        | `data_dir`        | `peryx-data` |
 | Offline mode              | `--offline`       | `PERYX_OFFLINE`         | `offline`         | `false`      |
+| Read replica mode         | `--read-only`     | `PERYX_READ_ONLY`       | `read_only`       | `false`      |
 | Config file               | `--config` / `-c` | (n/a)                   | (n/a)             | (none)       |
 | Cache freshness (seconds) | (file/env only)   | `PERYX_CACHE_TTL_SECS`  | `cache_ttl_secs`  | `300`        |
 | Page cache budget (bytes) | (file/env only)   | `PERYX_HOT_CACHE_BYTES` | `hot_cache_bytes` | `268435456`  |
@@ -54,6 +55,11 @@ transform again. Lower it on a memory-tight host; raise it when a few projects w
 from disk: PyPI project pages, [PEP 658](https://peps.python.org/pep-0658/) metadata siblings, and wheels; OCI manifests
 and blobs. A cold cached-index miss returns `503`; virtual-index routes still serve any hosted layer that can answer.
 Use `peryx mirror sync` before enabling offline mode on a machine that must run without network access.
+
+`read_only = true` runs the process as a [read replica](@/core/high-availability.md). It rejects each HTTP mutation with
+`503 Service Unavailable`, disables upstream cache fills, webhook delivery, and background maintenance, and reports the
+replica role through `GET /+status`. Use this mode only with a data directory populated by backup restore or an external
+replication system.
 
 ## TLS
 

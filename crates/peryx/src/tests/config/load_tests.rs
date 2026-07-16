@@ -27,6 +27,7 @@ fn test_env_overlays_scalar_and_log_fields() {
         ("PERYX_PORT", "8080"),
         ("PERYX_DATA_DIR", "/srv/peryx"),
         ("PERYX_OFFLINE", "true"),
+        ("PERYX_READ_ONLY", "true"),
         ("PERYX_CACHE_TTL_SECS", "42"),
         ("PERYX_HOT_CACHE_BYTES", "1048576"),
         ("PERYX_LOG_LEVEL", "debug"),
@@ -39,6 +40,7 @@ fn test_env_overlays_scalar_and_log_fields() {
     assert_eq!(partial.port, Some(8080));
     assert_eq!(partial.data_dir, Some(PathBuf::from("/srv/peryx")));
     assert_eq!(partial.offline, Some(true));
+    assert_eq!(partial.read_only, Some(true));
     assert_eq!(partial.cache_ttl_secs, Some(42));
     assert_eq!(partial.hot_cache_bytes, Some(1_048_576));
     assert_eq!(partial.log.level.as_deref(), Some("debug"));
@@ -64,6 +66,7 @@ fn test_env_empty_string_is_unset() {
 #[case::port("PERYX_PORT", "seventy")]
 #[case::ttl("PERYX_CACHE_TTL_SECS", "soon")]
 #[case::offline("PERYX_OFFLINE", "maybe")]
+#[case::read_only("PERYX_READ_ONLY", "maybe")]
 #[case::log_format("PERYX_LOG_FORMAT", "xml")]
 #[case::log_sink("PERYX_LOG_SINK", "pigeon")]
 fn test_env_invalid_is_rejected(#[case] var: &str, #[case] bad_value: &str) {

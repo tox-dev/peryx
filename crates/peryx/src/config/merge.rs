@@ -39,6 +39,9 @@ impl Config {
         if let Some(offline) = partial.offline {
             self.offline = offline;
         }
+        if let Some(read_only) = partial.read_only {
+            self.read_only = read_only;
+        }
         if let Some(max_stale_secs) = partial.max_stale_secs {
             self.max_stale_secs = max_stale_secs;
         }

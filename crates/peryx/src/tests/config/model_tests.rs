@@ -11,6 +11,7 @@ fn test_default_config() {
     assert_eq!(c.port, 4433);
     assert_eq!(c.data_dir, PathBuf::from("peryx-data"));
     assert!(!c.offline);
+    assert!(!c.read_only);
     assert_eq!(c.cache_ttl_secs, 300);
     assert_eq!(c.log, LogConfig::default());
     assert_eq!(c.rate_limit, RateLimitConfig::default());

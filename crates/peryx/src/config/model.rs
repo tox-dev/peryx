@@ -21,6 +21,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Disable upstream network access and serve only cached data.
     pub offline: bool,
+    /// Reject client mutations and disable upstream cache fills on a read replica.
+    pub read_only: bool,
     /// Fallback freshness for cached simple pages, in seconds. Upstream `Cache-Control` lifetimes
     /// take precedence; this applies only when the server granted none.
     pub cache_ttl_secs: i64,
@@ -267,6 +269,7 @@ impl Default for Config {
             port: 4433,
             data_dir: PathBuf::from("peryx-data"),
             offline: false,
+            read_only: false,
             cache_ttl_secs: 300,
             hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
             max_stale_secs: DEFAULT_MAX_STALE_SECS,

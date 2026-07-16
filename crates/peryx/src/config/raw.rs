@@ -52,6 +52,7 @@ pub struct PartialConfig {
     pub port: Option<u16>,
     pub data_dir: Option<PathBuf>,
     pub offline: Option<bool>,
+    pub read_only: Option<bool>,
     pub cache_ttl_secs: Option<i64>,
     pub hot_cache_bytes: Option<u64>,
     /// Bound on stale-on-error serving, in seconds; `0` serves stale without limit.

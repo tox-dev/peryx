@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::middleware;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, get, post};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
@@ -25,6 +26,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/+search", get(handlers::search))
         .route("/+search/", get(handlers::search))
         .route("/+status", get(handlers::status))
+        .route("/+health", get(handlers::health))
+        .route("/+ready", get(handlers::readiness))
         .route("/+acl", get(handlers::acl))
         .route("/+stats", get(handlers::stats))
         .route("/+ui/projects", get(handlers::ui_projects))
@@ -63,5 +66,27 @@ pub fn router(state: Arc<AppState>) -> Router {
     } else {
         router
     };
+    let router = if state.read_only {
+        router.layer(middleware::from_fn(reject_replica_mutation))
+    } else {
+        router
+    };
     router.with_state(state)
+}
+
+async fn reject_replica_mutation(request: Request, next: Next) -> Response {
+    if matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) {
+        return next.run(request).await;
+    }
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "error": "read_only_replica",
+            "message": "this replica does not accept mutations",
+        })),
+    )
+        .into_response()
 }

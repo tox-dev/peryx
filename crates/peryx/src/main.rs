@@ -166,16 +166,18 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
                 tokio::spawn(async move { client.warm().await });
             }
         }
-        let maintainer = state.clone();
-        tokio::spawn(async move {
-            // Reuse one process-wide tick to avoid a task and timer for each cached page or upload.
-            let mut ticker = tokio::time::interval(std::time::Duration::from_mins(1));
-            ticker.tick().await;
-            loop {
+        if !state.read_only {
+            let maintainer = state.clone();
+            tokio::spawn(async move {
+                // Reuse one process-wide tick to avoid a task and timer for each cached page or upload.
+                let mut ticker = tokio::time::interval(std::time::Duration::from_mins(1));
                 ticker.tick().await;
-                background_maintenance(&maintainer).await;
-            }
-        });
+                loop {
+                    ticker.tick().await;
+                    background_maintenance(&maintainer).await;
+                }
+            });
+        }
         let router = peryx::server::router_for(state);
         let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
             .parse()

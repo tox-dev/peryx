@@ -26,6 +26,8 @@ async fn test_discovery_document_ignores_untrusted_forwarding_and_redacts_token(
         json["urls"],
         serde_json::json!({
             "api": "http://internal.local/+api",
+            "health": "http://internal.local/+health",
+            "readiness": "http://internal.local/+ready",
             "status": "http://internal.local/+status",
             "stats": "http://internal.local/+stats",
             "openapi": "http://internal.local/api-docs/openapi.json",

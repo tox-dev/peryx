@@ -129,6 +129,10 @@ pub struct RuntimeArgs {
     #[arg(long)]
     pub offline: bool,
 
+    /// Run as a read replica, rejecting mutations and upstream cache fills.
+    #[arg(long)]
+    pub read_only: bool,
+
     /// Log level filter, e.g. `info` or `peryx_upstream=debug`.
     #[arg(long, help_heading = "Logging")]
     pub log_level: Option<String>,
@@ -164,6 +168,7 @@ impl RuntimeArgs {
             port: self.port,
             data_dir: self.data_dir.clone(),
             offline: self.offline.then_some(true),
+            read_only: self.read_only.then_some(true),
             cache_ttl_secs: None,
             hot_cache_bytes: None,
             max_stale_secs: None,

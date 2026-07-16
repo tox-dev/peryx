@@ -10,6 +10,7 @@ fn test_mirror_prefetch_from_toml() {
     let c = toml_config(
         "\
 offline = true
+read_only = true
 [[index]]
 name = \"pypi\"
 cached = \"https://pypi.org/simple/\"
@@ -28,6 +29,7 @@ max_file_size_bytes = 1048576
 ",
     );
     assert!(c.offline);
+    assert!(c.read_only);
     let IndexKind::Cached { offline, prefetch, .. } = &c.indexes[0].kind else {
         panic!("expected cached index");
     };

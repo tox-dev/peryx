@@ -60,6 +60,25 @@ impl AuthStatus {
     }
 }
 
+/// The result of the most recent connection attempt to an upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reachability {
+    Unknown,
+    Reachable,
+    Unreachable,
+}
+
+impl Reachability {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Reachable => "reachable",
+            Self::Unreachable => "unreachable",
+        }
+    }
+}
+
 /// A client for one upstream index, rooted at its `/simple/` base URL.
 #[derive(Debug, Clone)]
 pub struct UpstreamClient {
@@ -70,11 +89,15 @@ pub struct UpstreamClient {
     base: Url,
     auth: Auth,
     range_support: Arc<AtomicU8>,
+    reachability: Arc<AtomicU8>,
 }
 
 const RANGE_UNKNOWN: u8 = 0;
 const RANGE_SUPPORTED: u8 = 1;
 const RANGE_UNSUPPORTED: u8 = 2;
+const REACHABILITY_UNKNOWN: u8 = 0;
+const REACHABILITY_REACHABLE: u8 = 1;
+const REACHABILITY_UNREACHABLE: u8 = 2;
 
 impl UpstreamClient {
     /// Build an unauthenticated client for `base` (for example `https://pypi.org/simple/`).
@@ -127,6 +150,7 @@ impl UpstreamClient {
             base,
             auth,
             range_support: Arc::new(AtomicU8::new(RANGE_UNKNOWN)),
+            reachability: Arc::new(AtomicU8::new(REACHABILITY_UNKNOWN)),
         })
     }
 
@@ -141,7 +165,24 @@ impl UpstreamClient {
     /// Open a connection to the upstream host ahead of traffic, so the first real request skips
     /// the TCP and TLS handshakes. Failures are the first real request's problem to report.
     pub async fn warm(&self) {
-        let _ = self.http.head(self.base.clone()).send().await;
+        self.reachability.store(
+            if self.http.head(self.base.clone()).send().await.is_ok() {
+                REACHABILITY_REACHABLE
+            } else {
+                REACHABILITY_UNREACHABLE
+            },
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Whether the most recent request reached the upstream host.
+    #[must_use]
+    pub fn reachability(&self) -> Reachability {
+        match self.reachability.load(Ordering::Relaxed) {
+            REACHABILITY_REACHABLE => Reachability::Reachable,
+            REACHABILITY_UNREACHABLE => Reachability::Unreachable,
+            _ => Reachability::Unknown,
+        }
     }
 
     /// Start fetching a file's bytes from an absolute URL, for streaming.
@@ -398,12 +439,18 @@ impl UpstreamClient {
                     sleep_before_retry_status(&url, attempt, status).await;
                     attempt += 1;
                 }
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    self.reachability.store(REACHABILITY_REACHABLE, Ordering::Relaxed);
+                    return Ok(response);
+                }
                 Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
                     sleep_before_retry_str(err.url().map_or("unknown URL", Url::as_str), attempt, &err).await;
                     attempt += 1;
                 }
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    self.reachability.store(REACHABILITY_UNREACHABLE, Ordering::Relaxed);
+                    return Err(err.into());
+                }
             }
         }
     }

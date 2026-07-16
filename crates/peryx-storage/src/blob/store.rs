@@ -67,6 +67,16 @@ impl BlobStore {
         self.path_for(digest).is_file()
     }
 
+    /// Ensure the store root exists and can be read.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] when the root cannot be created or opened as a directory.
+    pub fn health_check(&self) -> Result<(), BlobError> {
+        std::fs::create_dir_all(&self.root)?;
+        std::fs::read_dir(&self.root)?;
+        Ok(())
+    }
+
     /// Write `bytes`, returning their digest. Idempotent: an existing blob is left untouched.
     ///
     /// # Errors

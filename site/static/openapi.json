@@ -120,7 +120,9 @@
                   "indexes": [],
                   "urls": {
                     "api": "http://127.0.0.1:4433/+api",
+                    "health": "http://127.0.0.1:4433/+health",
                     "openapi": "http://127.0.0.1:4433/api-docs/openapi.json",
+                    "readiness": "http://127.0.0.1:4433/+ready",
                     "stats": "http://127.0.0.1:4433/+stats",
                     "status": "http://127.0.0.1:4433/+status",
                     "web": "http://127.0.0.1:4433/"
@@ -129,6 +131,49 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/+health": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Local store health",
+        "description": "Checks that the metadata and blob stores remain available.",
+        "responses": {
+          "200": {
+            "description": "Both local stores are healthy"
+          },
+          "503": {
+            "description": "The metadata or blob store is unavailable"
+          }
+        }
+      }
+    },
+    "/+ready": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Read or write readiness",
+        "description": "Checks read readiness by default. Set `writes=true` for a probe that accepts only a healthy writer.",
+        "parameters": [
+          {
+            "name": "writes",
+            "in": "query",
+            "description": "Require the node to accept writes",
+            "required": false,
+            "example": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested traffic class is ready"
+          },
+          "503": {
+            "description": "The requested traffic class is not ready"
           }
         }
       }
@@ -299,6 +344,18 @@
                       "uploads": 4
                     }
                   ],
+                  "health": {
+                    "accepting_writes": true,
+                    "blob_store": "healthy",
+                    "metadata_store": "healthy",
+                    "serving_reads": true,
+                    "upstreams": {
+                      "disabled": 0,
+                      "reachable": 1,
+                      "unknown": 0,
+                      "unreachable": 0
+                    }
+                  },
                   "indexes": [
                     {
                       "hosted": null,
@@ -380,6 +437,7 @@
                     }
                   ],
                   "requests": 128,
+                  "role": "writer",
                   "serial": 42,
                   "version": "0.0.1"
                 }

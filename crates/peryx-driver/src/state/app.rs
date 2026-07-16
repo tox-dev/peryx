@@ -37,6 +37,8 @@ pub struct ServingState {
     pub max_stale_secs: i64,
     pub clock: Clock,
     pub requests: AtomicU64,
+    /// Whether this process serves as a replica and rejects client mutations.
+    pub read_only: bool,
     pub indexes: Vec<Index>,
     /// The role engine's caches for a cached (proxy) index: the single-flight map, the transformed-page
     /// cache, the negative cache, and the mutation epoch that retires them.

@@ -14,6 +14,14 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
             PathItemBuilder::new().operation(HttpMethod::Get, status()).build(),
         )
         .path(
+            "/+health",
+            PathItemBuilder::new().operation(HttpMethod::Get, health()).build(),
+        )
+        .path(
+            "/+ready",
+            PathItemBuilder::new().operation(HttpMethod::Get, readiness()).build(),
+        )
+        .path(
             "/+acl",
             PathItemBuilder::new().operation(HttpMethod::Get, acl()).build(),
         )
@@ -107,6 +115,8 @@ fn discovery() -> OperationBuilder {
                     "version": "0.0.1",
                     "urls": {
                         "api": "http://127.0.0.1:4433/+api",
+                        "health": "http://127.0.0.1:4433/+health",
+                        "readiness": "http://127.0.0.1:4433/+ready",
                         "status": "http://127.0.0.1:4433/+status",
                         "stats": "http://127.0.0.1:4433/+stats",
                         "openapi": "http://127.0.0.1:4433/api-docs/openapi.json",
@@ -143,6 +153,14 @@ fn status() -> OperationBuilder {
                     .example(Some(json!({
                         "version": env!("CARGO_PKG_VERSION"),
                         "serial": 42,
+                        "role": "writer",
+                        "health": {
+                            "serving_reads": true,
+                            "accepting_writes": true,
+                            "metadata_store": "healthy",
+                            "blob_store": "healthy",
+                            "upstreams": {"reachable": 1, "unreachable": 0, "unknown": 0, "disabled": 0}
+                        },
                         "requests": 128,
                         "by_ecosystem": [
                             {"ecosystem": "pypi", "pages": 128, "downloads": 6, "bytes": 64_733_247,
@@ -172,6 +190,45 @@ fn status() -> OperationBuilder {
                     })))
                     .build(),
             ),
+        )
+}
+
+fn health() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Local store health"))
+        .description(Some("Checks that the metadata and blob stores remain available."))
+        .response(
+            "200",
+            ResponseBuilder::new().description("Both local stores are healthy"),
+        )
+        .response(
+            "503",
+            ResponseBuilder::new().description("The metadata or blob store is unavailable"),
+        )
+}
+
+fn readiness() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Read or write readiness"))
+        .description(Some(
+            "Checks read readiness by default. Set `writes=true` for a probe that accepts only a healthy writer.",
+        ))
+        .parameter(
+            ParameterBuilder::new()
+                .name("writes")
+                .parameter_in(ParameterIn::Query)
+                .description(Some("Require the node to accept writes"))
+                .example(Some(json!(true))),
+        )
+        .response(
+            "200",
+            ResponseBuilder::new().description("The requested traffic class is ready"),
+        )
+        .response(
+            "503",
+            ResponseBuilder::new().description("The requested traffic class is not ready"),
         )
 }
 
