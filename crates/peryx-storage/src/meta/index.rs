@@ -107,7 +107,42 @@ impl MetaStore {
         &self,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
+        self.commit_driver_txn_at(None, body)
+    }
+
+    /// Apply replicated driver rows and copied journal entries only when the local serial matches
+    /// `expected_serial`.
+    ///
+    /// The rows, journal, and serial commit together. A stale follower cannot apply the same page
+    /// twice or skip over local state changed by another writer.
+    ///
+    /// # Errors
+    /// Returns [`MetaError::ReplicaSerialConflict`] through `E` when the local serial differs, the
+    /// body's error, or a store error if the transaction fails.
+    pub fn commit_replica_txn<T, E: From<MetaError>>(
+        &self,
+        expected_serial: u64,
+        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
+    ) -> Result<T, E> {
+        self.commit_driver_txn_at(Some(expected_serial), body)
+    }
+
+    fn commit_driver_txn_at<T, E: From<MetaError>>(
+        &self,
+        expected_serial: Option<u64>,
+        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
+    ) -> Result<T, E> {
         let txn = self.db.begin_write().map_err(MetaError::from)?;
+        if let Some(expected) = expected_serial {
+            let serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
+            let actual = serials
+                .get(SERIAL_KEY)
+                .map_err(MetaError::from)?
+                .map_or(0, |value| value.value());
+            if actual != expected {
+                return Err(MetaError::ReplicaSerialConflict { expected, actual }.into());
+            }
+        }
         let (value, journal) = {
             let mut driver = DriverTxn {
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,

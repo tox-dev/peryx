@@ -3785,6 +3785,18 @@ dependencies = [
 [[package]]
 name = "peryx-replication"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "futures-util",
+ "peryx-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "peryx-search"
