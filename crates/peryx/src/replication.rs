@@ -167,6 +167,16 @@ struct ReplicaLoop {
     monitor: Arc<ReplicaMonitor>,
 }
 
+fn log_replica_page(outcome: SyncOutcome) {
+    tracing::info!(
+        changes = outcome.changes,
+        blobs = outcome.blobs,
+        serial = outcome.serial,
+        primary_serial = outcome.primary_serial,
+        "replica page applied"
+    );
+}
+
 impl ReplicaLoop {
     async fn run(self) {
         loop {
@@ -182,16 +192,10 @@ impl ReplicaLoop {
             .await
         {
             Ok(outcome) => {
-                self.monitor.record(outcome);
                 if outcome.changes > 0 {
-                    tracing::info!(
-                        changes = outcome.changes,
-                        blobs = outcome.blobs,
-                        serial = outcome.serial,
-                        primary_serial = outcome.primary_serial,
-                        "replica page applied"
-                    );
+                    log_replica_page(outcome);
                 }
+                self.monitor.record(outcome);
                 outcome.caught_up()
             }
             Err(error) => {

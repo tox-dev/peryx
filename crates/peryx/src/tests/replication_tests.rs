@@ -131,15 +131,23 @@ async fn test_replica_runtime_drains_available_pages() {
     assert_eq!(runtime.sync_cycle().await, Some(false));
     drop(guard);
 
-    let task = runtime.start().unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while state.meta.current_serial().unwrap() != 3 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+    let router = runtime.mount(router_for(state.clone()));
+    let mut task = runtime.start().unwrap();
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
+    loop {
+        if get(&router, "/+replication/v1/health").await.0 == StatusCode::OK {
+            break;
         }
-    })
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::select! {
+            result = &mut task => panic!("replica runtime stopped before draining pages: {result:?}"),
+            () = &mut deadline => panic!(
+                "replica runtime did not drain pages; current serial is {}",
+                state.meta.current_serial().unwrap()
+            ),
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+    }
     task.abort();
 
     assert_eq!(state.meta.journal_after(0, 10).unwrap().len(), 3);
