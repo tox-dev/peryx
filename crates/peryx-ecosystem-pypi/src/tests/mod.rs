@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod archive;
+mod changelog_tests;
 mod conformance_tests;
 mod description_tests;
 mod fanout_tests;

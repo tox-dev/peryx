@@ -9,6 +9,7 @@ mod admin;
 pub mod archive;
 #[cfg(feature = "serving")]
 pub mod cache;
+mod changelog;
 #[cfg(feature = "serving")]
 mod classifier;
 #[cfg(feature = "serving")]
@@ -54,6 +55,10 @@ pub use serving::PypiServing;
 #[cfg(feature = "serving")]
 pub use simple_client::{ACCEPT_SIMPLE, SimpleClientExt, SimpleHead, SimpleResponse, UpstreamProtocol};
 
+pub use changelog::{
+    ChangelogEntry, ChangelogRequest, ChangelogRequestError, parse_changelog_request, render_changelog_fault,
+    render_changelog_response, render_last_serial_response,
+};
 pub use filename::{
     DistributionFilename, DistributionFilenameError, DistributionKind, distribution_version_segment,
     parse_distribution_filename,

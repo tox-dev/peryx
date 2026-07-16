@@ -64,6 +64,7 @@ pep440_rs.workspace = true
 tl.workspace = true
 url.workspace = true
 sha2.workspace = true
+xml-rs = "0.8"
 
 # Serving layer (enabled by the `serving` feature).
 peryx-driver = { workspace = true, optional = true }

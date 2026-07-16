@@ -3696,6 +3696,7 @@ dependencies = [
  "url",
  "utoipa",
  "wiremock",
+ "xml-rs",
  "zip",
 ]
 
