@@ -17,11 +17,16 @@ use central_dir::{
 };
 
 use super::download::file_path;
-use super::{CacheError, NEGATIVE_TTL_SECS, is_tar_gz, is_wheel, source_mirror, upstream_permit};
+use super::{CacheError, NEGATIVE_TTL_SECS, is_tar_gz, is_wheel, source_client, upstream_permit};
 
-/// Fetch a URL through the named cached's client (reusing its authentication).
-async fn fetch_from_source(state: &ServingState, source: &str, url: &str) -> Result<Bytes, CacheError> {
-    let (client, offline) = source_mirror(state, source)?;
+/// Fetch a URL through its recorded upstream client, reusing that source's authentication.
+async fn fetch_from_source(
+    state: &ServingState,
+    source: &str,
+    upstream: Option<&str>,
+    url: &str,
+) -> Result<Bytes, CacheError> {
+    let (client, offline) = source_client(state, source, upstream)?;
     if offline {
         return Err(CacheError::OfflineMissing("metadata"));
     }
@@ -59,7 +64,11 @@ pub async fn metadata_bytes(
             return Ok(Bytes::from(state.blobs.read(&metadata_digest)?));
         }
         if url != GENERATED_METADATA_URL {
-            let bytes = match fetch_from_source(state, &source, &url).await {
+            let upstream = state
+                .meta
+                .get_file_url(artifact_digest.as_str())?
+                .and_then(|source| source.upstream);
+            let bytes = match fetch_from_source(state, &source, upstream.as_deref(), &url).await {
                 Ok(bytes) => bytes,
                 Err(CacheError::Upstream(err)) if err.status() == Some(404) => {
                     state.remember_negative(negative_key, NEGATIVE_TTL_SECS);
@@ -109,7 +118,10 @@ async fn generated_metadata_bytes(
     let Some(source) = source else {
         return Err(CacheError::FileNotFound);
     };
-    if let Some(metadata) = generated_wheel_metadata_by_range(state, &source.source, &source.url, filename).await? {
+    if let Some(metadata) =
+        generated_wheel_metadata_by_range(state, &source.source, source.upstream.as_deref(), &source.url, filename)
+            .await?
+    {
         return Ok((metadata, Some(source.source)));
     }
     let path = file_path(
@@ -136,13 +148,14 @@ fn metadata_from_artifact_path(filename: &str, path: &std::path::Path) -> Result
 async fn generated_wheel_metadata_by_range(
     state: &Arc<ServingState>,
     source_name: &str,
+    upstream: Option<&str>,
     url: &str,
     filename: &str,
 ) -> Result<Option<Vec<u8>>, CacheError> {
     if !is_wheel(filename) {
         return Ok(None);
     }
-    let (client, offline) = source_mirror(state, source_name)?;
+    let (client, offline) = source_client(state, source_name, upstream)?;
     if offline {
         return Err(CacheError::OfflineMissing("metadata"));
     }

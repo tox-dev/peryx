@@ -289,8 +289,12 @@ fn is_tar_gz(filename: &str) -> bool {
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
 }
 
-fn source_mirror(state: &ServingState, source: &str) -> Result<(UpstreamClient, bool), CacheError> {
-    state
+fn source_client(
+    state: &ServingState,
+    source: &str,
+    upstream: Option<&str>,
+) -> Result<(UpstreamClient, bool), CacheError> {
+    let (client, offline) = state
         .indexes
         .iter()
         .find(|index| index.name == source)
@@ -298,7 +302,17 @@ fn source_mirror(state: &ServingState, source: &str) -> Result<(UpstreamClient, 
             IndexKind::Cached { client, offline } => Some((client.clone(), *offline)),
             IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
         })
-        .ok_or(CacheError::FileNotFound)
+        .ok_or(CacheError::FileNotFound)?;
+    let Some(upstream) = upstream else {
+        return Ok((client, offline));
+    };
+    let client = state
+        .upstream_routes
+        .get(source)
+        .and_then(|router| router.source(upstream))
+        .map(|source| source.client().clone())
+        .ok_or(CacheError::FileNotFound)?;
+    Ok((client, offline))
 }
 
 #[cfg(test)]

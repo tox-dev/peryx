@@ -65,6 +65,127 @@ async fn test_metadata_served_verified_and_counted() {
 }
 
 #[tokio::test]
+async fn test_routed_metadata_sidecar_uses_the_advertising_source_credentials() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&first)
+        .await;
+    let wheel_digest = Digest::of(b"wheel bytes");
+    let metadata = b"Metadata-Version: 2.1\nName: flask\n";
+    let metadata_digest = Digest::of(metadata);
+    let wheel_url = format!("{}/files/flask.whl", second.uri());
+    let page = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"flask-1.0.whl\",\"url\":\"{wheel_url}\",\
+         \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}}}]}}",
+        wheel_digest.as_str(),
+        metadata_digest.as_str(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(page, "application/vnd.pypi.simple.v1+json"))
+        .mount(&second)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl.metadata"))
+        .and(match_header("authorization", "Bearer second-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(metadata.to_vec()))
+        .expect(1)
+        .mount(&second)
+        .await;
+    let primary = UpstreamClient::new(&format!("{}/simple/", first.uri())).unwrap();
+    let router = UpstreamRouter::new(vec![
+        NamedUpstream::new("first", primary.clone()),
+        NamedUpstream::new(
+            "second",
+            UpstreamClient::with_auth(
+                &format!("{}/simple/", second.uri()),
+                Auth::Bearer("second-token".to_owned()),
+            )
+            .unwrap(),
+        ),
+    ])
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_state(&dir, primary, router);
+
+    get(&state, "/pypi/simple/flask/", Some("application/json")).await;
+    let uri = format!("/pypi/files/{}/flask-1.0.whl.metadata", wheel_digest.as_str());
+    let (status, _, body) = get(&state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, String::from_utf8_lossy(metadata));
+}
+
+#[tokio::test]
+async fn test_routed_metadata_ranges_use_the_advertising_source_credentials() {
+    let server = MockServer::start().await;
+    let metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
+    let wheel = fixture_wheel_with_metadata(metadata);
+    let wheel_size = wheel.len();
+    let digest = Digest::of(&wheel);
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    let file_url = format!("{}/files/{filename}", server.uri());
+    Mock::given(method("HEAD"))
+        .and(path(format!("/files/{filename}")))
+        .and(match_header("authorization", "Bearer mirror-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", wheel_size),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/files/{filename}")))
+        .and(match_header("authorization", "Bearer mirror-token"))
+        .respond_with(range_response(wheel))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::with_auth(
+        &format!("{}/simple/", server.uri()),
+        Auth::Bearer("mirror-token".to_owned()),
+    )
+    .unwrap();
+    let router = UpstreamRouter::new(vec![NamedUpstream::new("mirror", client.clone())]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_state(&dir, client, router);
+    let record = CachedIndex {
+        etag: None,
+        last_serial: None,
+        fetched_at_unix: 1000,
+        content_type: None,
+        fresh_secs: None,
+        body: Vec::new(),
+    };
+    state
+        .meta
+        .put_cached_page(
+            "project:pypi/peryxpkg",
+            &record,
+            "pypi",
+            "peryxpkg",
+            "peryxpkg",
+            "pypi",
+            Some("mirror"),
+            None,
+            None,
+            &[(digest.as_str().to_owned(), file_url, Some(wheel_size as u64))],
+            &[],
+        )
+        .unwrap();
+
+    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
+    let (status, _, body) = get(&state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, String::from_utf8_lossy(metadata));
+}
+
+#[tokio::test]
 async fn test_metadata_rejects_sidecar_over_size_limit() {
     let h = harness().await;
     let artifact = Digest::of(b"artifact");

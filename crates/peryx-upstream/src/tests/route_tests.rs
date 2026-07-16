@@ -50,6 +50,13 @@ fn test_upstream_router_exposes_the_selected_client() {
 }
 
 #[test]
+fn test_upstream_router_finds_a_source_by_name() {
+    let router = router();
+    assert_eq!(router.source("mirror").unwrap().name(), "mirror");
+    assert!(router.source("missing").is_none());
+}
+
+#[test]
 fn test_named_upstream_health_is_shared_between_router_clones() {
     let router = router();
     let cloned = router.clone();

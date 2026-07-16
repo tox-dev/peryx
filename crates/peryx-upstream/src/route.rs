@@ -193,4 +193,10 @@ impl UpstreamRouter {
     pub fn sources(&self) -> impl Iterator<Item = &NamedUpstream> {
         self.upstreams.iter()
     }
+
+    /// The configured source named `name`.
+    #[must_use]
+    pub fn source(&self, name: &str) -> Option<&NamedUpstream> {
+        self.positions.get(name).map(|&position| &self.upstreams[position])
+    }
 }

@@ -26,6 +26,50 @@ async fn test_file_download_fetches_verifies_and_caches() {
     assert_eq!(status2, StatusCode::OK);
     assert_eq!(body2, body);
 }
+
+#[tokio::test]
+async fn test_routed_file_download_uses_the_advertising_source_credentials() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&first)
+        .await;
+    let wheel = b"wheel from the second source";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl", second.uri());
+    mount_detail(&second, digest.as_str(), &file_url, None).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .and(match_header("authorization", "Bearer second-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.to_vec()))
+        .expect(1)
+        .mount(&second)
+        .await;
+    let primary = UpstreamClient::new(&format!("{}/simple/", first.uri())).unwrap();
+    let router = UpstreamRouter::new(vec![
+        NamedUpstream::new("first", primary.clone()),
+        NamedUpstream::new(
+            "second",
+            UpstreamClient::with_auth(
+                &format!("{}/simple/", second.uri()),
+                Auth::Bearer("second-token".to_owned()),
+            )
+            .unwrap(),
+        ),
+    ])
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_state(&dir, primary, router);
+
+    get(&state, "/pypi/simple/flask/", Some("application/json")).await;
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get_bytes(&state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, wheel);
+}
 #[tokio::test]
 async fn test_quarantined_project_hides_files_and_blocks_downloads() {
     let h = harness().await;

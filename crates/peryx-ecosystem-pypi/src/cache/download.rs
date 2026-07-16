@@ -12,7 +12,7 @@ use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_storage::blob::Digest;
 
-use super::{CacheError, flight_gate, release_flight, source_mirror, upstream_permit};
+use super::{CacheError, flight_gate, release_flight, source_client, upstream_permit};
 
 /// Resolve a file to a hosted blob path. A cache miss is fetched through the same streaming path as
 /// downloads, so the archive inspector never buffers the whole artifact in memory.
@@ -88,7 +88,7 @@ pub fn probe_file(state: &ServingState, digest: &Digest) -> Result<FileProbe, Ca
         .meta
         .get_file_url(digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
-    if source_mirror(state, &source.source)?.1 {
+    if source_client(state, &source.source, source.upstream.as_deref())?.1 {
         return Err(CacheError::OfflineMissing("file"));
     }
     Ok(FileProbe::Upstream(source.size))
@@ -162,7 +162,7 @@ async fn start_download(
         .meta
         .get_file_url(digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
-    let (client, offline) = source_mirror(state, &source.source)?;
+    let (client, offline) = source_client(state, &source.source, source.upstream.as_deref())?;
     if offline {
         return Err(CacheError::OfflineMissing("file"));
     }

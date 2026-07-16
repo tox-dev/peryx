@@ -102,6 +102,30 @@ pub async fn harness_with_stale(
 pub async fn harness() -> Harness {
     harness_with(true, true).await
 }
+
+pub fn routed_state(dir: &tempfile::TempDir, primary: UpstreamClient, router: UpstreamRouter) -> Arc<AppState> {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::new(
+        meta,
+        blobs,
+        60,
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Cached {
+                client: primary,
+                offline: false,
+            },
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+        }],
+    );
+    state.upstream_routes.insert("pypi".to_owned(), router);
+    crate::tests::wired(state)
+}
+
 pub async fn promotion_harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;

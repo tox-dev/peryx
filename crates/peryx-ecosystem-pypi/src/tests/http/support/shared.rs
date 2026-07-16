@@ -17,7 +17,7 @@ pub use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 pub use http_body_util::BodyExt as _;
 pub use peryx_storage::blob::{BlobStore, Digest};
 pub use peryx_storage::meta::MetaStore;
-pub use peryx_upstream::{Auth, UpstreamClient};
+pub use peryx_upstream::{Auth, NamedUpstream, UpstreamClient, UpstreamRouter};
 pub(crate) use rstest::rstest;
 pub use sha2::{Digest as _, Sha256};
 pub use tower::ServiceExt as _;
