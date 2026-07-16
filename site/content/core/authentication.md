@@ -36,11 +36,14 @@ Write and delete authorization runs through the model in this release. A PyPI up
 token as an HTTP Basic password, peryx resolves it to a principal against the target index's tokens, and the write
 proceeds only if a grant covers the project and action.
 
-Read enforcement is not wired yet. `anonymous_read` is recorded on every index and honored by the decision function, but
-no serving path consults it for a read, so reads are served openly today. The read challenge (Basic for PyPI, a Bearer
-token realm for OCI so `docker login` validates honestly) is the next step; the keys below let you declare the read
-policy ahead of that gate. External identity sources (LDAP, OIDC), token revocation, and per-mirror upstream credential
-refresh are also out of this release.
+OCI reads also run through the model. The registry challenges clients through its Bearer token realm, mints
+repository-scoped tokens, and checks manifest, blob, tag, and catalog access. Server-rendered project pages, hydrated UI
+requests, and search apply the same read ACLs, so they do not disclose inaccessible repositories.
+
+PyPI's Simple API, JSON, metadata, and artifact routes do not consult read ACLs yet. The neutral discovery, status,
+usage, and metrics endpoints also remain public. Setting `anonymous_read = false` does not protect those surfaces until
+their handlers gain access checks. External identity sources (LDAP, OIDC), token revocation, and per-mirror upstream
+credential refresh are also out of this release.
 
 ## Project globs
 
@@ -68,12 +71,12 @@ The `[auth]` table holds the settings every index's access rules share. All keys
 | `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive             | `300`   |
 | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it | `true`  |
 
-`signing_key` and `token_ttl_secs` configure the token realm that the forthcoming OCI Bearer flow will mint from. peryx
-reads the key at startup so a deployment can stage it now; nothing mints a token from it in this release. Set at most
-one of `signing_key` and `signing_key_file`.
+`signing_key` and `token_ttl_secs` configure the OCI Bearer token realm. peryx reads the key at startup and uses it to
+sign the repository-scoped tokens it mints. Set at most one of `signing_key` and `signing_key_file`.
 
-`default_anonymous_read = false` makes every index private by default, so a fully private server is one knob rather than
-one flag per index. An index that should stay open sets `anonymous_read = true`.
+`default_anonymous_read = false` makes every index's ACL deny anonymous reads by default. It closes the enforced OCI and
+project-presentation paths; the public paths listed above stay open. An index that should stay open sets
+`anonymous_read = true`.
 
 ## Per-index keys
 
