@@ -1,20 +1,16 @@
-//! Primary/replica replication for peryx — reserved, not yet implemented.
+//! Primary/replica replication over peryx's ordered storage journal.
 //!
-//! This crate is intentionally empty. It reserves the boundary the distributed story will grow
-//! behind so the single-node code never has to move to accommodate it: peryx runs as one writer by
-//! default, and replication is opt-in.
-//!
-//! The design it will implement:
-//!
-//! - A **primary** owns the append-only [`Journal`] in `peryx-storage`: every mutation (upload, yank, delete,
-//!   override, cache fetch) appends a serial, and that ordered log is the single source of truth for what changed and
-//!   when.
-//! - **Replicas** follow the primary's changelog by serial, fetch referenced blobs by digest with hash verification,
-//!   and serve reads locally while proxying writes back to the primary — the same single-writer, replay-a-log model
-//!   devpi uses, and the substrate a single-writer HA / failover story sits on.
-//!
-//! Nothing depends on this crate yet; it links no code into the running server. When replication is
-//! built, it consumes the storage journal and a coordination seam in the HTTP layer, neither of which
-//! the request hot path touches.
-//!
-//! [`Journal`]: https://docs.rs/peryx-storage
+//! A primary exposes [`ChangePage`] records and digest-addressed blob streams through [`Primary`].
+//! [`Replica`] verifies the serial sequence and every missing blob before committing metadata,
+//! copied journal entries, and its resume cursor in one transaction.
+
+mod error;
+mod protocol;
+mod replica;
+
+pub use error::SyncError;
+pub use protocol::{BlobReference, Change, ChangePage, MetadataMutation, PROTOCOL_VERSION, Primary};
+pub use replica::{Replica, ReplicaState, SyncOutcome};
+
+#[cfg(test)]
+mod tests;

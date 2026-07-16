@@ -16,6 +16,8 @@ pub enum MetaError {
     Commit(#[from] redb::CommitError),
     #[error(transparent)]
     Decode(#[from] serde_json::Error),
+    #[error("replica serial conflict: expected {expected}, found {actual}")]
+    ReplicaSerialConflict { expected: u64, actual: u64 },
 }
 
 /// A metadata scan error: either the store failed or the visitor rejected one row.

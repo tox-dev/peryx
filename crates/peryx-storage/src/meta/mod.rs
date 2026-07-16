@@ -20,6 +20,7 @@ pub use analytics::AnalyticsHandle;
 pub use error::{MetaError, MetaScanError};
 pub use index::DriverTxn;
 pub use job::{JobKind, JobOutcome, JobRunRecord, JobState, NewJobRun};
+pub use journal::JournalRecord;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
@@ -87,6 +88,7 @@ impl MetaStore {
             txn.open_table(WEBHOOK_DELIVERY)?;
             txn.open_table(WEBHOOK_DUE)?;
             txn.open_table(JOB_RUN)?;
+            txn.open_table(JOURNAL)?;
             txn.open_table(DRIVER_KV)?;
             txn.open_table(ANALYTICS)?;
         }
