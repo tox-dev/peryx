@@ -24,7 +24,7 @@ pub use index::{
     get_index, get_project_status, list_index_pages, put_cached_page, put_index, scan_index_pages, scan_index_records,
     touch_index_freshness,
 };
-pub use journal::JournalEntry;
+pub use journal::{JournalEntry, JournalSnapshot, read_journal_entries};
 pub use peryx_driver::serving::{IndexSummary, RecentUpload};
 pub use projects::{
     ProjectCachePurgeCounts, count_project_cache_purge, delete_project_cache, get_project, list_projects, put_project,

@@ -1,6 +1,7 @@
 use crate::{
-    ChangelogEntry, ChangelogRequest, ChangelogRequestError, parse_changelog_request, render_changelog_fault,
-    render_changelog_response, render_last_serial_response,
+    CHANGELOG_PAGE_SIZE, ChangelogEntry, ChangelogPage, ChangelogRequest, ChangelogRequestError,
+    dispatch_changelog_request, parse_changelog_request, render_changelog_fault, render_changelog_response,
+    render_last_serial_response,
 };
 
 #[test]
@@ -152,4 +153,99 @@ fn test_render_changelog_fault_escapes_message() {
     let response = render_changelog_fault(-32602, "expected <int> & nothing else");
     assert!(response.contains("<name>faultCode</name><value><int>-32602</int>"));
     assert!(response.contains("<string>expected &lt;int&gt; &amp; nothing else</string>"));
+}
+
+#[test]
+fn test_dispatch_changelog_last_serial_queries_only_the_head() {
+    assert_eq!(
+        dispatch_changelog_request(
+            b"<methodCall><methodName>changelog_last_serial</methodName></methodCall>",
+            || Ok::<_, ()>(42),
+            |_, _| -> Result<ChangelogPage, ()> { panic!("since query must not run") },
+        )
+        .unwrap(),
+        render_last_serial_response(42)
+    );
+}
+
+#[test]
+fn test_dispatch_changelog_since_serial_passes_the_warehouse_limit() {
+    let expected = ChangelogEntry {
+        project: "demo".to_owned(),
+        version: Some("1.0".to_owned()),
+        timestamp: 1_725_534_675,
+        action: "add source file demo-1.0.tar.gz".to_owned(),
+        serial: 43,
+    };
+    assert_eq!(
+        dispatch_changelog_request(
+            b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><int>42</int></value></param></params></methodCall>",
+            || -> Result<u64, ()> { panic!("head query must not run") },
+            |serial, limit| {
+                assert_eq!(serial, 42);
+                assert_eq!(limit, CHANGELOG_PAGE_SIZE);
+                Ok::<_, ()>(ChangelogPage::new(serial, expected.serial, vec![expected.clone()]).unwrap())
+            },
+        )
+        .unwrap(),
+        render_changelog_response(&[expected])
+    );
+}
+
+#[rstest::rstest]
+#[case::parse(
+    b"<methodCall>" as &[u8],
+    -32700,
+    "parse error; not well formed"
+)]
+#[case::unknown_method(
+    b"<methodCall><methodName>list_packages</methodName></methodCall>",
+    -32601,
+    "server error; requested method not found"
+)]
+#[case::invalid_params(
+    b"<methodCall><methodName>changelog_since_serial</methodName><params/></methodCall>",
+    -32602,
+    "server error; invalid method params"
+)]
+#[case::invalid_serial(
+    b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><int>nope</int></value></param></params></methodCall>",
+    -32602,
+    "server error; invalid method params"
+)]
+fn test_dispatch_changelog_request_maps_client_faults(#[case] body: &[u8], #[case] code: i32, #[case] message: &str) {
+    assert_eq!(
+        dispatch_changelog_request(
+            body,
+            || -> Result<u64, ()> { panic!("invalid requests must not query the source") },
+            |_, _| -> Result<ChangelogPage, ()> { panic!("invalid requests must not query the source") },
+        )
+        .unwrap(),
+        render_changelog_fault(code, message)
+    );
+}
+
+#[test]
+fn test_dispatch_changelog_request_maps_invalid_utf8_to_a_parse_fault() {
+    assert_eq!(
+        dispatch_changelog_request(
+            &[0xff],
+            || -> Result<u64, ()> { panic!("invalid requests must not query the source") },
+            |_, _| -> Result<ChangelogPage, ()> { panic!("invalid requests must not query the source") },
+        )
+        .unwrap(),
+        render_changelog_fault(-32700, "parse error; not well formed")
+    );
+}
+
+#[rstest::rstest]
+#[case::last_serial(b"<methodCall><methodName>changelog_last_serial</methodName></methodCall>")]
+#[case::since_serial(
+    b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><int>42</int></value></param></params></methodCall>"
+)]
+fn test_dispatch_changelog_request_preserves_source_errors(#[case] body: &[u8]) {
+    assert_eq!(
+        dispatch_changelog_request(body, || Err::<u64, _>(()), |_, _| Err::<ChangelogPage, _>(())),
+        Err(())
+    );
 }

@@ -35,6 +35,7 @@ pub mod policy;
 mod requirement;
 #[cfg(feature = "serving")]
 pub mod search_pypi;
+mod serial;
 #[cfg(feature = "serving")]
 pub mod serving;
 mod simple;
@@ -56,8 +57,8 @@ pub use serving::PypiServing;
 pub use simple_client::{ACCEPT_SIMPLE, SimpleClientExt, SimpleHead, SimpleResponse, UpstreamProtocol};
 
 pub use changelog::{
-    ChangelogEntry, ChangelogRequest, ChangelogRequestError, parse_changelog_request, render_changelog_fault,
-    render_changelog_response, render_last_serial_response,
+    CHANGELOG_PAGE_SIZE, ChangelogEntry, ChangelogRequest, ChangelogRequestError, dispatch_changelog_request,
+    parse_changelog_request, render_changelog_fault, render_changelog_response, render_last_serial_response,
 };
 pub use filename::{
     DistributionFilename, DistributionFilenameError, DistributionKind, distribution_version_segment,
@@ -68,6 +69,10 @@ pub use legacy_json::render_legacy_json;
 pub use metadata::{CoreMetadataDoc, MetadataError, parse_metadata, ui_meta, ui_project_from_detail};
 pub use name::{
     PackageName, file_matches_version, is_valid_name, normalize_name, normalize_name_cow, project_of_filename,
+};
+pub use serial::{
+    ChangelogPage, ChangelogPageError, SerialStamp, UpstreamSerialError, compose_serial_watermarks,
+    validate_upstream_serial,
 };
 pub use simple::{
     API_VERSION, API_VERSION_BASE, CoreMetadata, File, Meta, ParsedDetail, ProjectDetail, ProjectList,
