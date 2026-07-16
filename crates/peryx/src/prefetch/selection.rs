@@ -87,7 +87,10 @@ async fn all_projects(state: &Arc<AppState>, target: &Target, source: SelectionS
             .into_iter()
             .collect());
     }
-    let response = target.client.fetch_index().await?;
+    let response = match state.upstream_routes.get(&target.cached) {
+        Some(router) => router.fetch_index().await?,
+        None => target.client.fetch_index().await?,
+    };
     if response.status != 200 {
         bail!("upstream project list returned {}", response.status);
     }

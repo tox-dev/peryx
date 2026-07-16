@@ -78,6 +78,37 @@ async fn mount_project(server: &MockServer, wheel: Vec<u8>, metadata: Vec<u8>) {
         .await;
 }
 
+fn routed_config(dir: &Path, first: &MockServer, second: &MockServer, artifacts: &MockServer) -> Config {
+    let mut config = mirror_config(dir, &format!("{}/simple/", first.uri()));
+    let IndexKind::Cached { routing, .. } = &mut config.indexes[0].kind else {
+        panic!("expected cached index");
+    };
+    *routing = Some(Box::new(UpstreamRoutingConfig {
+        upstreams: vec![
+            UpstreamConfig {
+                name: "first".to_owned(),
+                url: format!("{}/simple/", first.uri()),
+                artifact_url: None,
+                username: None,
+                password: None,
+                token: None,
+            },
+            UpstreamConfig {
+                name: "second".to_owned(),
+                url: format!("{}/simple/", second.uri()),
+                artifact_url: Some(artifacts.uri()),
+                username: None,
+                password: None,
+                token: Some(SecretSource::Literal("second-token".to_owned())),
+            },
+        ],
+        fallback: true,
+        protected: Vec::new(),
+        pins: BTreeMap::default(),
+    }));
+    config
+}
+
 #[tokio::test]
 async fn test_mirror_plan_reports_wheel_tag_filter() {
     let dir = tempfile::tempdir().unwrap();
@@ -254,13 +285,35 @@ async fn test_mirror_sync_downloads_then_reuses_cached_blobs() {
 }
 
 #[tokio::test]
-async fn test_mirror_sync_uses_routed_source_credentials() {
+async fn test_mirror_sync_all_uses_routed_source_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let first = MockServer::start().await;
     let second = MockServer::start().await;
     let artifacts = MockServer::start().await;
     let wheel = b"wheel from the second source".to_vec();
     let metadata = b"Metadata-Version: 2.1\nName: flask\n".to_vec();
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(3)
+        .mount(&first)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .and(match_header("authorization", "Bearer second-token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                to_json(&serde_json::json!({
+                    "meta": {"api-version": "1.1"},
+                    "projects": [{"name": "Flask"}],
+                }))
+                .into_bytes(),
+                "application/vnd.pypi.simple.v1+json",
+            ),
+        )
+        .expect(1)
+        .mount(&second)
+        .await;
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .respond_with(ResponseTemplate::new(404))
@@ -291,47 +344,56 @@ async fn test_mirror_sync_uses_routed_source_credentials() {
         .expect(1)
         .mount(&artifacts)
         .await;
-    let mut config = mirror_config(dir.path(), &format!("{}/simple/", first.uri()));
-    let IndexKind::Cached { routing, .. } = &mut config.indexes[0].kind else {
-        panic!("expected cached index");
-    };
-    *routing = Some(Box::new(UpstreamRoutingConfig {
-        upstreams: vec![
-            UpstreamConfig {
-                name: "first".to_owned(),
-                url: format!("{}/simple/", first.uri()),
-                artifact_url: None,
-                username: None,
-                password: None,
-                token: None,
-            },
-            UpstreamConfig {
-                name: "second".to_owned(),
-                url: format!("{}/simple/", second.uri()),
-                artifact_url: Some(artifacts.uri()),
-                username: None,
-                password: None,
-                token: Some(SecretSource::Literal("second-token".to_owned())),
-            },
-        ],
-        fallback: true,
-        protected: Vec::new(),
-        pins: BTreeMap::default(),
-    }));
+    let config = routed_config(dir.path(), &first, &second, &artifacts);
+    let mut options = command_options(dir.path(), Vec::new());
+    options.mode = Some(PrefetchMode::All);
 
-    let text = run_ok(
-        &config,
-        &PrefetchCommand::Sync(PrefetchSyncArgs {
-            options: command_options(dir.path(), vec!["flask".to_owned()]),
-        }),
-    )
-    .await;
+    let text = run_ok(&config, &PrefetchCommand::Sync(PrefetchSyncArgs { options })).await;
 
     assert!(text.contains("metadata\tpypi\tflask\tflask-1.0-py3-none-any.whl.metadata"));
     assert!(text.contains("file\tpypi\tflask\tflask-1.0-py3-none-any.whl"));
     let blobs = BlobStore::new(dir.path().join("blobs"));
     assert!(blobs.exists(&Digest::of(&wheel)));
     assert!(blobs.exists(&Digest::of(&metadata)));
+}
+
+#[tokio::test]
+async fn test_mirror_plan_honors_routed_project_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .and(match_header("authorization", "Bearer second-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            detail_page(
+                "flask",
+                vec![file_entry("flask-1.0.tar.gz", Digest::of(b"sdist").as_str(), 5)],
+            ),
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .expect(1)
+        .mount(&second)
+        .await;
+    let mut config = routed_config(dir.path(), &first, &second, &second);
+    let IndexKind::Cached {
+        routing: Some(routing), ..
+    } = &mut config.indexes[0].kind
+    else {
+        panic!("expected routed index");
+    };
+    routing.pins.insert("flask".to_owned(), "second".to_owned());
+
+    let text = run_ok(
+        &config,
+        &PrefetchCommand::Plan(PrefetchPlanArgs {
+            options: command_options(dir.path(), vec!["flask".to_owned()]),
+        }),
+    )
+    .await;
+
+    assert!(text.contains("file\tpypi\tflask\tflask-1.0.tar.gz"));
+    assert!(first.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
