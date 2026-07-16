@@ -85,9 +85,11 @@ async fn test_routed_project_falls_back_on_retryable_status(#[case] status: u16)
 
 #[tokio::test]
 async fn test_routed_project_falls_back_after_a_transport_error() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unavailable = listener.local_addr().unwrap();
-    drop(listener);
+    let close_connection = tokio::spawn(async move {
+        drop(listener.accept().await.unwrap());
+    });
     let second = MockServer::start().await;
     mount_get(
         &second,
@@ -105,6 +107,7 @@ async fn test_routed_project_falls_back_after_a_transport_error() {
     .unwrap();
 
     let response = route.fetch_project("flask", None).await.unwrap();
+    close_connection.await.unwrap();
 
     assert_eq!(response.status, 200);
     assert!(response.url.as_str().starts_with(&second.uri()));
