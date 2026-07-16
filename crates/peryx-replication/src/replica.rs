@@ -143,6 +143,9 @@ impl<'store> Replica<'store> {
                     }
                 }
             }
+            for (digest, size) in validated.blobs.values() {
+                txn.reference_blob(digest.as_str(), *size);
+            }
             txn.put_local(REPLICA_STATE_KEY, &next_state)?;
             Ok::<_, SyncError>(((), validated.journal))
         })?;

@@ -130,7 +130,15 @@ async fn test_sync_commits_verified_blob_metadata_journal_and_cursor() {
         meta.get_driver_value("pypi\0upload").unwrap().as_deref(),
         Some(b"record".as_slice())
     );
-    assert_eq!(meta.journal_after(0, 10).unwrap()[0].payload, b"event-1");
+    let journal = meta.journal_after(0, 10).unwrap();
+    assert_eq!(journal[0].payload, b"event-1");
+    assert_eq!(
+        journal[0].blobs,
+        vec![peryx_storage::meta::DriverBlobReference {
+            sha256: digest.as_str().to_owned(),
+            size: bytes.len() as u64,
+        }]
+    );
     assert_eq!(replica(&meta, &blobs).state().unwrap().unwrap().serial, 1);
 }
 
