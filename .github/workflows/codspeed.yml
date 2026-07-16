@@ -296,11 +296,20 @@ jobs:
         id: benchmark-cache
         with:
           path: |
-            /usr/local/cargo/git
-            /usr/local/cargo/registry
+            /usr/local/cargo/git/db
+            /usr/local/cargo/registry/cache
+            /usr/local/cargo/registry/index
             target
           key: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
           restore-keys: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-
+      # A fresh checkout gives unchanged sources new mtimes, so Cargo rebuilds workspace crates after an
+      # exact cache hit. The content-derived key makes it safe to age only exact-match sources; partial
+      # restores retain checkout mtimes so changed sources still rebuild.
+      - name: Preserve exact benchmark build
+        if: steps.benchmark-cache.outputs.cache-hit == 'true'
+        run: |
+          git ls-files -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml \
+            | xargs -0 touch --date=@0 --
       - run: ci/run-codspeed.sh ${{ matrix.package }} ${{ matrix.cargo_jobs }}
         env:
           GH_MATRIX: ${{ toJSON(matrix) }}
@@ -310,8 +319,9 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            /usr/local/cargo/git
-            /usr/local/cargo/registry
+            /usr/local/cargo/git/db
+            /usr/local/cargo/registry/cache
+            /usr/local/cargo/registry/index
             target
           key: ${{ steps.benchmark-cache.outputs.cache-primary-key }}
 
@@ -327,6 +337,7 @@ jobs:
     steps:
       - name: Verify the aggregate analysis
         env:
+          ANALYSIS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           EXPECT_ANALYSIS: >-
             ${{ github.event_name == 'pull_request' &&
                 needs.changes.outputs.bench_matrix != '[]' &&
@@ -342,7 +353,7 @@ jobs:
           fi
 
           for attempt in {1..60}; do
-            check=$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA/check-runs?per_page=100" \
+            check=$(gh api "repos/$GH_REPO/commits/$ANALYSIS_SHA/check-runs?per_page=100" \
               --jq '[.check_runs[] | select(.name == "CodSpeed Performance Analysis" and .app.slug == "codspeed-hq")] | sort_by(.started_at) | last // {}')
             status=$(jq -r '.status // "missing"' <<< "$check")
             if [[ "$status" == completed ]]; then
