@@ -27,8 +27,11 @@ async fn test_file_download_fetches_verifies_and_caches() {
     assert_eq!(body2, body);
 }
 
+#[rstest]
+#[case::valid(b"expected wheel", true)]
+#[case::digest_mismatch(b"wrong bytes", false)]
 #[tokio::test]
-async fn test_routed_file_download_uses_the_advertising_source_credentials() {
+async fn test_routed_file_download_verifies_the_advertising_source(#[case] artifact: &[u8], #[case] valid: bool) {
     let first = MockServer::start().await;
     let second = MockServer::start().await;
     Mock::given(method("GET"))
@@ -36,19 +39,19 @@ async fn test_routed_file_download_uses_the_advertising_source_credentials() {
         .respond_with(ResponseTemplate::new(404))
         .mount(&first)
         .await;
-    let wheel = b"wheel from the second source";
+    let wheel = b"expected wheel";
     let digest = Digest::of(wheel);
     let file_url = format!("{}/files/flask.whl", second.uri());
     mount_detail(&second, digest.as_str(), &file_url, None).await;
     Mock::given(method("GET"))
         .and(path("/files/flask.whl"))
         .and(match_header("authorization", "Bearer second-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(artifact.to_vec()))
         .expect(1)
         .mount(&second)
         .await;
     let primary = UpstreamClient::new(&format!("{}/simple/", first.uri())).unwrap();
-    let router = UpstreamRouter::new(vec![
+    let upstream_router = UpstreamRouter::new(vec![
         NamedUpstream::new("first", primary.clone()),
         NamedUpstream::new(
             "second",
@@ -61,14 +64,31 @@ async fn test_routed_file_download_uses_the_advertising_source_credentials() {
     ])
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let state = routed_state(&dir, primary, router);
+    let state = routed_state(&dir, primary, upstream_router);
 
     get(&state, "/pypi/simple/flask/", Some("application/json")).await;
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
-    let (status, _, body) = get_bytes(&state, &uri, None).await;
+    let response = router(state.clone())
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, wheel);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await;
+    if valid {
+        assert_eq!(body.unwrap().to_bytes(), wheel.as_slice());
+        assert!(state.blobs.exists(&digest));
+    } else {
+        assert!(body.is_err());
+        for _ in 0..500 {
+            if state.metrics.index_totals()["pypi"].base.rejected == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert!(!state.blobs.exists(&digest));
+        assert_eq!(state.metrics.index_totals()["pypi"].base.rejected, 1);
+    }
 }
 #[tokio::test]
 async fn test_quarantined_project_hides_files_and_blocks_downloads() {
