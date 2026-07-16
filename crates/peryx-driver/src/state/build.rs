@@ -298,6 +298,7 @@ impl AppState {
             absolute_prefixes: Vec::new(),
             lexicons: LexiconRegistry::default(),
             openapi: std::sync::Arc::from(STUB_OPENAPI),
+            prometheus: Mutex::new(Vec::new()),
         }
     }
 }

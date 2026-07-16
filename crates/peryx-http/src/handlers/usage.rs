@@ -187,6 +187,7 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
             }
         }
     }
+    state.write_process_metrics(&mut body);
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
