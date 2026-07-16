@@ -70,8 +70,9 @@ directory.
   plug in as drivers, but those are not built yet. If you need one right now, that is
   [Artifactory](https://jfrog.com/artifactory/) and [Nexus](https://www.sonatype.com/products/nexus-repository)
   territory.
-- **You need high availability or replication.** peryx is one process with local state. Run it per site or per cluster
-  (each instance warms independently), but there is no primary/replica story yet.
+- **You need automatic failover or built-in replication.** peryx supports read replicas and
+  [manual promotion](@/core/high-availability.md), but it does not copy data between nodes, coordinate shared blob
+  storage, or elect a writer.
 - **You need per-user authentication and read ACLs.** Today's auth is one upload token per hosted index; reads are open
   to whoever can reach the port. Put it behind your network boundary or a reverse proxy that handles identity.
 - **You need a build farm** the way [piwheels](https://www.piwheels.org/) compiles wheels for Raspberry Pi. peryx serves

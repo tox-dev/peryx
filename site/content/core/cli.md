@@ -21,20 +21,22 @@ peryx <COMMAND>
 | `restore`        | Restore an offline backup into a data directory                                       |
 | `import-dir`     | Import local wheels and sdists into a hosted index                                    |
 | `policy`         | Preview index policy decisions against cached records                                 |
+| `writer`         | Promote a replacement writer during manual failover                                   |
 | `mirror`         | Plan, populate, and verify mirror cache contents                                      |
 | `openapi`        | Print the [OpenAPI](https://www.openapis.org/) description of the HTTP API as JSON    |
 | `self update`    | Replace the binary with the newest release (installer-managed builds only; see below) |
 
 ## `serve` and `init` options
 
-| Flag                | Meaning                                                   | Default      |
-| ------------------- | --------------------------------------------------------- | ------------ |
-| `--config <path>`   | TOML configuration file                                   | (none)       |
-| `--host <addr>`     | Bind address                                              | `127.0.0.1`  |
-| `--port <port>`     | Bind port                                                 | `4433`       |
-| `--data-dir <path>` | Data directory (redb store and blob cache)                | `peryx-data` |
-| `--offline`         | Serve configured cached indexes from cache only           | `false`      |
-| `--read-only`       | Serve as a replica and reject client mutations with `503` | `false`      |
+| Flag                           | Meaning                                                   | Default      |
+| ------------------------------ | --------------------------------------------------------- | ------------ |
+| `--config <path>`              | TOML configuration file                                   | (none)       |
+| `--host <addr>`                | Bind address                                              | `127.0.0.1`  |
+| `--port <port>`                | Bind port                                                 | `4433`       |
+| `--data-dir <path>`            | Data directory (redb store and blob cache)                | `peryx-data` |
+| `--writer-identity <identity>` | Identity allowed to write the metadata store              | (none)       |
+| `--offline`                    | Serve configured cached indexes from cache only           | `false`      |
+| `--read-only`                  | Serve as a replica and reject client mutations with `503` | `false`      |
 
 ### Logging
 
@@ -229,6 +231,19 @@ serve   pypi   flask             project-block-list  project  project "flask" is
 
 It does not fetch upstreams and does not change the served index. Use it after editing `[index.policy]` and before
 running `serve` with the same config.
+
+## `writer`
+
+Promote a replacement writer after fencing the previous writer:
+
+```shell
+peryx writer promote writer-b --config peryx.toml
+```
+
+The configured `writer_identity` is the expected current claim. `promote` atomically replaces it with the argument and
+refuses a missing store, missing expected identity, or stale claim. Update `writer_identity` to the replacement before
+starting the promoted node. The command does not create a data directory, copy data, or stop the previous writer; see
+[High availability](@/core/high-availability.md) for the complete procedure.
 
 ## `self update`
 
