@@ -387,6 +387,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
                 username: None,
                 password: None,
                 token: None,
+                routing: None,
                 upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                 offline: false,
                 prefetch: Box::default(),

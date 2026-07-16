@@ -16,7 +16,7 @@ use peryx_identity::{Action, Signer};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
-use peryx_upstream::{Auth, UpstreamClient, redact_url};
+use peryx_upstream::{Auth, NamedUpstream, UpstreamClient, UpstreamRouter, redact_url};
 
 use crate::config::{
     AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, ReplicationConfig, SecretSource, WebhookSecret,
@@ -57,6 +57,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     } else {
         Cow::Borrowed(config.indexes.as_slice())
     };
+    let upstream_routes = build_upstream_routes(&configs)?;
     let mut indexes = build_indexes(&configs, &config.auth, config.offline || config.read_only || replica)?;
     if replica {
         for index in &mut indexes {
@@ -77,6 +78,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         RuntimeOptions {
             rate_limit: config.rate_limit.clone(),
             upstream_concurrency: upstream_concurrency(&config.indexes),
+            upstream_routes,
             webhooks,
             hot_cache_bytes: config.hot_cache_bytes,
             max_stale_secs: config.max_stale_secs,
@@ -110,11 +112,13 @@ fn make_replica_configs(configs: &mut [IndexConfig]) {
             ConfigKind::Cached {
                 password,
                 token,
+                routing,
                 offline,
                 ..
             } => {
                 *password = None;
                 *token = None;
+                *routing = None;
                 *offline = true;
             }
             ConfigKind::Hosted { upload_token, .. } => *upload_token = None,
@@ -252,27 +256,16 @@ fn build_kind(
             token,
             offline,
             ..
-        } => {
-            let read = |source: &Option<SecretSource>| {
-                source
-                    .as_ref()
-                    .map(SecretSource::read)
-                    .transpose()
-                    .with_context(|| format!("read the upstream credentials of index {}", index.name))
-            };
-            let (token, password) = (read(token)?, read(password)?);
-            let auth = upstream_auth(token.as_deref(), username.as_deref(), password.as_deref());
-            Ok(IndexKind::Cached {
-                client: UpstreamClient::with_auth(upstream, auth).with_context(|| {
-                    format!(
-                        "build cached index {} with upstream {}",
-                        index.name,
-                        redact_url(upstream)
-                    )
-                })?,
-                offline: global_offline || *offline,
-            })
-        }
+        } => Ok(IndexKind::Cached {
+            client: build_upstream_client(
+                &index.name,
+                upstream,
+                username.as_deref(),
+                password.as_ref(),
+                token.as_ref(),
+            )?,
+            offline: global_offline || *offline,
+        }),
         ConfigKind::Hosted { volatile, .. } => Ok(IndexKind::Hosted { volatile: *volatile }),
         ConfigKind::Virtual { layers, upload } => {
             let layer_positions = layers
@@ -286,6 +279,64 @@ fn build_kind(
             })
         }
     }
+}
+
+fn build_upstream_routes(configs: &[IndexConfig]) -> anyhow::Result<Vec<(String, UpstreamRouter)>> {
+    configs
+        .iter()
+        .filter_map(|index| match &index.kind {
+            ConfigKind::Cached {
+                routing: Some(routing), ..
+            } => Some((index, routing)),
+            ConfigKind::Cached { routing: None, .. } | ConfigKind::Hosted { .. } | ConfigKind::Virtual { .. } => None,
+        })
+        .map(|(index, routing)| {
+            let upstreams = routing
+                .upstreams
+                .iter()
+                .map(|upstream| {
+                    build_upstream_client(
+                        &index.name,
+                        &upstream.url,
+                        upstream.username.as_deref(),
+                        upstream.password.as_ref(),
+                        upstream.token.as_ref(),
+                    )
+                    .map(|client| NamedUpstream::new(&upstream.name, client))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let driver = drivers()
+                .get(index.ecosystem)
+                .expect("every configured ecosystem has a registered driver");
+            let mut router = UpstreamRouter::new(upstreams)?.with_fallback(routing.fallback);
+            for project in &routing.protected {
+                router = router.protect(driver.normalize_name(project))?;
+            }
+            for (project, upstream) in &routing.pins {
+                router = router.pin(driver.normalize_name(project), upstream)?;
+            }
+            Ok((index.name.clone(), router))
+        })
+        .collect()
+}
+
+fn build_upstream_client(
+    index: &str,
+    upstream: &str,
+    username: Option<&str>,
+    password: Option<&SecretSource>,
+    token: Option<&SecretSource>,
+) -> anyhow::Result<UpstreamClient> {
+    let read = |source: Option<&SecretSource>| {
+        source
+            .map(SecretSource::read)
+            .transpose()
+            .with_context(|| format!("read the upstream credentials of index {index}"))
+    };
+    let (token, password) = (read(token)?, read(password)?);
+    let auth = upstream_auth(token.as_deref(), username, password.as_deref());
+    UpstreamClient::with_auth(upstream, auth)
+        .with_context(|| format!("build cached index {index} with upstream {}", redact_url(upstream)))
 }
 
 fn upstream_concurrency(configs: &[IndexConfig]) -> Vec<(String, usize)> {

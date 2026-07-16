@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -14,7 +14,10 @@ use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use tower::ServiceExt as _;
 
-use crate::config::{Config, IndexKind, ReplicationConfig, SecretSource, TokenConfig, WebhookConfig, WebhookSecret};
+use crate::config::{
+    Config, IndexKind, ReplicationConfig, SecretSource, TokenConfig, UpstreamConfig, UpstreamRoutingConfig,
+    WebhookConfig, WebhookSecret,
+};
 use crate::replication::ReplicationRuntime;
 use crate::server::{build_router, build_state, router_for};
 
@@ -261,10 +264,22 @@ async fn test_disabled_runtime_mounts_no_routes_or_task() {
 fn test_replica_runtime_disables_local_writers() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = config(&dir, Some(replica_config("https://primary.example/", 10)));
-    let IndexKind::Cached { password, .. } = &mut config.indexes[0].kind else {
+    let IndexKind::Cached { password, routing, .. } = &mut config.indexes[0].kind else {
         panic!("expected the default cached index");
     };
     *password = Some(SecretSource::File("missing-upstream-password".into()));
+    *routing = Some(Box::new(UpstreamRoutingConfig {
+        upstreams: vec![UpstreamConfig {
+            name: "primary".to_owned(),
+            url: "https://packages.example/simple/".to_owned(),
+            username: Some("replica".to_owned()),
+            password: Some(SecretSource::File("missing-routed-upstream-password".into())),
+            token: None,
+        }],
+        fallback: true,
+        protected: Vec::new(),
+        pins: BTreeMap::default(),
+    }));
     let IndexKind::Hosted { upload_token, .. } = &mut config.indexes[1].kind else {
         panic!("expected the default hosted index");
     };
@@ -299,6 +314,7 @@ fn test_replica_runtime_disables_local_writers() {
         state.indexes[0].kind,
         RuntimeIndexKind::Cached { offline: true, .. }
     ));
+    assert!(state.upstream_routes.is_empty());
     assert!(state.indexes[1].acl.grants_to_anyone(Action::Read));
     assert!(!state.indexes[1].acl.grants_to_anyone(Action::Write));
     assert!(!state.indexes[1].acl.grants_to_anyone(Action::Delete));

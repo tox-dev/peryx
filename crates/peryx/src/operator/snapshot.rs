@@ -77,6 +77,16 @@ enum SnapshotIndexKind<'a> {
         offline: bool,
         prefetch: SnapshotPrefetch<'a>,
     },
+    Routed {
+        #[serde(rename = "upstream")]
+        upstreams: Vec<SnapshotUpstream<'a>>,
+        fallback: bool,
+        protected: &'a [String],
+        pins: &'a std::collections::BTreeMap<String, String>,
+        upstream_concurrency: usize,
+        offline: bool,
+        prefetch: SnapshotPrefetch<'a>,
+    },
     Hosted {
         hosted: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +100,22 @@ enum SnapshotIndexKind<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         upload: Option<&'a str>,
     },
+}
+
+#[derive(Serialize)]
+struct SnapshotUpstream<'a> {
+    name: &'a str,
+    url: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password_file: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_file: Option<&'a Path>,
 }
 
 #[derive(Serialize)]
@@ -312,24 +338,36 @@ fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {
             username,
             password,
             token,
+            routing,
             upstream_concurrency,
             offline,
             prefetch,
-        } => {
-            let (password, password_file) = secret_parts(password.as_ref());
-            let (token, token_file) = secret_parts(token.as_ref());
-            SnapshotIndexKind::Cached {
-                cached: upstream,
-                username: username.as_deref(),
-                password,
-                password_file,
-                token,
-                token_file,
+        } => routing.as_ref().map_or_else(
+            || {
+                let (password, password_file) = secret_parts(password.as_ref());
+                let (token, token_file) = secret_parts(token.as_ref());
+                SnapshotIndexKind::Cached {
+                    cached: upstream,
+                    username: username.as_deref(),
+                    password,
+                    password_file,
+                    token,
+                    token_file,
+                    upstream_concurrency: *upstream_concurrency,
+                    offline: *offline,
+                    prefetch: snapshot_prefetch(prefetch),
+                }
+            },
+            |routing| SnapshotIndexKind::Routed {
+                upstreams: routing.upstreams.iter().map(snapshot_upstream).collect(),
+                fallback: routing.fallback,
+                protected: &routing.protected,
+                pins: &routing.pins,
                 upstream_concurrency: *upstream_concurrency,
                 offline: *offline,
                 prefetch: snapshot_prefetch(prefetch),
-            }
-        }
+            },
+        ),
         IndexKind::Hosted { upload_token, volatile } => {
             let (upload_token, upload_token_file) = secret_parts(upload_token.as_ref());
             SnapshotIndexKind::Hosted {
@@ -355,6 +393,20 @@ fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {
         access_tokens: tokens.iter().map(snapshot_token).collect::<anyhow::Result<_>>()?,
         webhooks: webhooks.iter().map(snapshot_webhook).collect(),
     })
+}
+
+fn snapshot_upstream(upstream: &crate::config::UpstreamConfig) -> SnapshotUpstream<'_> {
+    let (password, password_file) = secret_parts(upstream.password.as_ref());
+    let (token, token_file) = secret_parts(upstream.token.as_ref());
+    SnapshotUpstream {
+        name: &upstream.name,
+        url: &upstream.url,
+        username: upstream.username.as_deref(),
+        password,
+        password_file,
+        token,
+        token_file,
+    }
 }
 
 fn snapshot_prefetch(prefetch: &PrefetchConfig) -> SnapshotPrefetch<'_> {

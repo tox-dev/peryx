@@ -7,6 +7,8 @@ use peryx_driver::IndexKind as RuntimeKind;
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use peryx_ecosystem_oci::LibraryPrefix;
 
@@ -37,6 +39,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
             username: None,
             password: None,
             token: None,
+            routing: None,
             upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
             offline: false,
             prefetch: Box::default(),
@@ -88,13 +91,65 @@ async fn test_build_router_serves_status() {
         ..Config::default()
     };
     let router = build_router(&config).unwrap();
-    let response = router
-        .oneshot(Request::builder().uri("/+status").body(Body::empty()).unwrap())
+    let response = tokio::task::LocalSet::new()
+        .run_until(router.oneshot(Request::builder().uri("/+status").body(Body::empty()).unwrap()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&body).contains("root/pypi"));
+}
+
+#[tokio::test]
+async fn test_build_router_fails_over_live_simple_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&first)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":[],"files":[]}"#.to_vec(),
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .mount(&second)
+        .await;
+    let partial = crate::config::from_toml(
+        PathBuf::from("x.toml"),
+        &format!(
+            "[[index]]\nname = \"pypi\"\n\
+             [[index.upstream]]\nname = \"first\"\nurl = \"{}/simple/\"\n\
+             [[index.upstream]]\nname = \"second\"\nurl = \"{}/simple/\"\n",
+            first.uri(),
+            second.uri()
+        ),
+    )
+    .unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..Config::default().apply(partial).unwrap()
+    };
+    let router = build_router(&config).unwrap();
+
+    let response = tokio::task::LocalSet::new()
+        .run_until(
+            router.oneshot(
+                Request::builder()
+                    .uri("/pypi/simple/flask/")
+                    .header("accept", "application/vnd.pypi.simple.v1+json")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes()).contains("flask"));
 }
 
 #[test]
@@ -486,6 +541,53 @@ fn test_build_indexes_reads_upstream_credentials_from_files() {
     let indexes = build_indexes(&[index], &AuthConfig::default(), false).unwrap();
 
     assert!(matches!(&indexes[0].kind, RuntimeKind::Cached { .. }));
+}
+
+#[test]
+fn test_build_state_installs_normalized_upstream_routes() {
+    let dir = tempfile::tempdir().unwrap();
+    let partial = crate::config::from_toml(
+        PathBuf::from("x.toml"),
+        r#"
+[[index]]
+name = "pypi"
+protected = ["Internal.Pkg"]
+
+[index.pins]
+flask = "public"
+
+[[index.upstream]]
+name = "internal"
+url = "https://packages.example/simple/"
+
+[[index.upstream]]
+name = "public"
+url = "https://pypi.org/simple/"
+"#,
+    )
+    .unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..Config::default().apply(partial).unwrap()
+    };
+
+    let state = build_state(&config).unwrap();
+    let router = &state.upstream_routes["pypi"];
+
+    assert_eq!(
+        router
+            .candidates("internal-pkg")
+            .map(peryx_upstream::NamedUpstream::name)
+            .collect::<Vec<_>>(),
+        ["internal"]
+    );
+    assert_eq!(
+        router
+            .candidates("flask")
+            .map(peryx_upstream::NamedUpstream::name)
+            .collect::<Vec<_>>(),
+        ["public"]
+    );
 }
 
 #[test]

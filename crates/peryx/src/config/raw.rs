@@ -1,5 +1,6 @@
 //! The raw deserialization schema: partial overlays and unclassified `[[index]]` tables.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ipnet::IpNet;
@@ -151,8 +152,8 @@ impl<'de> serde::Deserialize<'de> for RawPolicy {
     }
 }
 
-/// A raw `[[index]]` table before classification. Exactly one of `cached`, `hosted`, or `layers`
-/// selects the kind; [`classify_index`](super::classify_index) enforces that.
+/// A raw `[[index]]` table before classification. `cached` or `[[index.upstream]]`, `hosted`, or
+/// `layers` selects the kind; [`classify_index`](super::classify_index) enforces that.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawIndex {
@@ -166,6 +167,13 @@ pub struct RawIndex {
     #[serde(default)]
     pub settings: Table,
     pub cached: Option<String>,
+    #[serde(default, rename = "upstream")]
+    pub upstreams: Vec<RawUpstream>,
+    pub fallback: Option<bool>,
+    #[serde(default)]
+    pub protected: Vec<String>,
+    #[serde(default)]
+    pub pins: BTreeMap<String, String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub password_file: Option<PathBuf>,
@@ -187,6 +195,19 @@ pub struct RawIndex {
     pub tokens: Vec<RawToken>,
     #[serde(default, rename = "webhook")]
     pub webhooks: Vec<RawWebhook>,
+}
+
+/// One named source in an index's ordered `[[index.upstream]]` route.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawUpstream {
+    pub name: String,
+    pub url: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub password_file: Option<PathBuf>,
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
 }
 
 /// A raw `[[index.access_token]]` table: one named credential, its grant, and when it stops working.

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use peryx_core::{Ecosystem, LexiconRegistry};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
+use peryx_upstream::UpstreamRouter;
 
 use peryx_index::Index;
 
@@ -60,6 +61,8 @@ pub struct ServingState {
     pub rate_limits: RateLimiter,
     /// Per-cached-index upstream fetch gates, keyed by configured index name.
     pub upstream_limits: UpstreamLimits,
+    /// Multi-source routes keyed by cached index name. Legacy cached indexes are absent.
+    pub upstream_routes: HashMap<String, UpstreamRouter>,
     /// Signed webhook delivery runtime.
     pub webhooks: WebhookRuntime,
     /// The token realm's signing key, or `None` when no signing key is configured. Without it an

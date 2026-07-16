@@ -79,6 +79,19 @@ fn persist_streamed(
     Ok(())
 }
 
+async fn fetch_project_head(
+    state: &ServingState,
+    name: &str,
+    client: &UpstreamClient,
+    project: &str,
+    etag: Option<&str>,
+) -> Result<SimpleHead, peryx_upstream::UpstreamError> {
+    match state.upstream_routes.get(name) {
+        Some(router) => router.head_project(project, etag).await,
+        None => client.head_project(project, etag).await,
+    }
+}
+
 /// How a simple-page request gets its bytes.
 pub enum PageOutcome {
     /// The full transformed document, from the hot cache or a warm raw page.
@@ -165,7 +178,7 @@ pub async fn stream_detail(
     let cached = cached_record(&state, &key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let permit = upstream_permit(&state, &cached_name).await?;
-    let Ok(head) = client.head_project(&project, etag.as_deref()).await else {
+    let Ok(head) = fetch_project_head(&state, &cached_name, &client, &project, etag.as_deref()).await else {
         release_flight(&state, &key, guard);
         return Ok(PageOutcome::Fallback);
     };

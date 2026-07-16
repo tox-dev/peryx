@@ -1,9 +1,18 @@
-use peryx_upstream::{Auth, UpstreamClient};
+use peryx_upstream::{Auth, NamedUpstream, UpstreamClient, UpstreamError, UpstreamRouter};
+use rstest::rstest;
 use wiremock::matchers::{header, header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{mount_get, simple_client};
 use crate::simple_client::SimpleClientExt as _;
+
+fn route(first: &MockServer, second: &MockServer) -> UpstreamRouter {
+    UpstreamRouter::new(vec![
+        NamedUpstream::new("first", simple_client(first)),
+        NamedUpstream::new("second", simple_client(second)),
+    ])
+    .unwrap()
+}
 
 #[tokio::test]
 async fn test_fetch_index_json() {
@@ -40,6 +49,157 @@ async fn test_fetch_project_revalidate_304() {
     let response = client.fetch_project("flask", Some("\"v1\"")).await.unwrap();
 
     assert_eq!(response.status, 304);
+}
+
+#[rstest]
+#[case::not_found(404)]
+#[case::rate_limited(429)]
+#[case::server_error(500)]
+#[tokio::test]
+async fn test_routed_project_falls_back_on_retryable_status(#[case] status: u16) {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(&first, "/simple/flask/", ResponseTemplate::new(status)).await;
+    mount_get(
+        &second,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+
+    let response = route(&first, &second).fetch_project("flask", None).await.unwrap();
+
+    assert_eq!(response.status, 200);
+    assert!(response.url.as_str().starts_with(&second.uri()));
+}
+
+#[tokio::test]
+async fn test_routed_project_falls_back_after_a_transport_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unavailable = listener.local_addr().unwrap();
+    drop(listener);
+    let second = MockServer::start().await;
+    mount_get(
+        &second,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+    let route = UpstreamRouter::new(vec![
+        NamedUpstream::new(
+            "unavailable",
+            UpstreamClient::new(&format!("http://{unavailable}/simple/")).unwrap(),
+        ),
+        NamedUpstream::new("second", simple_client(&second)),
+    ])
+    .unwrap();
+
+    let response = route.fetch_project("flask", None).await.unwrap();
+
+    assert_eq!(response.status, 200);
+    assert!(response.url.as_str().starts_with(&second.uri()));
+}
+
+#[tokio::test]
+async fn test_routed_project_respects_no_fallback() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(&first, "/simple/flask/", ResponseTemplate::new(404)).await;
+    mount_get(
+        &second,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+
+    let response = route(&first, &second)
+        .with_fallback(false)
+        .fetch_project("flask", None)
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 404);
+    assert!(second.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_routed_project_does_not_fall_back_on_an_invalid_response() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(
+        &first,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_bytes(b"{}".to_vec()),
+    )
+    .await;
+    mount_get(
+        &second,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+
+    let err = route(&first, &second).fetch_project("flask", None).await.unwrap_err();
+
+    assert!(matches!(err, UpstreamError::MissingContentType { .. }));
+    assert!(second.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_routed_project_head_falls_back() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(&first, "/simple/flask/", ResponseTemplate::new(500)).await;
+    mount_get(
+        &second,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+
+    let response = route(&first, &second).head_project("flask", None).await.unwrap();
+
+    assert_eq!(response.status, 200);
+    assert!(response.url.as_str().starts_with(&second.uri()));
+}
+
+#[tokio::test]
+async fn test_routed_index_falls_back() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(&first, "/simple/", ResponseTemplate::new(500)).await;
+    mount_get(
+        &second,
+        "/simple/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+
+    let response = route(&first, &second).fetch_index().await.unwrap();
+
+    assert_eq!(response.status, 200);
+    assert!(response.url.as_str().starts_with(&second.uri()));
+}
+
+#[tokio::test]
+async fn test_routed_project_does_not_reuse_an_unattributed_etag() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(
+        &first,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+
+    route(&first, &second)
+        .fetch_project("flask", Some("\"other-source\""))
+        .await
+        .unwrap();
+
+    let requests = first.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("if-none-match"));
 }
 
 #[tokio::test]

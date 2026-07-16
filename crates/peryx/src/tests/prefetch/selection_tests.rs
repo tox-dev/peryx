@@ -198,6 +198,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
             username: None,
             password: None,
             token: None,
+            routing: None,
             upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
             offline: false,
             prefetch: Box::default(),

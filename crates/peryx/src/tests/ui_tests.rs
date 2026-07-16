@@ -61,6 +61,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                     username: None,
                     password: None,
                     token: None,
+                    routing: None,
                     upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                     offline: false,
                     prefetch: Box::default(),

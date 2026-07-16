@@ -223,6 +223,91 @@ fn test_mirror_upstream_concurrency_defaults() {
 }
 
 #[test]
+fn test_ordered_upstreams_resolve_routing_and_credentials() {
+    let c = toml_config(
+        r#"
+[[index]]
+name = "pypi"
+fallback = false
+protected = ["Internal.Pkg"]
+
+[index.pins]
+flask = "public"
+
+[[index.upstream]]
+name = "internal"
+url = "https://packages.example/simple/"
+username = "reader"
+password_file = "/run/secrets/internal-password"
+
+[[index.upstream]]
+name = "public"
+url = "https://pypi.org/simple/"
+token = "bearer"
+"#,
+    );
+    let IndexKind::Cached {
+        upstream,
+        username,
+        password,
+        routing: Some(routing),
+        ..
+    } = &c.indexes[0].kind
+    else {
+        panic!("expected a routed cached index");
+    };
+    assert_eq!(
+        (upstream.as_str(), username.as_deref(), password),
+        (
+            "https://packages.example/simple/",
+            Some("reader"),
+            &Some(SecretSource::File(PathBuf::from("/run/secrets/internal-password")))
+        )
+    );
+    assert!(!routing.fallback);
+    assert_eq!(routing.protected, ["Internal.Pkg"]);
+    assert_eq!(routing.pins.get("flask").map(String::as_str), Some("public"));
+    assert_eq!(
+        routing
+            .upstreams
+            .iter()
+            .map(|upstream| upstream.name.as_str())
+            .collect::<Vec<_>>(),
+        ["internal", "public"]
+    );
+    assert!(matches!(
+        &routing.upstreams[1].token,
+        Some(SecretSource::Literal(token)) if token == "bearer"
+    ));
+}
+
+#[test]
+fn test_cached_url_and_ordered_upstreams_are_mutually_exclusive() {
+    let err = toml_error(
+        "[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n\
+         [[index.upstream]]\nname = \"mirror\"\nurl = \"https://mirror.example/simple/\"\n",
+    );
+    assert_eq!(
+        err.to_string(),
+        "index pypi: `cached` and `[[index.upstream]]` are mutually exclusive"
+    );
+}
+
+#[rstest]
+#[case::routing_without_sources(
+    "[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\nfallback = false\n",
+    "`fallback`, `protected`, and `pins` require `[[index.upstream]]`"
+)]
+#[case::credentials_on_index(
+    "[[index]]\nname = \"pypi\"\ntoken = \"wrong-level\"\n\
+     [[index.upstream]]\nname = \"public\"\nurl = \"https://pypi.org/simple/\"\n",
+    "credentials for `[[index.upstream]]` belong on each source"
+)]
+fn test_ordered_upstream_options_reject_ambiguous_placement(#[case] text: &str, #[case] reason: &str) {
+    assert_eq!(toml_error(text).to_string(), format!("index pypi: {reason}"));
+}
+
+#[test]
 fn test_upstream_password_and_token_read_from_files() {
     let c = toml_config(
         "[[index]]\nname = \"corp\"\ncached = \"https://corp/simple/\"\n\
@@ -243,6 +328,21 @@ fn test_upstream_password_and_token_read_from_files() {
 #[case::token("token = \"t\"\ntoken_file = \"/run/secrets/tok\"\n")]
 fn test_an_upstream_credential_may_not_have_two_sources(#[case] credential: &str) {
     let text = format!("[[index]]\nname = \"corp\"\ncached = \"https://corp/simple/\"\n{credential}");
+    let err = toml_error(&text).to_string();
+    assert!(
+        err.contains("index corp: set at most one of a secret and its `_file` sibling"),
+        "{err}"
+    );
+}
+
+#[rstest]
+#[case::password("password = \"p\"\npassword_file = \"/run/secrets/pw\"\n")]
+#[case::token("token = \"t\"\ntoken_file = \"/run/secrets/tok\"\n")]
+fn test_an_ordered_upstream_credential_may_not_have_two_sources(#[case] credential: &str) {
+    let text = format!(
+        "[[index]]\nname = \"corp\"\n\
+         [[index.upstream]]\nname = \"primary\"\nurl = \"https://corp/simple/\"\n{credential}"
+    );
     let err = toml_error(&text).to_string();
     assert!(
         err.contains("index corp: set at most one of a secret and its `_file` sibling"),
