@@ -22,10 +22,10 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{Cursor, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,7 @@ use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
 const SIMPLE_JSON_CT: &str = "application/vnd.pypi.simple.v1+json";
+const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The upload token every spawned peryx is configured with, so twine and `uv publish` can push to
 /// the hosted layer of the `root/pypi` virtual index.
@@ -240,10 +241,29 @@ fn respond(mut socket: TcpStream, routes: &Routes) {
     let _ = socket.write_all(body);
 }
 
+struct PeryxProcess(Child);
+
+impl PeryxProcess {
+    fn spawn(command: &mut Command) -> Self {
+        Self(command.spawn().expect("spawn child process"))
+    }
+
+    fn exited(&mut self) -> bool {
+        self.0.try_wait().expect("child status").is_some()
+    }
+}
+
+impl Drop for PeryxProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A peryx process bound to a free loopback port, with its data directory in a temp dir. Dropping it
 /// kills the child and removes the data dir, so tests leak nothing.
 struct Peryx {
-    child: Child,
+    child: PeryxProcess,
     port: u16,
     data: TempDir,
 }
@@ -276,7 +296,8 @@ impl Peryx {
             // The server's own log lands next to its data, so a failing test can be diagnosed from
             // what peryx saw rather than only what the client printed.
             let log = std::fs::File::create(data.path().join("peryx.log")).expect("create server log");
-            let mut child = Command::new(env!("CARGO_BIN_EXE_peryx"))
+            let mut command = Command::new(env!("CARGO_BIN_EXE_peryx"));
+            command
                 .arg("serve")
                 .args(["--port", &port.to_string()])
                 .arg("--data-dir")
@@ -285,13 +306,16 @@ impl Peryx {
                 .arg(&config)
                 .args(["--log-level", "debug"])
                 .stdout(log.try_clone().expect("clone log handle"))
-                .stderr(log)
-                .spawn()
-                .expect("spawn peryx");
-            if wait_ready(&mut child, port) {
+                .stderr(log);
+            let mut child = PeryxProcess::spawn(&mut command);
+            if ready_or_panic(
+                &wait_ready(&mut child, port, SERVER_STARTUP_TIMEOUT),
+                port,
+                SERVER_STARTUP_TIMEOUT,
+                data.path(),
+            ) {
                 return Self { child, port, data };
             }
-            let _ = child.wait(); // exited at bind; reap and retry on a fresh port
             eprintln!("peryx lost the race for port {port} (attempt {attempt}), retrying on a fresh port");
         }
         panic!("peryx failed to bind a free port after 10 attempts");
@@ -321,27 +345,40 @@ impl Peryx {
     }
 }
 
-impl Drop for Peryx {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+enum Readiness {
+    Ready,
+    Exited,
+    TimedOut,
 }
 
-/// Poll until this spawn's own child answers `/+status`. Returns `false` if the child exited (it
-/// lost the port race to another test's server), so the caller can retry on a fresh port.
-fn wait_ready(child: &mut Child, port: u16) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(20);
+/// Poll until this spawn's own child answers `/+status`, exits, or reaches the startup deadline.
+fn wait_ready(child: &mut PeryxProcess, port: u16, timeout: Duration) -> Readiness {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if child.try_wait().expect("child status").is_some() {
-            return false;
+        if child.exited() {
+            return Readiness::Exited;
         }
         if probe_status(port) {
-            return true;
+            return Readiness::Ready;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    panic!("peryx did not become ready on port {port}");
+    Readiness::TimedOut
+}
+
+fn ready_or_panic(readiness: &Readiness, port: u16, timeout: Duration, data: &Path) -> bool {
+    match readiness {
+        Readiness::Ready => true,
+        Readiness::Exited => false,
+        Readiness::TimedOut => panic!("{}", startup_timeout(port, timeout, data)),
+    }
+}
+
+fn startup_timeout(port: u16, timeout: Duration, data: &Path) -> String {
+    format!(
+        "peryx did not become ready on port {port} within {timeout:?}\nserver log:\n{}",
+        std::fs::read_to_string(data.join("peryx.log")).unwrap_or_else(|error| format!("<unavailable: {error}>"))
+    )
 }
 
 /// One tolerant readiness probe: any I/O failure (including a reset from a transient foreign
@@ -550,6 +587,52 @@ fn run(cmd: &mut Command, what: &str) {
         "{what} failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn e2e_process_guard_reaps_startup_failures() {
+    let data = TempDir::new().expect("temp data dir");
+    let started_port = AtomicU16::new(0);
+    let panic = std::panic::catch_unwind(|| {
+        let mut peryx = Peryx::start_against("http://127.0.0.1:1/simple/");
+        started_port.store(peryx.port, Ordering::Relaxed);
+        let timeout = Duration::from_millis(25);
+        let port = free_port();
+        ready_or_panic(
+            &wait_ready(&mut peryx.child, port, timeout),
+            port,
+            timeout,
+            peryx.data.path(),
+        );
+    })
+    .expect_err("unresponsive port should time out");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("string panic");
+    assert!(message.contains("within 25ms\nserver log:\n"), "{message}");
+    assert!(!probe_status(started_port.load(Ordering::Relaxed)));
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_peryx"));
+    command
+        .arg("--invalid-e2e-test-option")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = PeryxProcess::spawn(&mut command);
+    assert!(!ready_or_panic(
+        &wait_ready(&mut child, free_port(), Duration::from_secs(5)),
+        0,
+        Duration::from_secs(5),
+        data.path(),
+    ));
+}
+
+#[test]
+fn e2e_startup_timeout_reports_log_errors() {
+    let data = TempDir::new().expect("temp data dir");
+    let message = startup_timeout(1234, Duration::from_millis(250), data.path());
+    assert!(message.starts_with("peryx did not become ready on port 1234 within 250ms\nserver log:\n<unavailable:"));
 }
 
 /// The real proof a distribution installed and works: import it with the venv's interpreter.

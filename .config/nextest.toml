@@ -8,3 +8,10 @@
 # than hanging the run forever. No honest test on this suite comes close to the limit.
 [profile.default]
 slow-timeout = { period = "90s", terminate-after = 2 }
+
+[test-groups]
+e2e-servers = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = "binary_id(peryx::e2e)"
+test-group = "e2e-servers"
