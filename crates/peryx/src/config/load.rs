@@ -32,6 +32,7 @@ pub fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialCo
         host: get("PERYX_HOST"),
         port: parse_env(&get, "PERYX_PORT")?,
         data_dir: get("PERYX_DATA_DIR").map(PathBuf::from),
+        writer_identity: get("PERYX_WRITER_IDENTITY"),
         offline: parse_env(&get, "PERYX_OFFLINE")?,
         read_only: parse_env(&get, "PERYX_READ_ONLY")?,
         cache_ttl_secs: parse_env(&get, "PERYX_CACHE_TTL_SECS")?,

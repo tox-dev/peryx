@@ -10,6 +10,7 @@ fn test_default_config() {
     assert_eq!(c.host, "127.0.0.1");
     assert_eq!(c.port, 4433);
     assert_eq!(c.data_dir, PathBuf::from("peryx-data"));
+    assert_eq!(c.writer_identity, None);
     assert!(!c.offline);
     assert!(!c.read_only);
     assert_eq!(c.cache_ttl_secs, 300);

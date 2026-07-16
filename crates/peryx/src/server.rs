@@ -48,6 +48,10 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
+    if let Some(identity) = &config.writer_identity {
+        meta.claim_writer_identity(identity)
+            .with_context(|| format!("claim writer identity {identity:?}"))?;
+    }
     let blobs = BlobStore::new(config.data_dir.join("blobs"));
     let replica = matches!(config.replication, Some(ReplicationConfig::Replica { .. }));
     let configs = if replica {

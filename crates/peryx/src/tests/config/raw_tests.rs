@@ -6,6 +6,16 @@ use super::toml_config;
 use crate::config::{self, IndexKind, PrefetchMode};
 
 #[test]
+fn test_writer_identity_from_toml() {
+    assert_eq!(
+        toml_config("writer_identity = \"writer-a\"\n")
+            .writer_identity
+            .as_deref(),
+        Some("writer-a")
+    );
+}
+
+#[test]
 fn test_mirror_prefetch_from_toml() {
     let c = toml_config(
         "\

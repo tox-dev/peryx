@@ -4,6 +4,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;
 use peryx_driver::IndexKind as RuntimeKind;
+use peryx_storage::meta::MetaStore;
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
@@ -109,6 +110,41 @@ fn test_build_state_opens_configured_data_dir() {
 
     assert_eq!(state.indexes.len(), config.indexes.len());
     assert!(dir.path().join("peryx.redb").exists());
+}
+
+#[test]
+fn test_build_state_claims_configured_writer_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        writer_identity: Some("writer-a".to_owned()),
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(state.meta.writer_identity().unwrap().as_deref(), Some("writer-a"));
+}
+
+#[test]
+fn test_build_state_rejects_a_competing_writer_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    store.claim_writer_identity("writer-a").unwrap();
+    drop(store);
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        writer_identity: Some("writer-b".to_owned()),
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected writer identity conflict");
+    };
+
+    let message = format!("{error:#}");
+    assert!(message.contains("claim writer identity \"writer-b\""), "{message}");
+    assert!(message.contains("claimed by writer \"writer-a\""), "{message}");
 }
 
 #[test]

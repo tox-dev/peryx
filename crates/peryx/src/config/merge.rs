@@ -37,6 +37,9 @@ impl Config {
         if let Some(data_dir) = partial.data_dir {
             self.data_dir = data_dir;
         }
+        if let Some(writer_identity) = partial.writer_identity {
+            self.writer_identity = Some(writer_identity);
+        }
         if let Some(offline) = partial.offline {
             self.offline = offline;
         }

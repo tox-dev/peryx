@@ -125,6 +125,10 @@ pub struct RuntimeArgs {
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
 
+    /// Identity allowed to write this metadata store.
+    #[arg(long)]
+    pub writer_identity: Option<String>,
+
     /// Serve configured cached indexes from cache only.
     #[arg(long)]
     pub offline: bool,
@@ -167,6 +171,7 @@ impl RuntimeArgs {
             host: self.host.clone(),
             port: self.port,
             data_dir: self.data_dir.clone(),
+            writer_identity: self.writer_identity.clone(),
             offline: self.offline.then_some(true),
             read_only: self.read_only.then_some(true),
             cache_ttl_secs: None,

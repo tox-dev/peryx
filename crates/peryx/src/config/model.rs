@@ -21,6 +21,7 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub data_dir: PathBuf,
+    pub writer_identity: Option<String>,
     /// Disable upstream network access and serve only cached data.
     pub offline: bool,
     /// Reject client mutations and disable upstream cache fills on a read replica.
@@ -289,6 +290,7 @@ impl Default for Config {
             host: "127.0.0.1".to_owned(),
             port: 4433,
             data_dir: PathBuf::from("peryx-data"),
+            writer_identity: None,
             offline: false,
             read_only: false,
             cache_ttl_secs: 300,

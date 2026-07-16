@@ -151,6 +151,7 @@ pub(super) fn runtime_args() -> RuntimeArgs {
         host: None,
         port: None,
         data_dir: None,
+        writer_identity: None,
         offline: false,
         read_only: false,
         log_level: None,
