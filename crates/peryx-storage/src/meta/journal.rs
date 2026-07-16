@@ -1,9 +1,9 @@
-use redb::{ReadableDatabase as _, ReadableTable as _};
 use std::ops::Bound::{Excluded, Unbounded};
 
-use super::error::MetaError;
+use redb::{ReadableDatabase as _, ReadableTable as _};
 use serde::{Deserialize, Serialize};
 
+use super::error::MetaError;
 use super::{JOURNAL, JOURNAL_BLOBS, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
 
 /// One content blob required by a journal transaction.
@@ -30,6 +30,13 @@ pub struct JournalRecord {
     pub blobs: Vec<DriverBlobReference>,
 }
 
+/// A bounded journal read and the head serial from the same database snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalSnapshot {
+    pub current_serial: u64,
+    pub records: Vec<JournalRecord>,
+}
+
 impl MetaStore {
     /// The current serial (0 before any write).
     ///
@@ -39,6 +46,68 @@ impl MetaStore {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(SERIAL)?;
         Ok(table.get(SERIAL_KEY)?.map_or(0, |value| value.value()))
+    }
+
+    /// Read at most `limit` journal values after `after` and the head serial from one snapshot.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn journal_snapshot(&self, after: u64, limit: usize) -> Result<JournalSnapshot, MetaError> {
+        let txn = self.db.begin_read()?;
+        let current_serial = txn
+            .open_table(SERIAL)?
+            .get(SERIAL_KEY)?
+            .map_or(0, |value| value.value());
+        let table = match txn.open_table(JOURNAL) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(JournalSnapshot {
+                    current_serial,
+                    records: Vec::new(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mutations = match txn.open_table(JOURNAL_MUTATIONS) {
+            Ok(table) => Some(table),
+            Err(redb::TableError::TableDoesNotExist(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let blobs = match txn.open_table(JOURNAL_BLOBS) {
+            Ok(table) => Some(table),
+            Err(redb::TableError::TableDoesNotExist(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let records = table
+            .range((Excluded(after), Unbounded))?
+            .take(limit)
+            .map(|entry| -> Result<JournalRecord, MetaError> {
+                let (serial, payload) = entry?;
+                let serial = serial.value();
+                Ok(JournalRecord {
+                    serial,
+                    payload: payload.value().to_vec(),
+                    mutations: mutations
+                        .as_ref()
+                        .and_then(|table| table.get(serial).transpose())
+                        .transpose()?
+                        .map(|value| serde_json::from_slice(value.value()))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    blobs: blobs
+                        .as_ref()
+                        .and_then(|table| table.get(serial).transpose())
+                        .transpose()?
+                        .map(|value| serde_json::from_slice(value.value()))
+                        .transpose()?
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(JournalSnapshot {
+            current_serial,
+            records,
+        })
     }
 
     /// Increment the serial and return the new value.
@@ -70,36 +139,7 @@ impl MetaStore {
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn journal_page_after(&self, serial: u64, limit: usize) -> Result<(u64, Vec<JournalRecord>), MetaError> {
-        let txn = self.db.begin_read()?;
-        let current = txn
-            .open_table(SERIAL)?
-            .get(SERIAL_KEY)?
-            .map_or(0, |value| value.value());
-        let journal = txn.open_table(JOURNAL)?;
-        let mutations = txn.open_table(JOURNAL_MUTATIONS)?;
-        let blobs = txn.open_table(JOURNAL_BLOBS)?;
-        let records = journal
-            .range((Excluded(serial), Unbounded))?
-            .take(limit)
-            .map(|entry| -> Result<JournalRecord, MetaError> {
-                let (serial, payload) = entry?;
-                let serial = serial.value();
-                Ok(JournalRecord {
-                    serial,
-                    payload: payload.value().to_vec(),
-                    mutations: mutations
-                        .get(serial)?
-                        .map(|value| serde_json::from_slice(value.value()))
-                        .transpose()?
-                        .unwrap_or_default(),
-                    blobs: blobs
-                        .get(serial)?
-                        .map(|value| serde_json::from_slice(value.value()))
-                        .transpose()?
-                        .unwrap_or_default(),
-                })
-            })
-            .collect::<Result<_, _>>()?;
-        Ok((current, records))
+        let snapshot = self.journal_snapshot(serial, limit)?;
+        Ok((snapshot.current_serial, snapshot.records))
     }
 }

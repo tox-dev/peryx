@@ -21,7 +21,7 @@ pub use analytics::AnalyticsHandle;
 pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use index::DriverTxn;
 pub use job::{JobKind, JobOutcome, JobRunRecord, JobState, NewJobRun};
-pub use journal::{DriverBlobReference, DriverMutation, JournalRecord};
+pub use journal::{DriverBlobReference, DriverMutation, JournalRecord, JournalSnapshot};
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
