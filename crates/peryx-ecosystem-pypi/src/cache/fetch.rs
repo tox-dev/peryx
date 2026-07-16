@@ -39,7 +39,11 @@ pub(super) async fn fetch_and_store(
     let route = mirror_route(state, name);
     let event_project = project.to_owned();
     let _permit = upstream_permit(state, name).await?;
-    match client.fetch_project(project, etag.as_deref()).await {
+    let response = match state.upstream_routes.get(name) {
+        Some(router) => router.fetch_project(project, etag.as_deref()).await,
+        None => client.fetch_project(project, etag.as_deref()).await,
+    };
+    match response {
         Ok(response) if response.status == 200 => {
             let record = CachedIndex {
                 etag: response.etag.clone(),

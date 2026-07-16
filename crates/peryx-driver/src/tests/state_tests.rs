@@ -19,6 +19,7 @@ fn state_with_budget(hot_cache_bytes: u64) -> (tempfile::TempDir, AppState) {
         RuntimeOptions {
             rate_limit: RateLimitConfig::default(),
             upstream_concurrency: std::iter::empty(),
+            upstream_routes: Vec::new(),
             webhooks: WebhookRuntime::disabled(),
             hot_cache_bytes,
             max_stale_secs: crate::DEFAULT_MAX_STALE_SECS,

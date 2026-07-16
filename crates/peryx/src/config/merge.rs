@@ -14,11 +14,12 @@ use std::collections::HashSet;
 use super::ConfigError;
 use super::model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
-    IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
+    IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, UpstreamConfig,
+    UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
-    RawReplication, RawTls, RawToken, RawWebhook,
+    RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
 };
 
 impl Config {
@@ -139,6 +140,7 @@ fn classify_replication(raw: RawReplication) -> Result<ReplicationConfig, Config
 /// Turn a raw `[[index]]` table into a classified [`IndexConfig`]: `layers` makes a virtual index, else
 /// `cached` makes a cached index, else `hosted`/`upload_token` makes a hosted store.
 fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
+    let mut raw = raw;
     let route = raw.route.clone().unwrap_or_else(|| raw.name.clone());
     let ecosystem = match &raw.ecosystem {
         Some(value) => value.parse().map_err(|_| ConfigError::Index {
@@ -147,51 +149,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
         })?,
         None => Ecosystem::default(),
     };
-    if raw.upload_token.as_deref() == Some("") {
-        // An empty token authorizes any request whose Basic password is empty, so it is a
-        // configuration error, not "uploads with no token" (which is `hosted = true`).
-        return Err(ConfigError::Index {
-            name: raw.name,
-            reason: "`upload_token` must not be empty",
-        });
-    }
-    let kind = if let Some(layers) = raw.layers {
-        IndexKind::Virtual {
-            layers,
-            upload: raw.upload,
-        }
-    } else if let Some(upstream) = raw.cached {
-        IndexKind::Cached {
-            upstream,
-            username: raw.username,
-            password: secret_source(raw.password, raw.password_file).map_err(|reason| ConfigError::Index {
-                name: raw.name.clone(),
-                reason,
-            })?,
-            token: secret_source(raw.token, raw.token_file).map_err(|reason| ConfigError::Index {
-                name: raw.name.clone(),
-                reason,
-            })?,
-            upstream_concurrency: raw.upstream_concurrency.unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
-            offline: raw.offline.unwrap_or(false),
-            prefetch: Box::new(raw.prefetch.unwrap_or_default().resolve()),
-        }
-    } else if raw.hosted == Some(true) || raw.upload_token.is_some() || raw.upload_token_file.is_some() {
-        IndexKind::Hosted {
-            upload_token: secret_source(raw.upload_token, raw.upload_token_file).map_err(|reason| {
-                ConfigError::Index {
-                    name: raw.name.clone(),
-                    reason,
-                }
-            })?,
-            volatile: raw.volatile.unwrap_or(true),
-        }
-    } else {
-        return Err(ConfigError::Index {
-            name: raw.name,
-            reason: "index needs one of `cached`, `hosted`, or `layers`",
-        });
-    };
+    let kind = classify_index_kind(&mut raw)?;
     let tokens = classify_tokens(&raw.name, raw.tokens)?;
     Ok(IndexConfig {
         name: raw.name,
@@ -208,6 +166,133 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             .into_iter()
             .map(classify_webhook)
             .collect::<Result<_, _>>()?,
+    })
+}
+
+fn classify_index_kind(raw: &mut RawIndex) -> Result<IndexKind, ConfigError> {
+    validate_index_kind(raw)?;
+    if let Some(layers) = raw.layers.take() {
+        return Ok(IndexKind::Virtual {
+            layers,
+            upload: raw.upload.take(),
+        });
+    }
+    if let Some(upstream) = raw.cached.take() {
+        return classify_legacy_cached(raw, upstream);
+    }
+    if !raw.upstreams.is_empty() {
+        return classify_routed_cached(raw);
+    }
+    if raw.hosted == Some(true) || raw.upload_token.is_some() || raw.upload_token_file.is_some() {
+        return Ok(IndexKind::Hosted {
+            upload_token: secret_source(raw.upload_token.take(), raw.upload_token_file.take()).map_err(|reason| {
+                ConfigError::Index {
+                    name: raw.name.clone(),
+                    reason,
+                }
+            })?,
+            volatile: raw.volatile.unwrap_or(true),
+        });
+    }
+    Err(ConfigError::Index {
+        name: raw.name.clone(),
+        reason: "index needs one of `cached`, `hosted`, or `layers`",
+    })
+}
+
+fn validate_index_kind(raw: &RawIndex) -> Result<(), ConfigError> {
+    if raw.upload_token.as_deref() == Some("") {
+        // An empty token authorizes any request whose Basic password is empty, so it is a
+        // configuration error, not "uploads with no token" (which is `hosted = true`).
+        return Err(ConfigError::Index {
+            name: raw.name.clone(),
+            reason: "`upload_token` must not be empty",
+        });
+    }
+    if raw.cached.is_some() && !raw.upstreams.is_empty() {
+        return Err(ConfigError::Index {
+            name: raw.name.clone(),
+            reason: "`cached` and `[[index.upstream]]` are mutually exclusive",
+        });
+    }
+    if raw.upstreams.is_empty() && (raw.fallback.is_some() || !raw.protected.is_empty() || !raw.pins.is_empty()) {
+        return Err(ConfigError::Index {
+            name: raw.name.clone(),
+            reason: "`fallback`, `protected`, and `pins` require `[[index.upstream]]`",
+        });
+    }
+    if !raw.upstreams.is_empty()
+        && (raw.username.is_some()
+            || raw.password.is_some()
+            || raw.password_file.is_some()
+            || raw.token.is_some()
+            || raw.token_file.is_some())
+    {
+        return Err(ConfigError::Index {
+            name: raw.name.clone(),
+            reason: "credentials for `[[index.upstream]]` belong on each source",
+        });
+    }
+    Ok(())
+}
+
+fn classify_legacy_cached(raw: &mut RawIndex, upstream: String) -> Result<IndexKind, ConfigError> {
+    Ok(IndexKind::Cached {
+        upstream,
+        username: raw.username.take(),
+        password: secret_source(raw.password.take(), raw.password_file.take()).map_err(|reason| {
+            ConfigError::Index {
+                name: raw.name.clone(),
+                reason,
+            }
+        })?,
+        token: secret_source(raw.token.take(), raw.token_file.take()).map_err(|reason| ConfigError::Index {
+            name: raw.name.clone(),
+            reason,
+        })?,
+        routing: None,
+        upstream_concurrency: raw.upstream_concurrency.unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
+        offline: raw.offline.unwrap_or(false),
+        prefetch: Box::new(raw.prefetch.take().unwrap_or_default().resolve()),
+    })
+}
+
+fn classify_routed_cached(raw: &mut RawIndex) -> Result<IndexKind, ConfigError> {
+    let upstreams = std::mem::take(&mut raw.upstreams)
+        .into_iter()
+        .map(|upstream| classify_upstream(&raw.name, upstream))
+        .collect::<Result<Vec<_>, _>>()?;
+    let primary = &upstreams[0];
+    Ok(IndexKind::Cached {
+        upstream: primary.url.clone(),
+        username: primary.username.clone(),
+        password: primary.password.clone(),
+        token: primary.token.clone(),
+        routing: Some(Box::new(UpstreamRoutingConfig {
+            upstreams,
+            fallback: raw.fallback.unwrap_or(true),
+            protected: std::mem::take(&mut raw.protected),
+            pins: std::mem::take(&mut raw.pins),
+        })),
+        upstream_concurrency: raw.upstream_concurrency.unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
+        offline: raw.offline.unwrap_or(false),
+        prefetch: Box::new(raw.prefetch.take().unwrap_or_default().resolve()),
+    })
+}
+
+fn classify_upstream(index: &str, raw: RawUpstream) -> Result<UpstreamConfig, ConfigError> {
+    Ok(UpstreamConfig {
+        name: raw.name,
+        url: raw.url,
+        username: raw.username,
+        password: secret_source(raw.password, raw.password_file).map_err(|reason| ConfigError::Index {
+            name: index.to_owned(),
+            reason,
+        })?,
+        token: secret_source(raw.token, raw.token_file).map_err(|reason| ConfigError::Index {
+            name: index.to_owned(),
+            reason,
+        })?,
     })
 }
 

@@ -213,6 +213,42 @@ async fn test_offline_mirror_resolves_cached_page() {
 
     assert_eq!(detail.name, "flask");
 }
+
+#[tokio::test]
+async fn test_buffered_resolution_uses_the_upstream_route() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&first)
+        .await;
+    mount_json_page(
+        &second,
+        &detail_json(Digest::of(b"wheel").as_str(), "https://example.invalid/flask.whl"),
+    )
+    .await;
+    let primary = UpstreamClient::new(&format!("{}/simple/", first.uri())).unwrap();
+    let router = UpstreamRouter::new(vec![
+        NamedUpstream::new("first", primary.clone()),
+        NamedUpstream::new(
+            "second",
+            UpstreamClient::new(&format!("{}/simple/", second.uri())).unwrap(),
+        ),
+    ])
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_state(&dir, primary, router);
+
+    let detail = cache::resolve_detail(&state, state.index_at(0), "flask", "pypi")
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(detail.name, "flask");
+    assert_eq!(second.received_requests().await.unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn test_overlay_with_two_mirrors_serves_buffered() {
     let server = MockServer::start().await;

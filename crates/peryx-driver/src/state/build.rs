@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use peryx_core::LexiconRegistry;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
+use peryx_upstream::UpstreamRouter;
 
 use peryx_index::{Index, IndexKind};
 
@@ -28,6 +29,7 @@ struct StateParts {
 pub struct RuntimeOptions<I> {
     pub rate_limit: RateLimitConfig,
     pub upstream_concurrency: I,
+    pub upstream_routes: Vec<(String, UpstreamRouter)>,
     pub webhooks: WebhookRuntime,
     /// Byte budget for the transformed-page cache: memory traded against warm-serve speed. Entries
     /// are re-derivable from the cached raw page, so a smaller budget costs hit rate, never
@@ -147,6 +149,7 @@ impl AppState {
             RuntimeOptions {
                 rate_limit,
                 upstream_concurrency,
+                upstream_routes: Vec::new(),
                 webhooks: WebhookRuntime::disabled(),
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
                 max_stale_secs: DEFAULT_MAX_STALE_SECS,
@@ -205,6 +208,7 @@ impl AppState {
             RuntimeOptions {
                 rate_limit,
                 upstream_concurrency,
+                upstream_routes: Vec::new(),
                 webhooks: WebhookRuntime::disabled(),
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
                 max_stale_secs: DEFAULT_MAX_STALE_SECS,
@@ -234,6 +238,7 @@ impl AppState {
             RuntimeOptions {
                 rate_limit: RateLimitConfig::default(),
                 upstream_concurrency: std::iter::empty(),
+                upstream_routes: Vec::new(),
                 webhooks,
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
                 max_stale_secs: DEFAULT_MAX_STALE_SECS,
@@ -255,6 +260,7 @@ impl AppState {
         let RuntimeOptions {
             rate_limit,
             upstream_concurrency,
+            upstream_routes,
             webhooks,
             hot_cache_bytes,
             max_stale_secs,
@@ -290,6 +296,7 @@ impl AppState {
                 search,
                 rate_limits: RateLimiter::new(rate_limit),
                 upstream_limits: UpstreamLimits::new(upstream_limits),
+                upstream_routes: upstream_routes.into_iter().collect(),
                 webhooks,
                 signer: None,
                 token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,

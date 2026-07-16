@@ -19,11 +19,11 @@ pub(crate) use merge::classify_tls;
 pub use model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
     IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig,
-    TokenConfig, WebhookConfig, WebhookSecret,
+    TokenConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
-    RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawWebhook,
+    RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
 };
 
 /// An error while assembling configuration.

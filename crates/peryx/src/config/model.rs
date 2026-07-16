@@ -206,6 +206,9 @@ pub enum IndexKind {
         /// Bearer token; takes precedence over username/password. A `token_file` sibling keeps it out
         /// of the config file.
         token: Option<SecretSource>,
+        /// Ordered named sources and fallback controls. `None` preserves the legacy single-upstream
+        /// behavior of `cached = URL`.
+        routing: Option<Box<UpstreamRoutingConfig>>,
         /// Concurrent upstream fetches allowed for this cached index in this process; `0` disables the cap.
         upstream_concurrency: usize,
         /// Serve only cached data for this index.
@@ -226,6 +229,23 @@ pub enum IndexKind {
         layers: Vec<String>,
         upload: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamConfig {
+    pub name: String,
+    pub url: String,
+    pub username: Option<String>,
+    pub password: Option<SecretSource>,
+    pub token: Option<SecretSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamRoutingConfig {
+    pub upstreams: Vec<UpstreamConfig>,
+    pub fallback: bool,
+    pub protected: Vec<String>,
+    pub pins: std::collections::BTreeMap<String, String>,
 }
 
 /// Prefetch behavior configured under `[index.prefetch]`.
@@ -337,6 +357,7 @@ fn default_indexes() -> Vec<IndexConfig> {
         username: None,
         password: None,
         token: None,
+        routing: None,
         upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
         offline: false,
         prefetch: Box::default(),

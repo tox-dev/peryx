@@ -281,6 +281,50 @@ fn test_backup_create_snapshots_log_variants() {
     }
 }
 
+#[test]
+fn test_backup_config_round_trips_upstream_routes() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    drop(MetaStore::open(data_dir.join("peryx.redb")).unwrap());
+    let source = format!(
+        r#"
+data_dir = {:?}
+
+[[index]]
+name = "pypi"
+fallback = false
+protected = ["internal-pkg"]
+
+[index.pins]
+flask = "public"
+
+[[index.upstream]]
+name = "internal"
+url = "https://packages.example/simple/"
+password_file = "/run/secrets/internal-password"
+
+[[index.upstream]]
+name = "public"
+url = "https://pypi.org/simple/"
+token = "bearer"
+"#,
+        data_dir.display().to_string()
+    );
+    let config = Config::default()
+        .apply(config::from_toml(PathBuf::from("source.toml"), &source).unwrap())
+        .unwrap();
+    let backup = root.path().join("backup");
+
+    operator::backup_create(&config, &backup, &mut Vec::new()).unwrap();
+    let snapshot = std::fs::read_to_string(backup.join("config.toml")).unwrap();
+    let restored = Config::default()
+        .apply(config::from_toml(PathBuf::from("config.toml"), &snapshot).unwrap())
+        .unwrap();
+
+    assert_eq!(restored, config);
+}
+
 #[rstest]
 #[case::literal(SecretSource::Literal("s3cret".to_owned()), "upload_token = \"s3cret\"")]
 #[case::file(

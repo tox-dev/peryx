@@ -12,7 +12,7 @@ use std::future::Future;
 use bytes::Bytes;
 use futures_util::Stream;
 use peryx_upstream::retry::{MAX_RETRIES, should_retry_error, sleep_before_retry};
-use peryx_upstream::{UpstreamClient, UpstreamError};
+use peryx_upstream::{UpstreamClient, UpstreamError, UpstreamRouter};
 use reqwest::StatusCode;
 use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, HeaderMap, HeaderName};
 use url::Url;
@@ -103,6 +103,76 @@ impl SimpleClientExt for UpstreamClient {
     async fn head_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
         let url = self.base().join(&format!("{project}/"))?;
         simple_head(self.send_conditional(url, ACCEPT_SIMPLE, etag).await?)
+    }
+}
+
+impl SimpleClientExt for UpstreamRouter {
+    async fn fetch_project(&self, project: &str, _etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
+        let mut candidates = self.candidates(project).peekable();
+        loop {
+            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let result = SimpleClientExt::fetch_project(upstream.client(), project, None).await;
+            if fallback_result(&result) && candidates.peek().is_some() {
+                tracing::warn!(project, upstream = upstream.name(), "trying fallback");
+                continue;
+            }
+            return result;
+        }
+    }
+
+    async fn fetch_index(&self) -> Result<SimpleResponse, UpstreamError> {
+        let mut candidates = self.candidates("").peekable();
+        loop {
+            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let result = SimpleClientExt::fetch_index(upstream.client()).await;
+            if fallback_result(&result) && candidates.peek().is_some() {
+                tracing::warn!(upstream = upstream.name(), "upstream unavailable, trying fallback");
+                continue;
+            }
+            return result;
+        }
+    }
+
+    async fn head_project(&self, project: &str, _etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
+        let mut candidates = self.candidates(project).peekable();
+        loop {
+            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let result = upstream.client().head_project(project, None).await;
+            if fallback_result(&result) && candidates.peek().is_some() {
+                tracing::warn!(project, upstream = upstream.name(), "trying fallback");
+                continue;
+            }
+            return result;
+        }
+    }
+}
+
+fn fallback_result<T: SimpleStatus>(result: &Result<T, UpstreamError>) -> bool {
+    match result {
+        Ok(response) => matches!(response.status(), 404 | 429 | 500..=599),
+        Err(UpstreamError::Http(_)) => true,
+        Err(
+            UpstreamError::Url(_)
+            | UpstreamError::MissingContentType { .. }
+            | UpstreamError::UnsupportedContentType { .. }
+            | UpstreamError::ResponseTooLarge { .. },
+        ) => false,
+    }
+}
+
+trait SimpleStatus {
+    fn status(&self) -> u16;
+}
+
+impl SimpleStatus for SimpleResponse {
+    fn status(&self) -> u16 {
+        self.status
+    }
+}
+
+impl SimpleStatus for SimpleHead {
+    fn status(&self) -> u16 {
+        self.status
     }
 }
 

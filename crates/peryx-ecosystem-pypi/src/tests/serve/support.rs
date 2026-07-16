@@ -11,7 +11,7 @@ pub(super) use bytes::Bytes;
 pub(super) use futures_util::StreamExt as _;
 pub(super) use peryx_storage::blob::{BlobError, BlobStore, Digest};
 pub(super) use peryx_storage::meta::{MetaError, MetaStore};
-pub(super) use peryx_upstream::UpstreamClient;
+pub(super) use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
 pub(super) use wiremock::matchers::{method, path};
 pub(super) use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -80,6 +80,30 @@ pub(super) fn custom_state(
         indexes(client),
         Arc::new(|| 1000),
     ))
+}
+
+pub(super) fn routed_state(dir: &tempfile::TempDir, primary: UpstreamClient, router: UpstreamRouter) -> Arc<AppState> {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Cached {
+                client: primary,
+                offline: false,
+            },
+            policy: Policy::default(),
+            acl: peryx_identity::IndexAcl::default(),
+        }],
+        Arc::new(|| 1000),
+    );
+    state.upstream_routes.insert("pypi".to_owned(), router);
+    crate::tests::wired(state)
 }
 
 pub(super) async fn stream_outcome(state: &Arc<AppState>) -> Vec<Result<Bytes, std::io::Error>> {
