@@ -16,6 +16,7 @@ mod policy_tests;
 mod rate_limit_tests;
 mod refresh_tests;
 mod search;
+mod serial_tests;
 mod serve;
 mod simple;
 mod simple_client;

@@ -4,6 +4,11 @@ use std::fmt::Write as _;
 
 use xml::reader::{EventReader, XmlEvent};
 
+use crate::serial::ChangelogPage;
+
+/// Warehouse's maximum `changelog_since_serial` result size.
+pub const CHANGELOG_PAGE_SIZE: usize = 50_000;
+
 /// A supported Warehouse mirroring request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangelogRequest {
@@ -153,6 +158,37 @@ pub fn render_changelog_fault(code: i32, message: &str) -> String {
     string_value(&mut response, message);
     response.push_str("</member></struct></value></fault></methodResponse>");
     response
+}
+
+/// Dispatch a changelog request against storage callbacks and render its XML-RPC response.
+///
+/// Client errors become XML-RPC faults. Storage errors remain typed so the transport can log them
+/// before returning an opaque application fault. The transport is also responsible for limiting
+/// the request body before calling this function.
+///
+/// # Errors
+/// Returns the storage callback's error when a valid request cannot be served.
+pub fn dispatch_changelog_request<E>(
+    body: &[u8],
+    last_serial: impl FnOnce() -> Result<u64, E>,
+    since_serial: impl FnOnce(i64, usize) -> Result<ChangelogPage, E>,
+) -> Result<String, E> {
+    match parse_changelog_request(body) {
+        Ok(ChangelogRequest::LastSerial) => last_serial().map(render_last_serial_response),
+        Ok(ChangelogRequest::SinceSerial(serial)) => {
+            since_serial(serial, CHANGELOG_PAGE_SIZE).map(|page| render_changelog_response(page.entries()))
+        }
+        Err(ChangelogRequestError::InvalidUtf8 | ChangelogRequestError::MalformedXml) => {
+            Ok(render_changelog_fault(-32700, "parse error; not well formed"))
+        }
+        Err(ChangelogRequestError::UnsupportedMethod(_)) => Ok(render_changelog_fault(
+            -32601,
+            "server error; requested method not found",
+        )),
+        Err(ChangelogRequestError::InvalidShape(_) | ChangelogRequestError::InvalidSerial(_)) => {
+            Ok(render_changelog_fault(-32602, "server error; invalid method params"))
+        }
+    }
 }
 
 fn parse_since_serial(
