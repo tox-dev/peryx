@@ -336,6 +336,10 @@ fn main() -> anyhow::Result<()> {
             let config = resolve_config(command.runtime_args())?;
             app::index(&config, &command, &mut std::io::stdout())
         }
+        peryx::cli::Command::Job(command) => {
+            let config = resolve_config(command.runtime_args())?;
+            app::job(&config, &command, &mut std::io::stdout())
+        }
         peryx::cli::Command::Cache(command) => {
             let config = resolve_config(command.runtime_args())?;
             app::cache(&config, &command, &mut std::io::stdout())

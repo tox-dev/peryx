@@ -11,6 +11,7 @@ fn runtime(cli: Cli) -> RuntimeArgs {
         Command::Serve(args) | Command::Init(args) => args,
         Command::ConfigSnippet(_) => panic!("no runtime args on config-snippet"),
         Command::Index(_) => panic!("index commands carry nested runtime args"),
+        Command::Job(_) => panic!("job commands carry nested runtime args"),
         Command::Cache(_) => panic!("cache commands carry nested runtime args"),
         Command::Backup(_) => panic!("backup commands carry nested runtime args"),
         Command::Restore(_) => panic!("restore takes explicit data-dir args"),

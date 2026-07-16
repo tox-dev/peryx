@@ -4,6 +4,7 @@ use crate::cli::Cli;
 
 mod cache_tests;
 mod index_tests;
+mod job_tests;
 mod maintenance_tests;
 mod mirror_tests;
 mod parse_tests;
