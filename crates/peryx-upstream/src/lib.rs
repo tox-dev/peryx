@@ -2,9 +2,11 @@
 //! PEP 503/691 index (pypi.org by default, or any configured upstream).
 
 pub mod client;
+mod route;
 
 pub use client::retry;
 pub use client::{Auth, FileHead, RangeError, UpstreamClient, UpstreamError, redact_url};
+pub use route::{NamedUpstream, RouteError, UpstreamRouter};
 
 #[cfg(test)]
 mod tests;
