@@ -73,6 +73,7 @@ fn test_backup_config_round_trips_effective_settings(#[case] tls: &str, #[case] 
 host = "0.0.0.0"
 port = 7443
 data_dir = {data_dir:?}
+netrc = "/run/secrets/upstream.netrc"
 writer_identity = "writer-a"
 offline = true
 cache_ttl_secs = 91

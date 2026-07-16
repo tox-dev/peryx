@@ -88,6 +88,7 @@ wasm-bindgen = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rst_parser = "0.4"
 rst_renderer = "0.4"
+rustix = { version = "1", features = ["process"] }
 ammonia = "4.1"
 regex = "1"
 zip = { version = "8", default-features = false, features = ["deflate"] }
@@ -104,6 +105,7 @@ criterion = { package = "codspeed-criterion-compat", version = "5.0", default-fe
 stats_alloc = "0.1.10"
 statrs = "0.18"
 hdrhistogram = { version = "7.5", default-features = false }
+uv-netrc = "0.0.62"
 
 [profile.release]
 strip = true

@@ -20,6 +20,7 @@ or `PERYX_*` environment variables, which override the file. Precedence is `defa
 | Config file               | `--config` / `-c`   | (n/a)                   | (n/a)             | (none)       |
 | Cache freshness (seconds) | (file/env only)     | `PERYX_CACHE_TTL_SECS`  | `cache_ttl_secs`  | `300`        |
 | Page cache budget (bytes) | (file/env only)     | `PERYX_HOT_CACHE_BYTES` | `hot_cache_bytes` | `268435456`  |
+| Upstream netrc file       | (file/env only)     | `PERYX_NETRC`           | `netrc`           | (none)       |
 | Stale-on-error bound (s)  | (file/env only)     | `PERYX_MAX_STALE_SECS`  | `max_stale_secs`  | `300`        |
 | Indexes                   | (file only)         | (n/a)                   | `[[index]]`       | (see below)  |
 | Rate limits               | (file only)         | (n/a)                   | `[rate_limit]`    | (see below)  |
@@ -67,6 +68,50 @@ replication system. Replica mode requires the copied metadata store and configur
 another configured identity cannot start against that store. Replica mode does not claim it, so a restored config
 snapshot may retain the writer's value while serving read-only. See [High availability](@/core/high-availability.md) for
 promotion.
+
+## Upstream netrc credentials
+
+Set `netrc` to opt into one shared file of Basic credentials for cached upstreams. peryx reads and parses the file once
+at startup. A configured bearer token wins first, followed by a configured `username` and `password`; netrc supplies
+credentials only when the cached index or `[[index.upstream]]` source has neither.
+
+```toml
+netrc = "/run/secrets/upstream.netrc"
+
+[[index]]
+name = "corp"
+cached = "https://packages.example/simple/"
+```
+
+The traditional form matches pip and uv for a host on the scheme's default port:
+
+```text
+machine packages.example
+login __token__
+password pypi-token
+```
+
+Use an origin or authority machine name when the same host serves more than one credential boundary. peryx searches an
+exact origin first, then `host:port`, a bare host on a default port, and `default`.
+
+```text
+machine https://packages.example:8443
+login release-reader
+password release-secret
+
+machine packages.example:9443
+login staging-reader
+password staging-secret
+```
+
+The resolved credential belongs to the configured upstream's exact scheme, host, and effective port. peryx does not send
+it to an artifact URL on another origin, and reqwest removes it when a redirect changes any part of that origin. A
+`default` entry can select credentials for an otherwise unmatched upstream, but those credentials remain bound to the
+selected upstream after lookup; redirects do not trigger another netrc search.
+
+The selected path must name a regular file. On Unix, its owner must match the effective process user and group or other
+permission bits make startup fail; use `chmod 600 /run/secrets/upstream.netrc`. Parse and permission errors name the
+file without printing its contents. Peryx does not search `~/.netrc` unless you select that path.
 
 ## TLS
 

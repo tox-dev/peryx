@@ -31,6 +31,29 @@ password = "<token>"
 
 Start peryx with `--config` and install through `http://<host>:<port>/corp/simple/`.
 
+## Read Basic credentials from netrc
+
+One opt-in netrc file can hold Basic credentials outside `peryx.toml`. This uses the same `machine`, `login`, and
+`password` form as [pip](https://pip.pypa.io/en/stable/topics/authentication/#netrc-support):
+
+```toml
+netrc = "/run/secrets/upstream.netrc"
+
+[[index]]
+name = "corp"
+cached = "https://private.example/simple/"
+```
+
+```text
+machine private.example
+login __token__
+password pypi-token
+```
+
+Run `chmod 600 /run/secrets/upstream.netrc` on Unix. A `token`, or a complete `username` and `password` pair on the
+index, overrides netrc. The [configuration reference](@/core/configuration.md#upstream-netrc-credentials) covers custom
+ports, `default` entries, startup errors, and redirect isolation.
+
 ## Sync for offline use
 
 `peryx mirror sync` uses the same upstream URL and credentials as serving. Configure the working set next to the cached
@@ -66,11 +89,11 @@ The upstream response must send a Simple API content type (`text/html`, `applica
 
 ## Notes
 
-- The config file holds these credentials, so restrict it: `chmod 600 peryx.toml`.
+- Inline credentials make the config file secret, so restrict it: `chmod 600 peryx.toml`.
 - Each cached index keeps its own credentials. A cached file remembers which cached index it came from, and a later
   cache-miss fetch reuses that index's authentication.
 - Peryx asks upstream for `Accept-Encoding: identity` during artifact downloads. This makes the bytes pip and uv verify
-  match the cached bytes. Same-host redirects keep the cached index's credentials.
+  match the cached bytes. Same-origin redirects keep the cached index's credentials; cross-origin requests do not.
 - `cache_ttl_secs` (default 1800) controls how long peryx serves a cached project page before revalidating it against
   the upstream with `If-None-Match`.
 - Peryx caches upstream `404` misses for project pages and `.metadata` siblings for 30 seconds.

@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use futures_util::TryStreamExt as _;
 use http_body_util::BodyExt as _;
 use peryx_driver::IndexKind as RuntimeKind;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use peryx_ecosystem_oci::LibraryPrefix;
@@ -94,6 +95,15 @@ fn claim_writer(dir: &tempfile::TempDir, identity: &str) {
         .unwrap()
         .claim_writer_identity(identity)
         .unwrap();
+}
+
+fn write_netrc(path: &Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 }
 
 fn replication_replica() -> ReplicationConfig {
@@ -207,6 +217,244 @@ fn test_build_state_opens_configured_data_dir() {
 
     assert_eq!(state.indexes.len(), config.indexes.len());
     assert!(dir.path().join("peryx.redb").exists());
+}
+
+#[test]
+fn test_build_state_reads_basic_upstream_credentials_from_netrc() {
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("credentials.netrc");
+    write_netrc(
+        &netrc,
+        "machine https://corp.example:443 login reader password netrc-secret\n",
+    );
+    let state = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc),
+        indexes: vec![cached("corp", "https://corp.example/simple/")],
+        ..Config::default()
+    })
+    .unwrap();
+    let RuntimeKind::Cached { client, .. } = &state.indexes[0].kind else {
+        panic!("expected cached index");
+    };
+
+    assert_eq!(
+        client.auth(),
+        &Auth::Basic {
+            username: "reader".to_owned(),
+            password: "netrc-secret".to_owned()
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_build_state_reads_netrc_for_routed_upstreams() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata = MockServer::start().await;
+    let artifacts = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/packages/pkg.whl"))
+        .and(header_regex("authorization", "^Basic "))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&artifacts)
+        .await;
+    let netrc = dir.path().join("credentials.netrc");
+    write_netrc(
+        &netrc,
+        &format!(
+            "machine {} login metadata-reader password metadata-secret\n\
+             machine {} login artifact-reader password artifact-secret\n",
+            metadata.uri(),
+            artifacts.uri()
+        ),
+    );
+    let state = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc),
+        indexes: vec![routed(
+            &format!("{}/simple/", metadata.uri()),
+            Some(&format!("{}/packages/", artifacts.uri())),
+        )],
+        ..Config::default()
+    })
+    .unwrap();
+    let source = state.upstream_routes["pypi"].source("primary").unwrap();
+
+    assert_eq!(
+        source.client().auth(),
+        &Auth::Basic {
+            username: "metadata-reader".to_owned(),
+            password: "metadata-secret".to_owned()
+        }
+    );
+    let chunks = source
+        .artifacts()
+        .stream_bytes(&format!("{}/pkg.whl", artifacts.uri()))
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| chunk.iter().copied())
+            .collect::<Vec<_>>(),
+        b"wheelbytes"
+    );
+}
+
+#[rstest]
+#[case::basic(
+    Some("configured-reader"),
+    Some(SecretSource::Literal("configured-secret".to_owned())),
+    None,
+    Auth::Basic { username: "configured-reader".to_owned(), password: "configured-secret".to_owned() }
+)]
+#[case::bearer(
+    None,
+    None,
+    Some(SecretSource::Literal("configured-token".to_owned())),
+    Auth::Bearer("configured-token".to_owned())
+)]
+fn test_build_state_prefers_explicit_upstream_credentials(
+    #[case] username: Option<&str>,
+    #[case] password: Option<SecretSource>,
+    #[case] token: Option<SecretSource>,
+    #[case] expected: Auth,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("credentials.netrc");
+    write_netrc(
+        &netrc,
+        "machine https://corp.example:443 login netrc-reader password netrc-secret\n",
+    );
+    let mut index = cached("corp", "https://corp.example/simple/");
+    let IndexKind::Cached {
+        username: configured_username,
+        password: configured_password,
+        token: configured_token,
+        ..
+    } = &mut index.kind
+    else {
+        panic!("expected cached index");
+    };
+    *configured_username = username.map(str::to_owned);
+    *configured_password = password;
+    *configured_token = token;
+    let state = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc),
+        indexes: vec![index],
+        ..Config::default()
+    })
+    .unwrap();
+    let RuntimeKind::Cached { client, .. } = &state.indexes[0].kind else {
+        panic!("expected cached index");
+    };
+
+    assert_eq!(client.auth(), &expected);
+}
+
+#[test]
+fn test_build_state_leaves_missing_netrc_entries_anonymous() {
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("credentials.netrc");
+    write_netrc(&netrc, "machine other.example login reader password secret\n");
+    let state = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc),
+        indexes: vec![cached("corp", "https://corp.example/simple/")],
+        ..Config::default()
+    })
+    .unwrap();
+    let RuntimeKind::Cached { client, .. } = &state.indexes[0].kind else {
+        panic!("expected cached index");
+    };
+
+    assert_eq!(client.auth(), &Auth::None);
+}
+
+#[test]
+fn test_build_state_reports_netrc_errors_without_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("credentials.netrc");
+    write_netrc(
+        &netrc,
+        "machine corp.example login reader password swordfish invalid-token\n",
+    );
+    let Err(error) = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc),
+        indexes: vec![cached("corp", "https://corp.example/simple/")],
+        ..Config::default()
+    }) else {
+        panic!("expected invalid netrc syntax to fail startup");
+    };
+    let message = format!("{error:#}");
+
+    assert!(message.contains("load upstream netrc"));
+    assert!(message.contains("has invalid syntax"));
+    assert!(!message.contains("swordfish"));
+}
+
+#[test]
+fn test_build_state_reports_an_unreadable_netrc_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("missing.netrc");
+    let Err(error) = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc.clone()),
+        indexes: vec![cached("corp", "https://corp.example/simple/")],
+        ..Config::default()
+    }) else {
+        panic!("expected a missing netrc file to fail startup");
+    };
+    let message = format!("{error:#}");
+
+    assert!(message.contains("load upstream netrc"));
+    assert!(message.contains(&netrc.display().to_string()));
+    assert!(message.contains("cannot read netrc file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_build_state_rejects_an_insecure_netrc_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("public.netrc");
+    write_netrc(&netrc, "machine corp.example login reader password swordfish\n");
+    std::fs::set_permissions(&netrc, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let Err(error) = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(netrc),
+        indexes: vec![cached("corp", "https://corp.example/simple/")],
+        ..Config::default()
+    }) else {
+        panic!("expected an insecure netrc mode to fail startup");
+    };
+    let message = format!("{error:#}");
+
+    assert!(message.contains("must not grant group or other permissions"));
+    assert!(!message.contains("swordfish"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_build_state_rejects_a_netrc_owned_by_another_user() {
+    let path = PathBuf::from("/etc/hosts");
+    let dir = tempfile::tempdir().unwrap();
+    let Err(error) = build_state(&Config {
+        data_dir: dir.path().join("data"),
+        netrc: Some(path),
+        indexes: vec![cached("corp", "https://corp.example/simple/")],
+        ..Config::default()
+    }) else {
+        panic!("expected a netrc owned by another user to fail startup");
+    };
+
+    assert!(format!("{error:#}").contains("must be owned by the effective user"));
 }
 
 #[test]
@@ -541,12 +789,19 @@ fn test_build_router_data_dir_error() {
 #[case::artifact("https://metadata.example/simple/", Some("not a url"))]
 fn test_build_state_rejects_invalid_routed_source_urls(#[case] metadata: &str, #[case] artifact: Option<&str>) {
     let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("credentials.netrc");
+    write_netrc(&netrc, "default login reader password swordfish\n");
 
-    let Err(err) = build_state(&config_with(&dir, vec![routed(metadata, artifact)])) else {
+    let Err(err) = build_state(&Config {
+        netrc: Some(netrc),
+        ..config_with(&dir, vec![routed(metadata, artifact)])
+    }) else {
         panic!("invalid routed source URL succeeded");
     };
 
-    assert!(err.to_string().contains("build cached index pypi"), "{err}");
+    let message = format!("{err:#}");
+    assert!(message.contains("match netrc credentials for <invalid upstream URL>"));
+    assert!(!message.contains("swordfish"));
 }
 
 #[rstest]
