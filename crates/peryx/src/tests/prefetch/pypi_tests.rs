@@ -92,6 +92,7 @@ fn routed_config(dir: &Path, first: &MockServer, second: &MockServer, artifacts:
                 username: None,
                 password: None,
                 token: None,
+                tls: crate::config::UpstreamTlsConfig::default(),
             },
             UpstreamConfig {
                 name: "second".to_owned(),
@@ -100,6 +101,7 @@ fn routed_config(dir: &Path, first: &MockServer, second: &MockServer, artifacts:
                 username: None,
                 password: None,
                 token: Some(SecretSource::Literal("second-token".to_owned())),
+                tls: crate::config::UpstreamTlsConfig::default(),
             },
         ],
         fallback: true,

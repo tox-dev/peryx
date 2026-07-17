@@ -113,6 +113,52 @@ The selected path must name a regular file. On Unix, its owner must match the ef
 permission bits make startup fail; use `chmod 600 /run/secrets/upstream.netrc`. Parse and permission errors name the
 file without printing its contents. Peryx does not search `~/.netrc` unless you select that path.
 
+## Upstream TLS
+
+A cached PyPI index or OCI registry can extend the platform trust store with a private CA and authenticate with a client
+certificate. Configure the paths on the cached index:
+
+```toml
+[[index]]
+name = "corp-python"
+cached = "https://packages.example/simple/"
+ca_file = "/run/secrets/corp-ca.pem"
+client_cert_file = "/run/secrets/peryx-client.pem"
+client_key_file = "/run/secrets/peryx-client-key.pem"
+
+[[index]]
+name = "corp-images"
+ecosystem = "oci"
+cached = "https://registry.example"
+ca_file = "/run/secrets/corp-ca.pem"
+client_cert_file = "/run/secrets/peryx-client.pem"
+client_key_file = "/run/secrets/peryx-client-key.pem"
+```
+
+For an ordered route, put the same keys on each `[[index.upstream]]` source. Each source gets an independent trust store
+and identity; keys on the parent `[[index]]` are rejected because their scope would be ambiguous.
+
+`ca_file` accepts one or more PEM certificates and adds them to the platform roots. It does not replace public trust.
+`client_cert_file` contains a PEM leaf certificate followed by any intermediate certificates. `client_key_file` contains
+its matching, unencrypted PEM private key. Configure the certificate and key together. Peryx parses the PEM and verifies
+the key match when it builds the client. During the [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) handshake, peryx
+validates the upstream certificate and the upstream validates the client chain and
+[RFC 5280](https://www.rfc-editor.org/rfc/rfc5280) purpose.
+
+The identity is bound to the configured origin: scheme, host, and effective port. An explicit `artifact_url` or an
+absolute artifact URL discovered in upstream metadata receives the configured CA but not the identity when it changes
+origin. With a client identity, peryx rejects cross-origin redirects instead of offering the certificate to the redirect
+target.
+
+Peryx reads these files when it constructs the upstream client. To rotate them, replace each file atomically and restart
+peryx through the deployment supervisor; peryx does not poll the files. Existing clients keep their parsed material
+until the process replaces them. Restrict private keys to the peryx user (`0400` or `0600`) and their directory to
+`0700`. In a container, mount the CA, certificate, and key as read-only secrets rather than copying them into the image.
+
+Startup errors identify the index and whether the CA, certificate, or key was unreadable or invalid. They do not print
+the path or PEM contents. Configuration snapshots retain the paths so a restore can remount the same secrets; they never
+contain certificate or key bytes.
+
 ## TLS
 
 peryx serves plain HTTP by default, which is the right choice for a laptop: `pip`/`uv` accept any URL, and
@@ -169,6 +215,9 @@ the role. peryx rejects unknown keys.
 | `password_file`        | cached  | Path to read `password` from instead of inlining it                   | (none)             |
 | `token`                | cached  | Bearer token; takes precedence over username/password                 | (none)             |
 | `token_file`           | cached  | Path to read `token` from instead of inlining it                      | (none)             |
+| `ca_file`              | cached  | PEM CA bundle added to platform trust for this upstream               | (none)             |
+| `client_cert_file`     | cached  | PEM client certificate chain; requires `client_key_file`              | (none)             |
+| `client_key_file`      | cached  | Matching unencrypted PEM client key; requires `client_cert_file`      | (none)             |
 | `upstream_concurrency` | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default  | `0`                |
 | `offline`              | cached  | Serve this cached index from disk only                                | `false`            |
 | `prefetch`             | cached  | Package and artifact selection for `peryx mirror`                     | (see below)        |

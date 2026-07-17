@@ -16,10 +16,11 @@ use peryx_identity::{Action, Signer};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
-use peryx_upstream::{Auth, NamedUpstream, Netrc, UpstreamClient, UpstreamRouter, redact_url};
+use peryx_upstream::{Auth, NamedUpstream, Netrc, UpstreamClient, UpstreamRouter, UpstreamTls, redact_url};
 
 use crate::config::{
-    AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, ReplicationConfig, SecretSource, WebhookSecret,
+    AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, ReplicationConfig, SecretSource, UpstreamTlsConfig,
+    WebhookSecret,
 };
 
 /// Build the peryx router from configuration.
@@ -165,12 +166,14 @@ fn make_replica_configs(configs: &mut [IndexConfig]) {
             ConfigKind::Cached {
                 password,
                 token,
+                tls,
                 routing,
                 offline,
                 ..
             } => {
                 *password = None;
                 *token = None;
+                *tls = UpstreamTlsConfig::default();
                 *routing = None;
                 *offline = true;
             }
@@ -295,6 +298,13 @@ fn build_webhooks(configs: &[IndexConfig]) -> anyhow::Result<WebhookRuntime> {
     WebhookRuntime::new(targets).context("build webhook targets")
 }
 
+#[derive(Clone, Copy)]
+struct UpstreamCredentials<'a> {
+    username: Option<&'a str>,
+    password: Option<&'a SecretSource>,
+    token: Option<&'a SecretSource>,
+}
+
 fn webhook_secret(secret: &WebhookSecret, name: &str) -> anyhow::Result<String> {
     match secret {
         WebhookSecret::Literal(secret) => Ok(secret.clone()),
@@ -317,15 +327,20 @@ fn build_kind(
             username,
             password,
             token,
+            tls,
             offline,
             ..
         } => Ok(IndexKind::Cached {
             client: build_upstream_client(
                 &index.name,
                 upstream,
-                username.as_deref(),
-                password.as_ref(),
-                token.as_ref(),
+                UpstreamCredentials {
+                    username: username.as_deref(),
+                    password: password.as_ref(),
+                    token: token.as_ref(),
+                },
+                &load_upstream_tls(&index.name, tls)?,
+                upstream,
                 netrc,
             )?,
             offline: global_offline || *offline,
@@ -362,12 +377,17 @@ fn build_upstream_routes(
                 .upstreams
                 .iter()
                 .map(|upstream| {
+                    let tls = load_upstream_tls(&index.name, &upstream.tls)?;
                     let client = build_upstream_client(
                         &index.name,
                         &upstream.url,
-                        upstream.username.as_deref(),
-                        upstream.password.as_ref(),
-                        upstream.token.as_ref(),
+                        UpstreamCredentials {
+                            username: upstream.username.as_deref(),
+                            password: upstream.password.as_ref(),
+                            token: upstream.token.as_ref(),
+                        },
+                        &tls,
+                        &upstream.url,
                         netrc,
                     )?;
                     let named = NamedUpstream::new(&upstream.name, client);
@@ -377,9 +397,13 @@ fn build_upstream_routes(
                     let mirror = build_upstream_client(
                         &index.name,
                         artifact_url,
-                        upstream.username.as_deref(),
-                        upstream.password.as_ref(),
-                        upstream.token.as_ref(),
+                        UpstreamCredentials {
+                            username: upstream.username.as_deref(),
+                            password: upstream.password.as_ref(),
+                            token: upstream.token.as_ref(),
+                        },
+                        &tls,
+                        &upstream.url,
                         netrc,
                     )?;
                     Ok(named.with_artifact_mirror(mirror, routing.fallback))
@@ -403,9 +427,9 @@ fn build_upstream_routes(
 fn build_upstream_client(
     index: &str,
     upstream: &str,
-    username: Option<&str>,
-    password: Option<&SecretSource>,
-    token: Option<&SecretSource>,
+    credentials: UpstreamCredentials<'_>,
+    tls: &UpstreamTls,
+    identity_origin: &str,
     netrc: Option<&Netrc>,
 ) -> anyhow::Result<UpstreamClient> {
     let read = |source: Option<&SecretSource>| {
@@ -414,8 +438,8 @@ fn build_upstream_client(
             .transpose()
             .with_context(|| format!("read the upstream credentials of index {index}"))
     };
-    let (token, password) = (read(token)?, read(password)?);
-    let mut auth = upstream_auth(token.as_deref(), username, password.as_deref());
+    let (token, password) = (read(credentials.token)?, read(credentials.password)?);
+    let mut auth = upstream_auth(token.as_deref(), credentials.username, password.as_deref());
     if auth == Auth::None
         && let Some(netrc) = netrc
     {
@@ -423,8 +447,18 @@ fn build_upstream_client(
             .auth_for_str(upstream)
             .with_context(|| format!("match netrc credentials for {}", redact_url(upstream)))?;
     }
-    UpstreamClient::with_auth(upstream, auth)
+    UpstreamClient::with_auth_and_tls_for_origin(upstream, auth, tls, identity_origin)
         .with_context(|| format!("build cached index {index} with upstream {}", redact_url(upstream)))
+}
+
+fn load_upstream_tls(index: &str, config: &UpstreamTlsConfig) -> anyhow::Result<UpstreamTls> {
+    let identity = match (config.client_cert_file.as_deref(), config.client_key_file.as_deref()) {
+        (Some(certificate), Some(key)) => Some((certificate, key)),
+        (None, None) => None,
+        _ => bail!("index {index} requires both upstream client certificate and private key files"),
+    };
+    UpstreamTls::from_paths(config.ca_file.as_deref(), identity)
+        .with_context(|| format!("load upstream TLS material for index {index}"))
 }
 
 fn upstream_concurrency(configs: &[IndexConfig]) -> Vec<(String, usize)> {

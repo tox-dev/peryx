@@ -15,7 +15,7 @@ use super::ConfigError;
 use super::model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
     IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig,
-    UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
+    UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
@@ -221,6 +221,15 @@ fn validate_index_kind(raw: &RawIndex) -> Result<(), ConfigError> {
             reason: "`cached` and `[[index.upstream]]` are mutually exclusive",
         });
     }
+    if raw.cached.is_none()
+        && raw.upstreams.is_empty()
+        && (raw.ca_file.is_some() || raw.client_cert_file.is_some() || raw.client_key_file.is_some())
+    {
+        return Err(ConfigError::Index {
+            name: raw.name.clone(),
+            reason: "upstream TLS files require a cached index",
+        });
+    }
     if raw.upstreams.is_empty() && (raw.fallback.is_some() || !raw.protected.is_empty() || !raw.pins.is_empty()) {
         return Err(ConfigError::Index {
             name: raw.name.clone(),
@@ -239,10 +248,24 @@ fn validate_index_kind(raw: &RawIndex) -> Result<(), ConfigError> {
             reason: "credentials for `[[index.upstream]]` belong on each source",
         });
     }
+    if !raw.upstreams.is_empty()
+        && (raw.ca_file.is_some() || raw.client_cert_file.is_some() || raw.client_key_file.is_some())
+    {
+        return Err(ConfigError::Index {
+            name: raw.name.clone(),
+            reason: "TLS files for `[[index.upstream]]` belong on each source",
+        });
+    }
     Ok(())
 }
 
 fn classify_legacy_cached(raw: &mut RawIndex, upstream: String) -> Result<IndexKind, ConfigError> {
+    let tls = upstream_tls(
+        &raw.name,
+        raw.ca_file.take(),
+        raw.client_cert_file.take(),
+        raw.client_key_file.take(),
+    )?;
     Ok(IndexKind::Cached {
         upstream,
         username: raw.username.take(),
@@ -256,6 +279,7 @@ fn classify_legacy_cached(raw: &mut RawIndex, upstream: String) -> Result<IndexK
             name: raw.name.clone(),
             reason,
         })?,
+        tls,
         routing: None,
         upstream_concurrency: raw.upstream_concurrency.unwrap_or(DEFAULT_UPSTREAM_CONCURRENCY),
         offline: raw.offline.unwrap_or(false),
@@ -274,6 +298,7 @@ fn classify_routed_cached(raw: &mut RawIndex) -> Result<IndexKind, ConfigError> 
         username: primary.username.clone(),
         password: primary.password.clone(),
         token: primary.token.clone(),
+        tls: primary.tls.clone(),
         routing: Some(Box::new(UpstreamRoutingConfig {
             upstreams,
             fallback: raw.fallback.unwrap_or(true),
@@ -300,6 +325,26 @@ fn classify_upstream(index: &str, raw: RawUpstream) -> Result<UpstreamConfig, Co
             name: index.to_owned(),
             reason,
         })?,
+        tls: upstream_tls(index, raw.ca_file, raw.client_cert_file, raw.client_key_file)?,
+    })
+}
+
+fn upstream_tls(
+    index: &str,
+    ca_file: Option<PathBuf>,
+    client_cert_file: Option<PathBuf>,
+    client_key_file: Option<PathBuf>,
+) -> Result<UpstreamTlsConfig, ConfigError> {
+    if client_cert_file.is_some() != client_key_file.is_some() {
+        return Err(ConfigError::Index {
+            name: index.to_owned(),
+            reason: "`client_cert_file` and `client_key_file` must be configured together",
+        });
+    }
+    Ok(UpstreamTlsConfig {
+        ca_file,
+        client_cert_file,
+        client_key_file,
     })
 }
 

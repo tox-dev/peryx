@@ -3608,6 +3608,7 @@ dependencies = [
  "peryx-storage",
  "peryx-upstream",
  "peryx-web",
+ "rcgen",
  "redb",
  "rstest",
  "rustls",

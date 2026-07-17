@@ -19,7 +19,8 @@ pub(crate) use merge::classify_tls;
 pub use model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
     IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig,
-    TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
+    TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig,
+    WebhookSecret,
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,

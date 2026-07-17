@@ -317,6 +317,9 @@ name = "internal"
 url = "https://packages.example/simple/"
 artifact_url = "https://artifacts.example/"
 password_file = "/run/secrets/internal-password"
+ca_file = "/run/secrets/internal-ca.pem"
+client_cert_file = "/run/secrets/internal-client.pem"
+client_key_file = "/run/secrets/internal-client-key.pem"
 
 [[index.upstream]]
 name = "public"
@@ -369,7 +372,10 @@ fn test_backup_snapshots_where_the_upload_token_lives(#[case] source: SecretSour
 #[rstest]
 #[case::password("password_file = \"/run/secrets/pw\"")]
 #[case::token("token_file = \"/run/secrets/tok\"")]
-fn test_backup_snapshots_where_upstream_credentials_live(#[case] expected: &str) {
+#[case::ca("ca_file = \"/run/secrets/ca.pem\"")]
+#[case::certificate("client_cert_file = \"/run/secrets/client.pem\"")]
+#[case::key("client_key_file = \"/run/secrets/client-key.pem\"")]
+fn test_backup_snapshots_upstream_secret_paths(#[case] expected: &str) {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");
     std::fs::create_dir(&data_dir).unwrap();
@@ -379,11 +385,17 @@ fn test_backup_snapshots_where_upstream_credentials_live(#[case] expected: &str)
         data_dir,
         ..Config::default()
     };
-    let IndexKind::Cached { password, token, .. } = &mut config.indexes[0].kind else {
+    let IndexKind::Cached {
+        password, token, tls, ..
+    } = &mut config.indexes[0].kind
+    else {
         panic!("expected a cached index");
     };
     *password = Some(SecretSource::File(PathBuf::from("/run/secrets/pw")));
     *token = Some(SecretSource::File(PathBuf::from("/run/secrets/tok")));
+    tls.ca_file = Some(PathBuf::from("/run/secrets/ca.pem"));
+    tls.client_cert_file = Some(PathBuf::from("/run/secrets/client.pem"));
+    tls.client_key_file = Some(PathBuf::from("/run/secrets/client-key.pem"));
 
     operator::backup_create(&config, &backup, &mut Vec::new()).unwrap();
 

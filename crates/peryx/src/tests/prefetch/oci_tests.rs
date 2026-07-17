@@ -29,6 +29,7 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
                 username: None,
                 password: None,
                 token: None,
+                tls: crate::config::UpstreamTlsConfig::default(),
                 routing: None,
                 upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
                 offline: false,

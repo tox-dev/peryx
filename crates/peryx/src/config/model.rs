@@ -272,6 +272,8 @@ pub enum IndexKind {
         /// Bearer token; takes precedence over username/password. A `token_file` sibling keeps it out
         /// of the config file.
         token: Option<SecretSource>,
+        /// Per-upstream trust and client identity files.
+        tls: UpstreamTlsConfig,
         /// Ordered named sources and fallback controls. `None` preserves the legacy single-upstream
         /// behavior of `cached = URL`.
         routing: Option<Box<UpstreamRoutingConfig>>,
@@ -305,6 +307,28 @@ pub struct UpstreamConfig {
     pub username: Option<String>,
     pub password: Option<SecretSource>,
     pub token: Option<SecretSource>,
+    pub tls: UpstreamTlsConfig,
+}
+
+/// Paths to TLS material read when an upstream client is constructed.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct UpstreamTlsConfig {
+    pub ca_file: Option<PathBuf>,
+    pub client_cert_file: Option<PathBuf>,
+    pub client_key_file: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for UpstreamTlsConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UpstreamTlsConfig")
+            .field("custom_ca", &self.ca_file.is_some())
+            .field(
+                "client_identity",
+                &(self.client_cert_file.is_some() || self.client_key_file.is_some()),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,6 +450,7 @@ fn default_indexes() -> Vec<IndexConfig> {
         username: None,
         password: None,
         token: None,
+        tls: UpstreamTlsConfig::default(),
         routing: None,
         upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
         offline: false,

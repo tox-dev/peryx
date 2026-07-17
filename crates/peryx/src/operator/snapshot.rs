@@ -77,6 +77,12 @@ enum SnapshotIndexKind<'a> {
         token: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         token_file: Option<&'a Path>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ca_file: Option<&'a Path>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_cert_file: Option<&'a Path>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_key_file: Option<&'a Path>,
         upstream_concurrency: usize,
         offline: bool,
         prefetch: SnapshotPrefetch<'a>,
@@ -122,6 +128,12 @@ struct SnapshotUpstream<'a> {
     token: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     token_file: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ca_file: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_cert_file: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_key_file: Option<&'a Path>,
 }
 
 #[derive(Serialize)]
@@ -375,6 +387,7 @@ fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {
             username,
             password,
             token,
+            tls,
             routing,
             upstream_concurrency,
             offline,
@@ -390,6 +403,9 @@ fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {
                     password_file,
                     token,
                     token_file,
+                    ca_file: tls.ca_file.as_deref(),
+                    client_cert_file: tls.client_cert_file.as_deref(),
+                    client_key_file: tls.client_key_file.as_deref(),
                     upstream_concurrency: *upstream_concurrency,
                     offline: *offline,
                     prefetch: snapshot_prefetch(prefetch),
@@ -444,6 +460,9 @@ fn snapshot_upstream(upstream: &crate::config::UpstreamConfig) -> SnapshotUpstre
         password_file,
         token,
         token_file,
+        ca_file: upstream.tls.ca_file.as_deref(),
+        client_cert_file: upstream.tls.client_cert_file.as_deref(),
+        client_key_file: upstream.tls.client_key_file.as_deref(),
     }
 }
 

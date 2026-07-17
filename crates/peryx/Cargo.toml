@@ -86,6 +86,7 @@ tar.workspace = true
 flate2.workspace = true
 redb.workspace = true
 wiremock.workspace = true
+rcgen = "0.13.2"
 
 [lints]
 workspace = true

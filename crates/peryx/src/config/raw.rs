@@ -198,6 +198,9 @@ pub struct RawIndex {
     pub password_file: Option<PathBuf>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+    pub ca_file: Option<PathBuf>,
+    pub client_cert_file: Option<PathBuf>,
+    pub client_key_file: Option<PathBuf>,
     pub upstream_concurrency: Option<usize>,
     pub offline: Option<bool>,
     pub prefetch: Option<RawPrefetchConfig>,
@@ -228,6 +231,9 @@ pub struct RawUpstream {
     pub password_file: Option<PathBuf>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+    pub ca_file: Option<PathBuf>,
+    pub client_cert_file: Option<PathBuf>,
+    pub client_key_file: Option<PathBuf>,
 }
 
 /// A raw `[[index.access_token]]` table: one named credential, its grant, and when it stops working.

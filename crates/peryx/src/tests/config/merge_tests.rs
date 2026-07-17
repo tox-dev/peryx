@@ -295,6 +295,81 @@ token = "bearer"
 }
 
 #[test]
+fn test_upstream_tls_paths_resolve_for_legacy_and_routed_sources() {
+    let config = toml_config(
+        r#"
+[[index]]
+name = "legacy"
+cached = "https://legacy.example/simple/"
+ca_file = "/run/tls/legacy-ca.pem"
+client_cert_file = "/run/tls/legacy-cert.pem"
+client_key_file = "/run/tls/legacy-key.pem"
+
+[[index]]
+name = "routed"
+[[index.upstream]]
+name = "primary"
+url = "https://primary.example/simple/"
+ca_file = "/run/tls/primary-ca.pem"
+"#,
+    );
+    let IndexKind::Cached { tls, .. } = &config.indexes[0].kind else {
+        panic!("expected cached index");
+    };
+    assert_eq!(tls.ca_file.as_deref(), Some(Path::new("/run/tls/legacy-ca.pem")));
+    assert_eq!(
+        tls.client_cert_file.as_deref(),
+        Some(Path::new("/run/tls/legacy-cert.pem"))
+    );
+    assert_eq!(
+        tls.client_key_file.as_deref(),
+        Some(Path::new("/run/tls/legacy-key.pem"))
+    );
+    let IndexKind::Cached {
+        routing: Some(routing), ..
+    } = &config.indexes[1].kind
+    else {
+        panic!("expected routed cached index");
+    };
+    assert_eq!(
+        routing.upstreams[0].tls.ca_file.as_deref(),
+        Some(Path::new("/run/tls/primary-ca.pem"))
+    );
+    assert_eq!(
+        format!("{:?}", routing.upstreams[0].tls),
+        "UpstreamTlsConfig { custom_ca: true, client_identity: false }"
+    );
+}
+
+#[rstest]
+#[case::legacy_certificate_only(
+    "[[index]]\nname = \"pypi\"\ncached = \"https://example/simple/\"\nclient_cert_file = \"cert.pem\"\n"
+)]
+#[case::legacy_key_only(
+    "[[index]]\nname = \"pypi\"\ncached = \"https://example/simple/\"\nclient_key_file = \"key.pem\"\n"
+)]
+#[case::routed_certificate_only(
+    "[[index]]\nname = \"pypi\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://example/simple/\"\nclient_cert_file = \"cert.pem\"\n"
+)]
+#[case::routed_key_only(
+    "[[index]]\nname = \"pypi\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://example/simple/\"\nclient_key_file = \"key.pem\"\n"
+)]
+fn test_upstream_client_certificate_and_key_are_a_pair(#[case] text: &str) {
+    assert_eq!(
+        toml_error(text).to_string(),
+        "index pypi: `client_cert_file` and `client_key_file` must be configured together"
+    );
+}
+
+#[test]
+fn test_upstream_tls_files_require_a_cached_index() {
+    assert_eq!(
+        toml_error("[[index]]\nname = \"hosted\"\nhosted = true\nca_file = \"ca.pem\"\n").to_string(),
+        "index hosted: upstream TLS files require a cached index"
+    );
+}
+
+#[test]
 fn test_cached_url_and_ordered_upstreams_are_mutually_exclusive() {
     let err = toml_error(
         "[[index]]\nname = \"pypi\"\ncached = \"https://pypi.org/simple/\"\n\
@@ -315,6 +390,11 @@ fn test_cached_url_and_ordered_upstreams_are_mutually_exclusive() {
     "[[index]]\nname = \"pypi\"\ntoken = \"wrong-level\"\n\
      [[index.upstream]]\nname = \"public\"\nurl = \"https://pypi.org/simple/\"\n",
     "credentials for `[[index.upstream]]` belong on each source"
+)]
+#[case::tls_on_index(
+    "[[index]]\nname = \"pypi\"\nca_file = \"wrong-level.pem\"\n\
+     [[index.upstream]]\nname = \"public\"\nurl = \"https://pypi.org/simple/\"\n",
+    "TLS files for `[[index.upstream]]` belong on each source"
 )]
 fn test_ordered_upstream_options_reject_ambiguous_placement(#[case] text: &str, #[case] reason: &str) {
     assert_eq!(toml_error(text).to_string(), format!("index pypi: {reason}"));

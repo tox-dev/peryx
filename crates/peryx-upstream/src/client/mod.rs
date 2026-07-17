@@ -3,6 +3,7 @@
 mod error;
 mod netrc;
 pub mod retry;
+mod tls;
 
 mod response;
 
@@ -26,6 +27,7 @@ use self::retry::{
 pub use self::error::{RangeError, UpstreamError};
 pub use self::netrc::{Netrc, NetrcError};
 pub use self::response::FileHead;
+pub use self::tls::{UpstreamTls, UpstreamTlsError};
 
 const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -99,6 +101,8 @@ pub struct UpstreamClient {
     /// File downloads only: HTTP/2 would multiplex every artifact over one TCP connection and its
     /// single congestion window, so bulk transfers force HTTP/1.1 and get a connection each.
     bulk: reqwest::Client,
+    cross_origin_http: reqwest::Client,
+    cross_origin_bulk: reqwest::Client,
     base: Url,
     auth: Auth,
     range_support: Arc<AtomicU8>,
@@ -129,37 +133,74 @@ impl UpstreamClient {
     /// Returns [`UpstreamError::Url`] if `base` is not a valid URL, or [`UpstreamError::Http`] if
     /// the HTTP client cannot be built.
     pub fn with_auth(base: &str, auth: Auth) -> Result<Self, UpstreamError> {
+        Self::with_auth_and_tls(base, auth, &UpstreamTls::default())
+    }
+
+    /// Build a client for `base` with HTTP authentication and per-upstream TLS material.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::Url`] if `base` is not a valid URL, or [`UpstreamError::Http`] if
+    /// the TLS material is invalid or the HTTP clients cannot be built.
+    pub fn with_auth_and_tls(base: &str, auth: Auth, tls: &UpstreamTls) -> Result<Self, UpstreamError> {
+        Self::with_auth_and_tls_for_origin(base, auth, tls, base)
+    }
+
+    /// Build a client whose TLS identity is available only when `base` shares `identity_origin`.
+    /// Custom trust roots remain available on another origin.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::Url`] if either origin is invalid, or [`UpstreamError::Http`] if
+    /// the TLS material is invalid or the HTTP clients cannot be built.
+    pub fn with_auth_and_tls_for_origin(
+        base: &str,
+        auth: Auth,
+        tls: &UpstreamTls,
+        identity_origin: &str,
+    ) -> Result<Self, UpstreamError> {
         // Pin the ring crypto provider: unlike aws-lc it is pure Rust plus portable assembly, so
         // every release target cross-compiles without a C toolchain. Err means already installed.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut base = Url::parse(base)?;
+        let include_identity = same_origin(&base, &Url::parse(identity_origin)?);
         if !base.path().ends_with('/') {
             let with_slash = format!("{}/", base.path());
             base.set_path(&with_slash);
         }
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            // Saturate the network: plenty of warm connections per upstream host, HTTP/2 with
-            // adaptive flow-control windows, and no idle-pool eviction between resolver bursts.
-            .pool_max_idle_per_host(32)
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .http2_adaptive_window(true)
-            .tcp_keepalive(std::time::Duration::from_mins(1))
-            .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
-            .build()?;
-        let bulk = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .pool_max_idle_per_host(32)
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .http1_only()
-            .tcp_keepalive(std::time::Duration::from_mins(1))
-            .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
-            .build()?;
+        let http = configure_http_client(
+            tls.apply(reqwest::Client::builder(), include_identity),
+            identity_redirect_policy(&base, tls, include_identity),
+        )
+        .http2_adaptive_window(true)
+        .build()?;
+        let bulk = configure_http_client(
+            tls.apply(reqwest::Client::builder(), include_identity),
+            identity_redirect_policy(&base, tls, include_identity),
+        )
+        .http1_only()
+        .build()?;
+        let (cross_origin_http, cross_origin_bulk) = if include_identity && tls.has_identity() {
+            (
+                configure_http_client(
+                    tls.apply(reqwest::Client::builder(), false),
+                    reqwest::redirect::Policy::default(),
+                )
+                .http2_adaptive_window(true)
+                .build()?,
+                configure_http_client(
+                    tls.apply(reqwest::Client::builder(), false),
+                    reqwest::redirect::Policy::default(),
+                )
+                .http1_only()
+                .build()?,
+            )
+        } else {
+            (http.clone(), bulk.clone())
+        };
         Ok(Self {
             http,
             bulk,
+            cross_origin_http,
+            cross_origin_bulk,
             base,
             auth,
             range_support: Arc::new(AtomicU8::new(RANGE_UNKNOWN)),
@@ -173,6 +214,22 @@ impl UpstreamClient {
             _ if !same_origin(&self.base, url) => request,
             Auth::Basic { username, password } => request.basic_auth(username, Some(password)),
             Auth::Bearer(token) => request.bearer_auth(token),
+        }
+    }
+
+    fn http(&self, url: &Url) -> &reqwest::Client {
+        if same_origin(&self.base, url) {
+            &self.http
+        } else {
+            &self.cross_origin_http
+        }
+    }
+
+    fn bulk(&self, url: &Url) -> &reqwest::Client {
+        if same_origin(&self.base, url) {
+            &self.bulk
+        } else {
+            &self.cross_origin_bulk
         }
     }
 
@@ -215,7 +272,12 @@ impl UpstreamClient {
         use futures_util::TryStreamExt as _;
         let url = Url::parse(url)?;
         let response = self
-            .send_with_retry(|| self.authenticate(self.bulk.get(url.clone()).header(ACCEPT_ENCODING, "identity"), &url))
+            .send_with_retry(|| {
+                self.authenticate(
+                    self.bulk(&url).get(url.clone()).header(ACCEPT_ENCODING, "identity"),
+                    &url,
+                )
+            })
             .await?
             .error_for_status()?;
         Ok(response.bytes_stream().map_err(UpstreamError::from))
@@ -231,7 +293,10 @@ impl UpstreamClient {
         loop {
             let response = self
                 .send_with_retry(|| {
-                    self.authenticate(self.bulk.get(url.clone()).header(ACCEPT_ENCODING, "identity"), &url)
+                    self.authenticate(
+                        self.bulk(&url).get(url.clone()).header(ACCEPT_ENCODING, "identity"),
+                        &url,
+                    )
                 })
                 .await?
                 .error_for_status()?;
@@ -259,7 +324,10 @@ impl UpstreamClient {
         loop {
             let response = self
                 .send_with_retry(|| {
-                    self.authenticate(self.bulk.get(url.clone()).header(ACCEPT_ENCODING, "identity"), &url)
+                    self.authenticate(
+                        self.bulk(&url).get(url.clone()).header(ACCEPT_ENCODING, "identity"),
+                        &url,
+                    )
                 })
                 .await?
                 .error_for_status()?;
@@ -310,7 +378,7 @@ impl UpstreamClient {
     pub async fn head_file_for_range(&self, url: &str) -> Result<FileHead, RangeError> {
         let url = Url::parse(url).map_err(UpstreamError::from)?;
         let response = self
-            .authenticate(self.http.head(url.clone()), &url)
+            .authenticate(self.http(&url).head(url.clone()), &url)
             .header(ACCEPT_ENCODING, "identity")
             .send()
             .await
@@ -357,7 +425,7 @@ impl UpstreamClient {
         };
         let url = Url::parse(url).map_err(UpstreamError::from)?;
         let response = self
-            .authenticate(self.http.get(url.clone()), &url)
+            .authenticate(self.http(&url).get(url.clone()), &url)
             .header(ACCEPT_ENCODING, "identity")
             .header(RANGE, format!("bytes={start}-{end}"))
             .send()
@@ -461,7 +529,7 @@ impl UpstreamClient {
     ) -> Result<reqwest::Response, UpstreamError> {
         self.send_with_retry(|| {
             let mut request = self
-                .authenticate(self.http.get(url.clone()), &url)
+                .authenticate(self.http(&url).get(url.clone()), &url)
                 .header(ACCEPT, accept);
             if let Some(etag) = etag {
                 request = request.header(IF_NONE_MATCH, etag);
@@ -507,6 +575,35 @@ fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host() == right.host()
         && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn configure_http_client(
+    builder: reqwest::ClientBuilder,
+    redirect: reqwest::redirect::Policy,
+) -> reqwest::ClientBuilder {
+    builder
+        .user_agent(USER_AGENT)
+        .pool_max_idle_per_host(32)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .tcp_keepalive(Duration::from_mins(1))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .tls_version_min(reqwest::tls::Version::TLS_1_3)
+        .redirect(redirect)
+}
+
+fn identity_redirect_policy(base: &Url, tls: &UpstreamTls, include_identity: bool) -> reqwest::redirect::Policy {
+    if !include_identity || !tls.has_identity() {
+        return reqwest::redirect::Policy::default();
+    }
+    let base = base.clone();
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if same_origin(&base, attempt.url()) {
+            reqwest::redirect::Policy::default().redirect(attempt)
+        } else {
+            attempt.error("upstream client identity cannot follow a cross-origin redirect")
+        }
+    })
 }
 
 /// Remove credential-bearing URL parts before displaying configured upstreams.
