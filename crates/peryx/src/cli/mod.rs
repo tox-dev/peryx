@@ -27,7 +27,9 @@ pub use maintenance::{
 pub use mirror::{PrefetchCommand, PrefetchOptions, PrefetchPlanArgs, PrefetchSyncArgs, PrefetchVerifyArgs};
 pub use snippet::{ConfigSnippetArgs, SnippetFormat};
 
-use crate::config::{LogFormat, LogSink, PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig};
+use crate::config::{
+    LogFormat, LogSink, PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig,
+};
 
 /// uv-style help colors: bold green section headers, cyan literals and placeholders.
 const STYLES: Styles = Styles::styled()
@@ -199,6 +201,7 @@ impl RuntimeArgs {
             rate_limit: PartialRateLimitConfig::default(),
             auth: PartialAuthConfig::default(),
             replication: None,
+            jobs: PartialJobsConfig::default(),
         }
     }
 }

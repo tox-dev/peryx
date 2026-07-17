@@ -4,6 +4,7 @@ use crate::config::{self, Config, PartialConfig};
 
 mod auth_tests;
 mod integration_tests;
+mod jobs_tests;
 mod load_tests;
 mod merge_tests;
 mod model_tests;

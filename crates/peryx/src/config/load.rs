@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::ConfigError;
-use super::raw::{PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig};
+use super::raw::{PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig};
 
 /// Parse a TOML document into a [`PartialConfig`].
 ///
@@ -51,6 +51,7 @@ pub fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialCo
         rate_limit: PartialRateLimitConfig::default(),
         auth: PartialAuthConfig::default(),
         replication: None,
+        jobs: PartialJobsConfig::default(),
     })
 }
 

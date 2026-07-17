@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use rstest::rstest;
 
-use crate::config::{self, Config, IndexKind, LogConfig, LogFormat, LogSink, SecretSource};
+use crate::config::{self, Config, IndexKind, JobsConfig, JobsMode, LogConfig, LogFormat, LogSink, SecretSource};
 use crate::operator;
 
 use super::backup_fixture;
@@ -367,6 +367,38 @@ fn test_backup_snapshots_where_the_upload_token_lives(#[case] source: SecretSour
 
     let snapshot = std::fs::read_to_string(backup.join("config.toml")).unwrap();
     assert!(snapshot.contains(expected), "{snapshot}");
+}
+
+#[test]
+fn test_backup_snapshots_disabled_jobs_but_omits_the_default() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    drop(MetaStore::open(data_dir.join("peryx.redb")).unwrap());
+    let backup = root.path().join("backup");
+
+    let default = Config {
+        data_dir,
+        ..Config::default()
+    };
+    operator::backup_create(&default, &backup, &mut Vec::new()).unwrap();
+    assert!(
+        !std::fs::read_to_string(backup.join("config.toml"))
+            .unwrap()
+            .contains("[jobs]")
+    );
+
+    let disabled = Config {
+        jobs: JobsConfig { mode: JobsMode::None },
+        ..default
+    };
+    let backup = root.path().join("backup-none");
+    operator::backup_create(&disabled, &backup, &mut Vec::new()).unwrap();
+    let snapshot = std::fs::read_to_string(backup.join("config.toml")).unwrap();
+    let restored = Config::default()
+        .apply(config::from_toml(PathBuf::from("config.toml"), &snapshot).unwrap())
+        .unwrap();
+    assert_eq!(restored.jobs.mode, JobsMode::None);
 }
 
 #[rstest]

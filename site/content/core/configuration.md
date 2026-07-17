@@ -24,6 +24,7 @@ or `PERYX_*` environment variables, which override the file. Precedence is `defa
 | Stale-on-error bound (s)  | (file/env only)     | `PERYX_MAX_STALE_SECS`  | `max_stale_secs`  | `300`        |
 | Indexes                   | (file only)         | (n/a)                   | `[[index]]`       | (see below)  |
 | Rate limits               | (file only)         | (n/a)                   | `[rate_limit]`    | (see below)  |
+| Background jobs           | (file only)         | (n/a)                   | `[jobs]`          | (see below)  |
 
 Environment variables sit between the file and flags: a `PERYX_*` value overrides the TOML file, and a flag overrides
 the variable. Only scalar settings are environment-configurable. The `[[index]]` topology and `[rate_limit]` block stay
@@ -535,6 +536,25 @@ name = "pypi"
 cached = "https://pypi.org/simple/"
 upstream_concurrency = 4
 ```
+
+## `[jobs]`
+
+The `[jobs]` table controls the node-local background work peryx runs on a timer: reclaiming expired process resources
+and revalidating stale cached pages. Each ecosystem is swept on its own, so independent repositories run together while
+one repository never sweeps itself twice at once.
+
+```toml
+[jobs]
+mode = "none"
+```
+
+| Key    | Meaning                                                    | Default |
+| ------ | ---------------------------------------------------------- | ------- |
+| `mode` | `local` runs maintenance on this node; `none` runs nothing | `local` |
+
+`mode = "none"` starts no scheduler, timer, or worker, which suits a node fronted by an external maintenance runner or
+one that should only serve. A [read replica](@/core/high-availability.md) runs no maintenance regardless of this
+setting.
 
 ## `[auth]`
 

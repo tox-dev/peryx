@@ -26,8 +26,8 @@ ipnet.workspace = true
 moka = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "fs"] }
-tokio-util.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time", "fs"] }
+tokio-util = { workspace = true, features = ["rt"] }
 thiserror.workspace = true
 tracing.workspace = true
 utoipa.workspace = true

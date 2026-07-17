@@ -15,6 +15,7 @@ pub mod conditional;
 pub mod discovery;
 pub mod download;
 mod driver_set;
+pub mod jobs;
 pub mod openapi;
 pub mod range;
 pub mod rate_limit;
