@@ -654,15 +654,22 @@ async fn test_if_range_without_a_range_is_ignored() {
 }
 /// Register the wheel's upstream URL from an index page, with the size that page publishes, and refuse
 /// to serve its bytes: anything that reaches for the body fails the mock's expectation.
+///
+/// The page advertises the file's PEP 658 metadata sibling so the detached metadata backfill has
+/// nothing to synthesize. Without it, resolving a wheel that advertises no metadata spawns a
+/// background task that fetches the artifact from upstream to read its `METADATA` member. That fetch
+/// races the mock's verify-on-drop under load, the very thing the `expect(0)` guard must stay free of.
 async fn uncached_wheel_uri(h: &Harness, published_size: Option<usize>) -> String {
     let digest = Digest::of(WHEEL);
     let size = published_size.map_or_else(String::new, |size| format!(",\"size\":{size}"));
+    let metadata_digest = Digest::of(b"flask metadata");
     let detail = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{}/files/flask.whl\",\
-         \"hashes\":{{\"sha256\":\"{}\"}}{size}}}]}}",
+         \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}{size}}}]}}",
         h.server.uri(),
-        digest.as_str()
+        digest.as_str(),
+        metadata_digest.as_str()
     );
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
