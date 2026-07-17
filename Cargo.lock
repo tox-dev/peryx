@@ -3880,11 +3880,13 @@ name = "peryx-index"
 version = "0.0.1"
 dependencies = [
  "bytes",
+ "hdrhistogram",
  "moka",
  "peryx-core",
  "peryx-identity",
  "peryx-policy",
  "peryx-upstream",
+ "stats_alloc",
  "tokio",
 ]
 

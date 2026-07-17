@@ -1,6 +1,39 @@
 //! Resolving a request against the configured indexes, and the order a virtual index merges them in.
 
+use std::collections::HashMap;
+
 use crate::index::{Index, IndexKind};
+
+/// Immutable repository-route positions for request dispatch.
+pub struct RouteResolver {
+    positions: HashMap<Box<str>, usize>,
+}
+
+impl RouteResolver {
+    /// Copy validated routes once so request lookup can borrow path slices.
+    #[must_use]
+    pub fn new(indexes: &[Index]) -> Self {
+        Self {
+            positions: indexes
+                .iter()
+                .enumerate()
+                .map(|(position, index)| (Box::from(index.route.as_str()), position))
+                .collect(),
+        }
+    }
+
+    /// Resolve the longest segment-aligned route prefix without allocating.
+    #[must_use]
+    pub fn resolve<'a>(&self, path: &'a str) -> Option<(usize, &'a str)> {
+        let mut end = path.len();
+        loop {
+            if let Some(&position) = self.positions.get(&path[..end]) {
+                return Some((position, if end == path.len() { "" } else { &path[end + 1..] }));
+            }
+            end = path[..end].rfind('/')?;
+        }
+    }
+}
 
 /// The part of `path` after `route`, requiring a segment boundary so `team/dev` does not match
 /// `team/development`. `""` means the index route itself.
@@ -10,22 +43,6 @@ pub fn remainder<'a>(path: &'a str, route: &str) -> Option<&'a str> {
         return Some("");
     }
     path.strip_prefix(route)?.strip_prefix('/')
-}
-
-/// The position of the index whose route is the longest segment-aligned prefix of `path` (which has
-/// no leading slash), and the path remainder after `route/`. `None` when no route matches.
-#[must_use]
-pub fn resolve_position<'a>(indexes: &[Index], path: &'a str) -> Option<(usize, &'a str)> {
-    let mut best: Option<(usize, &str)> = None;
-    for (position, index) in indexes.iter().enumerate() {
-        let Some(rest) = remainder(path, &index.route) else {
-            continue;
-        };
-        if best.is_none_or(|(current, _)| index.route.len() > indexes[current].route.len()) {
-            best = Some((position, rest));
-        }
-    }
-    best
 }
 
 /// A virtual index's members in shadowing order: every non-cached member first, then the cached ones.
@@ -44,12 +61,65 @@ pub fn shadow_order(indexes: &[Index], layers: &[usize]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{remainder, resolve_position, shadow_order};
+    use super::{RouteResolver, remainder, shadow_order};
     use crate::index::{Index, IndexKind};
     use peryx_core::Ecosystem;
     use peryx_identity::IndexAcl;
     use peryx_policy::Policy;
     use peryx_upstream::UpstreamClient;
+
+    #[test]
+    fn test_remainder_requires_a_segment_boundary() {
+        assert_eq!(
+            [
+                remainder("team/dev", "team/dev"),
+                remainder("team/dev/simple", "team/dev"),
+                remainder("team/development", "team/dev"),
+            ],
+            [Some(""), Some("simple"), None]
+        );
+    }
+
+    #[test]
+    fn test_route_resolver_prefers_the_longest_segment_aligned_route() {
+        let indexes = vec![index("short", "team", hosted()), index("long", "team/dev", hosted())];
+        let resolver = RouteResolver::new(&indexes);
+        assert_eq!(
+            [
+                resolver.resolve("team/dev"),
+                resolver.resolve("team/dev/"),
+                resolver.resolve("team/dev/simple/naïve"),
+                resolver.resolve("team/other"),
+                resolver.resolve("team/development"),
+                resolver.resolve("elsewhere"),
+            ],
+            [
+                Some((1, "")),
+                Some((1, "")),
+                Some((1, "simple/naïve")),
+                Some((0, "other")),
+                Some((0, "development")),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_shadow_order_puts_cached_members_last_whatever_the_configured_order() {
+        let indexes = vec![index("pypi", "pypi", cached()), index("hosted", "hosted", hosted())];
+        assert_eq!(shadow_order(&indexes, &[0, 1]), vec![1, 0]);
+        assert_eq!(shadow_order(&indexes, &[1, 0]), vec![1, 0]);
+    }
+
+    #[test]
+    fn test_shadow_order_keeps_configured_order_within_a_group() {
+        let indexes = vec![
+            index("hosted-a", "a", hosted()),
+            index("pypi", "pypi", cached()),
+            index("hosted-b", "b", hosted()),
+        ];
+        assert_eq!(shadow_order(&indexes, &[0, 1, 2]), vec![0, 2, 1]);
+    }
 
     fn index(name: &str, route: &str, kind: IndexKind) -> Index {
         Index {
@@ -71,37 +141,5 @@ mod tests {
 
     const fn hosted() -> IndexKind {
         IndexKind::Hosted { volatile: false }
-    }
-
-    #[test]
-    fn test_remainder_requires_a_segment_boundary() {
-        assert_eq!(remainder("team/dev", "team/dev"), Some(""));
-        assert_eq!(remainder("team/dev/simple", "team/dev"), Some("simple"));
-        assert_eq!(remainder("team/development", "team/dev"), None);
-    }
-
-    #[test]
-    fn test_resolve_position_prefers_the_longest_route() {
-        let indexes = vec![index("short", "team", hosted()), index("long", "team/dev", hosted())];
-        assert_eq!(resolve_position(&indexes, "team/dev/simple"), Some((1, "simple")));
-        assert_eq!(resolve_position(&indexes, "team/other"), Some((0, "other")));
-        assert_eq!(resolve_position(&indexes, "elsewhere"), None);
-    }
-
-    #[test]
-    fn test_shadow_order_puts_cached_members_last_whatever_the_configured_order() {
-        let indexes = vec![index("pypi", "pypi", cached()), index("hosted", "hosted", hosted())];
-        assert_eq!(shadow_order(&indexes, &[0, 1]), vec![1, 0]);
-        assert_eq!(shadow_order(&indexes, &[1, 0]), vec![1, 0]);
-    }
-
-    #[test]
-    fn test_shadow_order_keeps_configured_order_within_a_group() {
-        let indexes = vec![
-            index("hosted-a", "a", hosted()),
-            index("pypi", "pypi", cached()),
-            index("hosted-b", "b", hosted()),
-        ];
-        assert_eq!(shadow_order(&indexes, &[0, 1, 2]), vec![0, 2, 1]);
     }
 }
