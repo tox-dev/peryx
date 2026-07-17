@@ -9,7 +9,7 @@ use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
 
-use super::model::{LogFormat, LogSink, PrefetchConfig, PrefetchMode};
+use super::model::{JobsMode, LogFormat, LogSink, PrefetchConfig, PrefetchMode};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -72,6 +72,14 @@ pub struct PartialConfig {
     pub rate_limit: PartialRateLimitConfig,
     pub auth: PartialAuthConfig,
     pub replication: Option<RawReplication>,
+    pub jobs: PartialJobsConfig,
+}
+
+/// The `[jobs]` half of [`PartialConfig`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialJobsConfig {
+    pub mode: Option<JobsMode>,
 }
 
 /// One process replication role before secret and numeric validation.

@@ -14,12 +14,12 @@ use std::collections::HashSet;
 use super::ConfigError;
 use super::model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
-    IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig,
+    IndexKind, JobsConfig, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig,
     UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
 };
 use super::raw::{
-    PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
-    RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
+    PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
+    RawAcme, RawIndex, RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
 };
 
 impl Config {
@@ -71,7 +71,18 @@ impl Config {
         if let Some(replication) = partial.replication {
             self.replication = Some(classify_replication(replication)?);
         }
+        self.jobs = self.jobs.apply(partial.jobs);
         Ok(self)
+    }
+}
+
+impl JobsConfig {
+    #[must_use]
+    const fn apply(mut self, partial: PartialJobsConfig) -> Self {
+        if let Some(mode) = partial.mode {
+            self.mode = mode;
+        }
+        self
     }
 }
 

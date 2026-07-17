@@ -14,8 +14,9 @@ use time::format_description::well_known::Rfc3339;
 use toml::{Table, Value};
 
 use crate::config::{
-    AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig,
-    PrefetchMode, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
+    AcmeConfig, AuthConfig, Config, IndexConfig, IndexKind, JobsConfig, JobsMode, LogConfig, LogFormat, LogSink,
+    PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig,
+    WebhookSecret,
 };
 
 #[derive(Serialize)]
@@ -42,6 +43,13 @@ struct SnapshotConfig<'a> {
     auth: SnapshotAuth<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     replication: Option<SnapshotReplication<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jobs: Option<SnapshotJobs>,
+}
+
+#[derive(Serialize)]
+struct SnapshotJobs {
+    mode: &'static str,
 }
 
 #[derive(Serialize)]
@@ -279,6 +287,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         rate_limit,
         auth,
         replication,
+        jobs,
     } = config;
     let LogConfig {
         level,
@@ -335,8 +344,18 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
                 .collect(),
         },
         replication: snapshot_replication(replication.as_ref()),
+        jobs: snapshot_jobs(*jobs),
     };
     Ok(toml::to_string_pretty(&snapshot)?)
+}
+
+/// A snapshot carries the `[jobs]` table only when it departs from the default, so an unset backup
+/// stays terse and restores to the same default.
+const fn snapshot_jobs(jobs: JobsConfig) -> Option<SnapshotJobs> {
+    match jobs.mode {
+        JobsMode::Local => None,
+        JobsMode::None => Some(SnapshotJobs { mode: "none" }),
+    }
 }
 
 fn snapshot_replication(replication: Option<&ReplicationConfig>) -> Option<SnapshotReplication<'_>> {

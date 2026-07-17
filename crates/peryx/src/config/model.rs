@@ -46,6 +46,24 @@ pub struct Config {
     pub rate_limit: RateLimitConfig,
     pub auth: AuthConfig,
     pub replication: Option<ReplicationConfig>,
+    pub jobs: JobsConfig,
+}
+
+/// The `[jobs]` table: how this node runs its background maintenance.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct JobsConfig {
+    pub mode: JobsMode,
+}
+
+/// Whether a node runs its own background maintenance jobs.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobsMode {
+    /// Run maintenance on this node under the node-local job scheduler.
+    #[default]
+    Local,
+    /// Run no maintenance: start no scheduler, timer, or worker.
+    None,
 }
 
 pub const DEFAULT_REPLICA_PAGE_SIZE: usize = 100;
@@ -413,6 +431,7 @@ impl Default for Config {
             rate_limit: RateLimitConfig::default(),
             auth: AuthConfig::default(),
             replication: None,
+            jobs: JobsConfig::default(),
         }
     }
 }
