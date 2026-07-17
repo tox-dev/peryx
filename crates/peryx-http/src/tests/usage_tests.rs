@@ -34,6 +34,8 @@ async fn test_top_packages_returns_durable_usage() {
             route: repository.into(),
             project: project.into(),
             filename: filename.into(),
+            version: None,
+            source: None,
             bytes,
         });
     }
@@ -72,6 +74,8 @@ async fn test_top_packages_defaults_to_twenty_five() {
             route: "pypi".into(),
             project: format!("project-{project:02}"),
             filename: "file.whl".into(),
+            version: None,
+            source: None,
             bytes: 1,
         });
     }

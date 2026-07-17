@@ -339,10 +339,13 @@ pub fn tail_download(
             }
             match progress.done {
                 Some(Ok(())) => {
+                    let (version, source) = download_dimensions(&tail.state, &tail.digest, &tail.filename);
                     tail.state.metrics.record(Event::Download {
                         route: tail.route.clone(),
                         project: project_of_filename(&tail.filename),
                         filename: tail.filename.clone(),
+                        version,
+                        source,
                         bytes: tail.sent,
                     });
                     return None;
@@ -363,6 +366,23 @@ pub fn tail_download(
     .boxed()
 }
 
+/// The version and routed-source labels for a served artifact's daily-usage bucket.
+///
+/// `version` comes from the filename alone. `source` is the upstream the blob was routed from, read
+/// from the local store: a hosted upload and any blob with no recorded upstream both yield `None`, so
+/// a response served without routing to an upstream carries no source. The read is local and off the
+/// cross-node path, so it stays within the collection boundary's constraints.
+pub fn download_dimensions(state: &ServingState, digest: &Digest, filename: &str) -> (Option<String>, Option<String>) {
+    let version = crate::distribution_version_segment(filename).map(str::to_owned);
+    let source = state
+        .meta
+        .get_file_url(digest.as_str())
+        .ok()
+        .flatten()
+        .and_then(|source| source.upstream);
+    (version, source)
+}
+
 fn committed_download(
     state: Arc<ServingState>,
     digest: Digest,
@@ -380,19 +400,22 @@ fn committed_download(
             .boxed();
         Ok::<_, std::io::Error>(
             futures_util::stream::try_unfold(
-                (stream, state, route, filename, 0u64),
-                |(mut stream, state, route, filename, bytes)| async move {
+                (stream, state, digest, route, filename, 0u64),
+                |(mut stream, state, digest, route, filename, bytes)| async move {
                     let Some(chunk) = stream.next().await.transpose()? else {
+                        let (version, source) = download_dimensions(&state, &digest, &filename);
                         state.metrics.record(Event::Download {
                             route,
                             project: project_of_filename(&filename),
                             filename,
+                            version,
+                            source,
                             bytes,
                         });
                         return Ok(None);
                     };
                     let bytes = bytes.saturating_add(chunk.len() as u64);
-                    Ok(Some((chunk, (stream, state, route, filename, bytes))))
+                    Ok(Some((chunk, (stream, state, digest, route, filename, bytes))))
                 },
             )
             .boxed(),

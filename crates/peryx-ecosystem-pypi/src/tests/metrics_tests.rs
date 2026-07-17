@@ -28,12 +28,16 @@ fn test_events_aggregate_by_index_project_and_file() {
         route: "root/pypi".into(),
         project: "pandas".into(),
         filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl".into(),
+        version: None,
+        source: None,
         bytes: 100,
     });
     metrics.record(Event::Download {
         route: "root/pypi".into(),
         project: "pandas".into(),
         filename: "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl".into(),
+        version: None,
+        source: None,
         bytes: 50,
     });
     metrics.record(Event::Ecosystem {
@@ -245,6 +249,29 @@ async fn test_router_paths_feed_stats_and_prometheus_metrics() {
     assert_eq!(pypi["families"]["metadata"], 1);
     assert_eq!(status["metric_families"][0]["key"], "metadata");
     assert_eq!(status["metric_families"][0]["label"], "PEP 658 metadata hits");
+}
+
+#[tokio::test]
+async fn test_cache_hit_download_records_a_daily_version_bucket() {
+    let harness = harness().await;
+    let wheel = b"wheelcontent";
+    let digest = Digest::of(wheel);
+    harness.state.blobs.put_bytes_as(wheel, &digest).await.unwrap();
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+
+    let (status, ..) = get(&harness.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    settle(&harness.state.metrics, |metrics| !metrics.daily_usage().is_empty());
+    let usage = harness.state.metrics.daily_usage();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].repository, "pypi");
+    assert_eq!(usage[0].project, "flask");
+    assert_eq!(usage[0].version, "1.0");
+    // Served from the local store with no recorded upstream, so no source was routed to.
+    assert_eq!(usage[0].source, "");
+    assert_eq!(usage[0].downloads, 1);
+    assert_eq!(usage[0].bytes, wheel.len() as u64);
 }
 
 #[tokio::test]

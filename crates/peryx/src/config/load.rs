@@ -39,6 +39,7 @@ pub fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialCo
         hot_cache_bytes: parse_env(&get, "PERYX_HOT_CACHE_BYTES")?,
         netrc: get("PERYX_NETRC").map(PathBuf::from),
         max_stale_secs: parse_env(&get, "PERYX_MAX_STALE_SECS")?,
+        usage_retention_days: parse_env(&get, "PERYX_USAGE_RETENTION_DAYS")?,
         indexes: None,
         tls: None,
         acme: None,

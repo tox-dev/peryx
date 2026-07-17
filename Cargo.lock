@@ -3828,6 +3828,7 @@ name = "peryx-events"
 version = "0.0.1"
 dependencies = [
  "base64",
+ "codspeed-criterion-compat",
  "http",
  "peryx-core",
  "peryx-identity",

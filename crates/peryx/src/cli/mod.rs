@@ -189,6 +189,7 @@ impl RuntimeArgs {
             hot_cache_bytes: None,
             netrc: None,
             max_stale_secs: None,
+            usage_retention_days: None,
             indexes: None,
             tls: None,
             acme: None,

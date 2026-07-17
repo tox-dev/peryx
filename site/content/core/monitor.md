@@ -25,8 +25,10 @@ curl -s 'http://127.0.0.1:4433/+stats?index=root/pypi' | jq '.projects | to_entr
 curl -s 'http://127.0.0.1:4433/+stats?index=root/pypi&project=numpy' | jq .files
 ```
 
-Counters live in memory and reset on restart; for durable time series, scrape `/metrics`. Prometheus sums repositories
-by the bounded `ecosystem` and `role` labels. A query can split PyPI from OCI traffic without storing repository names:
+These counters live in memory and reset on restart; for durable time series, scrape `/metrics`, and see
+[daily version and source usage](#daily-version-and-source-usage) for the one aggregate that survives a restart.
+Prometheus sums repositories by the bounded `ecosystem` and `role` labels. A query can split PyPI from OCI traffic
+without storing repository names:
 
 ```text
 peryx_artifacts_served_total{ecosystem="pypi",role="virtual"}
@@ -37,6 +39,41 @@ Repository, project, file, user, path, error, credential, token, and URL values 
 labels. Use `/+stats` for repository and package drill-down. The
 [endpoint reference](@/ecosystems/pypi/reference/endpoints.md#metrics-compatibility) lists renamed series and
 replacement queries.
+
+## Daily version and source usage
+
+Alongside the in-memory counters, peryx keeps one durable aggregate that survives a restart: daily download totals
+broken down by version and routed source. Each successful artifact response folds into a bucket keyed by repository,
+project, distribution version, routed source, and the UTC day it landed on, holding that bucket's download count and
+byte total. The fold, its persistence, and retention all run on the aggregator thread, so nothing here touches the
+request path.
+
+The dimensions stay narrow. peryx parses `version` from the artifact filename, so a PyPI wheel or sdist carries its
+release and a content-addressed OCI layer carries none. `source` is the named upstream a cache miss routed to; a
+response served from the local store carries no source, because it routed to no upstream. A bucket never holds a
+client's identity, address, or credential, and never an unbounded label. The label set stays bounded by the configured
+repositories, their projects and versions, the configured sources, and the retention window.
+
+### Counting rule
+
+One fully delivered response is one download, counted once when its last expected byte leaves the body:
+
+| Response                                    | Counted                  |
+| ------------------------------------------- | ------------------------ |
+| Full `200` delivered to the last byte       | Once                     |
+| `206` range delivered to the last byte      | Once, for the bytes sent |
+| Truncated, cancelled, or disconnected       | No                       |
+| `4xx`/`5xx`, unauthorized, or policy-denied | No                       |
+
+A range request counts once and records only the bytes it transmitted, so a resumed download is not double-counted
+against the whole artifact. A transfer that fails its digest is rejected, not counted.
+
+### Retention
+
+`usage_retention_days` bounds how many days of buckets to keep; leave it unset to keep them without limit. Expiry drops
+whole expired days on the aggregator thread and never touches a retained day's totals, so tightening the window only
+reclaims durable storage. Existing durable snapshots that predate this aggregate, carry missing dimensions, or fail to
+parse rebuild from zero rather than blocking startup.
 
 ## Check operational status
 

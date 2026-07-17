@@ -20,6 +20,7 @@ mod mutate;
 mod page_stream;
 mod resolve;
 
+pub(crate) use download::download_dimensions;
 pub use download::{FileOutcome, FileProbe, file_path, probe_file, stream_file};
 pub use fetch::{RefreshSummary, refresh_stale_pages};
 pub use metadata::{metadata_bytes, registered_file_size};

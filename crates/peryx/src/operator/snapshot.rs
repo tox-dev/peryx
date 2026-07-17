@@ -33,6 +33,8 @@ struct SnapshotConfig<'a> {
     cache_ttl_secs: i64,
     hot_cache_bytes: u64,
     max_stale_secs: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage_retention_days: Option<u32>,
     index: Vec<SnapshotIndex<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tls: Option<SnapshotTls<'a>>,
@@ -289,6 +291,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         cache_ttl_secs,
         hot_cache_bytes,
         max_stale_secs,
+        usage_retention_days,
         indexes,
         tls,
         log,
@@ -323,6 +326,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         cache_ttl_secs: *cache_ttl_secs,
         hot_cache_bytes: *hot_cache_bytes,
         max_stale_secs: *max_stale_secs,
+        usage_retention_days: *usage_retention_days,
         index: indexes.iter().map(snapshot_index).collect::<anyhow::Result<_>>()?,
         tls,
         acme,

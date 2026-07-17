@@ -69,6 +69,7 @@ const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
 const POLICY_DECISION_SERIAL_KEY: &str = "policy_decision";
 const ANALYTICS_KEY: &str = "downloads";
+const ANALYTICS_DAILY_KEY: &str = "daily_usage";
 const WRITER_KEY: &str = "active";
 
 /// A set of driver-owned writes to apply in one transaction.

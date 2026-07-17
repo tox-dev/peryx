@@ -39,6 +39,9 @@ pub struct RuntimeOptions<I> {
     /// unreachable. `0` means without limit: a mirror in front of a flaky upstream can be told to
     /// keep serving whatever it last saw, but that is an operator's explicit choice, not a default.
     pub max_stale_secs: i64,
+    /// How many days of daily version-and-source usage buckets to retain; `None` keeps them without
+    /// limit. Older buckets expire on the aggregator thread, never on the request path.
+    pub usage_retention_days: Option<u32>,
 }
 
 /// How long an outage may be papered over with a stale page, when an operator configures no bound.
@@ -159,6 +162,7 @@ impl AppState {
                 webhooks: WebhookRuntime::disabled(),
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
                 max_stale_secs: DEFAULT_MAX_STALE_SECS,
+                usage_retention_days: None,
             },
         )
     }
@@ -218,6 +222,7 @@ impl AppState {
                 webhooks: WebhookRuntime::disabled(),
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
                 max_stale_secs: DEFAULT_MAX_STALE_SECS,
+                usage_retention_days: None,
             },
         )
     }
@@ -248,6 +253,7 @@ impl AppState {
                 webhooks,
                 hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
                 max_stale_secs: DEFAULT_MAX_STALE_SECS,
+                usage_retention_days: None,
             },
         )
     }
@@ -270,6 +276,7 @@ impl AppState {
             webhooks,
             hot_cache_bytes,
             max_stale_secs,
+            usage_retention_days,
         } = runtime;
         let configured: HashMap<_, _> = upstream_concurrency.into_iter().collect();
         let upstream_limits = indexes
@@ -285,7 +292,7 @@ impl AppState {
                 IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
             })
             .collect::<Vec<_>>();
-        let metrics = Metrics::start_durable(meta.analytics());
+        let metrics = Metrics::start_durable(meta.analytics(), usage_retention_days, clock.clone());
         Self {
             serving: std::sync::Arc::new(super::app::ServingState {
                 meta,

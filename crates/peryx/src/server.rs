@@ -103,6 +103,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
             webhooks,
             hot_cache_bytes: config.hot_cache_bytes,
             max_stale_secs: config.max_stale_secs,
+            usage_retention_days: config.usage_retention_days,
         },
     )
     .context(format!("open search index {}", search_path.display()))?;

@@ -14,11 +14,22 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use peryx_core::Role;
 use peryx_storage::meta::AnalyticsHandle;
+
+/// Unix seconds, the shape every peryx clock reports, so the aggregator can date a download's UTC
+/// bucket without pulling in a heavier time type.
+pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+const SECONDS_PER_DAY: i64 = 86_400;
+
+/// The current on-disk shape of the daily-usage snapshot. A snapshot written under any other schema
+/// is rebuilt from zero rather than trusted, so a forward-incompatible format never blocks startup.
+const DAILY_SCHEMA: u32 = 1;
 
 /// One request-path observation.
 #[derive(Debug, Clone)]
@@ -27,10 +38,18 @@ pub enum Event {
     Page { route: String, project: String },
     /// An artifact was served, with its size. `filename` keys the per-file breakdown; `project` is
     /// the pre-normalized owning project (the ecosystem driver derives it, so this stays neutral).
+    ///
+    /// `version` and `source` feed the durable daily aggregate: `version` is the distribution version
+    /// the driver parsed from the artifact identity (`None` when the ecosystem has no version, as with
+    /// content-addressed OCI layers), and `source` is the routed upstream a cache miss fetched from
+    /// (`None` when the bytes came straight from the local store, so no upstream was routed to). The
+    /// driver derives both without touching the store, keeping collection off the request path.
     Download {
         route: String,
         project: String,
         filename: String,
+        version: Option<String>,
+        source: Option<String>,
         bytes: u64,
     },
     /// An ecosystem-specific counter fired. `family` is a static key the ecosystem driver declares
@@ -217,35 +236,101 @@ struct DownloadSnapshot {
     files: Vec<FileDownloadRow>,
 }
 
-/// The recording half handed to request handlers: a clone-cheap sender plus the shared snapshot.
+/// The identity of one daily-usage bucket: a repository/project's downloads of one version, routed
+/// from one source, on one UTC day. `day` leads the ordering so retention drops an expired prefix in
+/// one `BTreeMap` split. Every field is a bounded server-side label, never a client identity, address,
+/// or credential, so the aggregate stays low-cardinality per Prometheus guidance.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DailyKey {
+    day: i64,
+    repository: String,
+    project: String,
+    version: String,
+    source: String,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DailyTotals {
+    downloads: u64,
+    bytes: u64,
+}
+
+/// The live daily aggregate: independent buckets the aggregator folds downloads into and retention
+/// prunes. Kept apart from the all-time per-file [`DownloadSnapshot`] so time-bucketed usage evolves
+/// without disturbing the totals that rebuild the live tree.
+type DailyBuckets = BTreeMap<DailyKey, DailyTotals>;
+
+/// One daily-usage bucket as callers read it: the full dimension tuple plus its totals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DailyUsage {
+    /// The UTC day, in whole days since the Unix epoch.
+    pub day: i64,
+    pub repository: String,
+    pub project: String,
+    /// The distribution version, or empty when the ecosystem reported none.
+    pub version: String,
+    /// The routed upstream, or empty when the bytes were served from the local store.
+    pub source: String,
+    pub downloads: u64,
+    pub bytes: u64,
+}
+
+/// The durable daily aggregate: a schema tag guarding the rows, so a future format change is a
+/// deliberate migration rather than a silent misread.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct DailySnapshot {
+    schema: u32,
+    buckets: Vec<DailyUsage>,
+}
+
+/// The UTC day a Unix-seconds instant falls on, flooring toward the epoch so pre-epoch instants (only
+/// a misconfigured clock reaches them) still map to a stable day rather than rounding across zero.
+const fn utc_day(unix_secs: i64) -> i64 {
+    unix_secs.div_euclid(SECONDS_PER_DAY)
+}
+
+/// The system-wall-clock source used when no clock is injected: Unix seconds, saturating rather than
+/// panicking if the host clock predates the epoch.
+fn system_clock() -> Clock {
+    Arc::new(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+    })
+}
+
+/// The recording half handed to request handlers: a clone-cheap sender plus the shared snapshots.
 #[derive(Clone)]
 pub struct Metrics {
     sender: Sender<Event>,
     tree: Arc<RwLock<StatsTree>>,
+    daily: Arc<RwLock<DailyBuckets>>,
 }
 
 impl Metrics {
-    /// Start an ephemeral aggregator whose counters live only as long as the process.
+    /// Start an ephemeral aggregator whose counters live only as long as the process, dating downloads
+    /// off the system clock and keeping daily buckets without limit.
     ///
     /// # Panics
     /// Panics if the OS refuses to spawn the aggregator thread.
     #[must_use]
     pub fn start() -> Self {
-        Self::spawn(None)
+        Self::spawn(None, None, system_clock())
     }
 
-    /// Start an aggregator with durable download usage: restore the persisted snapshot into the
-    /// initial tree, and rewrite it after every batch that recorded a download, so download and byte
-    /// totals survive a restart. Persistence runs on the aggregator thread, never the request path.
+    /// Start an aggregator with durable usage: restore the persisted per-file totals and daily buckets,
+    /// rewrite each after every batch that recorded a download, and prune daily buckets older than
+    /// `retention_days` (kept without limit when `None`). `clock` dates each download's UTC bucket.
+    /// Persistence and pruning run on the aggregator thread, never the request path.
     ///
     /// # Panics
     /// Panics if the OS refuses to spawn the aggregator thread.
     #[must_use]
-    pub fn start_durable(store: AnalyticsHandle) -> Self {
-        Self::spawn(Some(store))
+    pub fn start_durable(store: AnalyticsHandle, retention_days: Option<u32>, clock: Clock) -> Self {
+        Self::spawn(Some(store), retention_days, clock)
     }
 
-    fn spawn(store: Option<AnalyticsHandle>) -> Self {
+    fn spawn(store: Option<AnalyticsHandle>, retention_days: Option<u32>, clock: Clock) -> Self {
         let (sender, receiver) = channel();
         let mut initial = StatsTree::new();
         if let Some(snapshot) = store
@@ -255,13 +340,37 @@ impl Metrics {
         {
             restore_downloads(&mut initial, snapshot);
         }
+        let mut daily_initial = DailyBuckets::new();
+        if let Some(snapshot) = store
+            .as_ref()
+            .and_then(|store| store.load_daily().ok().flatten())
+            .and_then(|bytes| serde_json::from_slice::<DailySnapshot>(&bytes).ok())
+            .filter(|snapshot| snapshot.schema == DAILY_SCHEMA)
+        {
+            restore_daily(&mut daily_initial, snapshot);
+        }
+        if let Some(days) = retention_days {
+            expire_daily(&mut daily_initial, clock(), days);
+        }
         let tree = Arc::new(RwLock::new(initial));
+        let daily = Arc::new(RwLock::new(daily_initial));
         let sink = Arc::clone(&tree);
+        let daily_sink = Arc::clone(&daily);
         std::thread::Builder::new()
             .name("peryx-metrics".to_owned())
-            .spawn(move || aggregate(&receiver, &sink, store.as_ref()))
+            .spawn(move || aggregate(&receiver, &sink, &daily_sink, store.as_ref(), retention_days, &clock))
             .expect("spawn metrics thread");
-        Self { sender, tree }
+        Self { sender, tree, daily }
+    }
+
+    /// A snapshot of the daily version-and-source usage buckets, ordered by day then dimension.
+    ///
+    /// # Panics
+    /// Panics if the aggregator thread panicked and poisoned the daily lock.
+    #[must_use]
+    pub fn daily_usage(&self) -> Vec<DailyUsage> {
+        let daily = self.daily.read().expect("metrics lock");
+        daily_rows(&daily)
     }
 
     /// Record one event; never blocks, and a stopped aggregator is ignored.
@@ -365,15 +474,25 @@ impl Metrics {
 /// The aggregator loop: drain events until every sender is gone, persisting the download snapshot
 /// after each batch that changed it. Serializing happens under the lock (cheap); the durable write
 /// happens after releasing it, so a slow disk never stalls the aggregator's readers.
-fn aggregate(receiver: &Receiver<Event>, tree: &Arc<RwLock<StatsTree>>, store: Option<&AnalyticsHandle>) {
+fn aggregate(
+    receiver: &Receiver<Event>,
+    tree: &Arc<RwLock<StatsTree>>,
+    daily: &Arc<RwLock<DailyBuckets>>,
+    store: Option<&AnalyticsHandle>,
+    retention_days: Option<u32>,
+    clock: &Clock,
+) {
     while let Ok(event) = receiver.recv() {
         let mut dirty = matches!(&event, Event::Download { .. });
+        let mut downloads = Vec::new();
+        collect_daily(&event, clock, &mut downloads);
         let pending = {
             let mut tree = tree.write().expect("metrics lock");
             apply(&mut tree, event);
             // Batch whatever else is already queued under the same lock acquisition.
             while let Ok(event) = receiver.try_recv() {
                 dirty |= matches!(&event, Event::Download { .. });
+                collect_daily(&event, clock, &mut downloads);
                 apply(&mut tree, event);
             }
             (dirty && store.is_some())
@@ -382,6 +501,99 @@ fn aggregate(receiver: &Receiver<Event>, tree: &Arc<RwLock<StatsTree>>, store: O
         if let (Some(store), Some(bytes)) = (store, pending) {
             let _ = store.save(&bytes);
         }
+        if !downloads.is_empty() {
+            let mut daily = daily.write().expect("metrics lock");
+            for (key, bytes) in downloads {
+                let totals = daily.entry(key).or_default();
+                totals.downloads += 1;
+                totals.bytes += bytes;
+            }
+            if let Some(days) = retention_days {
+                expire_daily(&mut daily, clock(), days);
+            }
+            let pending = store.is_some().then(|| snapshot_daily(&daily));
+            drop(daily);
+            if let (Some(store), Some(snapshot)) = (store, pending) {
+                let _ = store.save_daily(&serde_json::to_vec(&snapshot).expect("serialize daily usage snapshot"));
+            }
+        }
+    }
+}
+
+/// Pull one download's daily-bucket key and byte count out of an event, dating it on the clock; every
+/// other event kind leaves the daily aggregate untouched.
+fn collect_daily(event: &Event, clock: &Clock, out: &mut Vec<(DailyKey, u64)>) {
+    if let Event::Download {
+        route,
+        project,
+        version,
+        source,
+        bytes,
+        ..
+    } = event
+    {
+        out.push((
+            DailyKey {
+                day: utc_day(clock()),
+                repository: route.clone(),
+                project: project.clone(),
+                version: version.clone().unwrap_or_default(),
+                source: source.clone().unwrap_or_default(),
+            },
+            *bytes,
+        ));
+    }
+}
+
+/// Drop every bucket older than `retention_days` days. Buckets order by day first, so the expired
+/// prefix leaves in one split and the retained totals are never touched.
+fn expire_daily(daily: &mut DailyBuckets, now_secs: i64, retention_days: u32) {
+    let floor = DailyKey {
+        day: utc_day(now_secs) - i64::from(retention_days),
+        repository: String::new(),
+        project: String::new(),
+        version: String::new(),
+        source: String::new(),
+    };
+    *daily = daily.split_off(&floor);
+}
+
+fn daily_rows(daily: &DailyBuckets) -> Vec<DailyUsage> {
+    daily
+        .iter()
+        .map(|(key, totals)| DailyUsage {
+            day: key.day,
+            repository: key.repository.clone(),
+            project: key.project.clone(),
+            version: key.version.clone(),
+            source: key.source.clone(),
+            downloads: totals.downloads,
+            bytes: totals.bytes,
+        })
+        .collect()
+}
+
+fn snapshot_daily(daily: &DailyBuckets) -> DailySnapshot {
+    DailySnapshot {
+        schema: DAILY_SCHEMA,
+        buckets: daily_rows(daily),
+    }
+}
+
+/// Fold a restored daily snapshot back into fresh buckets, summing any rows that share a key.
+fn restore_daily(daily: &mut DailyBuckets, snapshot: DailySnapshot) {
+    for row in snapshot.buckets {
+        let totals = daily
+            .entry(DailyKey {
+                day: row.day,
+                repository: row.repository,
+                project: row.project,
+                version: row.version,
+                source: row.source,
+            })
+            .or_default();
+        totals.downloads += row.downloads;
+        totals.bytes += row.bytes;
     }
 }
 
@@ -431,6 +643,7 @@ fn apply(tree: &mut StatsTree, event: Event) {
             project,
             filename,
             bytes,
+            ..
         } => {
             let index = tree.entry(route).or_default();
             index.totals.base.downloads += 1;
@@ -517,14 +730,21 @@ fn apply(tree: &mut StatsTree, event: Event) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use peryx_storage::meta::{AnalyticsHandle, MetaStore};
 
-    use super::{DownloadSnapshot, Event, Metrics, PackageUsage};
+    use super::{Clock, DailySnapshot, DailyUsage, DownloadSnapshot, Event, Metrics, PackageUsage, SECONDS_PER_DAY};
 
     fn store() -> (tempfile::TempDir, MetaStore) {
         let dir = tempfile::tempdir().unwrap();
         let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
         (dir, meta)
+    }
+
+    /// A clock frozen at `day`'s noon, so a test dates every download to one deterministic UTC bucket.
+    fn clock_on_day(day: i64) -> Clock {
+        Arc::new(move || day * SECONDS_PER_DAY + SECONDS_PER_DAY / 2)
     }
 
     fn settle(done: impl Fn() -> bool) {
@@ -547,6 +767,19 @@ mod tests {
             route: route.into(),
             project: project.into(),
             filename: filename.into(),
+            version: None,
+            source: None,
+            bytes,
+        }
+    }
+
+    fn download_of(route: &str, project: &str, version: &str, source: Option<&str>, bytes: u64) -> Event {
+        Event::Download {
+            route: route.into(),
+            project: project.into(),
+            filename: format!("{project}-{version}.whl"),
+            version: Some(version.into()),
+            source: source.map(Into::into),
             bytes,
         }
     }
@@ -555,7 +788,7 @@ mod tests {
     fn test_durable_downloads_survive_a_restart() {
         let (_dir, meta) = store();
         let filename = "pandas-3.0-py3-none-any.whl";
-        let metrics = Metrics::start_durable(meta.analytics());
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
         metrics.record(Event::Page {
             route: "root/pypi".into(),
             project: "pandas".into(),
@@ -565,7 +798,7 @@ mod tests {
         settle(|| persisted_downloads(&meta.analytics()) == Some(2));
         drop(metrics);
 
-        let restarted = Metrics::start_durable(meta.analytics());
+        let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
         let totals = restarted.index_totals();
         let index = &totals["root/pypi"];
         assert_eq!(index.base.downloads, 2);
@@ -578,7 +811,7 @@ mod tests {
     #[test]
     fn test_batches_without_a_download_persist_nothing() {
         let (_dir, meta) = store();
-        let metrics = Metrics::start_durable(meta.analytics());
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
         metrics.record(Event::Page {
             route: "pypi".into(),
             project: "flask".into(),
@@ -590,6 +823,158 @@ mod tests {
                 .is_some_and(|totals| totals.base.pages == 1)
         });
         assert_eq!(persisted_downloads(&meta.analytics()), None);
+        assert!(meta.analytics().load_daily().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_daily_buckets_split_by_version_source_and_day() {
+        let (_dir, meta) = store();
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(20_000));
+        metrics.record(download_of("pypi", "flask", "3.0", Some("pypi-org"), 10));
+        metrics.record(download_of("pypi", "flask", "3.0", Some("pypi-org"), 40));
+        metrics.record(download_of("pypi", "flask", "2.0", Some("pypi-org"), 5));
+        metrics.record(download_of("pypi", "flask", "3.0", None, 7));
+        settle(|| metrics.daily_usage().len() == 3);
+
+        assert_eq!(
+            metrics.daily_usage(),
+            [
+                DailyUsage {
+                    day: 20_000,
+                    repository: "pypi".into(),
+                    project: "flask".into(),
+                    version: "2.0".into(),
+                    source: "pypi-org".into(),
+                    downloads: 1,
+                    bytes: 5,
+                },
+                DailyUsage {
+                    day: 20_000,
+                    repository: "pypi".into(),
+                    project: "flask".into(),
+                    version: "3.0".into(),
+                    source: String::new(),
+                    downloads: 1,
+                    bytes: 7,
+                },
+                DailyUsage {
+                    day: 20_000,
+                    repository: "pypi".into(),
+                    project: "flask".into(),
+                    version: "3.0".into(),
+                    source: "pypi-org".into(),
+                    downloads: 2,
+                    bytes: 50,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_retention_drops_expired_days_and_keeps_retained_totals() {
+        let (_dir, meta) = store();
+        let old = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(100));
+        old.record(download_of("pypi", "flask", "1.0", Some("up"), 3));
+        settle(|| old.daily_usage().len() == 1);
+        drop(old);
+
+        // Ten days later a fresh download lands; the day-100 bucket is now beyond the 7-day window.
+        let metrics = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(110));
+        metrics.record(download_of("pypi", "flask", "2.0", Some("up"), 9));
+        settle(|| metrics.daily_usage().iter().any(|row| row.day == 110));
+
+        assert_eq!(
+            metrics.daily_usage(),
+            [DailyUsage {
+                day: 110,
+                repository: "pypi".into(),
+                project: "flask".into(),
+                version: "2.0".into(),
+                source: "up".into(),
+                downloads: 1,
+                bytes: 9,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_daily_usage_survives_a_restart() {
+        let (_dir, meta) = store();
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(42));
+        metrics.record(download_of("pypi", "flask", "3.0", Some("up"), 12));
+        settle(|| meta.analytics().load_daily().unwrap().is_some());
+        drop(metrics);
+
+        let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(42));
+        assert_eq!(
+            restarted.daily_usage(),
+            [DailyUsage {
+                day: 42,
+                repository: "pypi".into(),
+                project: "flask".into(),
+                version: "3.0".into(),
+                source: "up".into(),
+                downloads: 1,
+                bytes: 12,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_malformed_daily_snapshot_rebuilds_without_blocking_startup() {
+        let (_dir, meta) = store();
+        meta.analytics().save_daily(b"{ not valid json").unwrap();
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(7));
+        assert!(metrics.daily_usage().is_empty());
+
+        metrics.record(download_of("pypi", "flask", "3.0", Some("up"), 4));
+        settle(|| metrics.daily_usage().len() == 1);
+        assert_eq!(metrics.daily_usage()[0].bytes, 4);
+    }
+
+    #[test]
+    fn test_unknown_daily_schema_rebuilds_from_zero() {
+        let (_dir, meta) = store();
+        let future = DailySnapshot {
+            schema: super::DAILY_SCHEMA + 1,
+            buckets: vec![DailyUsage {
+                day: 1,
+                repository: "pypi".into(),
+                project: "flask".into(),
+                version: "9.9".into(),
+                source: "up".into(),
+                downloads: 99,
+                bytes: 99,
+            }],
+        };
+        meta.analytics()
+            .save_daily(&serde_json::to_vec(&future).unwrap())
+            .unwrap();
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(7));
+        assert!(metrics.daily_usage().is_empty());
+    }
+
+    #[test]
+    fn test_missing_dimensions_restore_as_empty_labels() {
+        let (_dir, meta) = store();
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(3));
+        metrics.record(download("pypi", "flask", "flask-3.0.whl", 8));
+        settle(|| meta.analytics().load_daily().unwrap().is_some());
+        drop(metrics);
+
+        let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(3));
+        assert_eq!(
+            restarted.daily_usage(),
+            [DailyUsage {
+                day: 3,
+                repository: "pypi".into(),
+                project: "flask".into(),
+                version: String::new(),
+                source: String::new(),
+                downloads: 1,
+                bytes: 8,
+            }]
+        );
     }
 
     #[test]

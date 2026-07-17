@@ -37,6 +37,9 @@ pub struct Config {
     pub netrc: Option<PathBuf>,
     /// Bound on stale-on-error serving, in seconds; `0` serves stale without limit.
     pub max_stale_secs: i64,
+    /// Days of daily version-and-source usage buckets to retain; `None` keeps them without limit.
+    /// Expiry runs off the request path, so a tighter window only bounds durable storage.
+    pub usage_retention_days: Option<u32>,
     /// The configured indexes: caches, hosted stores, and virtual indexes that compose them.
     pub indexes: Vec<IndexConfig>,
     /// How the server terminates TLS, or `None` for plain HTTP (the zero-config default, which
@@ -456,6 +459,7 @@ impl Default for Config {
             hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
             netrc: None,
             max_stale_secs: DEFAULT_MAX_STALE_SECS,
+            usage_retention_days: None,
             indexes: default_indexes(),
             tls: None,
             log: LogConfig::default(),

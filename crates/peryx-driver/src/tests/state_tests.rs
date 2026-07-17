@@ -90,6 +90,7 @@ fn state_with_budget(hot_cache_bytes: u64) -> (tempfile::TempDir, AppState) {
             webhooks: WebhookRuntime::disabled(),
             hot_cache_bytes,
             max_stale_secs: crate::DEFAULT_MAX_STALE_SECS,
+            usage_retention_days: None,
         },
     )
     .unwrap();

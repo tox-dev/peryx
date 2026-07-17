@@ -24,8 +24,13 @@ url.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
 rstest.workspace = true
 tempfile.workspace = true
+
+[[bench]]
+name = "usage_aggregate"
+harness = false
 
 [lints]
 workspace = true

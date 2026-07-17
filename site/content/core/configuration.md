@@ -9,22 +9,23 @@ or `PERYX_*` environment variables, which override the file. Precedence is `defa
 
 ## Top level
 
-| Setting                   | Flag                | Environment             | TOML key          | Default      |
-| ------------------------- | ------------------- | ----------------------- | ----------------- | ------------ |
-| Bind host                 | `--host`            | `PERYX_HOST`            | `host`            | `127.0.0.1`  |
-| Bind port                 | `--port`            | `PERYX_PORT`            | `port`            | `4433`       |
-| Data directory            | `--data-dir`        | `PERYX_DATA_DIR`        | `data_dir`        | `peryx-data` |
-| Writer identity           | `--writer-identity` | `PERYX_WRITER_IDENTITY` | `writer_identity` | (none)       |
-| Offline mode              | `--offline`         | `PERYX_OFFLINE`         | `offline`         | `false`      |
-| Read replica mode         | `--read-only`       | `PERYX_READ_ONLY`       | `read_only`       | `false`      |
-| Config file               | `--config` / `-c`   | (n/a)                   | (n/a)             | (none)       |
-| Cache freshness (seconds) | (file/env only)     | `PERYX_CACHE_TTL_SECS`  | `cache_ttl_secs`  | `300`        |
-| Page cache budget (bytes) | (file/env only)     | `PERYX_HOT_CACHE_BYTES` | `hot_cache_bytes` | `268435456`  |
-| Upstream netrc file       | (file/env only)     | `PERYX_NETRC`           | `netrc`           | (none)       |
-| Stale-on-error bound (s)  | (file/env only)     | `PERYX_MAX_STALE_SECS`  | `max_stale_secs`  | `300`        |
-| Indexes                   | (file only)         | (n/a)                   | `[[index]]`       | (see below)  |
-| Rate limits               | (file only)         | (n/a)                   | `[rate_limit]`    | (see below)  |
-| Background jobs           | (file only)         | (n/a)                   | `[jobs]`          | (see below)  |
+| Setting                   | Flag                | Environment                  | TOML key               | Default      |
+| ------------------------- | ------------------- | ---------------------------- | ---------------------- | ------------ |
+| Bind host                 | `--host`            | `PERYX_HOST`                 | `host`                 | `127.0.0.1`  |
+| Bind port                 | `--port`            | `PERYX_PORT`                 | `port`                 | `4433`       |
+| Data directory            | `--data-dir`        | `PERYX_DATA_DIR`             | `data_dir`             | `peryx-data` |
+| Writer identity           | `--writer-identity` | `PERYX_WRITER_IDENTITY`      | `writer_identity`      | (none)       |
+| Offline mode              | `--offline`         | `PERYX_OFFLINE`              | `offline`              | `false`      |
+| Read replica mode         | `--read-only`       | `PERYX_READ_ONLY`            | `read_only`            | `false`      |
+| Config file               | `--config` / `-c`   | (n/a)                        | (n/a)                  | (none)       |
+| Cache freshness (seconds) | (file/env only)     | `PERYX_CACHE_TTL_SECS`       | `cache_ttl_secs`       | `300`        |
+| Page cache budget (bytes) | (file/env only)     | `PERYX_HOT_CACHE_BYTES`      | `hot_cache_bytes`      | `268435456`  |
+| Upstream netrc file       | (file/env only)     | `PERYX_NETRC`                | `netrc`                | (none)       |
+| Stale-on-error bound (s)  | (file/env only)     | `PERYX_MAX_STALE_SECS`       | `max_stale_secs`       | `300`        |
+| Usage retention (days)    | (file/env only)     | `PERYX_USAGE_RETENTION_DAYS` | `usage_retention_days` | (unset)      |
+| Indexes                   | (file only)         | (n/a)                        | `[[index]]`            | (see below)  |
+| Rate limits               | (file only)         | (n/a)                        | `[rate_limit]`         | (see below)  |
+| Background jobs           | (file only)         | (n/a)                        | `[jobs]`               | (see below)  |
 
 Environment variables sit between the file and flags: a `PERYX_*` value overrides the TOML file, and a flag overrides
 the variable. Only scalar settings are environment-configurable. The `[[index]]` topology and `[rate_limit]` block stay
@@ -47,6 +48,11 @@ last page it fetched rather than failing a build over a blip — but only for th
 Beyond it the upstream failure surfaces instead, because a cache that answers with whatever it last saw, forever, has
 stopped being a cache and become a fork. Set it to `0` to serve stale without limit, which is what mirroring a knowingly
 unreliable upstream asks for; `offline = true` below is the unconditional form.
+
+`usage_retention_days` bounds the durable
+[daily version and source usage](@/core/monitor.md#daily-version-and-source-usage) aggregate: buckets older than this
+many days expire on the aggregator thread, off the request path. Leave it unset to keep every day. Tightening it only
+reclaims durable storage; a retained day's totals never change, and expiry never blocks request handling.
 
 `hot_cache_bytes` is the memory budget for the transformed-page cache, where a warm request is a lookup, an expiry
 check, and a memcpy. It trades memory against warm-serve speed and nothing else: every entry is re-derivable from the
