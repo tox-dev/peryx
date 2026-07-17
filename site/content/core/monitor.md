@@ -25,14 +25,18 @@ curl -s 'http://127.0.0.1:4433/+stats?index=root/pypi' | jq '.projects | to_entr
 curl -s 'http://127.0.0.1:4433/+stats?index=root/pypi&project=numpy' | jq .files
 ```
 
-Counters live in memory and reset on restart; for durable time series, scrape `/metrics`, which exposes the same set per
-index alongside the global request counter. The `ecosystem` label carries each index's format, so a query can split PyPI
-from OCI traffic:
+Counters live in memory and reset on restart; for durable time series, scrape `/metrics`. Prometheus sums repositories
+by the bounded `ecosystem` and `role` labels. A query can split PyPI from OCI traffic without storing repository names:
 
 ```text
-peryx_index_downloads_total{index="root/pypi",ecosystem="pypi",role="virtual"}
-peryx_index_downloads_total{index="root/oci",ecosystem="oci",role="virtual"}
+peryx_artifacts_served_total{ecosystem="pypi",role="virtual"}
+peryx_artifacts_served_total{ecosystem="oci",role="virtual"}
 ```
+
+Repository, project, file, user, path, error, credential, token, and URL values are excluded from metric names and
+labels. Use `/+stats` for repository and package drill-down. The
+[endpoint reference](@/ecosystems/pypi/reference/endpoints.md#metrics-compatibility) lists renamed series and
+replacement queries.
 
 ## Check operational status
 

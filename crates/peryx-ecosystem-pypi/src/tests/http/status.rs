@@ -1,6 +1,7 @@
 //! The neutral `/+status`, `/+stats` and `/metrics` endpoints.
 
 use super::support::*;
+use peryx_driver::rate_limit::UpstreamLimits;
 use peryx_identity::IndexAcl;
 use peryx_upstream::{NamedUpstream, UpstreamRouter};
 
@@ -151,10 +152,10 @@ async fn test_metrics_exposes_counters() {
     let (status, _, body) = get(&h.state, "/metrics", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("peryx_requests_total"));
-    assert!(body.contains("peryx_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 0"));
+    assert!(body.contains("peryx_metadata_served_total{ecosystem=\"pypi\",role=\"cached\"} 0"));
 }
 #[tokio::test]
-async fn test_metrics_exposes_per_index_counters() {
+async fn test_metrics_exposes_bounded_role_counters() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
     let file_url = format!("{}/files/flask.whl", h.server.uri());
@@ -179,11 +180,74 @@ async fn test_metrics_exposes_per_index_counters() {
     }
     let (status, _, body) = get(&h.state, "/metrics", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("peryx_index_pages_total{index=\"hosted\",ecosystem=\"pypi\",role=\"hosted\"} 1"));
-    assert!(body.contains("peryx_index_pages_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1"));
-    assert!(body.contains("peryx_index_refreshes_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 0"));
-    assert!(body.contains("peryx_index_rejected_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 0"));
+    assert!(body.contains("peryx_pages_served_total{ecosystem=\"pypi\",role=\"hosted\"} 1"));
+    assert!(body.contains("peryx_pages_served_total{ecosystem=\"pypi\",role=\"cached\"} 1"));
+    assert!(body.contains("peryx_upstream_refreshes_total{ecosystem=\"pypi\",role=\"cached\"} 0"));
+    assert!(body.contains("peryx_artifacts_rejected_total{ecosystem=\"pypi\",role=\"cached\"} 0"));
     // A caching-only counter never appears for the hosted index, and uploads never for the cache.
-    assert!(!body.contains("peryx_index_refreshes_total{index=\"hosted\""));
-    assert!(!body.contains("peryx_index_uploads_total{index=\"pypi\""));
+    assert!(!body.contains("peryx_upstream_refreshes_total{ecosystem=\"pypi\",role=\"hosted\""));
+    assert!(!body.contains("peryx_artifacts_uploaded_total{ecosystem=\"pypi\",role=\"cached\""));
+}
+
+#[tokio::test]
+async fn test_metrics_omit_hostile_values_and_bound_series_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let indexes: Vec<_> = (0..64)
+        .map(|position| Index {
+            name: format!("repository-credential-{position}"),
+            route: format!("repository-credential-{position}"),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Hosted { volatile: false },
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+        })
+        .collect();
+    let mut app = AppState::new(
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        BlobStore::new(dir.path().join("blobs")),
+        60,
+        indexes,
+    );
+    app.upstream_limits = UpstreamLimits::new([(
+        "https://user:pass@example.invalid/simple?X-Amz-Credential=actor&X-Amz-Signature=signed-secret".to_owned(),
+        1,
+    )]);
+    let state = crate::tests::wired(app);
+    for position in 0..64 {
+        state.metrics.record(peryx_events::metrics::Event::Download {
+            route: format!("repository-credential-{position}"),
+            project: "actor-token-value".to_owned(),
+            filename: "../../private/path?error=raw-secret".to_owned(),
+            bytes: 1,
+        });
+    }
+    for _ in 0..500 {
+        if state.metrics.index_totals().len() == 64 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+
+    let (status, _, body) = get(&state, "/metrics", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.lines()
+            .filter(|line| line.starts_with("peryx_artifacts_served_total{"))
+            .count(),
+        1
+    );
+    assert!(body.contains("peryx_artifacts_served_total{ecosystem=\"pypi\",role=\"hosted\"} 64"));
+    assert!(body.contains("peryx_upstream_rate_limit_denied_total 0"));
+    for secret in [
+        "repository-credential",
+        "user:pass",
+        "X-Amz-Credential",
+        "signed-secret",
+        "actor-token-value",
+        "private/path",
+        "raw-secret",
+    ] {
+        assert!(!body.contains(secret), "{secret} leaked into metrics:\n{body}");
+    }
 }

@@ -376,11 +376,31 @@ impl UpstreamLimits {
         snapshots.sort_by(|left, right| left.index.cmp(&right.index));
         snapshots
     }
+
+    /// Process-wide upstream concurrency totals for bounded-cardinality metrics.
+    #[must_use]
+    pub fn totals(&self) -> UpstreamLimitTotals {
+        self.entries
+            .values()
+            .fold(UpstreamLimitTotals::default(), |mut totals, limit| {
+                totals.in_flight += limit.semaphore.as_ref().map_or(0, |semaphore| {
+                    limit.max_concurrent.saturating_sub(semaphore.available_permits())
+                });
+                totals.denied += limit.denied.load(Ordering::Relaxed);
+                totals
+            })
+    }
 }
 
 pub struct UpstreamLimitSnapshot {
     pub index: String,
     pub max_concurrent: usize,
+    pub in_flight: usize,
+    pub denied: u64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UpstreamLimitTotals {
     pub in_flight: usize,
     pub denied: u64,
 }

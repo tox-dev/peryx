@@ -160,8 +160,8 @@ When `[rate_limit] enabled = true` and a client exceeds a configured route-class
 longer than 30 seconds returns the same `429` with `Retry-After`.
 
 Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry delay.
-It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class, plus upstream
-concurrency denials by cached index. HTTP request counters stay at zero while the request limiter is disabled.
+It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class plus process-wide
+upstream concurrency totals. HTTP request counters stay at zero while the request limiter is disabled.
 
 ## Status and usage
 
@@ -188,22 +188,53 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 
 ## Metrics
 
-`GET /metrics` exposes Prometheus counters:
+`GET /metrics` exposes Prometheus counters and gauges:
 
-- `peryx_requests_total`: HTTP requests served. This is the one global counter; everything else below is per index.
+- `peryx_requests_total`: HTTP requests served.
 - `peryx_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
 - `peryx_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
-- `peryx_upstream_rate_limit_denied_total{index="<name>"}`: cached index concurrency cap denials.
-- `peryx_upstream_inflight_fetches{index="<name>"}`: current upstream fetches holding a concurrency slot.
+- `peryx_upstream_rate_limit_denied_total`: cached-index concurrency cap denials across the process.
+- `peryx_upstream_inflight_fetches`: current upstream fetches holding a concurrency slot across the process.
 
-Every per-index counter carries `{index="<route>",ecosystem="<ecosystem>",role="<role>"}` labels, and each family is
-scoped to the role that reports it:
+Serving counters carry only `{ecosystem="<ecosystem>",role="<role>"}`. Values from repositories with the same ecosystem
+and role are summed before rendering. Each family is scoped to the role that reports it:
 
-- Base (every role): `peryx_index_pages_total`, `peryx_index_downloads_total`, `peryx_index_download_bytes_total`,
-  `peryx_index_rejected_total`.
-- Caching indexes only: `peryx_index_refreshes_total`, `peryx_index_pages_changed_total`,
-  `peryx_index_stale_served_total`, `peryx_index_upstream_errors_total`.
-- Hosted indexes only: `peryx_index_uploads_total`.
-- Ecosystem families (declared by the ecosystem driver): `peryx_index_metadata_total` is PyPI's PEP 658/714 `.metadata`
-  sibling counter; a rising value proves clients resolve via the metadata fast path rather than by downloading
-  artifacts. Sum it across indexes for the instance-wide total.
+- Base (every role): `peryx_pages_served_total`, `peryx_artifacts_served_total`, `peryx_artifacts_served_bytes_total`,
+  `peryx_artifacts_rejected_total`.
+- Caching indexes only: `peryx_upstream_refreshes_total`, `peryx_upstream_pages_changed_total`,
+  `peryx_stale_pages_served_total`, `peryx_upstream_errors_total`.
+- Hosted indexes only: `peryx_artifacts_uploaded_total`.
+- Ecosystem families: `peryx_metadata_served_total` is PyPI's PEP 658/714 `.metadata` sibling counter. A rising value
+  proves clients resolve through the metadata fast path instead of downloading artifacts.
+
+The label vocabulary is fixed by peryx: five request classes, two ecosystems, and three roles. Repository names, package
+names, user or actor identifiers, request paths, raw errors, credentials, tokens, and URLs never become metric names or
+labels. Use `/+stats` when repository, project, or file detail is required. Keep `/metrics` access-controlled as part of
+the operational surface even though these fields are absent.
+
+This contract follows [Prometheus label guidance](https://prometheus.io/docs/practices/naming/) and OpenTelemetry's
+[data-minimization guidance](https://opentelemetry.io/docs/security/handling-sensitive-data/): omit sensitive dimensions
+when aggregate data answers the operational question.
+
+### Metrics compatibility
+
+The bounded series replace the per-repository series. Existing dashboards and alerts must use these names:
+
+| Removed series                      | Replacement                          |
+| ----------------------------------- | ------------------------------------ |
+| `peryx_index_pages_total`           | `peryx_pages_served_total`           |
+| `peryx_index_downloads_total`       | `peryx_artifacts_served_total`       |
+| `peryx_index_download_bytes_total`  | `peryx_artifacts_served_bytes_total` |
+| `peryx_index_rejected_total`        | `peryx_artifacts_rejected_total`     |
+| `peryx_index_refreshes_total`       | `peryx_upstream_refreshes_total`     |
+| `peryx_index_pages_changed_total`   | `peryx_upstream_pages_changed_total` |
+| `peryx_index_stale_served_total`    | `peryx_stale_pages_served_total`     |
+| `peryx_index_upstream_errors_total` | `peryx_upstream_errors_total`        |
+| `peryx_index_uploads_total`         | `peryx_artifacts_uploaded_total`     |
+| `peryx_index_metadata_total`        | `peryx_metadata_served_total`        |
+
+The `index` label was also removed from `peryx_upstream_rate_limit_denied_total` and `peryx_upstream_inflight_fetches`.
+Replace an instance-wide download query such as `sum by (ecosystem, role) (rate(peryx_index_downloads_total[5m]))` with
+`rate(peryx_artifacts_served_total[5m])`. Replace `sum(rate(peryx_upstream_rate_limit_denied_total{index=~".+"}[5m]))`
+with `rate(peryx_upstream_rate_limit_denied_total[5m])`. There is no per-repository Prometheus replacement because that
+dimension was the source of unbounded cardinality and secret exposure; use `/+stats` for current per-repository totals.

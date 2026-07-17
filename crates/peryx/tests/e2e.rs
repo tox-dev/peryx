@@ -386,12 +386,11 @@ impl Peryx {
         format!("http://127.0.0.1:{}/root/pypi/", self.port)
     }
 
-    /// Sum peryx's per-index `peryx_index_metadata_total` counters — the PEP 658 siblings it has
-    /// served across every index.
+    /// Sum peryx's `peryx_metadata_served_total` counters across bounded ecosystem and role labels.
     fn metadata_requests(&self) -> u64 {
         let (status, body) = http_get(self.port, "/metrics").expect("metrics");
         assert_eq!(status, 200);
-        sum_labeled_counter(&body, "peryx_index_metadata_total")
+        sum_labeled_counter(&body, "peryx_metadata_served_total")
     }
 }
 
@@ -534,7 +533,7 @@ fn html_get(port: u16, path: &str) -> String {
 }
 
 /// Pull the value off a Prometheus `# TYPE ... counter` line like `name 3`.
-/// Sum every labelled sample of a per-index counter family, e.g. `name{index="a",…} 3`.
+/// Sum every labelled sample of a counter family, e.g. `name{role="cached",…} 3`.
 fn sum_labeled_counter(metrics: &str, name: &str) -> u64 {
     metrics
         .lines()

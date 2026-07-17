@@ -66,6 +66,15 @@ async fn test_oci_serving_records_page_download_and_upload() {
     assert_eq!(store.base.pages, 1);
     assert_eq!(store.base.downloads, 1);
     assert_eq!(store.base.bytes, blob.len() as u64);
+
+    let (status, _, metrics) = send(&app, Method::GET, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    let metrics = String::from_utf8(metrics.to_vec()).unwrap();
+    assert!(metrics.contains("peryx_pages_served_total{ecosystem=\"oci\",role=\"hosted\"} 1"));
+    assert!(metrics.contains("peryx_artifacts_served_total{ecosystem=\"oci\",role=\"hosted\"} 1"));
+    for secret in [TOKEN, "store", "app"] {
+        assert!(!metrics.contains(secret), "{secret} leaked into metrics:\n{metrics}");
+    }
 }
 
 #[tokio::test]

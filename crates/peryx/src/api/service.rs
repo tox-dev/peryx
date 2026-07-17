@@ -329,9 +329,9 @@ fn metrics() -> OperationBuilder {
                 "# HELP peryx_requests_total Total HTTP requests served.\n\
                  # TYPE peryx_requests_total counter\n\
                  peryx_requests_total 128\n\
-                 # HELP peryx_index_metadata_total PEP 658 metadata siblings served.\n\
-                 # TYPE peryx_index_metadata_total counter\n\
-                 peryx_index_metadata_total{index=\"root/pypi\",ecosystem=\"pypi\",role=\"virtual\"} 37\n",
+                 # HELP peryx_metadata_served_total PEP 658 metadata siblings served.\n\
+                 # TYPE peryx_metadata_served_total counter\n\
+                 peryx_metadata_served_total{ecosystem=\"pypi\",role=\"virtual\"} 37\n",
             ),
         )
 }

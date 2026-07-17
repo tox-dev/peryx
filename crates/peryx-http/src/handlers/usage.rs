@@ -8,7 +8,8 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
-use peryx_driver::state::{AppState, IndexDescription};
+use peryx_core::Role;
+use peryx_driver::state::{AppState, IndexDescription, IndexKind};
 
 /// Per-index totals joined to each index's ecosystem and role.
 ///
@@ -112,7 +113,7 @@ pub async fn top_packages(
 struct NeutralFamily {
     name: &'static str,
     help: &'static str,
-    role: Option<&'static str>,
+    role: Option<Role>,
     read: fn(&peryx_events::metrics::Counters) -> u64,
 }
 
@@ -120,66 +121,66 @@ struct NeutralFamily {
 /// index fills, and an upload group only a hosted index fills.
 const NEUTRAL_FAMILIES: &[NeutralFamily] = &[
     NeutralFamily {
-        name: "peryx_index_pages_total",
+        name: "peryx_pages_served_total",
         help: "Index listings served.",
         role: None,
         read: |c| c.base.pages,
     },
     NeutralFamily {
-        name: "peryx_index_downloads_total",
+        name: "peryx_artifacts_served_total",
         help: "Artifacts served.",
         role: None,
         read: |c| c.base.downloads,
     },
     NeutralFamily {
-        name: "peryx_index_download_bytes_total",
+        name: "peryx_artifacts_served_bytes_total",
         help: "Artifact bytes served.",
         role: None,
         read: |c| c.base.bytes,
     },
     NeutralFamily {
-        name: "peryx_index_rejected_total",
+        name: "peryx_artifacts_rejected_total",
         help: "Downloads failing digest verification.",
         role: None,
         read: |c| c.base.rejected,
     },
     NeutralFamily {
-        name: "peryx_index_refreshes_total",
+        name: "peryx_upstream_refreshes_total",
         help: "Upstream revalidations.",
-        role: Some("cached"),
+        role: Some(Role::Cached),
         read: |c| c.cached.refreshes,
     },
     NeutralFamily {
-        name: "peryx_index_pages_changed_total",
+        name: "peryx_upstream_pages_changed_total",
         help: "Revalidations that found upstream changed.",
-        role: Some("cached"),
+        role: Some(Role::Cached),
         read: |c| c.cached.changed,
     },
     NeutralFamily {
-        name: "peryx_index_stale_served_total",
+        name: "peryx_stale_pages_served_total",
         help: "Pages served stale with upstream down.",
-        role: Some("cached"),
+        role: Some(Role::Cached),
         read: |c| c.cached.stale_served,
     },
     NeutralFamily {
-        name: "peryx_index_upstream_errors_total",
+        name: "peryx_upstream_errors_total",
         help: "Upstream failures with nothing cached.",
-        role: Some("cached"),
+        role: Some(Role::Cached),
         read: |c| c.cached.upstream_errors,
     },
     NeutralFamily {
-        name: "peryx_index_uploads_total",
+        name: "peryx_artifacts_uploaded_total",
         help: "Distributions uploaded.",
-        role: Some("hosted"),
+        role: Some(Role::Hosted),
         read: |c| c.hosted.uploads,
     },
 ];
 
 /// `GET /metrics`: Prometheus text exposition.
 ///
-/// The global request counter plus every per-index counter the stats tree tracks, each labelled by
-/// index route, ecosystem, and role. Role-scoped families emit only for the role that owns them;
-/// ecosystem families come from the driver.
+/// The global request counter plus the stats tree aggregated by bounded ecosystem and role labels.
+/// Role-scoped families emit only for the role that owns them; ecosystem families come from the
+/// driver.
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
     let requests = state.requests.load(Ordering::Relaxed);
     let mut body = format!(
@@ -188,24 +189,27 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
          peryx_requests_total {requests}\n"
     );
     write_rate_limit_metrics(&mut body, &state);
-    let mut indexes = per_index_metrics(&state);
-    indexes.sort_by(|(a, _), (b, _)| a.route.cmp(&b.route));
+    let totals = prometheus_totals(&state);
     for family in NEUTRAL_FAMILIES {
         let _ = writeln!(body, "# HELP {} {}", family.name, family.help);
         let _ = writeln!(body, "# TYPE {} counter", family.name);
-        for (index, counters) in &indexes {
-            if family.role.is_none_or(|role| role == index.kind) {
-                write_metric(&mut body, family.name, index, (family.read)(counters));
+        for ((ecosystem, role), counters) in &totals {
+            if family.role.is_none_or(|family_role| family_role.as_str() == *role) {
+                write_metric(&mut body, family.name, ecosystem, role, (family.read)(counters));
             }
         }
     }
-    for family in state.drivers().flat_map(|serving| serving.metric_families()) {
-        let _ = writeln!(body, "# HELP {} {}", family.prom_name, family.help);
-        let _ = writeln!(body, "# TYPE {} counter", family.prom_name);
-        for (index, counters) in &indexes {
-            if family.roles.iter().any(|role| role.as_str() == index.kind) {
-                let value = counters.ecosystem.get(family.key).copied().unwrap_or(0);
-                write_metric(&mut body, family.prom_name, index, value);
+    for driver in state.drivers() {
+        for family in driver.metric_families() {
+            let _ = writeln!(body, "# HELP {} {}", family.prom_name, family.help);
+            let _ = writeln!(body, "# TYPE {} counter", family.prom_name);
+            for ((ecosystem, role), counters) in &totals {
+                if *ecosystem == driver.ecosystem().as_str()
+                    && family.roles.iter().any(|family_role| family_role.as_str() == *role)
+                {
+                    let value = counters.ecosystem.get(family.key).copied().unwrap_or(0);
+                    write_metric(&mut body, family.prom_name, ecosystem, role, value);
+                }
             }
         }
     }
@@ -213,13 +217,45 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
-/// One Prometheus sample line, labelled by index route, ecosystem, and role.
-fn write_metric(body: &mut String, name: &str, index: &IndexDescription, value: u64) {
-    let _ = writeln!(
-        body,
-        "{name}{{index=\"{}\",ecosystem=\"{}\",role=\"{}\"}} {value}",
-        index.route, index.ecosystem, index.kind
-    );
+fn prometheus_totals(
+    state: &AppState,
+) -> std::collections::BTreeMap<(&'static str, &'static str), peryx_events::metrics::Counters> {
+    let snapshots = state
+        .metrics
+        .totals_for_routes(state.indexes.iter().map(|index| index.route.as_str()));
+    let mut totals = std::collections::BTreeMap::new();
+    for (index, counters) in state.indexes.iter().zip(snapshots) {
+        let role = match &index.kind {
+            IndexKind::Cached { .. } => Role::Cached,
+            IndexKind::Hosted { .. } => Role::Hosted,
+            IndexKind::Virtual { .. } => Role::Virtual,
+        };
+        merge_counters(
+            totals.entry((index.ecosystem.as_str(), role.as_str())).or_default(),
+            counters,
+        );
+    }
+    totals
+}
+
+fn merge_counters(target: &mut peryx_events::metrics::Counters, source: peryx_events::metrics::Counters) {
+    target.base.pages += source.base.pages;
+    target.base.downloads += source.base.downloads;
+    target.base.bytes += source.base.bytes;
+    target.base.rejected += source.base.rejected;
+    target.cached.refreshes += source.cached.refreshes;
+    target.cached.changed += source.cached.changed;
+    target.cached.stale_served += source.cached.stale_served;
+    target.cached.upstream_errors += source.cached.upstream_errors;
+    target.hosted.uploads += source.hosted.uploads;
+    for (family, value) in source.ecosystem {
+        *target.ecosystem.entry(family).or_default() += value;
+    }
+}
+
+/// One Prometheus sample line, labelled only by bounded ecosystem and role enums.
+fn write_metric(body: &mut String, name: &str, ecosystem: &str, role: &str, value: u64) {
+    let _ = writeln!(body, "{name}{{ecosystem=\"{ecosystem}\",role=\"{role}\"}} {value}");
 }
 
 fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
@@ -252,23 +288,12 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
         "# HELP peryx_upstream_rate_limit_denied_total Upstream fetches denied by the hosted concurrency cap.\n\
          # TYPE peryx_upstream_rate_limit_denied_total counter"
     );
-    for counter in state.upstream_limits.snapshots() {
-        let _ = writeln!(
-            body,
-            "peryx_upstream_rate_limit_denied_total{{index=\"{}\"}} {}",
-            counter.index, counter.denied
-        );
-    }
+    let upstream = state.upstream_limits.totals();
+    let _ = writeln!(body, "peryx_upstream_rate_limit_denied_total {}", upstream.denied);
     let _ = writeln!(
         body,
         "# HELP peryx_upstream_inflight_fetches Current upstream fetches held by the hosted concurrency cap.\n\
          # TYPE peryx_upstream_inflight_fetches gauge"
     );
-    for counter in state.upstream_limits.snapshots() {
-        let _ = writeln!(
-            body,
-            "peryx_upstream_inflight_fetches{{index=\"{}\"}} {}",
-            counter.index, counter.in_flight
-        );
-    }
+    let _ = writeln!(body, "peryx_upstream_inflight_fetches {}", upstream.in_flight);
 }

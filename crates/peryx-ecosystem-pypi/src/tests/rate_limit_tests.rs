@@ -569,7 +569,7 @@ async fn test_upstream_concurrency_cap_applies_backpressure() {
     assert_eq!(second.0, StatusCode::OK);
 
     let (_, _, metrics) = request(&h.state, "/metrics", &[]).await;
-    assert!(metrics.contains("peryx_upstream_rate_limit_denied_total{index=\"pypi\"} 0"));
+    assert!(metrics.contains("peryx_upstream_rate_limit_denied_total 0"));
 }
 
 // `held` must keep the only permit alive for the whole test so the second acquire saturates and times out.
@@ -585,6 +585,8 @@ async fn test_upstream_acquire_times_out_when_saturated() {
 
     assert!(matches!(denied, Err(UpstreamLimited { retry_after: 1 })));
     assert_eq!(limits.snapshots()[0].denied, 1);
+    assert_eq!(limits.totals().in_flight, 1);
+    assert_eq!(limits.totals().denied, 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -722,6 +724,8 @@ async fn test_upstream_limits_allow_unknown_and_uncapped_mirrors() {
     assert_eq!(snapshots[1].index, "z");
     assert_eq!(snapshots[1].max_concurrent, 0);
     assert_eq!(snapshots[1].in_flight, 0);
+    assert_eq!(limits.totals().in_flight, 0);
+    assert_eq!(limits.totals().denied, 0);
 }
 
 #[test]

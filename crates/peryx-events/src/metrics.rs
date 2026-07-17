@@ -98,7 +98,7 @@ pub type EcosystemCounters = BTreeMap<&'static str, u64>;
 pub struct MetricFamily {
     /// The [`EcosystemCounters`] key this family accumulates under.
     pub key: &'static str,
-    /// The Prometheus metric name, e.g. `peryx_index_metadata_total`.
+    /// The Prometheus metric name, e.g. `peryx_metadata_served_total`.
     pub prom_name: &'static str,
     /// The Prometheus `# HELP` line.
     pub help: &'static str,
@@ -257,6 +257,20 @@ impl Metrics {
         let tree = self.tree.read().expect("metrics lock");
         tree.iter()
             .map(|(route, stats)| (route.clone(), stats.totals.clone()))
+            .collect()
+    }
+
+    /// Snapshot totals for the requested routes in the same order, without copying route values.
+    /// Missing routes report zero counters.
+    ///
+    /// # Panics
+    /// Panics if the aggregator thread panicked and poisoned the tree lock.
+    #[must_use]
+    pub fn totals_for_routes<'a>(&self, routes: impl IntoIterator<Item = &'a str>) -> Vec<Counters> {
+        let tree = self.tree.read().expect("metrics lock");
+        routes
+            .into_iter()
+            .map(|route| tree.get(route).map(|stats| stats.totals.clone()).unwrap_or_default())
             .collect()
     }
 
@@ -539,6 +553,22 @@ mod tests {
                 .is_some_and(|totals| totals.base.pages == 1)
         });
         assert_eq!(persisted_downloads(&meta.analytics()), None);
+    }
+
+    #[test]
+    fn test_totals_for_routes_preserves_order_without_returning_keys() {
+        let metrics = Metrics::start();
+        metrics.record(Event::Page {
+            route: "credential-bearing-route".into(),
+            project: "actor-token".into(),
+        });
+        settle(|| metrics.index_totals().contains_key("credential-bearing-route"));
+
+        let totals = metrics.totals_for_routes(["missing", "credential-bearing-route"]);
+
+        assert_eq!(totals.len(), 2);
+        assert_eq!(totals[0].base.pages, 0);
+        assert_eq!(totals[1].base.pages, 1);
     }
 
     #[test]

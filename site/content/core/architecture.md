@@ -209,7 +209,7 @@ generated sibling for later page responses.
 If an index does not satisfy range requests, peryx remembers that for the process and streams the artifact into the blob
 store before extracting metadata from the cached file. Sdist backfill uses the same cached-file path and buffers only
 capped `PKG-INFO` content. For hosted uploads, peryx writes the sibling from verified wheel `METADATA` or sdist
-`PKG-INFO`. The per-index `peryx_index_metadata_total` metric counts these; the end-to-end tests assert on it to prove
+`PKG-INFO`. The bounded `peryx_metadata_served_total` metric counts these; the end-to-end tests assert on it to prove
 real clients take this path. Few third-party indexes serve PEP 658 yet, so fronting one with peryx can make resolution
 faster than the upstream itself once metadata is cached.
 
@@ -223,7 +223,7 @@ before a single layer moves.
 Handlers record events (page served, file downloaded, upload accepted, refresh outcome) with one non-blocking channel
 send; a dedicated thread aggregates them into an index → project → file tree. The request path never takes the
 aggregation lock; recording costs one channel send. The tree serves [`/+stats`](@/core/monitor.md), the dashboard's
-usage drill-down, and the per-index [Prometheus](https://prometheus.io/) counters.
+usage drill-down, and [Prometheus](https://prometheus.io/) counters aggregated by ecosystem and role.
 
 ## Distribution
 

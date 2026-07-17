@@ -59,7 +59,7 @@ async fn test_metadata_served_verified_and_counted() {
     }
     let (_, _, metrics) = get(&h.state, "/metrics", None).await;
     assert!(
-        metrics.contains("peryx_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 2"),
+        metrics.contains("peryx_metadata_served_total{ecosystem=\"pypi\",role=\"cached\"} 2"),
         "metadata counter never reached 2:\n{metrics}"
     );
 }

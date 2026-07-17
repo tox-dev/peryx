@@ -195,10 +195,10 @@ async fn test_router_paths_feed_stats_and_prometheus_metrics() {
     let (metrics_status, _, metrics_body) = get(&harness.state, "/metrics", None).await;
     assert_eq!(metrics_status, StatusCode::OK);
     for line in [
-        "peryx_index_pages_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1",
-        "peryx_index_downloads_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1",
-        "peryx_index_download_bytes_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 12",
-        "peryx_index_metadata_total{index=\"pypi\",ecosystem=\"pypi\",role=\"cached\"} 1",
+        "peryx_pages_served_total{ecosystem=\"pypi\",role=\"cached\"} 1",
+        "peryx_artifacts_served_total{ecosystem=\"pypi\",role=\"cached\"} 1",
+        "peryx_artifacts_served_bytes_total{ecosystem=\"pypi\",role=\"cached\"} 12",
+        "peryx_metadata_served_total{ecosystem=\"pypi\",role=\"cached\"} 1",
     ] {
         assert!(metrics_body.contains(line), "{line} missing from:\n{metrics_body}");
     }

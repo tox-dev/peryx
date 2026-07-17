@@ -193,7 +193,7 @@ fn specificity(media: &str, types: &[&str], ranges: &[&str]) -> Option<u8> {
 /// the whole wheel. Any role that serves files can serve it, so it is not role-scoped.
 const METADATA_FAMILY: MetricFamily = MetricFamily {
     key: "metadata",
-    prom_name: "peryx_index_metadata_total",
+    prom_name: "peryx_metadata_served_total",
     help: "PEP 658 metadata siblings served.",
     ui_label: "PEP 658 metadata hits",
     roles: &[Role::Cached, Role::Hosted, Role::Virtual],
