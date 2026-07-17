@@ -78,12 +78,31 @@ async fn test_blob_read_stream_rejects_reversed_range() {
 
 #[tokio::test]
 async fn test_body_completion_reports_bytes_at_clean_eof() {
+    // A body shorter than its declared length still completes at EOF, reporting what it sent.
     let completed = Arc::new(AtomicU64::new(u64::MAX));
     let recorded = completed.clone();
-    let body = on_body_complete(Body::from("hello"), move |bytes| {
+    let body = on_body_complete(Body::from("hello"), 10, move |bytes| {
         recorded.store(bytes, Ordering::Relaxed);
     });
     assert_eq!(collect(body).await, b"hello");
+    assert_eq!(completed.load(Ordering::Relaxed), 5);
+}
+
+#[tokio::test]
+async fn test_body_completion_reports_bytes_before_a_terminal_poll() {
+    // A length-framed server stops pulling once it holds the declared bytes and never polls for the
+    // stream's `None`, so completion is recognized from the byte count instead.
+    let completed = Arc::new(AtomicU64::new(u64::MAX));
+    let recorded = completed.clone();
+    let body = on_body_complete(Body::from("hello"), 5, move |bytes| {
+        recorded.store(bytes, Ordering::Relaxed);
+    });
+    let mut stream = body.into_data_stream();
+    let mut seen = 0;
+    while seen < 5 {
+        seen += stream.next().await.unwrap().unwrap().len();
+    }
+    drop(stream);
     assert_eq!(completed.load(Ordering::Relaxed), 5);
 }
 
@@ -92,7 +111,7 @@ async fn test_body_completion_ignores_failed_streams() {
     let completed = Arc::new(AtomicU64::new(u64::MAX));
     let recorded = completed.clone();
     let body = Body::from_stream(stream::once(async { Err::<Bytes, _>(std::io::Error::other("failed")) }));
-    let body = on_body_complete(body, move |bytes| {
+    let body = on_body_complete(body, 5, move |bytes| {
         recorded.store(bytes, Ordering::Relaxed);
     });
     assert!(to_bytes(body, usize::MAX).await.is_err());

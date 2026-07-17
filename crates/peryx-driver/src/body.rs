@@ -16,14 +16,25 @@ pub fn blob_read(read: BlobRead) -> Body {
     }
 }
 
-/// Run `complete` with the transmitted byte count only after a body reaches a clean EOF.
-pub fn on_body_complete(body: Body, complete: impl FnOnce(u64) + Send + 'static) -> Body {
+/// Run `complete` with the transmitted byte count once a body delivers all of `expected` bytes, or
+/// at a clean EOF short of that.
+///
+/// `expected` is the response's own `Content-Length`. A length-framed response stops the server as
+/// soon as that many bytes leave the body, and it never polls the stream for its terminating `None`,
+/// so completion has to be recognized from the byte count rather than the end marker. A stream error
+/// abandons the callback: a truncated transfer is not a download.
+pub fn on_body_complete(body: Body, expected: u64, complete: impl FnOnce(u64) + Send + 'static) -> Body {
     Body::from_stream(futures_util::stream::unfold(
         (body.into_data_stream(), Some(complete), 0u64),
-        |(mut stream, mut complete, bytes)| async move {
+        move |(mut stream, mut complete, bytes)| async move {
             match stream.next().await {
                 Some(Ok(chunk)) => {
                     let bytes = bytes.saturating_add(chunk.len() as u64);
+                    if bytes >= expected
+                        && let Some(complete) = complete.take()
+                    {
+                        complete(bytes);
+                    }
                     Some((Ok(chunk), (stream, complete, bytes)))
                 }
                 Some(Err(error)) => {

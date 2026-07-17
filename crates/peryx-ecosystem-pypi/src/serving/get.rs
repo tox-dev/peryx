@@ -500,14 +500,15 @@ async fn serve_blob(
             let metrics = state.metrics.clone();
             let project = crate::project_of_filename(filename);
             let filename = filename.to_owned();
-            let body = peryx_driver::body::on_body_complete(peryx_driver::body::blob_read(read), move |bytes| {
-                metrics.record(Event::Download {
-                    project,
-                    route,
-                    filename,
-                    bytes,
+            let body =
+                peryx_driver::body::on_body_complete(peryx_driver::body::blob_read(read), length, move |bytes| {
+                    metrics.record(Event::Download {
+                        project,
+                        route,
+                        filename,
+                        bytes,
+                    });
                 });
-            });
             builder
                 .body(body)
                 .expect("blob response builds from validated header parts")

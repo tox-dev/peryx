@@ -64,12 +64,18 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             BlobFetch::Gateway(response) => response,
         };
         if response.status().is_success() {
+            let expected = response
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
             let metrics = state.metrics.clone();
             let route = index.route.clone();
             let project = repo.to_owned();
             let filename = digest.to_owned();
             let body = std::mem::replace(response.body_mut(), Body::empty());
-            *response.body_mut() = peryx_driver::body::on_body_complete(body, move |bytes| {
+            *response.body_mut() = peryx_driver::body::on_body_complete(body, expected, move |bytes| {
                 metrics.record(Event::Download {
                     route,
                     project,
