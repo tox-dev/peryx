@@ -33,6 +33,7 @@ mod error;
 mod mirror;
 mod name;
 pub mod openapi;
+mod quota;
 pub(crate) mod registry;
 mod search_oci;
 mod settings;
@@ -45,6 +46,7 @@ mod tests;
 
 pub use error::{ErrorCode, error_response, gateway_error};
 pub use mirror::{MirrorMode, MirrorRow, mirror};
+pub use quota::quota_reservation;
 pub use registry::OciRegistry;
 #[doc(hidden)]
 pub use registry::OciRegistryWithHasher;

@@ -34,6 +34,8 @@ pub mod openapi;
 #[cfg(feature = "serving")]
 pub mod policy;
 #[cfg(feature = "serving")]
+mod quota;
+#[cfg(feature = "serving")]
 mod requirement;
 #[cfg(feature = "serving")]
 pub mod search_pypi;
@@ -51,6 +53,8 @@ pub mod stream;
 pub mod upload;
 mod version;
 
+#[cfg(feature = "serving")]
+pub use quota::quota_reservation;
 #[cfg(feature = "serving")]
 pub use search_pypi::PypiIndexer;
 #[cfg(feature = "serving")]

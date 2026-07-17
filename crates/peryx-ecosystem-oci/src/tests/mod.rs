@@ -9,6 +9,7 @@ mod mirror_tests;
 mod negotiate_tests;
 mod policy_tests;
 mod push_tests;
+mod quota_tests;
 mod scope_tests;
 mod search_tests;
 mod serve;
