@@ -499,6 +499,7 @@ async fn serve_blob(
             };
             let metrics = state.metrics.clone();
             let project = crate::project_of_filename(filename);
+            let (version, source) = cache::download_dimensions(state, &digest, filename);
             let filename = filename.to_owned();
             let body =
                 peryx_driver::body::on_body_complete(peryx_driver::body::blob_read(read), length, move |bytes| {
@@ -506,6 +507,8 @@ async fn serve_blob(
                         project,
                         route,
                         filename,
+                        version,
+                        source,
                         bytes,
                     });
                 });

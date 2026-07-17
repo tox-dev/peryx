@@ -85,6 +85,17 @@ async fn test_routed_file_download_verifies_the_advertising_source(#[case] artif
     if valid {
         assert_eq!(body.unwrap().to_bytes(), wheel.as_slice());
         assert!(state.blobs.head(&digest).await.unwrap().is_some());
+        for _ in 0..500 {
+            if !state.metrics.daily_usage().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        let usage = state.metrics.daily_usage();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].version, "1.0");
+        assert_eq!(usage[0].source, "second");
+        assert_eq!(usage[0].downloads, 1);
     } else {
         assert!(body.is_err());
         for _ in 0..500 {

@@ -244,6 +244,8 @@ async fn test_metrics_omit_hostile_values_and_bound_series_count() {
             route: format!("repository-credential-{position}"),
             project: "actor-token-value".to_owned(),
             filename: "../../private/path?error=raw-secret".to_owned(),
+            version: None,
+            source: None,
             bytes: 1,
         });
     }

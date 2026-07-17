@@ -80,6 +80,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     route,
                     project,
                     filename,
+                    // OCI layers are content-addressed with no version, and a stored serve has no cheap
+                    // per-digest routed-upstream lookup, so both daily-usage labels stay empty here.
+                    version: None,
+                    source: None,
                     bytes,
                 });
             });
