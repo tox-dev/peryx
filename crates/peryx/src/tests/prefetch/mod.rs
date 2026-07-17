@@ -158,6 +158,16 @@ pub(super) fn mirror(dir: &tempfile::TempDir, server: &MockServer) -> Config {
     mirror_config(dir.path(), &format!("{}/simple/", server.uri()))
 }
 
+// `catalog::sync_catalog` coalesces concurrent syncs through a process-global lock keyed on the
+// index name, so tests that sync the catalog need a distinct name to stay isolated under parallel
+// runs; sharing one name lets an in-flight sync make another test's sync return `NotModified`.
+pub(super) fn mirror_named(dir: &tempfile::TempDir, server: &MockServer, index: &str) -> Config {
+    let mut config = mirror_config(dir.path(), &format!("{}/simple/", server.uri()));
+    config.indexes[0].name = index.to_owned();
+    config.indexes[0].route = index.to_owned();
+    config
+}
+
 pub(super) async fn run_ok(config: &Config, command: &PrefetchCommand) -> String {
     let mut out = Vec::new();
     crate::prefetch::run(config, command, &mut out).await.unwrap();

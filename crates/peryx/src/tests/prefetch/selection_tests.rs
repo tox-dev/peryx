@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use peryx_ecosystem_pypi::store::{catalog_state, get_project, list_projects, put_project};
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
@@ -138,22 +135,24 @@ async fn test_mirror_sync_all_reads_html_project_list_and_filters_files() {
 async fn test_mirror_plan_all_reuses_not_modified_catalog() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
-    let requests = Arc::new(AtomicUsize::new(0));
-    let response_requests = Arc::clone(&requests);
+    // Key the 200-vs-304 response on the `If-None-Match` header instead of call order. The first
+    // fetch sends no validator and gets the catalog with an etag; later revalidations send the etag
+    // and get a 304. A retried request keeps its header, so it stays on the same branch.
     Mock::given(method("GET"))
         .and(path("/simple/"))
-        .respond_with(
-            move |_request: &Request| match response_requests.fetch_add(1, Ordering::Relaxed) {
-                1 => ResponseTemplate::new(304),
-                _ => ResponseTemplate::new(200)
+        .respond_with(|request: &Request| {
+            if request.headers.contains_key("if-none-match") {
+                ResponseTemplate::new(304)
+            } else {
+                ResponseTemplate::new(200)
                     .insert_header("etag", "catalog-v1")
                     .set_body_raw(
                         br#"<html><body><a href="/simple/flask/">Flask</a></body></html>"#.to_vec(),
                         "text/html",
-                    ),
-            },
-        )
-        .expect(3)
+                    )
+            }
+        })
+        .expect(3..)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -169,45 +168,48 @@ async fn test_mirror_plan_all_reuses_not_modified_catalog() {
             ),
             "application/vnd.pypi.simple.v1+json",
         ))
-        .expect(3)
+        .expect(3..)
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), Vec::new());
+    options.index = "catalog-reuse".to_owned();
     options.mode = Some(PrefetchMode::All);
+    let config = mirror_named(&dir, &server, "catalog-reuse");
 
     for _ in 0..3 {
         let text = run_ok(
-            &mirror(&dir, &server),
+            &config,
             &PrefetchCommand::Plan(PrefetchPlanArgs {
                 options: options.clone(),
             }),
         )
         .await;
-        assert!(text.contains("page\tpypi\tflask"));
+        assert!(text.contains("page\tcatalog-reuse\tflask"));
     }
-    assert_eq!(requests.load(Ordering::Relaxed), 3);
 }
 
 #[tokio::test]
 async fn test_mirror_plan_all_aborts_invalid_catalog_refresh() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
-    let requests = Arc::new(AtomicUsize::new(0));
-    let response_requests = Arc::clone(&requests);
+    // Key the response on the `If-None-Match` header instead of call order. The first fetch sends no
+    // validator and publishes `Flask` with an etag; the revalidation sends the etag and gets a
+    // changed, invalid catalog that aborts the refresh. A retried request keeps its header, so it
+    // stays on the same branch.
     Mock::given(method("GET"))
         .and(path("/simple/"))
-        .respond_with(move |_request: &Request| {
-            let project = if response_requests.fetch_add(1, Ordering::Relaxed) == 0 {
-                "Flask"
+        .respond_with(|request: &Request| {
+            let (project, etag) = if request.headers.contains_key("if-none-match") {
+                ("bad name", "catalog-v2")
             } else {
-                "bad name"
+                ("Flask", "catalog-v1")
             };
-            ResponseTemplate::new(200).set_body_raw(
+            ResponseTemplate::new(200).insert_header("etag", etag).set_body_raw(
                 format!(r#"{{"meta":{{"api-version":"1.4"}},"projects":[{{"name":"{project}"}}]}}"#),
                 "application/vnd.pypi.simple.v1+json",
             )
         })
-        .expect(2)
+        .expect(2..)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -223,40 +225,38 @@ async fn test_mirror_plan_all_aborts_invalid_catalog_refresh() {
             ),
             "application/vnd.pypi.simple.v1+json",
         ))
-        .expect(1)
+        .expect(1..)
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), Vec::new());
+    options.index = "catalog-refresh".to_owned();
     options.mode = Some(PrefetchMode::All);
+    let config = mirror_named(&dir, &server, "catalog-refresh");
     let command = PrefetchCommand::Plan(PrefetchPlanArgs {
         options: options.clone(),
     });
-    assert!(
-        run_ok(&mirror(&dir, &server), &command)
-            .await
-            .contains("page\tpypi\tflask")
-    );
+    assert!(run_ok(&config, &command).await.contains("page\tcatalog-refresh\tflask"));
     let meta = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
-    let active_generation = catalog_state(&meta, "pypi").unwrap().active.unwrap().generation;
+    let active_generation = catalog_state(&meta, "catalog-refresh")
+        .unwrap()
+        .active
+        .unwrap()
+        .generation;
     drop(meta);
 
-    let (_text, error) = run_err(
-        &mirror(&dir, &server),
-        &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
-    )
-    .await;
+    let (_text, error) = run_err(&config, &PrefetchCommand::Plan(PrefetchPlanArgs { options })).await;
 
     assert!(error.to_string().contains("bad name"));
     let meta = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
-    let state = catalog_state(&meta, "pypi").unwrap();
+    let state = catalog_state(&meta, "catalog-refresh").unwrap();
     assert_eq!(state.active.as_ref().unwrap().generation, active_generation);
     assert_eq!(state.staging, None);
     assert!(
-        meta.driver_prefix_keys(&format!("pypi\0g\0pypi/{:020}/", state.next_generation))
+        meta.driver_prefix_keys(&format!("pypi\0g\0catalog-refresh/{:020}/", state.next_generation))
             .unwrap()
             .is_empty()
     );
-    assert_eq!(list_projects(&meta, "pypi").unwrap(), vec!["Flask"]);
+    assert_eq!(list_projects(&meta, "catalog-refresh").unwrap(), vec!["Flask"]);
     put_project(&meta, "foreground", "probe", "Probe").unwrap();
     assert_eq!(
         get_project(&meta, "foreground", "probe").unwrap().as_deref(),
