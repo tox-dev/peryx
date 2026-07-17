@@ -74,7 +74,7 @@ async fn test_discovery_document_ignores_untrusted_forwarding_and_redacts_token(
 async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![
         Index {
             name: "pypi".to_owned(),
@@ -119,7 +119,7 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
 async fn test_per_index_discovery_dispatches_an_oci_index_to_the_oci_driver() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![Index {
         name: "images".to_owned(),
         route: "images".to_owned(),

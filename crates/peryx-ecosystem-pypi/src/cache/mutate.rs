@@ -18,9 +18,9 @@ use super::resolve::resolve_detail;
 ///
 /// # Errors
 /// Returns [`CacheError`] if a blob write, store write, or encode fails.
-pub fn store_upload(state: &ServingState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
+pub async fn store_upload(state: &ServingState, name: &str, prepared: PreparedUpload) -> Result<bool, CacheError> {
     let project = prepared.normalized.clone();
-    let stored = upload::store_prepared(&state.meta, &state.blobs, name, prepared)?;
+    let stored = upload::store_prepared(&state.meta, &state.blobs, name, prepared).await?;
     if stored {
         state.invalidate_project(&project);
     }

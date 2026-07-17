@@ -37,7 +37,7 @@ async fn test_overlay_serves_buffered_when_local_layer_policy_is_active() {
 async fn test_overlay_tolerates_unavailable_layer() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
     let indexes = vec![
         Index {
@@ -97,7 +97,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let digest = Digest::of(b"wheel");
     mount_detail(&server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;

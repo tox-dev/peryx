@@ -11,16 +11,22 @@ use sha2::{Digest as _, Sha256};
 
 mod backend;
 mod error;
+mod storage;
 mod store;
 
-pub use backend::BlobBackend;
-pub use error::{BlobError, BlobOperation, BlobScanError};
+pub use backend::{
+    BlobBackend, BlobCapabilities, BlobDurability, BlobLease, BlobRead, BlobReadBody, BlobStaged, BlobSupport,
+    BlobTail, BlobWrite,
+};
+pub use error::{BlobError, BlobErrorContext, BlobErrorKind, BlobOperation, BlobScanError};
+pub use storage::{BlobBlocking, BlobStorage};
 pub use store::{BlobEntry, BlobStore, PendingBlob, StagedBlob};
 
 /// Metadata returned without fetching a blob's contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlobMetadata {
     pub bytes: u64,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 /// A sha256 digest rendered as lowercase hex.

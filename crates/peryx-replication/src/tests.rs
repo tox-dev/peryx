@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::stream;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 
 use crate::{BlobReference, Change, ChangePage, MetadataMutation, PROTOCOL_VERSION, Primary, Replica, SyncError};
@@ -42,10 +42,10 @@ impl Primary for TestPrimary {
     }
 }
 
-fn stores() -> (tempfile::TempDir, MetaStore, BlobStore) {
+fn stores() -> (tempfile::TempDir, MetaStore, BlobStorage) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     (dir, meta, blobs)
 }
 
@@ -94,7 +94,7 @@ fn put(key: &str, value: &[u8]) -> MetadataMutation {
     }
 }
 
-fn replica<'store>(meta: &'store MetaStore, blobs: &'store BlobStore) -> Replica<'store> {
+fn replica<'store>(meta: &'store MetaStore, blobs: &'store BlobStorage) -> Replica<'store> {
     Replica::new(meta, blobs, NonZeroUsize::new(100).unwrap())
 }
 
@@ -125,7 +125,7 @@ async fn test_sync_commits_verified_blob_metadata_journal_and_cursor() {
     assert_eq!(outcome.changes, 1);
     assert_eq!(outcome.blobs, 1);
     assert!(outcome.caught_up());
-    assert_eq!(blobs.read(&digest).unwrap(), bytes);
+    assert_eq!(blobs.read_bytes(&digest, bytes.len() as u64).await.unwrap(), bytes);
     assert_eq!(
         meta.get_driver_value("pypi\0upload").unwrap().as_deref(),
         Some(b"record".as_slice())
@@ -193,7 +193,7 @@ async fn test_sync_digest_mismatch_keeps_prior_cursor_and_metadata() {
     assert!(meta.get_driver_value("key").unwrap().is_none());
     assert!(replica(&meta, &blobs).state().unwrap().is_none());
     assert_eq!(meta.current_serial().unwrap(), 0);
-    assert!(!blobs.exists(&expected));
+    assert!(blobs.head(&expected).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -228,7 +228,34 @@ async fn test_sync_interrupted_blob_keeps_prior_cursor_and_metadata() {
     assert!(matches!(result, Err(SyncError::Primary(_))));
     assert!(meta.get_driver_value("key").unwrap().is_none());
     assert!(replica(&meta, &blobs).state().unwrap().is_none());
-    assert!(!blobs.exists(&digest));
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_sync_primary_blob_open_failure_removes_the_stage() {
+    let (_dir, meta, blobs) = stores();
+    let digest = Digest::of(b"missing");
+    let source = primary(
+        vec![page(
+            "primary-a",
+            0,
+            1,
+            vec![change(
+                1,
+                vec![put("key", b"value")],
+                vec![BlobReference {
+                    sha256: digest.as_str().to_owned(),
+                    size: 7,
+                }],
+            )],
+        )],
+        Vec::new(),
+    );
+
+    let result = replica(&meta, &blobs).sync_once(&source).await;
+
+    assert!(matches!(result, Err(SyncError::Primary(_))));
+    assert!(blobs.head(&digest).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -443,8 +470,14 @@ async fn test_sync_rejects_changes_ahead_of_the_primary_serial() {
 #[tokio::test]
 async fn test_sync_rejects_a_corrupt_existing_blob() {
     let (_dir, meta, blobs) = stores();
-    let digest = blobs.write(b"artifact").unwrap();
-    std::fs::write(blobs.path_for(&digest), b"corrupt").unwrap();
+    let digest = blobs.put_bytes(b"artifact").await.unwrap();
+    // Rewrite the stored bytes in place to the same length, so the size check passes and verification
+    // is what rejects the blob. Writing through the backend's own entry path keeps this cross-platform:
+    // a materialized lease holds a shared file lock that Windows enforces against writers.
+    blobs
+        .blocking()
+        .visit(|entry| std::fs::write(&entry.path, b"corrupt!"))
+        .unwrap();
     let source = primary(
         vec![page(
             "primary-a",
@@ -515,7 +548,7 @@ async fn test_sync_size_mismatch_keeps_prior_cursor_and_metadata() {
     ));
     assert!(meta.get_driver_value("key").unwrap().is_none());
     assert!(replica(&meta, &blobs).state().unwrap().is_none());
-    assert!(!blobs.exists(&digest));
+    assert!(blobs.head(&digest).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -551,7 +584,7 @@ async fn test_sync_short_blob_keeps_prior_cursor_and_metadata() {
         })
     ));
     assert!(meta.get_driver_value("key").unwrap().is_none());
-    assert!(!blobs.exists(&digest));
+    assert!(blobs.head(&digest).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -580,7 +613,7 @@ async fn test_sync_applies_the_last_metadata_mutation_in_a_page() {
 #[tokio::test]
 async fn test_sync_reuses_an_existing_verified_blob() {
     let (_dir, meta, blobs) = stores();
-    let digest = blobs.write(b"artifact").unwrap();
+    let digest = blobs.put_bytes(b"artifact").await.unwrap();
     let source = primary(
         vec![page(
             "primary-a",
@@ -601,7 +634,40 @@ async fn test_sync_reuses_an_existing_verified_blob() {
     let outcome = replica(&meta, &blobs).sync_once(&source).await.unwrap();
 
     assert_eq!(outcome.blobs, 0);
-    assert_eq!(blobs.read(&digest).unwrap(), b"artifact");
+    assert_eq!(blobs.read_bytes(&digest, 8).await.unwrap(), b"artifact");
+}
+
+#[tokio::test]
+async fn test_sync_rejects_the_wrong_size_for_an_existing_blob() {
+    let (_dir, meta, blobs) = stores();
+    let digest = blobs.put_bytes(b"artifact").await.unwrap();
+    let source = primary(
+        vec![page(
+            "primary-a",
+            0,
+            1,
+            vec![change(
+                1,
+                Vec::new(),
+                vec![BlobReference {
+                    sha256: digest.as_str().to_owned(),
+                    size: 9,
+                }],
+            )],
+        )],
+        Vec::new(),
+    );
+
+    let error = replica(&meta, &blobs).sync_once(&source).await.unwrap_err();
+
+    assert!(matches!(
+        error,
+        SyncError::BlobSizeMismatch {
+            expected: 9,
+            actual: 8,
+            ..
+        }
+    ));
 }
 
 #[test]

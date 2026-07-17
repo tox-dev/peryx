@@ -23,7 +23,7 @@ const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
 /// peryx does not need. Every read or decode error funnels through [`reject`] as a 400.
 pub(super) async fn collect_form(
     mut multipart: Multipart,
-    blobs: &peryx_storage::blob::BlobStore,
+    blobs: &peryx_storage::blob::BlobStorage,
     max_file_size: Option<u64>,
 ) -> Result<(UploadForm, Option<StagedUpload>), Response> {
     let mut form = UploadForm::default();
@@ -128,7 +128,7 @@ async fn drain_field(mut field: axum::extract::multipart::Field<'_>) -> Result<(
 
 async fn stage_content(
     mut field: axum::extract::multipart::Field<'_>,
-    blobs: &peryx_storage::blob::BlobStore,
+    blobs: &peryx_storage::blob::BlobStorage,
     max_file_size: Option<u64>,
     form: &UploadForm,
 ) -> Result<StagedUpload, Response> {
@@ -142,23 +142,34 @@ async fn stage_content(
     {
         return Err(upload_size_reject(form, size, limit));
     }
-    let mut pending = blobs.begin().map_err(storage_reject)?;
+    let mut pending = blobs.begin().await.map_err(storage_reject)?;
     let mut blake2 = Blake2bVar::new(32).expect("blake2b-256 output size is valid");
     let mut size = 0_u64;
-    while let Some(chunk) = field.chunk().await.map_err(reject)? {
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                let response = reject(error);
+                pending.abort().await.map_err(storage_reject)?;
+                return Err(response);
+            }
+        };
         size = size.saturating_add(chunk.len() as u64);
         if size > limit {
-            return Err(upload_size_reject(form, size, limit));
+            let response = upload_size_reject(form, size, limit);
+            pending.abort().await.map_err(storage_reject)?;
+            return Err(response);
         }
         blake2.update(&chunk);
-        pending.write(&chunk).map_err(storage_reject)?;
+        pending.write_chunk(chunk).await.map_err(storage_reject)?;
     }
     let mut digest = [0; 32];
     blake2
         .finalize_variable(&mut digest)
         .expect("blake2b-256 output buffer has the requested size");
     Ok(StagedUpload {
-        blob: pending.finish().map_err(storage_reject)?,
+        blob: pending.finish().await.map_err(storage_reject)?,
         blake2_256: hex(&digest),
     })
 }

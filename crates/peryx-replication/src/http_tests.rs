@@ -4,7 +4,7 @@ use axum::http::{Request, StatusCode, header};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use http_body_util::BodyExt as _;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobMetadata, BlobRead, BlobReadBody, BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
 
@@ -15,10 +15,29 @@ use crate::{
 
 const TOKEN: &str = "replica-secret";
 
+#[tokio::test]
+async fn test_blob_body_preserves_a_backend_stream() {
+    let digest = Digest::of(b"artifact");
+    let read = BlobRead::new(
+        "stream",
+        digest,
+        BlobMetadata {
+            bytes: 8,
+            modified: None,
+        },
+        0..8,
+        BlobReadBody::Stream(futures_util::stream::once(async { Ok(Bytes::from_static(b"artifact")) }).boxed()),
+    );
+
+    let body = crate::http::blob_body(read).collect().await.unwrap().to_bytes();
+
+    assert_eq!(body, b"artifact".as_slice());
+}
+
 struct TestStores {
     _dir: tempfile::TempDir,
     meta: MetaStore,
-    blobs: BlobStore,
+    blobs: BlobStorage,
 }
 
 impl TestStores {
@@ -26,7 +45,7 @@ impl TestStores {
         let dir = tempfile::tempdir().unwrap();
         Self {
             meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
-            blobs: BlobStore::new(dir.path().join("blobs")),
+            blobs: BlobStorage::filesystem(dir.path().join("blobs")),
             _dir: dir,
         }
     }
@@ -151,7 +170,7 @@ async fn test_primary_router_reports_a_journal_read_error() {
         "primary-a",
         TOKEN,
         MetaStore::open_existing(path).unwrap(),
-        BlobStore::new(dir.path().join("blobs")),
+        BlobStorage::filesystem(dir.path().join("blobs")),
     )
     .unwrap();
 
@@ -198,7 +217,7 @@ async fn test_primary_router_rejects_an_oversized_page_limit() {
 #[tokio::test]
 async fn test_primary_router_streams_a_digest_addressed_blob() {
     let stores = TestStores::new();
-    let digest = stores.blobs.write(b"artifact bytes").unwrap();
+    let digest = stores.blobs.put_bytes(b"artifact bytes").await.unwrap();
 
     let response = stores
         .router()
@@ -253,8 +272,9 @@ async fn test_primary_router_reports_an_unreadable_blob() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let stores = TestStores::new();
-    let digest = stores.blobs.write(b"unreadable").unwrap();
-    std::fs::set_permissions(stores.blobs.path_for(&digest), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let digest = stores.blobs.put_bytes(b"unreadable").await.unwrap();
+    let lease = stores.blobs.materialize(&digest).await.unwrap();
+    std::fs::set_permissions(lease.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
 
     let response = stores
         .router()
@@ -314,7 +334,7 @@ fn test_http_primary_rejects_a_malformed_url() {
 async fn test_http_primary_fetches_changes_and_streams_blobs() {
     let stores = TestStores::new();
     stores.meta.put_driver_value("delete", b"old").unwrap();
-    let digest = stores.blobs.write(b"artifact").unwrap();
+    let digest = stores.blobs.put_bytes(b"artifact").await.unwrap();
     stores
         .meta
         .commit_driver_txn(|txn| {

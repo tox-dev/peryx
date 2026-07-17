@@ -87,7 +87,8 @@ fn list_cache(
     }
     stores
         .blobs
-        .scan(|entry| {
+        .blocking()
+        .visit(|entry| {
             let Some(digest) = &entry.digest else {
                 return Ok(());
             };
@@ -136,7 +137,8 @@ fn size_cache(config: &Config, stores: &CacheStores, now: i64, out: &mut dyn Wri
     let mut invalid_blob_paths = 0_u64;
     stores
         .blobs
-        .scan(|entry| {
+        .blocking()
+        .visit(|entry| {
             blob_files += 1;
             blob_bytes += entry.bytes;
             invalid_blob_paths += u64::from(entry.digest.is_none());

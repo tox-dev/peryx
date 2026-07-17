@@ -225,6 +225,19 @@ and enumerates them by ordered prefix scan. redb is an embedded, transactional
 [MVCC](https://en.wikipedia.org/wiki/Multiversion_concurrency_control) readers that never block it, so a fetch reads
 consistent state while a publish commits, and each write is one transaction.
 
+Runtime state holds a `BlobStorage` facade. Full and ranged reads return a local file or a byte stream, matching the
+payload split in Rust's
+[`object_store::GetResult`](https://docs.rs/object_store/latest/object_store/struct.GetResult.html). Metadata reads,
+verified writes, deletes, integrity checks, and maintenance scans cross the facade. The default uses the existing
+filesystem tree, so installations need no configuration or migration. PyPI and OCI can tail flushed bytes from a local
+staged write without exposing its temporary path.
+
+The status API reports the selected backend's effective contract. The capability model follows
+[`OpenDAL::Capability`](https://docs.rs/opendal/latest/opendal/struct.Capability.html): the backend implements `native`
+operations, peryx composes `emulated` operations from lower-level calls, and callers cannot rely on `unsupported`
+operations. Filesystem checksum verification is `emulated` because peryx reads and hashes the bytes. `filesystem`
+durability reports acknowledgment from the configured filesystem; crash and replication guarantees depend on its mount.
+
 A driver rarely writes one entry at a time. The store applies a batch of opaque entries in a single transaction — the
 atomicity a cached page or a publish needs — and a journaled variant allocates the store's monotonic **serial** and
 records an opaque changelog entry in the same commit, so a publish's entries, its serial, and its journal entry land
@@ -253,7 +266,7 @@ collector preserves bytes another ecosystem references.
 OCI keeps upload sessions process-local because their staged blob disappears with the process. The session entry pairs
 the staged state with its index resolution and full request name. peryx chooses a 128-bit random identifier, then checks
 both values after authorizing a subsequent request. A writer may resume an upload that another credential opened for
-that repository. Each body chunk passes the compiled file-size policy before `PendingBlob::write`; a transport error
+that repository. Each body chunk passes the compiled file-size policy before `BlobWrite::write_chunk`; a transport error
 reinserts the session at its accepted offset, while a policy denial drops the session and staged file.
 
 {% mermaid() %}

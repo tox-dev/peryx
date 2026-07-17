@@ -8,6 +8,9 @@ repository.workspace = true
 description = "Content-addressed blob store and metadata storage for peryx."
 
 [dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+fs4.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true
 sha2.workspace = true

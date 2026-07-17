@@ -33,7 +33,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
             if let Some((source_index, source_repo)) = resolve(&state.indexes, source)
                 && !policy_blocks(source_index, PolicyAction::Serve, source_repo)
-                && state.blobs.exists(&storage)
+                && state.blobs.head(&storage).await.map_err(blob_fault)?.is_some()
                 && self.blob_authorized(state, source_index, source_repo, mount)?
             {
                 if policy_blocks(index, PolicyAction::Upload, &repo) {
@@ -44,18 +44,18 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
         }
         if let Some(digest) = params.get("digest") {
-            let mut pending = state.blobs.begin().map_err(blob_fault)?;
+            let mut pending = state.blobs.begin().await.map_err(blob_fault)?;
             let mut size = 0;
             if let Err(err) = append_body(&mut pending, &mut size, body, index, &repo).await {
                 return err.into_response();
             }
-            return commit_blob(state, pending, &index.name, &repo, name, digest);
+            return commit_blob(state, pending, &index.name, &repo, name, digest).await;
         }
         let now = (state.clock)();
         let session = Self::random_session()?;
-        let pending = state.blobs.begin().map_err(blob_fault)?;
+        let pending = state.blobs.begin().await.map_err(blob_fault)?;
         let mut uploads = self.uploads.lock().await;
-        reclaim_expired(&mut uploads, now);
+        let expired = reclaim_expired(&mut uploads, now);
         let session = std::iter::once(Ok(session))
             .chain(std::iter::repeat_with(Self::random_session))
             .find(|candidate| {
@@ -74,6 +74,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             },
         );
         drop(uploads);
+        abort_uploads(expired).await;
         Ok(upload_accepted(name, &session, 0))
     }
 
@@ -106,9 +107,8 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
     }
 
-    /// Cancel an open upload session (spec end-14): drop its staged bytes and answer `204`, or `404`
-    /// when the id names no session this index opened. Dropping the session unlinks its temp file, so a
-    /// client that aborts a push releases the server resources it held.
+    /// Cancel an open upload session (spec end-14): remove its staged bytes and answer `204`, or `404`
+    /// when the id names no session this index opened.
     pub(super) async fn cancel_upload(
         &self,
         state: &ServingState,
@@ -121,7 +121,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Err(response) => return Ok(response),
         };
         Ok(match self.take_session(&index.name, name, session).await {
-            Some(_) => StatusCode::NO_CONTENT.into_response(),
+            Some(entry) => {
+                entry.pending.abort().await.map_err(blob_fault)?;
+                StatusCode::NO_CONTENT.into_response()
+            }
             None => error_response(ErrorCode::BlobUploadUnknown, "upload unknown"),
         })
     }
@@ -225,14 +228,24 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 "finishing an upload requires a digest",
             ));
         };
-        commit_blob(state, entry.pending, &index.name, &repo, name, &digest)
+        commit_blob(state, entry.pending, &index.name, &repo, name, &digest).await
     }
 }
 
-pub(super) fn reclaim_expired(uploads: &mut std::collections::HashMap<String, UploadSession>, now: i64) -> usize {
-    let before = uploads.len();
-    uploads.retain(|_, session| now.saturating_sub(session.last_active_at) < UPLOAD_SESSION_TTL_SECS);
-    before - uploads.len()
+pub(super) fn reclaim_expired(
+    uploads: &mut std::collections::HashMap<String, UploadSession>,
+    now: i64,
+) -> Vec<UploadSession> {
+    uploads
+        .extract_if(|_, session| now.saturating_sub(session.last_active_at) >= UPLOAD_SESSION_TTL_SECS)
+        .map(|(_, session)| session)
+        .collect()
+}
+
+pub(super) async fn abort_uploads(uploads: Vec<UploadSession>) {
+    for upload in uploads {
+        let _ = upload.pending.abort().await;
+    }
 }
 
 impl UploadSession {
@@ -256,7 +269,7 @@ impl UploadBodyError {
 }
 
 async fn append_body(
-    pending: &mut PendingBlob,
+    pending: &mut BlobWrite,
     offset: &mut u64,
     body: Body,
     index: &Index,
@@ -273,7 +286,8 @@ async fn append_body(
             ));
         }
         pending
-            .write(&chunk)
+            .write_chunk(chunk)
+            .await
             .map_err(blob_fault)
             .map_err(UploadBodyError::Fault)?;
         *offset = size;

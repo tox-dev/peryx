@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::http::{HeaderValue, header};
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryRecord, WebhookDeliveryStatus};
 use serde_json::json;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -33,7 +33,7 @@ impl Harness {
     fn new(url: String, events: &[&str]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
         let clock = Arc::new(AtomicI64::new(1000));
         let ticks = clock.clone();
         let webhooks = WebhookRuntime::new(vec![WebhookTargetConfig {

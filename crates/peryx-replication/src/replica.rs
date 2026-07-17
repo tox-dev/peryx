@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
 use futures_util::StreamExt as _;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use serde::{Deserialize, Serialize};
 
@@ -39,13 +39,13 @@ impl SyncOutcome {
 /// A follower that verifies and commits one primary page at a time.
 pub struct Replica<'store> {
     meta: &'store MetaStore,
-    blobs: &'store BlobStore,
+    blobs: &'store BlobStorage,
     page_limit: NonZeroUsize,
 }
 
 impl<'store> Replica<'store> {
     #[must_use]
-    pub const fn new(meta: &'store MetaStore, blobs: &'store BlobStore, page_limit: NonZeroUsize) -> Self {
+    pub const fn new(meta: &'store MetaStore, blobs: &'store BlobStorage, page_limit: NonZeroUsize) -> Self {
         Self {
             meta,
             blobs,
@@ -89,36 +89,59 @@ impl<'store> Replica<'store> {
         let validated = ValidatedPage::new(page, after, self.page_limit.get(), state.as_ref())?;
         let mut fetched = 0;
         for (digest, size) in validated.blobs.values() {
-            if self.blobs.exists(digest) {
-                if !self.blobs.verify(digest)? {
+            if let Some(metadata) = self.blobs.head(digest).await? {
+                if metadata.bytes != *size {
+                    return Err(SyncError::BlobSizeMismatch {
+                        digest: digest.as_str().to_owned(),
+                        expected: *size,
+                        actual: metadata.bytes,
+                    });
+                }
+                if !self.blobs.verify(digest).await? {
                     return Err(SyncError::CorruptBlob(digest.as_str().to_owned()));
                 }
                 continue;
             }
-            let mut pending = self.blobs.begin()?;
-            let mut stream = primary.blob(digest).await.map_err(SyncError::primary)?;
+            let mut pending = self.blobs.begin().await?;
+            let mut stream = match primary.blob(digest).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    pending.abort().await?;
+                    return Err(SyncError::primary(error));
+                }
+            };
             let mut actual = 0_u64;
             while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(SyncError::primary)?;
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        pending.abort().await?;
+                        return Err(SyncError::primary(error));
+                    }
+                };
                 let chunk_len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
                 if chunk_len > size - actual {
-                    return Err(SyncError::BlobSizeMismatch {
+                    let error = SyncError::BlobSizeMismatch {
                         digest: digest.as_str().to_owned(),
                         expected: *size,
                         actual: actual.saturating_add(chunk_len),
-                    });
+                    };
+                    pending.abort().await?;
+                    return Err(error);
                 }
                 actual += chunk_len;
-                pending.write(&chunk)?;
+                pending.write_chunk(chunk).await?;
             }
             if actual != *size {
-                return Err(SyncError::BlobSizeMismatch {
+                let error = SyncError::BlobSizeMismatch {
                     digest: digest.as_str().to_owned(),
                     expected: *size,
                     actual,
-                });
+                };
+                pending.abort().await?;
+                return Err(error);
             }
-            self.blobs.commit(pending, digest)?;
+            pending.commit(digest).await?;
             fetched += 1;
         }
         if validated.journal.is_empty() {

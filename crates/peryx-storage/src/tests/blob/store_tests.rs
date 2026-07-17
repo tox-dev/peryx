@@ -1,7 +1,7 @@
 use std::error::Error as _;
 
 use super::{collect_entries, store};
-use crate::blob::{BlobError, BlobMetadata, BlobStore, Digest};
+use crate::blob::{BlobStore, Digest};
 
 #[test]
 fn test_digest_of_known_vector() {
@@ -61,21 +61,21 @@ fn test_write_verified_mismatch() {
     let (_dir, store) = store();
     let wrong = Digest::of(b"other");
     let err = store.write_verified(b"verified", &wrong).unwrap_err();
-    assert!(matches!(err, BlobError::DigestMismatch { .. }));
+    assert_eq!(err.kind(), crate::blob::BlobErrorKind::DigestMismatch);
 }
 
 #[test]
 fn test_read_missing_is_not_found() {
     let (_dir, store) = store();
     let err = store.read(&Digest::of(b"absent")).unwrap_err();
-    assert!(matches!(err, BlobError::NotFound(_)));
+    assert_eq!(err.kind(), crate::blob::BlobErrorKind::NotFound);
 }
 
 #[test]
 fn test_head_reports_length_without_reading() {
     let (_dir, store) = store();
     let digest = store.write(b"payload").unwrap();
-    assert_eq!(store.head(&digest).unwrap(), Some(BlobMetadata { bytes: 7 }));
+    assert_eq!(store.head(&digest).unwrap().unwrap().bytes, 7);
     assert_eq!(store.head(&Digest::of(b"absent")).unwrap(), None);
 }
 
@@ -95,7 +95,7 @@ fn test_head_reports_a_filesystem_error() {
     let path = store.path_for(&digest);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&path, &path).unwrap();
-    assert!(matches!(store.head(&digest), Err(BlobError::Io(_))));
+    assert_eq!(store.head(&digest).unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
 }
 
 #[test]
@@ -110,22 +110,25 @@ fn test_read_range_uses_end_exclusive_offsets() {
 fn test_read_range_missing_is_not_found() {
     let (_dir, store) = store();
     let digest = Digest::of(b"missing");
-    assert!(matches!(store.read_range(&digest, 0..1), Err(BlobError::NotFound(_))));
+    assert_eq!(
+        store.read_range(&digest, 0..1).unwrap_err().kind(),
+        crate::blob::BlobErrorKind::NotFound
+    );
 }
 
 #[test]
 fn test_read_range_rejects_out_of_bounds_offsets() {
     let (_dir, store) = store();
     let digest = store.write(b"payload").unwrap();
-    assert!(matches!(
-        store.read_range(&digest, 3..8),
-        Err(BlobError::InvalidRange { .. })
-    ));
+    assert_eq!(
+        store.read_range(&digest, 3..8).unwrap_err().kind(),
+        crate::blob::BlobErrorKind::InvalidRange
+    );
     let (start, end) = (5, 4);
-    assert!(matches!(
-        store.read_range(&digest, start..end),
-        Err(BlobError::InvalidRange { .. })
-    ));
+    assert_eq!(
+        store.read_range(&digest, start..end).unwrap_err().kind(),
+        crate::blob::BlobErrorKind::InvalidRange
+    );
 }
 
 #[test]
@@ -143,7 +146,18 @@ fn test_health_check_rejects_a_file_as_the_store_root() {
     let root = dir.path().join("not-a-directory");
     std::fs::write(&root, b"x").unwrap();
     let store = BlobStore::new(root);
-    assert!(matches!(store.health_check(), Err(BlobError::Io(_))));
+    assert_eq!(store.health_check().unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_health_check_reports_an_unreadable_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let lease = dir.path().join("blobs/.leases/.peryx-lease-loop");
+    std::fs::create_dir_all(lease.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&lease, &lease).unwrap();
+    assert_eq!(store.health_check().unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
 }
 
 #[test]
@@ -213,7 +227,7 @@ fn test_verify_detects_digest_mismatch() {
 fn test_verify_missing_is_not_found() {
     let (_dir, store) = store();
     let err = store.verify(&Digest::of(b"absent")).unwrap_err();
-    assert!(matches!(err, BlobError::NotFound(_)));
+    assert_eq!(err.kind(), crate::blob::BlobErrorKind::NotFound);
 }
 
 #[test]
@@ -231,7 +245,10 @@ fn test_remove_io_error_when_blob_path_is_a_directory() {
     let digest = Digest::of(b"payload");
     let path = store.path_for(&digest);
     std::fs::create_dir_all(&path).unwrap();
-    assert!(matches!(store.remove(&digest), Err(BlobError::Io(_))));
+    assert_eq!(
+        store.remove(&digest).unwrap_err().kind(),
+        crate::blob::BlobErrorKind::Io
+    );
 }
 
 #[test]
@@ -240,7 +257,7 @@ fn test_write_io_error_when_root_is_a_file() {
     let file = dir.path().join("not-a-dir");
     std::fs::write(&file, b"x").unwrap();
     let store = BlobStore::new(&file);
-    assert!(matches!(store.write(b"data"), Err(BlobError::Io(_))));
+    assert_eq!(store.write(b"data").unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
 }
 
 #[test]
@@ -249,10 +266,31 @@ fn test_streamed_blob_commits_after_verification() {
     let store = BlobStore::new(dir.path().join("blobs"));
     let digest = Digest::of(b"streamed content");
     let mut pending = store.begin().unwrap();
+    assert_eq!((pending.len(), pending.is_empty()), (0, true));
     pending.write(b"streamed ").unwrap();
+    assert_eq!((pending.len(), pending.is_empty()), (9, false));
     pending.write(b"content").unwrap();
     store.commit(pending, &digest).unwrap();
     assert_eq!(store.read(&digest).unwrap(), b"streamed content");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn test_materialized_lease_copies_across_filesystems() {
+    #[cfg(target_os = "linux")]
+    let source_root = tempfile::tempdir().unwrap();
+    #[cfg(target_os = "linux")]
+    let lease_root = tempfile::tempdir_in("/dev/shm").unwrap();
+    #[cfg(target_os = "macos")]
+    let source_root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    #[cfg(target_os = "macos")]
+    let lease_root = tempfile::tempdir().unwrap();
+    let source = source_root.path().join("blob");
+    std::fs::write(&source, b"payload").unwrap();
+
+    let lease = crate::blob::BlobLease::pinned(&source, lease_root.path()).unwrap();
+
+    assert_eq!(std::fs::read(lease.path()).unwrap(), b"payload");
 }
 
 #[test]
@@ -263,7 +301,7 @@ fn test_streamed_blob_with_wrong_digest_is_refused() {
     let mut pending = store.begin().unwrap();
     pending.write(b"tampered").unwrap();
     let err = store.commit(pending, &digest).unwrap_err();
-    assert!(matches!(err, BlobError::DigestMismatch { .. }));
+    assert_eq!(err.kind(), crate::blob::BlobErrorKind::DigestMismatch);
     assert!(!store.exists(&digest));
 }
 
@@ -281,5 +319,5 @@ fn test_commit_into_an_unwritable_store_is_an_io_error() {
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
     let err = store.commit(pending, &digest).unwrap_err();
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(matches!(err, BlobError::Io(_)));
+    assert_eq!(err.kind(), crate::blob::BlobErrorKind::Io);
 }

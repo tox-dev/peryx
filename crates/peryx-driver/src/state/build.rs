@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use peryx_core::LexiconRegistry;
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamRouter;
 
@@ -19,7 +19,7 @@ use peryx_search::{PackageSearch, SearchError};
 
 struct StateParts {
     meta: MetaStore,
-    blobs: BlobStore,
+    blobs: BlobStorage,
     ttl_secs: i64,
     indexes: Vec<Index>,
     clock: Clock,
@@ -66,7 +66,7 @@ use super::app::{AppState, Clock};
 impl AppState {
     /// Build the state with a system clock.
     #[must_use]
-    pub fn new(meta: MetaStore, blobs: BlobStore, ttl_secs: i64, indexes: Vec<Index>) -> Self {
+    pub fn new(meta: MetaStore, blobs: impl Into<BlobStorage>, ttl_secs: i64, indexes: Vec<Index>) -> Self {
         Self::with_clock(meta, blobs, ttl_secs, indexes, Arc::new(system_now))
     }
 
@@ -74,7 +74,7 @@ impl AppState {
     #[must_use]
     pub fn with_rate_limits(
         meta: MetaStore,
-        blobs: BlobStore,
+        blobs: impl Into<BlobStorage>,
         ttl_secs: i64,
         indexes: Vec<Index>,
         rate_limit: RateLimitConfig,
@@ -93,7 +93,13 @@ impl AppState {
 
     /// Build the state with an injected clock.
     #[must_use]
-    pub fn with_clock(meta: MetaStore, blobs: BlobStore, ttl_secs: i64, indexes: Vec<Index>, clock: Clock) -> Self {
+    pub fn with_clock(
+        meta: MetaStore,
+        blobs: impl Into<BlobStorage>,
+        ttl_secs: i64,
+        indexes: Vec<Index>,
+        clock: Clock,
+    ) -> Self {
         Self::with_limits(
             meta,
             blobs,
@@ -111,7 +117,7 @@ impl AppState {
     /// Returns an error if the search index cannot be opened.
     pub fn with_search_path(
         meta: MetaStore,
-        blobs: BlobStore,
+        blobs: impl Into<BlobStorage>,
         ttl_secs: i64,
         indexes: Vec<Index>,
         search_path: impl AsRef<std::path::Path>,
@@ -133,7 +139,7 @@ impl AppState {
     /// Returns an error if the search index cannot be opened.
     pub fn with_search_path_and_rate_limits(
         meta: MetaStore,
-        blobs: BlobStore,
+        blobs: impl Into<BlobStorage>,
         ttl_secs: i64,
         indexes: Vec<Index>,
         search_path: impl AsRef<std::path::Path>,
@@ -163,7 +169,7 @@ impl AppState {
     /// Returns an error if the search index cannot be opened.
     pub fn with_search_path_and_runtime<I>(
         meta: MetaStore,
-        blobs: BlobStore,
+        blobs: impl Into<BlobStorage>,
         ttl_secs: i64,
         indexes: Vec<Index>,
         search_path: impl AsRef<std::path::Path>,
@@ -175,7 +181,7 @@ impl AppState {
         Ok(Self::with_limits_and_search(
             StateParts {
                 meta,
-                blobs,
+                blobs: blobs.into(),
                 ttl_secs,
                 indexes,
                 clock: Arc::new(system_now),
@@ -189,7 +195,7 @@ impl AppState {
     #[must_use]
     pub fn with_limits(
         meta: MetaStore,
-        blobs: BlobStore,
+        blobs: impl Into<BlobStorage>,
         ttl_secs: i64,
         indexes: Vec<Index>,
         clock: Clock,
@@ -199,7 +205,7 @@ impl AppState {
         Self::with_limits_and_search(
             StateParts {
                 meta,
-                blobs,
+                blobs: blobs.into(),
                 ttl_secs,
                 indexes,
                 clock,
@@ -220,7 +226,7 @@ impl AppState {
     #[must_use]
     pub fn with_clock_and_webhooks(
         meta: MetaStore,
-        blobs: BlobStore,
+        blobs: impl Into<BlobStorage>,
         ttl_secs: i64,
         indexes: Vec<Index>,
         clock: Clock,
@@ -229,7 +235,7 @@ impl AppState {
         Self::with_limits_and_search(
             StateParts {
                 meta,
-                blobs,
+                blobs: blobs.into(),
                 ttl_secs,
                 indexes,
                 clock,

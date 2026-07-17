@@ -387,7 +387,7 @@ async fn test_mirror_detail_stale_on_5xx() {
 async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
     let indexes = vec![Index {
         name: "pypi".to_owned(),
@@ -408,7 +408,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
 async fn test_mirror_detail_stale_on_upstream_error() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
     let body = crate::to_json(&crate::ProjectDetail {
         meta: crate::Meta::default(),
@@ -457,7 +457,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let indexes = vec![Index {
         name: "pypi".to_owned(),
@@ -485,7 +485,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let body = crate::to_json(&crate::ProjectDetail {
         meta: crate::Meta::default(),
         name: "flask".to_owned(),

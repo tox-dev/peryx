@@ -28,7 +28,7 @@ async fn test_inspect_fetches_an_uncached_file_from_upstream() {
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     let uri = format!("/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
     get(&h.state, &uri, None).await;
-    assert!(h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_some());
 }
 #[tokio::test]
 async fn test_inspect_digest_mismatch_is_bad_gateway() {
@@ -48,7 +48,7 @@ async fn test_inspect_digest_mismatch_is_bad_gateway() {
     assert!(body.contains("file download on index \"pypi\""));
     assert!(body.contains("flask-1.0-py3-none-any.whl"));
     assert!(body.contains(digest.as_str()));
-    assert!(!h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_none());
 }
 #[test]
 fn test_offline_missing_user_message_names_target() {

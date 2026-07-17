@@ -1,6 +1,7 @@
 //! How the OCI driver lays its data into the neutral stores.
 //!
-//! Blobs and manifests are content-addressed, so they share the global [`BlobStore`]/manifest
+//! Blobs and manifests are content-addressed, so they share the global
+//! [`BlobStorage`](peryx_storage::blob::BlobStorage)/manifest
 //! namespace and dedupe across proxies. Tags are mutable per proxy, so a tag key carries the index
 //! route and the upstream repository to keep two registries' identically-named repos apart. The
 //! [`MetaStore`] never interprets these keys; the driver owns the whole layout.

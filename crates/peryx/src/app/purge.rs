@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use peryx_driver::serving::PurgeReport;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 
 use super::CacheStores;
@@ -59,10 +59,11 @@ struct OrphanCandidate {
 /// Walk the blob tree and gather every stored blob absent from `referenced`. Collecting the whole set
 /// before reclaiming lets the caller re-read references once the walk is done, closing the window in
 /// which a reference committed mid-scan would otherwise be missed.
-fn orphan_candidates(blobs: &BlobStore, referenced: &BTreeSet<String>) -> anyhow::Result<Vec<OrphanCandidate>> {
+fn orphan_candidates(blobs: &BlobStorage, referenced: &BTreeSet<String>) -> anyhow::Result<Vec<OrphanCandidate>> {
     let mut candidates = Vec::new();
     blobs
-        .scan(|entry| {
+        .blocking()
+        .visit(|entry| {
             if let Some(digest) = entry.digest
                 && !referenced.contains(digest.as_str())
             {
@@ -82,7 +83,7 @@ fn orphan_candidates(blobs: &BlobStore, referenced: &BTreeSet<String>) -> anyhow
 /// Report and, under `yes`, unlink each candidate the fresh `referenced` snapshot still does not name.
 /// A candidate a concurrent committer referenced during the walk shows up here and is left in place.
 fn reclaim_orphans(
-    blobs: &BlobStore,
+    blobs: &BlobStorage,
     yes: bool,
     candidates: &[OrphanCandidate],
     referenced: &BTreeSet<String>,
@@ -99,7 +100,7 @@ fn reclaim_orphans(
         count += 1;
         bytes += candidate.bytes;
         if yes {
-            blobs.remove(&candidate.digest)?;
+            blobs.blocking().delete(&candidate.digest)?;
         }
         writeln!(
             out,
@@ -154,17 +155,17 @@ mod tests {
     #[test]
     fn test_reclaim_orphans_spares_a_reference_that_landed_during_the_walk() {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = BlobStore::new(dir.path().join("blobs"));
-        let orphan = blobs.write(b"orphan").unwrap();
-        let raced = blobs.write(b"raced").unwrap();
+        let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+        let orphan = blobs.blocking().put_bytes(b"orphan").unwrap();
+        let raced = blobs.blocking().put_bytes(b"raced").unwrap();
         let candidates = orphan_candidates(&blobs, &BTreeSet::new()).unwrap();
         // The committer named `raced` after the up-front snapshot; the fresh snapshot the walk hands
         // back now carries it, so only the true orphan is reclaimed.
         let referenced = BTreeSet::from([raced.as_str().to_owned()]);
         let mut out = Vec::new();
         reclaim_orphans(&blobs, true, &candidates, &referenced, &mut out).unwrap();
-        assert!(!blobs.exists(&orphan));
-        assert!(blobs.exists(&raced));
+        assert!(blobs.blocking().head(&orphan).unwrap().is_none());
+        assert!(blobs.blocking().head(&raced).unwrap().is_some());
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains(&format!("removed\torphaned-blob\t{}\t", orphan.as_str())));
         assert!(!text.contains(raced.as_str()));
@@ -177,7 +178,7 @@ mod tests {
         let root = dir.path().join("blobs");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("sha256"), b"not a directory").unwrap();
-        let err = orphan_candidates(&BlobStore::new(&root), &BTreeSet::new())
+        let err = orphan_candidates(&BlobStorage::filesystem(&root), &BTreeSet::new())
             .err()
             .expect("scanning a corrupt store fails");
         assert!(err.to_string().contains("scan orphaned blob files"), "{err}");

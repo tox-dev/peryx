@@ -85,7 +85,7 @@ async fn test_search_skips_unusable_metadata_and_quarantined_projects() {
         .put_metadata(
             invalid_utf8.as_str(),
             "uploaded",
-            h.state.blobs.write(&[0xff]).unwrap().as_str(),
+            h.state.blobs.put_bytes(&[0xff]).await.unwrap().as_str(),
             "pypi",
         )
         .unwrap();
@@ -185,7 +185,8 @@ async fn test_search_indexes_a_project_whose_metadata_sibling_is_malformed() {
             "uploaded",
             h.state
                 .blobs
-                .write(b"Name: malformed\nmalformed header\nVersion: 1.0\n")
+                .put_bytes(b"Name: malformed\nmalformed header\nVersion: 1.0\n")
+                .await
                 .unwrap()
                 .as_str(),
             "pypi",

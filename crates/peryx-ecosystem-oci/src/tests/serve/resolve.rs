@@ -372,14 +372,15 @@ async fn test_unreadable_blob_is_a_gateway_error() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted(&dir);
     let blob = b"unreadable";
-    let stored = state.blobs.write(blob).unwrap();
-    let path = state.blobs.path_for(&stored);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let stored = state.blobs.put_bytes(blob).await.unwrap();
+    let lease = state.blobs.materialize(&stored).await.unwrap();
+    let path = lease.path();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
     let digest = format!("sha256:{}", stored.as_str());
     store::record_blob_membership(&state.meta, "store", "app", &digest).unwrap();
     let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
     // Restore permissions so the temp dir can be cleaned up.
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 #[tokio::test]
@@ -405,6 +406,34 @@ async fn test_proxy_blob_head_answers_a_range_it_has_not_cached() {
     let (status, _, _) = send_with(&app, Method::HEAD, &uri, &[("range", "bytes=99-100")]).await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
 }
+
+#[tokio::test]
+async fn test_proxy_blob_head_without_upstream_length_omits_length_and_ignores_range() {
+    use std::io::{Read as _, Write as _};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let upstream = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let _ = socket.read(&mut request).unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n")
+            .unwrap();
+    });
+    let digest = oci_digest(b"unknown-length");
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &base, false);
+    let uri = format!("/v2/hub/library/nginx/blobs/{digest}");
+
+    let (status, headers, body) = send_with(&app, Method::HEAD, &uri, &[("range", "bytes=0-3")]).await;
+    upstream.join().unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::CONTENT_LENGTH));
+    assert!(!headers.contains_key(header::CONTENT_RANGE));
+    assert!(body.is_empty());
+}
+
 #[tokio::test]
 async fn test_proxy_blob_head_uses_an_upstream_head_not_a_download() {
     let server = MockServer::start().await;
@@ -424,7 +453,14 @@ async fn test_proxy_blob_head_uses_an_upstream_head_not_a_download() {
     assert_eq!(headers[header::CONTENT_LENGTH], blob.len().to_string());
     assert!(body.is_empty());
     // The blob was not downloaded into the store.
-    assert!(!state.blobs.exists(&crate::store::blob_digest(&digest).unwrap()));
+    assert!(
+        state
+            .blobs
+            .head(&crate::store::blob_digest(&digest).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 #[tokio::test]
 async fn test_proxy_blob_head_absent_and_upstream_error() {

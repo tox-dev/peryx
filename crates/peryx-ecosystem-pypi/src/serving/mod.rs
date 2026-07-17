@@ -304,7 +304,7 @@ impl EcosystemDriver for PypiServing {
     fn fsck_metadata(
         &self,
         meta: &peryx_storage::meta::MetaStore,
-        blobs: &peryx_storage::blob::BlobStore,
+        blobs: &peryx_storage::blob::BlobStorage,
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
         crate::admin::fsck_metadata(meta, blobs, out)
@@ -355,7 +355,7 @@ impl EcosystemDriver for PypiServing {
     fn import_dir(
         &self,
         meta: &peryx_storage::meta::MetaStore,
-        blobs: &peryx_storage::blob::BlobStore,
+        blobs: &peryx_storage::blob::BlobStorage,
         target_name: &str,
         target_route: &str,
         dir: &std::path::Path,
@@ -402,7 +402,7 @@ impl EcosystemDriver for PypiServing {
         position: usize,
         digest_hex: String,
         filename: String,
-    ) -> Result<std::path::PathBuf, String> {
+    ) -> Result<peryx_storage::blob::BlobLease, String> {
         web::artifact_path(state, position, digest_hex, filename).await
     }
 

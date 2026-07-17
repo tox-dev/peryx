@@ -3,13 +3,13 @@
 //! walks the directory, validates each distribution, and stores it through the upload pipeline.
 
 use std::fs::File;
-use std::io::{BufReader, Read as _, Write};
+use std::io::{BufReader, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
 use crate::upload::{self, StagedUpload, UploadError, UploadForm};
@@ -27,7 +27,7 @@ const BUFFER_BYTES: usize = 1024 * 1024;
 /// Returns a message when the directory or a staged file cannot be read.
 pub fn import_dir(
     meta: &MetaStore,
-    blobs: &BlobStore,
+    blobs: &BlobStorage,
     target_name: &str,
     target_route: &str,
     dir: &Path,
@@ -88,7 +88,7 @@ fn import_file(
     path: &Path,
     target: Target<'_>,
     meta: &MetaStore,
-    blobs: &BlobStore,
+    blobs: &BlobStorage,
     counts: &mut ImportCounts,
     out: &mut dyn Write,
 ) -> std::io::Result<()> {
@@ -109,7 +109,9 @@ fn import_file(
         }
     };
     let staged = stage_file(path, blobs)?;
-    if let Some((normalized, version)) = sdist_pkg_info_identity(&filename, &parsed, staged.blob.path())
+    if let Some((normalized, version)) = staged
+        .blob
+        .with_materialized(|path| sdist_pkg_info_identity(&filename, &parsed, path))
         && (normalized != parsed.normalized_name || version != parsed.version)
     {
         counts.rejected += 1;
@@ -127,7 +129,7 @@ fn import_file(
         target.route,
         unix_now(),
     ) {
-        Ok(prepared) => match upload::store_prepared(meta, blobs, target.name, prepared) {
+        Ok(prepared) => match upload::store_prepared_blocking(meta, blobs, target.name, prepared) {
             Ok(true) => {
                 counts.imported += 1;
                 writeln!(out, "imported\t{display}\t{normalized}\t{version}\tstored")
@@ -165,24 +167,35 @@ fn sdist_pkg_info_identity(filename: &str, parsed: &DistributionFilename, path: 
     Some((normalize_name(&doc.name), parse_version(&doc.version)?))
 }
 
-fn stage_file(path: &Path, blobs: &BlobStore) -> std::io::Result<StagedUpload> {
-    let mut input = BufReader::with_capacity(BUFFER_BYTES, File::open(path)?);
-    let mut pending = blobs.begin().map_err(std::io::Error::other)?;
+fn stage_file(path: &Path, blobs: &BlobStorage) -> std::io::Result<StagedUpload> {
     let mut blake2 = Blake2bVar::new(32).expect("blake2b-256 output size is valid");
-    let mut buffer = vec![0; BUFFER_BYTES];
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        let chunk = &buffer[..read];
-        blake2.update(chunk);
-        pending.write(chunk).map_err(std::io::Error::other)?;
-    }
+    let blob = {
+        let mut input = HashingReader {
+            inner: BufReader::with_capacity(BUFFER_BYTES, File::open(path)?),
+            blake2: &mut blake2,
+        };
+        blobs
+            .blocking()
+            .stage_reader(&mut input)
+            .map_err(std::io::Error::other)?
+    };
     Ok(StagedUpload {
-        blob: pending.finish().map_err(std::io::Error::other)?,
+        blob,
         blake2_256: finalize_blake2(blake2),
     })
+}
+
+struct HashingReader<'hasher, Reader> {
+    inner: Reader,
+    blake2: &'hasher mut Blake2bVar,
+}
+
+impl<Reader: std::io::Read> std::io::Read for HashingReader<'_, Reader> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.blake2.update(&buffer[..read]);
+        Ok(read)
+    }
 }
 
 fn upload_form(filename: &str, parsed: &DistributionFilename, staged: &StagedUpload) -> UploadForm {

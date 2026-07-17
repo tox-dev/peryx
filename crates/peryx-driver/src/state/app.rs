@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use peryx_core::{Ecosystem, LexiconRegistry};
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamRouter;
 
@@ -36,7 +36,7 @@ pub trait PrometheusSource: Send + Sync {
 /// not a convention.
 pub struct ServingState {
     pub meta: MetaStore,
-    pub blobs: BlobStore,
+    pub blobs: BlobStorage,
     /// Fallback freshness for cached simple pages, in seconds: applies only when upstream's
     /// `Cache-Control` granted no usable lifetime.
     pub ttl_secs: i64,
@@ -150,8 +150,8 @@ impl std::ops::DerefMut for AppState {
 impl ServingState {
     /// Whether the local stores and process role permit the requested traffic class.
     #[must_use]
-    pub fn is_ready(&self, writes: bool) -> bool {
-        self.meta.current_serial().is_ok() && self.blobs.health_check().is_ok() && (!writes || !self.read_only)
+    pub async fn is_ready(&self, writes: bool) -> bool {
+        self.meta.current_serial().is_ok() && self.blobs.health().await.is_ok() && (!writes || !self.read_only)
     }
 
     /// Find the index whose route is the longest segment-aligned prefix of `path` (which has no

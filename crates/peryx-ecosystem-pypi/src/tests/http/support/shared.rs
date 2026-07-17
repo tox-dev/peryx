@@ -15,7 +15,7 @@ pub use axum::http::{HeaderMap, Request, StatusCode, header};
 pub use base64::Engine as _;
 pub use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 pub use http_body_util::BodyExt as _;
-pub use peryx_storage::blob::{BlobStore, Digest};
+pub use peryx_storage::blob::{BlobStorage, Digest};
 pub use peryx_storage::meta::MetaStore;
 pub use peryx_upstream::{Auth, NamedUpstream, UpstreamClient, UpstreamRouter};
 pub(crate) use rstest::rstest;

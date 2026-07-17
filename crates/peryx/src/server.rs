@@ -14,7 +14,7 @@ use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
 use peryx_identity::{Action, Signer};
 use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use peryx_upstream::{Auth, NamedUpstream, Netrc, UpstreamClient, UpstreamRouter, UpstreamTls, redact_url};
 
@@ -63,7 +63,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         meta.claim_writer_identity(identity)
             .with_context(|| format!("claim writer identity {identity:?}"))?;
     }
-    let blobs = BlobStore::new(config.data_dir.join("blobs"));
+    let blobs = BlobStorage::filesystem(config.data_dir.join("blobs"));
     let configs = if configured_replica {
         let mut configs = config.indexes.clone();
         make_replica_configs(&mut configs);

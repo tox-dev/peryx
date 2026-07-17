@@ -234,6 +234,30 @@ async fn test_replica_status_and_readiness_report_read_only_role() {
 }
 
 #[tokio::test]
+async fn test_status_reports_blob_backend_capabilities() {
+    let (_dir, app) = read_only_app();
+
+    let (status, document) = get_json(&app, "/+status").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        document["blob_storage"],
+        serde_json::json!({
+            "backend": "filesystem",
+            "capabilities": {
+                "durability": "filesystem",
+                "conditional_write": "native",
+                "range": "native",
+                "checksum": "emulated",
+                "delete": "native",
+                "listing": "native",
+                "local_staging": "native",
+            },
+        })
+    );
+}
+
+#[tokio::test]
 async fn test_liveness_stays_successful_when_a_local_store_is_unavailable() {
     let (_dir, app) = unavailable_app();
     let (status, headers, document) = get_probe(&app, "/+health").await;

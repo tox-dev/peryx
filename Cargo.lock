@@ -3941,7 +3941,10 @@ dependencies = [
 name = "peryx-storage"
 version = "0.0.1"
 dependencies = [
+ "bytes",
  "flate2",
+ "fs4",
+ "futures-util",
  "peryx-identity",
  "peryx-policy",
  "redb",

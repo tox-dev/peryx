@@ -8,7 +8,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use base64::Engine as _;
 use http_body_util::BodyExt as _;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
 use tower::ServiceExt as _;
@@ -540,7 +540,7 @@ async fn harness_with_acl(rate_limit: RateLimitConfig, upstream_concurrency: usi
     let server = MockServer::start().await;
     let state = super::wired(AppState::with_limits(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
-        BlobStore::new(dir.path().join("blobs")),
+        BlobStorage::filesystem(dir.path().join("blobs")),
         60,
         vec![Index {
             name: "pypi".to_owned(),
@@ -630,7 +630,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let ticks = Arc::new(AtomicI64::new(1000));
     let state = super::wired(AppState::with_limits(
@@ -694,7 +694,7 @@ fn test_rate_limiter_default_has_zeroed_counters() {
 fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:9/simple/").unwrap();
     let state = AppState::with_rate_limits(
         meta,
@@ -725,7 +725,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
 fn test_state_with_search_path_uses_disabled_limiter() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let state = AppState::with_search_path(meta, blobs, 60, Vec::new(), dir.path().join("search-v1")).unwrap();
 
     assert!(!state.rate_limits.enabled());

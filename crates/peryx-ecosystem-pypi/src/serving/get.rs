@@ -192,8 +192,10 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
         Ok(filename) => filename,
         Err(err) => return path_error_response(&err),
     };
-    if let Some(response) = download_policy_response(state, index, &filename, &digest) {
-        return response;
+    match download_policy_response(state, index, &filename, &digest).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return cache_error_response(&err, CacheContext::file(&route, digest.as_str(), &filename)),
     }
     match cache::download_status(state, index, &filename) {
         Ok(status) if !status.offers_downloads() => {
@@ -237,7 +239,8 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
             range,
             &etag,
             conditional_date(headers),
-        );
+        )
+        .await;
     }
     serve_blob(state, route, &filename, digest, range, &etag, conditional_date(headers)).await
 }
@@ -287,25 +290,28 @@ fn unchanged(etag: &str, modified: Option<SystemTime>) -> Response {
         .expect("not-modified response builds from validated header parts")
 }
 
-fn download_policy_response(state: &ServingState, index: &Index, filename: &str, digest: &Digest) -> Option<Response> {
+async fn download_policy_response(
+    state: &ServingState,
+    index: &Index,
+    filename: &str,
+    digest: &Digest,
+) -> Result<Option<Response>, cache::CacheError> {
     // No configured policy can deny a download, so skip the two blocking stats it would take to
     // learn the file size. This is the zero-config default and keeps the warm wheel path off the
     // filesystem until the byte stream itself opens the file.
     if !index.policy.active() {
-        return None;
+        return Ok(None);
     }
-    let size = if state.blobs.exists(digest) {
-        std::fs::metadata(state.blobs.path_for(digest))
-            .ok()
-            .map(|metadata| metadata.len())
+    let size = if let Some(metadata) = state.blobs.head(digest).await? {
+        Some(metadata.bytes)
     } else {
-        cache::registered_file_size(state, digest).ok().flatten()
+        cache::registered_file_size(state, digest)?
     };
-    index
+    Ok(index
         .policy
         .check_download(PolicyAction::Serve, filename, size)
         .err()
-        .map(|denial| policy_denial_response(&denial))
+        .map(|denial| policy_denial_response(&denial)))
 }
 
 struct LegacyJsonTarget {
@@ -364,7 +370,7 @@ const fn blob_headers(etag: &str) -> [(header::HeaderName, &str); 4] {
 /// body behind it, so its `GET` streams the whole representation and ignores the `Range`; the `HEAD`
 /// says the same. Its `Content-Length` is the size the index page registered, and is omitted when the
 /// page carried none: an uncached artifact's length is not peryx's to invent.
-fn head_blob(
+async fn head_blob(
     state: &Arc<ServingState>,
     route: &str,
     filename: &str,
@@ -373,7 +379,7 @@ fn head_blob(
     etag: &str,
     since: Option<&str>,
 ) -> Response {
-    let probe = match cache::probe_file(state, digest) {
+    let probe = match cache::probe_file(state, digest).await {
         Ok(probe) => probe,
         Err(err) => return cache_error_response(&err, CacheContext::file(route, digest.as_str(), filename)),
     };
@@ -446,20 +452,10 @@ async fn serve_blob(
 ) -> Response {
     let digest_hex = digest.as_str().to_owned();
     let blob_headers = blob_headers(etag);
-    match cache::stream_file(state.clone(), digest, route.clone(), filename.to_owned()).await {
-        Ok(cache::FileOutcome::Cached(path)) => {
-            let Ok(file) = tokio::fs::File::open(&path).await else {
-                return (
-                    StatusCode::NOT_FOUND,
-                    format!("cached file missing on index {route:?}: digest {digest_hex}, filename {filename:?}"),
-                )
-                    .into_response();
-            };
-            let on_disk = file.metadata().await.ok();
-            let size = on_disk.as_ref().map_or(0, std::fs::Metadata::len);
-            let modified = on_disk
-                .and_then(|on_disk| on_disk.modified().ok())
-                .map(|stored| last_modified(stored, SystemTime::now()));
+    match cache::stream_file(state.clone(), digest.clone(), route.clone(), filename.to_owned()).await {
+        Ok(cache::FileOutcome::Cached(metadata)) => {
+            let size = metadata.bytes;
+            let modified = metadata.modified.map(|stored| last_modified(stored, SystemTime::now()));
             // RFC 9110 s13.2.2 evaluates the condition ahead of the range: a client whose copy is still
             // current gets the `304` it asked for, not the slice of it that a `Range` would have cut.
             if let Some(modified) = modified
@@ -478,12 +474,6 @@ async fn serve_blob(
                         Some(format!("bytes {start}-{end}/{size}")),
                     ),
                 };
-            state.metrics.record(Event::Download {
-                project: crate::project_of_filename(filename),
-                route,
-                filename: filename.to_owned(),
-                bytes: length,
-            });
             let mut builder = Response::builder()
                 .status(status)
                 .header(header::CONTENT_LENGTH, length);
@@ -496,9 +486,28 @@ async fn serve_blob(
             if let Some(content_range) = content_range {
                 builder = builder.header(header::CONTENT_RANGE, content_range);
             }
-            // Pipeline the disk read ahead of the socket write: a pull-driven ReaderStream awaits each
-            // read before writing it, serializing two independent I/O waits per chunk.
-            let body = peryx_driver::body::pipelined_file(file.into_std().await, start, length);
+            let read = match state.blobs.open(&digest, Some(start..start + length)).await {
+                Ok(read) => read,
+                Err(err) => {
+                    tracing::error!(error = ?err, digest = digest_hex, "cached blob open failed");
+                    return (
+                        StatusCode::NOT_FOUND,
+                        format!("cached file missing on index {route:?}: digest {digest_hex}, filename {filename:?}"),
+                    )
+                        .into_response();
+                }
+            };
+            let metrics = state.metrics.clone();
+            let project = crate::project_of_filename(filename);
+            let filename = filename.to_owned();
+            let body = peryx_driver::body::on_body_complete(peryx_driver::body::blob_read(read), move |bytes| {
+                metrics.record(Event::Download {
+                    project,
+                    route,
+                    filename,
+                    bytes,
+                });
+            });
             builder
                 .body(body)
                 .expect("blob response builds from validated header parts")

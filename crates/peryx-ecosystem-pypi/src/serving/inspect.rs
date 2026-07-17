@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
+use peryx_storage::blob::BlobLease;
 
 use crate::cache::{self};
 
@@ -129,11 +130,11 @@ fn archive_query(query: Option<&str>) -> Result<ArchiveQuery, Response> {
 }
 
 /// Render an archive's member list as JSON.
-async fn archive_listing(filename: &str, path: std::path::PathBuf, containers: Vec<String>) -> Response {
+async fn archive_listing(filename: &str, lease: BlobLease, containers: Vec<String>) -> Response {
     let filename = filename.to_owned();
     match tokio::task::spawn_blocking({
         let filename = filename.clone();
-        move || crate::archive::list_members_nested_path(&filename, &path, &containers)
+        move || crate::archive::list_members_nested_path(&filename, lease.path(), &containers)
     })
     .await
     .expect("archive listing task panicked")
@@ -146,7 +147,7 @@ async fn archive_listing(filename: &str, path: std::path::PathBuf, containers: V
 /// Serve one text archive member chunk.
 async fn archive_member(
     filename: &str,
-    path: std::path::PathBuf,
+    lease: BlobLease,
     containers: Vec<String>,
     member: &str,
     offset: u64,
@@ -158,7 +159,14 @@ async fn archive_member(
         let filename = filename.clone();
         let member = member.clone();
         move || {
-            crate::archive::read_text_member_chunk_nested_path(&filename, &path, &containers, &member, offset, limit)
+            crate::archive::read_text_member_chunk_nested_path(
+                &filename,
+                lease.path(),
+                &containers,
+                &member,
+                offset,
+                limit,
+            )
         }
     })
     .await

@@ -303,10 +303,13 @@ fn metadata_doc(ctx: &IndexerCtx<'_>, detail: &ProjectDetail) -> Result<Option<C
         let Some(digest) = Digest::from_hex(&metadata_sha256) else {
             continue;
         };
-        if !ctx.blobs.exists(&digest) {
+        if ctx.blobs.blocking().head(&digest)?.is_none() {
             continue;
         }
-        let bytes = ctx.blobs.read(&digest)?;
+        let bytes = ctx
+            .blobs
+            .blocking()
+            .read_bytes(&digest, crate::archive::MAX_WHEEL_METADATA_BYTES)?;
         let Ok(text) = std::str::from_utf8(&bytes) else {
             continue;
         };

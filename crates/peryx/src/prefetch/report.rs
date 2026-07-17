@@ -93,13 +93,14 @@ pub(super) fn write_count(out: &mut Output, index: &str, name: &str, value: u64)
     )
 }
 
-pub(super) fn blob_size(state: &AppState, digest: &Digest) -> u64 {
+pub(super) async fn blob_size(state: &AppState, digest: &Digest) -> u64 {
     state
         .blobs
-        .path_for(digest)
-        .metadata()
-        .map(|metadata| metadata.len())
-        .unwrap_or_default()
+        .head(digest)
+        .await
+        .ok()
+        .flatten()
+        .map_or(0, |metadata| metadata.bytes)
 }
 
 pub(super) fn unix_now() -> u64 {

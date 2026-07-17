@@ -9,7 +9,7 @@ pub(super) use crate::store::PypiStore as _;
 pub(super) use axum::http::StatusCode;
 pub(super) use bytes::Bytes;
 pub(super) use futures_util::StreamExt as _;
-pub(super) use peryx_storage::blob::{BlobError, BlobStore, Digest};
+pub(super) use peryx_storage::blob::{BlobError, BlobStorage, Digest};
 pub(super) use peryx_storage::meta::{MetaError, MetaStore};
 pub(super) use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
 pub(super) use wiremock::matchers::{method, path};
@@ -71,7 +71,7 @@ pub(super) fn custom_state(
     indexes: fn(UpstreamClient) -> Vec<Index>,
 ) -> Arc<AppState> {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let client = UpstreamClient::new(upstream).unwrap();
     crate::tests::wired(AppState::with_clock(
         meta,
@@ -84,7 +84,7 @@ pub(super) fn custom_state(
 
 pub(super) fn routed_state(dir: &tempfile::TempDir, primary: UpstreamClient, router: UpstreamRouter) -> Arc<AppState> {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let mut state = AppState::with_clock(
         meta,
         blobs,

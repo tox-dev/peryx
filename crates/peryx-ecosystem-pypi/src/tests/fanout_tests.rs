@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::StreamExt as _;
-use peryx_storage::blob::Digest;
+use peryx_storage::blob::{BlobTail, Digest};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -37,6 +37,24 @@ fn stalling_upstream(first: Vec<u8>, rest: Vec<u8>) -> (String, std::sync::mpsc:
         socket.write_all(&rest).unwrap();
     });
     (format!("http://{addr}/stalled.whl"), release)
+}
+
+fn truncated_upstream() -> (String, std::sync::mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buffer = [0u8; 1024];
+        let _ = socket.read(&mut buffer);
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\npart")
+            .unwrap();
+        socket.flush().unwrap();
+        released.recv().unwrap();
+    });
+    (format!("http://{addr}/truncated.whl"), release)
 }
 
 async fn live_stream_for(state: &Arc<AppState>, digest: &Digest) -> cache::FileOutcome {
@@ -85,7 +103,7 @@ async fn test_concurrent_cold_requests_stream_before_the_transfer_finishes() {
         }
         assert_eq!(body, whole);
     }
-    assert!(h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_some());
 }
 
 #[tokio::test]
@@ -122,7 +140,7 @@ async fn test_blob_committed_while_waiting_on_the_gate_serves_from_disk() {
     });
     // The parked request only proceeds once the holder commits the blob and releases the gate.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    h.state.blobs.write_verified(body, &digest).unwrap();
+    h.state.blobs.put_bytes_as(body, &digest).await.unwrap();
     drop(guard);
     let outcome = waiting.await.unwrap().unwrap();
     assert!(matches!(outcome, cache::FileOutcome::Cached(_)));
@@ -159,7 +177,7 @@ async fn test_digest_mismatch_fails_every_tail_and_persists_nothing() {
         }
         assert!(saw_error);
     }
-    assert!(!h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -178,7 +196,7 @@ async fn test_abandoned_download_still_fills_the_cache() {
     assert!(matches!(outcome, cache::FileOutcome::Live(_)));
     drop(outcome);
     for _ in 0..200 {
-        if h.state.blobs.exists(&digest) {
+        if h.state.blobs.head(&digest).await.unwrap().is_some() {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -186,14 +204,58 @@ async fn test_abandoned_download_still_fills_the_cache() {
     panic!("the detached transfer never persisted the blob");
 }
 
-fn handle_with(path: std::path::PathBuf, progress: DownloadProgress) -> DownloadHandle {
+#[tokio::test]
+async fn test_stage_cleanup_error_removes_the_live_download() {
+    let h = harness().await;
+    let digest = Digest::of(b"complete body");
+    let (url, release) = truncated_upstream();
+    h.state.meta.put_file_url(digest.as_str(), &url, "pypi").unwrap();
+    let outcome = live_stream_for(&h.state, &digest).await;
+    let stage = std::fs::read_dir(h.dir.path().join("blobs"))
+        .unwrap()
+        .find(|entry| entry.as_ref().is_ok_and(|entry| entry.file_type().unwrap().is_file()))
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::remove_file(&stage).unwrap();
+    std::fs::create_dir(&stage).unwrap();
+    release.send(()).unwrap();
+    drop(outcome);
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if !h
+                .state
+                .downloads
+                .lock()
+                .expect("downloads lock")
+                .contains_key(digest.as_str())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_none());
+}
+
+fn handle_with(tail: BlobTail, progress: DownloadProgress) -> DownloadHandle {
     let (sender, receiver) = tokio::sync::watch::channel(progress);
     // The sender leaks into a detached task keeping the channel open for the test body.
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_mins(1)).await;
         drop(sender);
     });
-    DownloadHandle::new(path, receiver)
+    DownloadHandle::new(tail, receiver)
+}
+
+async fn missing_tail(state: &AppState) -> BlobTail {
+    let pending = state.blobs.begin().await.unwrap();
+    let tail = pending.tail().unwrap();
+    pending.abort().await.unwrap();
+    tail
 }
 
 async fn drain(state: &Arc<AppState>, digest: Digest, handle: DownloadHandle) -> Result<Vec<u8>, std::io::Error> {
@@ -214,14 +276,14 @@ async fn drain(state: &Arc<AppState>, digest: Digest, handle: DownloadHandle) ->
 #[tokio::test]
 async fn test_tail_of_a_truncated_temp_file_errors() {
     let h = harness().await;
-    let dir = tempfile::tempdir().unwrap();
-    let temp = dir.path().join("short");
-    std::fs::write(&temp, b"abc").unwrap();
+    let mut pending = h.state.blobs.begin().await.unwrap();
+    pending.write_chunk(Bytes::from_static(b"abc")).await.unwrap();
+    pending.flush().await.unwrap();
     let progress = DownloadProgress {
         flushed: 100,
         done: None,
     };
-    let handle = handle_with(temp, progress);
+    let handle = handle_with(pending.tail().unwrap(), progress);
     // Three bytes arrive, then the read inside the flushed window comes back empty.
     let mut stream = cache::tail_download(
         h.state.serving.clone(),
@@ -241,12 +303,12 @@ async fn test_tail_switches_to_the_committed_blob_when_the_temp_file_is_gone() {
     let h = harness().await;
     let body = b"committed while attaching";
     let digest = Digest::of(body);
-    h.state.blobs.write_verified(body, &digest).unwrap();
+    h.state.blobs.put_bytes_as(body, &digest).await.unwrap();
     let progress = DownloadProgress {
         flushed: body.len() as u64,
         done: Some(Ok(())),
     };
-    let handle = handle_with(std::path::PathBuf::from("/nonexistent/temp"), progress);
+    let handle = handle_with(missing_tail(&h.state).await, progress);
     let mut stream = cache::tail_download(
         h.state.serving.clone(),
         digest,
@@ -262,6 +324,71 @@ async fn test_tail_switches_to_the_committed_blob_when_the_temp_file_is_gone() {
 }
 
 #[tokio::test]
+async fn test_committed_tail_holds_its_materialized_lease_until_eof() {
+    let h = harness().await;
+    let body = b"committed while attaching";
+    let digest = Digest::of(body);
+    h.state.blobs.put_bytes_as(body, &digest).await.unwrap();
+    let progress = DownloadProgress {
+        flushed: body.len() as u64,
+        done: Some(Ok(())),
+    };
+    let handle = handle_with(missing_tail(&h.state).await, progress);
+    let mut stream = cache::tail_download(
+        h.state.serving.clone(),
+        digest,
+        handle,
+        "pypi".to_owned(),
+        "tail.whl".to_owned(),
+    );
+    assert_eq!(stream.next().await.unwrap().unwrap(), body.as_slice());
+    assert_eq!(
+        std::fs::read_dir(h.dir.path().join("blobs/.leases"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".peryx-lease-"))
+            .count(),
+        1
+    );
+    assert!(stream.next().await.is_none());
+    assert!(
+        std::fs::read_dir(h.dir.path().join("blobs/.leases"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with(".peryx-lease-"))
+    );
+}
+
+#[tokio::test]
+async fn test_backend_without_local_tail_records_the_committed_download() {
+    let h = harness().await;
+    let body = b"streamed from committed storage";
+    let digest = h.state.blobs.put_bytes(body).await.unwrap();
+    let (sender, receiver) = tokio::sync::watch::channel(DownloadProgress {
+        flushed: body.len() as u64,
+        done: Some(Ok(())),
+    });
+    let streamed = drain(&h.state, digest, DownloadHandle::new(None, receiver))
+        .await
+        .unwrap();
+    drop(sender);
+    assert_eq!(streamed, body);
+    for _ in 0..500 {
+        if h.state
+            .metrics
+            .index_totals()
+            .get("pypi")
+            .is_some_and(|totals| totals.base.downloads == 1)
+        {
+            assert_eq!(h.state.metrics.index_totals()["pypi"].base.bytes, body.len() as u64);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("download metric never settled");
+}
+
+#[tokio::test]
 async fn test_tail_waits_out_the_commit_window_between_rename_and_verdict() {
     let h = harness().await;
     let body = b"renamed before the verdict broadcast";
@@ -273,12 +400,12 @@ async fn test_tail_waits_out_the_commit_window_between_rename_and_verdict() {
     // The temp file is already gone but no verdict has landed: the exact in-between state a slow
     // tail observes mid-commit. The verdict arrives while it waits.
     let (sender, receiver) = tokio::sync::watch::channel(progress);
-    let handle = DownloadHandle::new(std::path::PathBuf::from("/nonexistent/temp"), receiver);
+    let handle = DownloadHandle::new(missing_tail(&h.state).await, receiver);
     let state = h.state.clone();
     let commit_digest = digest.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        state.blobs.write_verified(body, &commit_digest).unwrap();
+        state.blobs.put_bytes_as(body, &commit_digest).await.unwrap();
         sender.send_modify(|progress| progress.done = Some(Ok(())));
     });
     let streamed = drain(&h.state, digest, handle).await.unwrap();
@@ -292,7 +419,7 @@ async fn test_tail_with_a_missing_temp_file_surfaces_the_failure_verdict() {
         flushed: 10,
         done: Some(Err("verification failed".to_owned())),
     };
-    let handle = handle_with(std::path::PathBuf::from("/nonexistent/temp"), progress);
+    let handle = handle_with(missing_tail(&h.state).await, progress);
     let err = drain(&h.state, Digest::of(b"tail-target"), handle).await.unwrap_err();
     assert!(err.to_string().contains("verification failed"));
 }
@@ -306,7 +433,7 @@ async fn test_tail_with_a_missing_temp_file_and_a_dead_pump_errors() {
     };
     let (sender, receiver) = tokio::sync::watch::channel(progress);
     drop(sender);
-    let handle = DownloadHandle::new(std::path::PathBuf::from("/nonexistent/temp"), receiver);
+    let handle = DownloadHandle::new(missing_tail(&h.state).await, receiver);
     let err = drain(&h.state, Digest::of(b"tail-target"), handle).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }
@@ -318,7 +445,7 @@ async fn test_tail_surfaces_the_transfer_failure() {
         flushed: 0,
         done: Some(Err("upstream fell over".to_owned())),
     };
-    let handle = handle_with(std::path::PathBuf::from("/irrelevant"), progress);
+    let handle = handle_with(missing_tail(&h.state).await, progress);
     let err = drain(&h.state, Digest::of(b"tail-target"), handle).await.unwrap_err();
     assert!(err.to_string().contains("upstream fell over"));
 }
@@ -328,7 +455,7 @@ async fn test_tail_errors_when_the_pump_vanishes_without_a_verdict() {
     let h = harness().await;
     let (sender, receiver) = tokio::sync::watch::channel(DownloadProgress::default());
     drop(sender);
-    let handle = DownloadHandle::new(std::path::PathBuf::from("/irrelevant"), receiver);
+    let handle = DownloadHandle::new(missing_tail(&h.state).await, receiver);
     let err = drain(&h.state, Digest::of(b"tail-target"), handle).await.unwrap_err();
     assert!(err.to_string().contains("abandoned"));
 }
