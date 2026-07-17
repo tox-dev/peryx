@@ -1,6 +1,8 @@
-use std::io::{Read as _, Seek as _, Write as _};
+use std::io::{ErrorKind, Read as _, Seek as _, Write as _};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
@@ -31,6 +33,48 @@ fn absent_or_io(err: std::io::Error, digest: &Digest) -> BlobError {
         return BlobError::not_found(digest);
     }
     err.into()
+}
+
+/// Drop an abandoned stage so a reader tailing it never faults on a half-deleted name.
+///
+/// On Windows an unlink only flags the file for deletion while any handle stays open — a follower
+/// tailing the stage, or a reader the caller just closed — and the original name lingers in a
+/// delete-pending state that answers openers with `PermissionDenied` until that handle releases.
+/// Renaming the stage aside frees its name at once (a rename tolerates open handles), so a tail sees
+/// it vanish instead; the moved file is then removed, retried briefly while a straggling handle lets
+/// go. Unix unlinks immediately, so the rename is a harmless extra step there.
+fn discard_stage(path: tempfile::TempPath) -> Result<(), BlobError> {
+    let scratch = scratch_path(&path);
+    if std::fs::rename(&path, &scratch).is_err() {
+        return path.close().map_err(BlobError::from);
+    }
+    remove_pending(&scratch)
+}
+
+fn scratch_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(
+        ".discard-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    path.with_file_name(name)
+}
+
+fn remove_pending(path: &Path) -> Result<(), BlobError> {
+    let mut backoff = Duration::from_millis(1);
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::PermissionDenied && backoff < Duration::from_millis(64) => {
+                std::thread::sleep(backoff);
+                backoff *= 2;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// A file found while walking the content-addressed blob tree.
@@ -426,8 +470,7 @@ impl PendingBlob {
     pub(crate) fn abort(self) -> Result<(), BlobError> {
         let (file, _) = self.file.into_parts();
         drop(file);
-        self.path.close()?;
-        Ok(())
+        discard_stage(self.path)
     }
 }
 
@@ -457,8 +500,7 @@ impl StagedBlob {
     }
 
     pub(crate) fn abort(self) -> Result<(), BlobError> {
-        self.path.close()?;
-        Ok(())
+        discard_stage(self.path)
     }
 }
 
@@ -491,5 +533,47 @@ mod placement_tests {
             commit_placement(Err(failure), &absent).unwrap_err().kind(),
             crate::blob::BlobErrorKind::Io
         );
+    }
+}
+
+#[cfg(test)]
+mod stage_tests {
+    #[cfg(unix)]
+    use super::discard_stage;
+    use super::remove_pending;
+
+    #[test]
+    fn test_remove_pending_treats_a_missing_stage_as_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(remove_pending(&dir.path().join("absent")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_remove_pending_reports_a_persistent_denial() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let target = locked.join("stage");
+        std::fs::write(&target, b"x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = remove_pending(&target);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_discard_stage_falls_back_when_rename_is_denied() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let (_file, path) = tempfile::NamedTempFile::new_in(&locked).unwrap().into_parts();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = discard_stage(path);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
     }
 }
