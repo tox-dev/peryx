@@ -252,6 +252,10 @@ impl MetaStore {
     /// # Errors
     /// Returns a validation error for an oversized subject, or a store error if the record cannot be
     /// read or decoded.
+    ///
+    /// # Panics
+    /// Panics if a current pointer has no matching history record; both tables change in one
+    /// transaction.
     pub fn current_policy_decision(
         &self,
         subject: NewPolicyDecision<'_>,
