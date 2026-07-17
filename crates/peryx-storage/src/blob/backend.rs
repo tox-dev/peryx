@@ -411,11 +411,18 @@ impl FilesystemWrite {
 
 impl Drop for FilesystemWrite {
     fn drop(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            spawn_blocking_or_run(move || {
+        let pending = self.pending.take();
+        let task = self.task.take();
+        let handle = tokio::runtime::Handle::try_current().ok();
+        spawn_blocking_or_run(move || {
+            // An accepted batch still owns the stage on a worker thread. Reclaim it so its file handle
+            // is released before `abort` removes the stage: Windows refuses to unlink a file another
+            // handle holds open.
+            let pending = pending.or_else(move || handle?.block_on(task?).ok()?.ok());
+            if let Some(pending) = pending {
                 let _ = pending.abort();
-            });
-        }
+            }
+        });
     }
 }
 
