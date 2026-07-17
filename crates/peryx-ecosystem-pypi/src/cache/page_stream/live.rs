@@ -159,7 +159,8 @@ async fn buffer_whole_page(
         .project_status;
     let mut transformer = PageTransformer::new(context);
     transformer.seed_project_status(status);
-    let served = transformer.push(&raw).map_err(transform_error)?;
+    let mut served = Vec::with_capacity(raw.len());
+    transformer.push_into(&raw, &mut served).map_err(transform_error)?;
     let summary = transformer.finish().map_err(transform_error)?;
     Ok((raw, served, summary))
 }
@@ -187,28 +188,31 @@ async fn preflight_json_stream(
 ) -> Result<JsonPreflight, CacheError> {
     use futures_util::StreamExt as _;
     let mut raw = Vec::new();
-    let mut served = Vec::new();
     let mut pending = VecDeque::new();
+    let mut outgoing = Vec::new();
     loop {
         let Some(chunk) = body.next().await else {
             let summary = transformer.finish().map_err(transform_error)?;
-            return Ok(JsonPreflight::Complete { raw, served, summary });
+            return Ok(JsonPreflight::Complete {
+                raw,
+                served: outgoing,
+                summary,
+            });
         };
         let chunk = chunk?;
         for position in 0..chunk.len() {
             raw.push(chunk[position]);
-            let out = transformer.push(&chunk[position..=position]).map_err(transform_error)?;
-            if !out.is_empty() {
-                served.extend_from_slice(&out);
-                pending.push_back(Bytes::from(out));
-            }
+            transformer
+                .push_into(&chunk[position..=position], &mut outgoing)
+                .map_err(transform_error)?;
             if transformer.meta_preflight_done() || raw.len() >= JSON_META_PREFLIGHT_BYTES {
+                pending.push_back(Bytes::copy_from_slice(&outgoing));
                 body = prepend_chunk(body, chunk.slice(position + 1..));
                 return Ok(JsonPreflight::Streaming {
                     body,
                     transformer: Box::new(transformer),
                     raw,
-                    served,
+                    served: outgoing,
                     pending,
                 });
             }
