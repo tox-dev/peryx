@@ -189,6 +189,12 @@ fn test_indexes_from_toml_classify_all_kinds() {
 }
 
 #[test]
+fn test_netrc_path_overlays_the_default() {
+    let config = toml_config("netrc = \"/run/secrets/upstream.netrc\"\n");
+    assert_eq!(config.netrc, Some(PathBuf::from("/run/secrets/upstream.netrc")));
+}
+
+#[test]
 fn test_rate_limits_from_toml_overlay_defaults() {
     let c = toml_config(
         "\

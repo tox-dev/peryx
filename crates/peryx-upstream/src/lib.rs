@@ -5,7 +5,9 @@ pub mod client;
 mod route;
 
 pub use client::retry;
-pub use client::{Auth, FileHead, RangeError, Reachability, UpstreamClient, UpstreamError, redact_url};
+pub use client::{
+    Auth, FileHead, Netrc, NetrcError, RangeError, Reachability, UpstreamClient, UpstreamError, redact_url,
+};
 pub use route::{ArtifactClient, NamedUpstream, RouteError, UpstreamHealth, UpstreamRouter};
 
 #[cfg(test)]

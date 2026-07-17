@@ -24,6 +24,8 @@ struct SnapshotConfig<'a> {
     port: u16,
     data_dir: &'a Path,
     #[serde(skip_serializing_if = "Option::is_none")]
+    netrc: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     writer_identity: Option<&'a str>,
     offline: bool,
     read_only: bool,
@@ -239,6 +241,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         host,
         port,
         data_dir,
+        netrc,
         writer_identity,
         offline,
         read_only,
@@ -269,6 +272,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         host,
         port: *port,
         data_dir,
+        netrc: netrc.as_deref(),
         writer_identity: writer_identity.as_deref(),
         offline: *offline,
         read_only: *read_only,

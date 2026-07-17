@@ -1,6 +1,7 @@
 //! The upstream HTTP client.
 
 mod error;
+mod netrc;
 pub mod retry;
 
 mod response;
@@ -22,6 +23,7 @@ use self::retry::{
 };
 
 pub use self::error::{RangeError, UpstreamError};
+pub use self::netrc::{Netrc, NetrcError};
 pub use self::response::FileHead;
 
 const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
@@ -30,7 +32,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How peryx authenticates to a private upstream. `Basic` covers pypi.org tokens (`__token__` +
 /// token) and Artifactory/GitLab username/password; `Bearer` covers access/identity tokens.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub enum Auth {
     #[default]
     None,
@@ -39,6 +41,16 @@ pub enum Auth {
         password: String,
     },
     Bearer(String),
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::None => "None",
+            Self::Basic { .. } => "Basic(..)",
+            Self::Bearer(_) => "Bearer(..)",
+        })
+    }
 }
 
 /// Redacted authentication shape for status surfaces.
@@ -154,9 +166,10 @@ impl UpstreamClient {
         })
     }
 
-    fn authenticate(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn authenticate(&self, request: reqwest::RequestBuilder, url: &Url) -> reqwest::RequestBuilder {
         match &self.auth {
             Auth::None => request,
+            _ if !same_origin(&self.base, url) => request,
             Auth::Basic { username, password } => request.basic_auth(username, Some(password)),
             Auth::Bearer(token) => request.bearer_auth(token),
         }
@@ -166,7 +179,12 @@ impl UpstreamClient {
     /// the TCP and TLS handshakes. Failures are the first real request's problem to report.
     pub async fn warm(&self) {
         self.reachability.store(
-            if self.http.head(self.base.clone()).send().await.is_ok() {
+            if self
+                .authenticate(self.http.head(self.base.clone()), &self.base)
+                .send()
+                .await
+                .is_ok()
+            {
                 REACHABILITY_REACHABLE
             } else {
                 REACHABILITY_UNREACHABLE
@@ -194,8 +212,9 @@ impl UpstreamClient {
         url: &str,
     ) -> Result<impl Stream<Item = Result<Bytes, UpstreamError>> + Send + use<>, UpstreamError> {
         use futures_util::TryStreamExt as _;
+        let url = Url::parse(url)?;
         let response = self
-            .send_with_retry(|| self.authenticate(self.bulk.get(url).header(ACCEPT_ENCODING, "identity")))
+            .send_with_retry(|| self.authenticate(self.bulk.get(url.clone()).header(ACCEPT_ENCODING, "identity"), &url))
             .await?
             .error_for_status()?;
         Ok(response.bytes_stream().map_err(UpstreamError::from))
@@ -206,16 +225,19 @@ impl UpstreamClient {
     /// # Errors
     /// Returns [`UpstreamError::Http`] if the request fails or answers a non-success status.
     pub async fn fetch_bytes(&self, url: &str) -> Result<Bytes, UpstreamError> {
+        let url = Url::parse(url)?;
         let mut attempt = 0;
         loop {
             let response = self
-                .send_with_retry(|| self.authenticate(self.bulk.get(url).header(ACCEPT_ENCODING, "identity")))
+                .send_with_retry(|| {
+                    self.authenticate(self.bulk.get(url.clone()).header(ACCEPT_ENCODING, "identity"), &url)
+                })
                 .await?
                 .error_for_status()?;
             match response.bytes().await {
                 Ok(bytes) => return Ok(bytes),
                 Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                    sleep_before_retry_str(url, attempt, &err).await;
+                    sleep_before_retry_str(url.as_str(), attempt, &err).await;
                     attempt += 1;
                 }
                 Err(err) => return Err(err.into()),
@@ -231,10 +253,13 @@ impl UpstreamClient {
     pub async fn fetch_bytes_limited(&self, url: &str, limit: usize) -> Result<Bytes, UpstreamError> {
         use futures_util::TryStreamExt as _;
 
+        let url = Url::parse(url)?;
         let mut attempt = 0;
         loop {
             let response = self
-                .send_with_retry(|| self.authenticate(self.bulk.get(url).header(ACCEPT_ENCODING, "identity")))
+                .send_with_retry(|| {
+                    self.authenticate(self.bulk.get(url.clone()).header(ACCEPT_ENCODING, "identity"), &url)
+                })
                 .await?
                 .error_for_status()?;
             let content_length = response.content_length();
@@ -255,7 +280,7 @@ impl UpstreamClient {
                     Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
                     Ok(None) => return Ok(bytes.freeze()),
                     Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                        sleep_before_retry_str(url, attempt, &err).await;
+                        sleep_before_retry_str(url.as_str(), attempt, &err).await;
                         attempt += 1;
                         break;
                     }
@@ -282,8 +307,9 @@ impl UpstreamClient {
     /// Returns [`RangeError::Unsupported`] when upstream omits range support or length metadata,
     /// and [`RangeError::Upstream`] on other request failures.
     pub async fn head_file_for_range(&self, url: &str) -> Result<FileHead, RangeError> {
+        let url = Url::parse(url).map_err(UpstreamError::from)?;
         let response = self
-            .authenticate(self.http.head(url))
+            .authenticate(self.http.head(url.clone()), &url)
             .header(ACCEPT_ENCODING, "identity")
             .send()
             .await
@@ -328,8 +354,9 @@ impl UpstreamClient {
         let Ok(expected_len) = usize::try_from(range_len) else {
             return Err(RangeError::Invalid("requested range does not fit memory".to_owned()));
         };
+        let url = Url::parse(url).map_err(UpstreamError::from)?;
         let response = self
-            .authenticate(self.http.get(url))
+            .authenticate(self.http.get(url.clone()), &url)
             .header(ACCEPT_ENCODING, "identity")
             .header(RANGE, format!("bytes={start}-{end}"))
             .send()
@@ -417,7 +444,9 @@ impl UpstreamClient {
         etag: Option<&str>,
     ) -> Result<reqwest::Response, UpstreamError> {
         self.send_with_retry(|| {
-            let mut request = self.authenticate(self.http.get(url.clone())).header(ACCEPT, accept);
+            let mut request = self
+                .authenticate(self.http.get(url.clone()), &url)
+                .header(ACCEPT, accept);
             if let Some(etag) = etag {
                 request = request.header(IF_NONE_MATCH, etag);
             }
@@ -454,6 +483,12 @@ impl UpstreamClient {
             }
         }
     }
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host() == right.host()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 /// Remove credential-bearing URL parts before displaying configured upstreams.

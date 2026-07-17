@@ -53,6 +53,9 @@ impl Config {
         if let Some(hot_cache_bytes) = partial.hot_cache_bytes {
             self.hot_cache_bytes = hot_cache_bytes;
         }
+        if let Some(netrc) = partial.netrc {
+            self.netrc = Some(netrc);
+        }
         if let Some(cache_ttl_secs) = partial.cache_ttl_secs {
             self.cache_ttl_secs = cache_ttl_secs;
         }

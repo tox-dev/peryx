@@ -255,6 +255,73 @@ async fn test_fetch_bytes_preserves_basic_auth_on_same_host_redirect() {
     assert_eq!(&bytes[..], b"wheelbytes");
 }
 
+#[tokio::test]
+async fn test_fetch_bytes_strips_basic_auth_on_cross_origin_redirect() {
+    let origin = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/redirect/pkg.whl"))
+        .and(header_regex("authorization", "^Basic "))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/pkg.whl", target.uri())))
+        .mount(&origin)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pkg.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&target)
+        .await;
+    let client = UpstreamClient::with_auth(
+        &format!("{}/simple/", origin.uri()),
+        Auth::Basic {
+            username: "reader".to_owned(),
+            password: "secret".to_owned(),
+        },
+    )
+    .unwrap();
+
+    let bytes = client
+        .fetch_bytes(&format!("{}/redirect/pkg.whl", origin.uri()))
+        .await
+        .unwrap();
+
+    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(
+        target.received_requests().await.unwrap()[0]
+            .headers
+            .get("authorization"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_bytes_does_not_authenticate_a_direct_cross_origin_url() {
+    let origin = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pkg.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .mount(&target)
+        .await;
+    let client = UpstreamClient::with_auth(
+        &format!("{}/simple/", origin.uri()),
+        Auth::Basic {
+            username: "reader".to_owned(),
+            password: "secret".to_owned(),
+        },
+    )
+    .unwrap();
+
+    let bytes = client.fetch_bytes(&format!("{}/pkg.whl", target.uri())).await.unwrap();
+
+    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(
+        target.received_requests().await.unwrap()[0]
+            .headers
+            .get("authorization"),
+        None
+    );
+}
+
 #[test]
 fn test_auth_status_redacts_basic_credentials_and_url_secrets() {
     let client = UpstreamClient::with_auth(

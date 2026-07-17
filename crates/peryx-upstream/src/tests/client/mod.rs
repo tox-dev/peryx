@@ -1,5 +1,6 @@
 mod client_tests;
 mod error_tests;
+mod netrc_tests;
 mod retry_tests;
 
 use wiremock::matchers::{method, path};

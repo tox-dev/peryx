@@ -33,6 +33,8 @@ pub struct Config {
     /// it are re-derivable from the cached raw page, so a smaller budget only lowers the warm-hit
     /// rate; `0` turns the cache off and every warm page pays its transform again.
     pub hot_cache_bytes: u64,
+    /// An opt-in netrc file read once at startup for upstream Basic credentials.
+    pub netrc: Option<PathBuf>,
     /// Bound on stale-on-error serving, in seconds; `0` serves stale without limit.
     pub max_stale_secs: i64,
     /// The configured indexes: caches, hosted stores, and virtual indexes that compose them.
@@ -337,6 +339,7 @@ impl Default for Config {
             read_only: false,
             cache_ttl_secs: 300,
             hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
+            netrc: None,
             max_stale_secs: DEFAULT_MAX_STALE_SECS,
             indexes: default_indexes(),
             tls: None,

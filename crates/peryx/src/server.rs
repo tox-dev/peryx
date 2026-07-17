@@ -16,7 +16,7 @@ use peryx_identity::{Action, Signer};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
-use peryx_upstream::{Auth, NamedUpstream, UpstreamClient, UpstreamRouter, redact_url};
+use peryx_upstream::{Auth, NamedUpstream, Netrc, UpstreamClient, UpstreamRouter, redact_url};
 
 use crate::config::{
     AuthConfig, Config, IndexConfig, IndexKind as ConfigKind, ReplicationConfig, SecretSource, WebhookSecret,
@@ -70,8 +70,14 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     } else {
         Cow::Borrowed(config.indexes.as_slice())
     };
-    let upstream_routes = build_upstream_routes(&configs)?;
-    let mut indexes = build_indexes(&configs, &config.auth, config.offline || read_only)?;
+    let netrc = config
+        .netrc
+        .as_deref()
+        .map(Netrc::from_path)
+        .transpose()
+        .context("load upstream netrc")?;
+    let upstream_routes = build_upstream_routes(&configs, netrc.as_ref())?;
+    let mut indexes = build_indexes_with_netrc(&configs, &config.auth, config.offline || read_only, netrc.as_ref())?;
     if configured_replica {
         for index in &mut indexes {
             if let IndexKind::Virtual { upload, .. } = &mut index.kind {
@@ -168,6 +174,15 @@ pub(crate) fn drivers() -> &'static DriverSet {
 /// building each cached index's authenticated upstream client, and reading each index's access rules
 /// (which is where a secret kept in a file is read).
 pub(crate) fn build_indexes(configs: &[IndexConfig], auth: &AuthConfig, offline: bool) -> anyhow::Result<Vec<Index>> {
+    build_indexes_with_netrc(configs, auth, offline, None)
+}
+
+fn build_indexes_with_netrc(
+    configs: &[IndexConfig],
+    auth: &AuthConfig,
+    offline: bool,
+    netrc: Option<&Netrc>,
+) -> anyhow::Result<Vec<Index>> {
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
@@ -192,7 +207,7 @@ pub(crate) fn build_indexes(configs: &[IndexConfig], auth: &AuthConfig, offline:
                 name: index.name.clone(),
                 route: index.route.clone(),
                 ecosystem: index.ecosystem,
-                kind: build_kind(index, configs, &positions, offline)?,
+                kind: build_kind(index, configs, &positions, offline, netrc)?,
                 policy: Policy::compile(&index.policy, |name| driver.normalize_name(name)).with_rules(rules),
                 acl: index
                     .acl(auth)
@@ -260,6 +275,7 @@ fn build_kind(
     configs: &[IndexConfig],
     positions: &HashMap<&str, usize>,
     global_offline: bool,
+    netrc: Option<&Netrc>,
 ) -> anyhow::Result<IndexKind> {
     match &index.kind {
         ConfigKind::Cached {
@@ -276,6 +292,7 @@ fn build_kind(
                 username.as_deref(),
                 password.as_ref(),
                 token.as_ref(),
+                netrc,
             )?,
             offline: global_offline || *offline,
         }),
@@ -294,7 +311,10 @@ fn build_kind(
     }
 }
 
-fn build_upstream_routes(configs: &[IndexConfig]) -> anyhow::Result<Vec<(String, UpstreamRouter)>> {
+fn build_upstream_routes(
+    configs: &[IndexConfig],
+    netrc: Option<&Netrc>,
+) -> anyhow::Result<Vec<(String, UpstreamRouter)>> {
     configs
         .iter()
         .filter_map(|index| match &index.kind {
@@ -314,6 +334,7 @@ fn build_upstream_routes(configs: &[IndexConfig]) -> anyhow::Result<Vec<(String,
                         upstream.username.as_deref(),
                         upstream.password.as_ref(),
                         upstream.token.as_ref(),
+                        netrc,
                     )?;
                     let named = NamedUpstream::new(&upstream.name, client);
                     let Some(artifact_url) = &upstream.artifact_url else {
@@ -325,6 +346,7 @@ fn build_upstream_routes(configs: &[IndexConfig]) -> anyhow::Result<Vec<(String,
                         upstream.username.as_deref(),
                         upstream.password.as_ref(),
                         upstream.token.as_ref(),
+                        netrc,
                     )?;
                     Ok(named.with_artifact_mirror(mirror, routing.fallback))
                 })
@@ -350,6 +372,7 @@ fn build_upstream_client(
     username: Option<&str>,
     password: Option<&SecretSource>,
     token: Option<&SecretSource>,
+    netrc: Option<&Netrc>,
 ) -> anyhow::Result<UpstreamClient> {
     let read = |source: Option<&SecretSource>| {
         source
@@ -358,7 +381,14 @@ fn build_upstream_client(
             .with_context(|| format!("read the upstream credentials of index {index}"))
     };
     let (token, password) = (read(token)?, read(password)?);
-    let auth = upstream_auth(token.as_deref(), username, password.as_deref());
+    let mut auth = upstream_auth(token.as_deref(), username, password.as_deref());
+    if auth == Auth::None
+        && let Some(netrc) = netrc
+    {
+        auth = netrc
+            .auth_for_str(upstream)
+            .with_context(|| format!("match netrc credentials for {}", redact_url(upstream)))?;
+    }
     UpstreamClient::with_auth(upstream, auth)
         .with_context(|| format!("build cached index {index} with upstream {}", redact_url(upstream)))
 }

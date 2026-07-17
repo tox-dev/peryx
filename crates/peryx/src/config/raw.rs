@@ -57,6 +57,8 @@ pub struct PartialConfig {
     pub read_only: Option<bool>,
     pub cache_ttl_secs: Option<i64>,
     pub hot_cache_bytes: Option<u64>,
+    /// An operator-selected netrc file for upstream Basic credentials.
+    pub netrc: Option<PathBuf>,
     /// Bound on stale-on-error serving, in seconds; `0` serves stale without limit.
     pub max_stale_secs: Option<i64>,
     /// The `[[index]]` array from the TOML file. When present it replaces the default topology.

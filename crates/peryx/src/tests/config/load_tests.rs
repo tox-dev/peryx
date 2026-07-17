@@ -31,6 +31,7 @@ fn test_env_overlays_scalar_and_log_fields() {
         ("PERYX_READ_ONLY", "true"),
         ("PERYX_CACHE_TTL_SECS", "42"),
         ("PERYX_HOT_CACHE_BYTES", "1048576"),
+        ("PERYX_NETRC", "/run/secrets/upstream.netrc"),
         ("PERYX_LOG_LEVEL", "debug"),
         ("PERYX_LOG_FORMAT", "json"),
         ("PERYX_LOG_SINK", "file"),
@@ -45,6 +46,7 @@ fn test_env_overlays_scalar_and_log_fields() {
     assert_eq!(partial.read_only, Some(true));
     assert_eq!(partial.cache_ttl_secs, Some(42));
     assert_eq!(partial.hot_cache_bytes, Some(1_048_576));
+    assert_eq!(partial.netrc, Some(PathBuf::from("/run/secrets/upstream.netrc")));
     assert_eq!(partial.log.level.as_deref(), Some("debug"));
     assert_eq!(partial.log.format, Some(LogFormat::Json));
     assert_eq!(partial.log.sink, Some(LogSink::File));
