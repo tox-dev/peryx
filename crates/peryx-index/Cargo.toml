@@ -16,5 +16,13 @@ bytes.workspace = true
 moka = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
+[dev-dependencies]
+hdrhistogram.workspace = true
+stats_alloc.workspace = true
+
+[[bench]]
+name = "route_resolver"
+harness = false
+
 [lints]
 workspace = true

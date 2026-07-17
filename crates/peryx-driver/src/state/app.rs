@@ -9,7 +9,7 @@ use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamRouter;
 
-use peryx_index::Index;
+use peryx_index::{Index, RouteResolver};
 
 use super::describe::{IndexDescription, describe_indexes, describe_upstream_route};
 use crate::rate_limit::{RateLimiter, UpstreamLimits};
@@ -46,6 +46,8 @@ pub struct ServingState {
     pub requests: AtomicU64,
     /// Whether this process serves as a replica and rejects client mutations.
     pub read_only: bool,
+    /// Immutable repository-route positions for request dispatch.
+    pub(super) route_resolver: RouteResolver,
     pub indexes: Vec<Index>,
     /// The role engine's caches for a cached (proxy) index: the single-flight map, the transformed-page
     /// cache, the negative cache, and the mutation epoch that retires them.
@@ -154,7 +156,7 @@ impl ServingState {
     /// Like [`Self::resolve`], returning the index position instead of a borrow.
     #[must_use]
     pub fn resolve_position<'a>(&self, path: &'a str) -> Option<(usize, &'a str)> {
-        peryx_index::resolve_position(&self.indexes, path)
+        self.route_resolver.resolve(path)
     }
 
     /// The index at position `pos` (a virtual-index layer or upload target).
