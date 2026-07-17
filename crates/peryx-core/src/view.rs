@@ -122,6 +122,11 @@ pub enum UiAvailability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiFile {
     pub filename: String,
+    /// The declared release this file belongs to, after ecosystem-specific version matching. `None`
+    /// keeps a file visible when its filename is malformed, its release is undeclared, or several
+    /// declared releases normalize to the same identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
     pub url: String,
     pub sha256: String,
     pub size: Option<u64>,
@@ -220,6 +225,7 @@ mod tests {
     fn test_ui_file_carries_availability_on_the_wire() {
         let file = UiFile {
             filename: "pkg-1.0-py3-none-any.whl".to_owned(),
+            release: Some("1.0".to_owned()),
             url: "/pypi/files/aa/pkg-1.0-py3-none-any.whl".to_owned(),
             sha256: "aa".to_owned(),
             size: Some(10),
@@ -233,6 +239,25 @@ mod tests {
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains("\"availability\":\"remote_only\""), "{json}");
         assert!(json.contains("\"upstream\":\"mirror\""), "{json}");
+        assert!(json.contains("\"release\":\"1.0\""), "{json}");
         assert_eq!(serde_json::from_str::<UiFile>(&json).unwrap(), file);
+    }
+
+    #[test]
+    fn test_ui_file_defaults_an_omitted_release_to_unassociated() {
+        let file: UiFile = serde_json::from_value(serde_json::json!({
+            "filename": "notes.txt",
+            "url": "/files/notes.txt",
+            "sha256": "aa",
+            "size": null,
+            "upload_time": null,
+            "yanked": false,
+            "yanked_reason": null,
+            "has_metadata": false,
+            "availability": "remote_only",
+        }))
+        .unwrap();
+
+        assert_eq!(file.release, None);
     }
 }

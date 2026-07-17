@@ -7,6 +7,7 @@
     reason = "cfg-split helpers are const only without the hydrate feature; constness cannot vary by cfg"
 )]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use leptos::prelude::*;
@@ -23,7 +24,7 @@ use crate::model::{UiFile, UiProject, UiProjectStatus, UiProjectView, UiRelease}
 use crate::url::browser_http_origin;
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_url, browse_index_url, browse_project_file_search_url,
-    browse_ref_url, simple_index_url,
+    browse_project_release_url, browse_ref_url, simple_index_url,
 };
 
 type ProjectPage = Result<Option<UiProjectView>, String>;
@@ -116,24 +117,29 @@ fn ProjectBody(
     set_token: WriteSignal<String>,
     set_outcome: WriteSignal<String>,
 ) -> impl IntoView {
+    let UiProject {
+        name,
+        status,
+        versions,
+        files,
+    } = ui;
     let latest = meta
         .version
         .clone()
-        .or_else(|| ui.versions.last().map(|release| release.version.clone()))
+        .or_else(|| versions.last().map(|release| release.version.clone()))
         .unwrap_or_default();
     let description = meta.description.clone().unwrap_or_default();
     let notice = description.notice;
     let summary = meta.summary.clone();
-    let status = ui.status.clone();
-    let admin_versions = ui.versions.iter().map(|release| release.version.clone()).collect();
+    let admin_versions = versions.iter().map(|release| release.version.clone()).collect();
     view! {
         <header class="project-head">
             <h1>
-                {ui.name.clone()} <span class="version">{latest.clone()}</span>
+                {name.clone()} <span class="version">{latest.clone()}</span>
                 {status.map(|status| project_status_badge(*status))}
             </h1>
             {summary.map(|summary| view! { <p class="summary">{summary}</p> })}
-            <InstallSnippet index_url=simple_index_url(&route) project=ui.name.clone() version=latest />
+            <InstallSnippet index_url=simple_index_url(&route) project=name.clone() version=latest />
         </header>
         <div class="project-grid">
             <div class="project-main">
@@ -141,11 +147,16 @@ fn ProjectBody(
                 {notice.map(|notice| view! { <p class="dim">{notice}</p> })}
                 <div class="description" inner_html=description.html></div>
                 <h2>"Files"</h2>
-                <FileTable route=route.clone() project=ui.name.clone() files=ui.files.clone() />
-                <AdminPanel route=route project=ui.name.clone() versions=admin_versions refresh token set_token set_outcome />
+                <FileTable
+                    route=route.clone()
+                    project=name.clone()
+                    releases=versions.clone()
+                    files
+                />
+                <AdminPanel route=route.clone() project=name.clone() versions=admin_versions refresh token set_token set_outcome />
             </div>
             <aside class="project-side">
-                <MetaPanel meta releases=ui.versions />
+                <MetaPanel route project=name meta releases=versions />
             </aside>
         </div>
     }
@@ -229,20 +240,21 @@ fn is_shell_safe(byte: u8) -> bool {
 }
 
 #[component]
-fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoView {
+fn FileTable(route: String, project: String, releases: Vec<UiRelease>, files: Vec<UiFile>) -> impl IntoView {
     let query = use_query_map();
     let navigate = use_navigate();
     let files = Arc::new(files);
+    let groups = Arc::new(group_file_indexes(&releases, &files));
     let initial = FileSearch::from_query(&query.read());
-    let (initial_matches, initial_error) = match matching_file_indexes(&files, &initial.pattern, initial.mode) {
-        Ok(indexes) => (indexes, None),
-        Err(message) => ((0..files.len()).collect(), Some(message)),
+    let (initial_matches, initial_error) = match matching_files(&files, &initial.pattern, initial.mode) {
+        Ok(matches) => (matches, None),
+        Err(message) => (vec![true; files.len()], Some(message)),
     };
     let (pattern, set_pattern) = signal(initial.pattern);
     let (mode, set_mode) = signal(initial.mode);
+    let (version, set_version) = signal(initial.version);
     let (matches, set_matches) = signal(initial_matches);
     let (error, set_error) = signal(initial_error);
-    let total = files.len();
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         Effect::new(move |_| {
@@ -253,20 +265,24 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
             if mode.get_untracked() != search.mode {
                 set_mode.set(search.mode);
             }
+            if version.get_untracked() != search.version {
+                set_version.set(search.version);
+            }
         });
         Effect::new({
             let files = files.clone();
-            move |_| match matching_file_indexes(&files, &pattern.get(), mode.get()) {
-                Ok(indexes) => {
+            move |_| match matching_files(&files, &pattern.get(), mode.get()) {
+                Ok(next_matches) => {
                     set_error.set(None);
-                    set_matches.set(indexes);
+                    set_matches.set(next_matches);
                 }
                 Err(message) => set_error.set(Some(message)),
             }
         });
     }
     #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    let _ = (set_matches, set_error);
+    let _ = (set_matches, set_error, set_version);
+    let count_groups = groups.clone();
     view! {
         <div class="file-filter">
             <input
@@ -286,6 +302,7 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                             &browse_project_file_search_url(
                                 &route,
                                 &project,
+                                version.get_untracked().as_deref(),
                                 &next,
                                 mode.get_untracked() == FileSearchMode::Regex,
                             ),
@@ -313,6 +330,7 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                                 &browse_project_file_search_url(
                                     &route,
                                     &project,
+                                    version.get_untracked().as_deref(),
                                     &pattern.get_untracked(),
                                     next == FileSearchMode::Regex,
                                 ),
@@ -324,29 +342,193 @@ fn FileTable(route: String, project: String, files: Vec<UiFile>) -> impl IntoVie
                 <span>"regex"</span>
             </label>
             <span class="file-filter-count">
-                {move || file_count(matches.with(Vec::len), total)}
+                {move || {
+                    let selected = version.get();
+                    let (shown, total) = group_file_count(&count_groups, &matches.read(), selected.as_deref());
+                    file_count(shown, total)
+                }}
             </span>
         </div>
         {move || error.get().map(|message| view! { <p class="error">{message}</p> })}
-        <table class="files">
-            <thead><tr><th>"File"</th><th>"Size"</th><th>"Uploaded"</th><th>"sha256"</th><th>"Flags"</th></tr></thead>
-            <tbody>
-                {move || {
-                    if matches.with(Vec::is_empty) {
-                        view! { <tr><td colspan="5" class="empty">"No artifacts match this filename filter."</td></tr> }
-                            .into_any()
-                    } else {
-                        matches
-                            .get()
-                            .into_iter()
-                            .map(|index| file_row(&route, &project, &files[index]))
-                            .collect_view()
-                            .into_any()
-                    }
-                }}
-            </tbody>
-        </table>
+        {move || {
+            file_groups_view(
+                &route,
+                &project,
+                &files,
+                &groups,
+                &matches.read(),
+                version.get().as_deref(),
+                !pattern.get().is_empty(),
+            )
+        }}
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileGroup {
+    release: Option<UiRelease>,
+    indexes: Vec<usize>,
+}
+
+/// The `PyPI` adapter resolves version parsing and ambiguity; this layer follows only explicit release labels.
+fn group_file_indexes(releases: &[UiRelease], files: &[UiFile]) -> Vec<FileGroup> {
+    let mut groups: Vec<FileGroup> = releases
+        .iter()
+        .cloned()
+        .map(|release| FileGroup {
+            release: Some(release),
+            indexes: Vec::new(),
+        })
+        .collect();
+    let mut group_by_version = HashMap::with_capacity(releases.len());
+    for (index, release) in releases.iter().enumerate() {
+        group_by_version.entry(release.version.as_str()).or_insert(index);
+    }
+    let mut legacy = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        match file
+            .release
+            .as_deref()
+            .and_then(|version| group_by_version.get(version))
+        {
+            Some(&group) => groups[group].indexes.push(index),
+            None => legacy.push(index),
+        }
+    }
+    if !legacy.is_empty() {
+        groups.push(FileGroup {
+            release: None,
+            indexes: legacy,
+        });
+    }
+    groups
+}
+
+fn group_file_count(groups: &[FileGroup], matches: &[bool], selected: Option<&str>) -> (usize, usize) {
+    let groups = groups
+        .iter()
+        .filter(|group| selected.is_none_or(|selected| group.release.as_ref().is_some_and(|r| r.version == selected)));
+    groups.fold((0, 0), |(shown, total), group| {
+        (
+            shown + group.indexes.iter().filter(|&&index| matches[index]).count(),
+            total + group.indexes.len(),
+        )
+    })
+}
+
+fn file_groups_view(
+    route: &str,
+    project: &str,
+    files: &[UiFile],
+    groups: &[FileGroup],
+    matches: &[bool],
+    selected: Option<&str>,
+    filtering: bool,
+) -> AnyView {
+    if let Some(selected) = selected {
+        return groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| {
+                group
+                    .release
+                    .as_ref()
+                    .is_some_and(|release| release.version == selected)
+            })
+            .map_or_else(
+                || {
+                    view! {
+                        <p class="dim release-empty">
+                            "Release " <code>{selected.to_owned()}</code> " is not listed for this project."
+                        </p>
+                    }
+                    .into_any()
+                },
+                |(position, group)| file_group_view(route, project, files, group, matches, position, filtering),
+            );
+    }
+    if groups.is_empty() {
+        return view! { <p class="dim release-empty">"No releases or files are available."</p> }.into_any();
+    }
+    if filtering && group_file_count(groups, matches, None).0 == 0 {
+        return view! { <p class="dim release-empty">"No artifacts match this filename filter."</p> }.into_any();
+    }
+    groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| !filtering || group.indexes.iter().any(|&index| matches[index]))
+        .map(|(position, group)| file_group_view(route, project, files, group, matches, position, filtering))
+        .collect_view()
+        .into_any()
+}
+
+fn file_group_view(
+    route: &str,
+    project: &str,
+    files: &[UiFile],
+    group: &FileGroup,
+    matches: &[bool],
+    position: usize,
+    filtering: bool,
+) -> AnyView {
+    let (heading_id, heading, yanked, reasons) = group.release.as_ref().map_or_else(
+        || {
+            (
+                "legacy-files".to_owned(),
+                "Legacy or unassociated files".to_owned(),
+                false,
+                Vec::new(),
+            )
+        },
+        |release| {
+            (
+                format!("release-{position}"),
+                format!("Release {}", release.version),
+                release.yanked,
+                release.yanked_reasons.clone(),
+            )
+        },
+    );
+    let indexes: Vec<usize> = group.indexes.iter().copied().filter(|&index| matches[index]).collect();
+    let empty = if group.indexes.is_empty() {
+        Some("No files are associated with this release.")
+    } else if indexes.is_empty() && filtering {
+        Some("No artifacts match this filename filter.")
+    } else {
+        None
+    };
+    let legacy = group.release.is_none();
+    let heading_element_id = heading_id.clone();
+    view! {
+        <section class="release-files" aria-labelledby=heading_id>
+            <h3 id=heading_element_id>
+                {heading}
+                {yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
+            </h3>
+            {(!reasons.is_empty()).then(|| view! {
+                <ul class="yank-reasons">
+                    {reasons.into_iter().map(|reason| view! { <li>{reason}</li> }).collect_view()}
+                </ul>
+            })}
+            {legacy.then(|| view! {
+                <p class="dim release-note">
+                    "These files do not match one declared release, so peryx keeps them separate."
+                </p>
+            })}
+            <div class="table-scroll">
+                <table class="files">
+                    <thead><tr><th>"File"</th><th>"Size"</th><th>"Uploaded"</th><th>"sha256"</th><th>"Flags"</th></tr></thead>
+                    <tbody>
+                        {empty.map_or_else(
+                            || indexes.into_iter().map(|index| file_row(route, project, &files[index])).collect_view().into_any(),
+                            |message| view! { <tr><td colspan="5" class="empty">{message}</td></tr> }.into_any(),
+                        )}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+    .into_any()
 }
 
 fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
@@ -401,6 +583,7 @@ fn file_label(count: usize) -> &'static str {
 struct FileSearch {
     pattern: String,
     mode: FileSearchMode,
+    version: Option<String>,
 }
 
 impl FileSearch {
@@ -408,6 +591,7 @@ impl FileSearch {
         Self {
             pattern: query.get("filename").unwrap_or_default(),
             mode: FileSearchMode::from_query(query.get_str("filename_match")),
+            version: query.get("version"),
         }
     }
 }
@@ -427,26 +611,21 @@ impl FileSearchMode {
     }
 }
 
-fn matching_file_indexes(files: &[UiFile], pattern: &str, mode: FileSearchMode) -> Result<Vec<usize>, String> {
+fn matching_files(files: &[UiFile], pattern: &str, mode: FileSearchMode) -> Result<Vec<bool>, String> {
     if pattern.is_empty() {
-        return Ok((0..files.len()).collect());
+        return Ok(vec![true; files.len()]);
     }
     match mode {
         FileSearchMode::Substring => {
             let needle = pattern.to_lowercase();
             Ok(files
                 .iter()
-                .enumerate()
-                .filter_map(|(index, file)| file.filename.to_lowercase().contains(&needle).then_some(index))
+                .map(|file| file.filename.to_lowercase().contains(&needle))
                 .collect())
         }
         FileSearchMode::Regex => {
             let regex = Regex::new(pattern).map_err(|err| format!("Invalid regex: {err}"))?;
-            Ok(files
-                .iter()
-                .enumerate()
-                .filter_map(|(index, file)| regex.is_match(&file.filename).then_some(index))
-                .collect())
+            Ok(files.iter().map(|file| regex.is_match(&file.filename)).collect())
         }
     }
 }
@@ -476,23 +655,59 @@ fn is_sha256_hex(sha256: &str) -> bool {
 }
 
 #[component]
-fn MetaPanel(meta: UiMeta, releases: Vec<UiRelease>) -> impl IntoView {
+fn MetaPanel(route: String, project: String, meta: UiMeta, releases: Vec<UiRelease>) -> impl IntoView {
+    let query = use_query_map();
     let blocks = meta.blocks.into_iter().map(block_view).collect_view();
     view! {
         <h3>"Versions"</h3>
-        <ul class="releases">{releases.into_iter().map(release_row).collect_view()}</ul>
+        <nav aria-label="Project releases">
+            <ul class="releases">
+                <li class="release">
+                    <a
+                        class="release-link"
+                        href={
+                            let route = route.clone();
+                            let project = project.clone();
+                            move || {
+                                let search = FileSearch::from_query(&query.read());
+                                browse_project_file_search_url(
+                                    &route,
+                                    &project,
+                                    None,
+                                    &search.pattern,
+                                    search.mode == FileSearchMode::Regex,
+                                )
+                            }
+                        }
+                        aria-current=move || query.read().get_str("version").is_none().then_some("page")
+                    >
+                        "All releases"
+                    </a>
+                </li>
+                {releases
+                    .into_iter()
+                    .map(|release| view! {
+                        <ReleaseRow route=route.clone() project=project.clone() release />
+                    })
+                    .collect_view()}
+            </ul>
+        </nav>
         {blocks}
     }
 }
 
 /// One release: its version, a badge when its publisher yanked the whole release, and the reasons
 /// they gave. The reasons come from the package, so they render as text, never as markup.
-fn release_row(release: UiRelease) -> impl IntoView {
+#[component]
+fn ReleaseRow(route: String, project: String, release: UiRelease) -> impl IntoView {
+    let query = use_query_map();
     let UiRelease {
         version,
         yanked,
         yanked_reasons,
     } = release;
+    let link_version = version.clone();
+    let current_version = version.clone();
     let reasons = (!yanked_reasons.is_empty()).then(|| {
         view! {
             <ul class="yank-reasons">
@@ -502,7 +717,24 @@ fn release_row(release: UiRelease) -> impl IntoView {
     });
     view! {
         <li class=if yanked { "release yanked" } else { "release" }>
-            <code>{version}</code>
+            <a
+                class="release-link"
+                href=move || {
+                    let search = FileSearch::from_query(&query.read());
+                    browse_project_release_url(
+                        &route,
+                        &project,
+                        &link_version,
+                        &search.pattern,
+                        search.mode == FileSearchMode::Regex,
+                    )
+                }
+                aria-current=move || {
+                    (query.read().get_str("version") == Some(current_version.as_str())).then_some("page")
+                }
+            >
+                <code>{version}</code>
+            </a>
             {yanked.then(|| view! { <span class="badge yanked-badge">"yanked"</span> })}
             {reasons}
         </li>
@@ -701,6 +933,7 @@ mod tests {
             "flask",
             &UiFile {
                 filename: "flask-1.0.whl".to_owned(),
+                release: Some("1.0".to_owned()),
                 url: "/pypi/files/aa/flask-1.0.whl".to_owned(),
                 sha256: "aa".repeat(32),
                 size: None,

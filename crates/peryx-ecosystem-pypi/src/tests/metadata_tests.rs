@@ -20,9 +20,30 @@ fn test_ui_project_from_detail_maps_files() {
     });
     let project = ui_project_from_detail(&value);
     assert_eq!(project.name, "veloxdemo");
+    assert_eq!(project.files[0].release.as_deref(), Some("1.0"));
     assert_eq!(project.files[0].sha256, "aa");
     assert_eq!(project.files[0].upload_time.as_deref(), Some("2026-01-01T00:00:00Z"));
     assert!(project.files[0].has_metadata);
+}
+
+#[rstest]
+#[case::pep440_equivalent(&["1.0.0"], "veloxdemo-1.0-py3-none-any.whl", Some("1.0.0"))]
+#[case::local(&["1.0+acme.1"], "veloxdemo-1.0+acme.1-py3-none-any.whl", Some("1.0+acme.1"))]
+#[case::legacy_exact(&["legacy"], "veloxdemo-legacy-py3-none-any.whl", Some("legacy"))]
+#[case::undeclared(&["1.0"], "veloxdemo-2.0-py3-none-any.whl", None)]
+#[case::nameless(&["1.0"], "notes.txt", None)]
+#[case::ambiguous(&["1.0", "1.0.0"], "veloxdemo-1.0-py3-none-any.whl", None)]
+fn test_ui_project_from_detail_associates_files_with_one_declared_release(
+    #[case] versions: &[&str],
+    #[case] filename: &str,
+    #[case] expected: Option<&str>,
+) {
+    let project = ui_project_from_detail(&serde_json::json!({
+        "name": "veloxdemo",
+        "versions": versions,
+        "files": [{"filename": filename}],
+    }));
+    assert_eq!(project.files[0].release.as_deref(), expected);
 }
 
 #[rstest]

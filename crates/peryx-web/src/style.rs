@@ -260,11 +260,12 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 }
 .copy:hover { border-color: var(--brand-b); }
 .project-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 2.5rem; }
+.project-main { min-width: 0; }
 @media (max-width: 52rem) { .project-grid { grid-template-columns: 1fr; } }
 @media (max-width: 52rem) {
   .site-header nav { flex-wrap: wrap; }
   .header-search { order: 3; flex-basis: 100%; max-width: none; }
-  .nav-links { margin-left: auto; }
+  .nav-links { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
   .search-controls { grid-template-columns: 1fr 1fr; }
   .search-controls .search { grid-column: 1 / -1; }
 }
@@ -280,6 +281,11 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .file-search { flex: 1 1 18rem; margin: 0; }
 .file-filter-mode { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
 .file-filter-count { color: var(--text-soft); font-size: 0.9rem; margin-left: auto; }
+.release-files { min-width: 0; margin: 1.25rem 0 1.75rem; }
+.release-files h3 { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.55rem; }
+.release-files .table-scroll { max-width: 100%; }
+.release-files table.files { min-width: 44rem; }
+.release-note, .release-empty { margin: 0.35rem 0 0.75rem; }
 table.files, table.admin-table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
 table.files th, table.files td, table.admin-table td {
   border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left;
@@ -291,6 +297,9 @@ tr.yanked td a { text-decoration: line-through; color: var(--text-soft); }
 .chips code { margin: 0 0.3rem 0.3rem 0; display: inline-block; }
 .releases { list-style: none; padding: 0; margin: 0 0 0.6rem; }
 .releases li { margin-bottom: 0.3rem; }
+.release-link { display: inline-block; border-radius: 4px; padding: 0.08rem 0.2rem; }
+.release-link[aria-current='page'] { font-weight: 700; text-decoration: underline 2px; text-underline-offset: 0.2rem; }
+.release-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .releases li.yanked code { text-decoration: line-through; color: var(--text-soft); }
 .yank-reasons { list-style: none; padding: 0; margin: 0.15rem 0 0; color: var(--text-soft); font-size: 0.85rem; }
 .classifiers { list-style: none; padding: 0; margin: 0 0 0.6rem; color: var(--text-soft); font-size: 0.85rem; }

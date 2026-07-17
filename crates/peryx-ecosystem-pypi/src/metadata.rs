@@ -380,32 +380,47 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProjec
     fn string_at(value: &serde_json::Value, key: &str) -> String {
         value[key].as_str().unwrap_or_default().to_owned()
     }
+    let versions = releases(value);
+    let mut release_by_key: HashMap<VersionKey, Option<&str>> = HashMap::with_capacity(versions.len());
+    for release in &versions {
+        release_by_key
+            .entry(version_key(&release.version))
+            .and_modify(|version| *version = None)
+            .or_insert(Some(&release.version));
+    }
     let files = value["files"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|file| peryx_core::UiFile {
-            filename: string_at(file, "filename"),
-            url: string_at(file, "url"),
-            sha256: file["hashes"]["sha256"].as_str().unwrap_or_default().to_owned(),
-            size: file["size"].as_u64(),
-            upload_time: file["upload-time"].as_str().map(str::to_owned),
-            yanked: file_yanked(file),
-            yanked_reason: file["yanked"]
-                .as_str()
-                .filter(|reason| !reason.is_empty())
-                .map(str::to_owned),
-            has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
-            upstream: None,
-            // The wire document alone cannot prove a blob is stored locally, so every file starts
-            // upstream-only; `serving::web::project_page` upgrades it against the blob and upload stores.
-            availability: peryx_core::UiAvailability::RemoteOnly,
+        .map(|file| {
+            let filename = string_at(file, "filename");
+            let release = distribution_version_segment(&filename)
+                .and_then(|version| release_by_key.get(&version_key(version)).copied().flatten())
+                .map(str::to_owned);
+            peryx_core::UiFile {
+                filename,
+                release,
+                url: string_at(file, "url"),
+                sha256: file["hashes"]["sha256"].as_str().unwrap_or_default().to_owned(),
+                size: file["size"].as_u64(),
+                upload_time: file["upload-time"].as_str().map(str::to_owned),
+                yanked: file_yanked(file),
+                yanked_reason: file["yanked"]
+                    .as_str()
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_owned),
+                has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
+                upstream: None,
+                // The wire document alone cannot prove a blob is stored locally, so every file starts
+                // upstream-only; `serving::web::project_page` upgrades it against the blob and upload stores.
+                availability: peryx_core::UiAvailability::RemoteOnly,
+            }
         })
         .collect();
     peryx_core::UiProject {
         name: string_at(value, "name"),
         status: project_status(value),
-        versions: releases(value),
+        versions,
         files,
     }
 }

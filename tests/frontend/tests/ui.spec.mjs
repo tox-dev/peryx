@@ -4,6 +4,7 @@ import { expect, test } from "@playwright/test";
 
 const PROJECT_URL = "/browse?index=root%2Fpypi&project=veloxdemo";
 const TOKEN = "playwright-secret";
+const HOST = `127.0.0.1:${process.env.PERYX_FRONTEND_PORT ?? "4455"}`;
 
 /// Navigate and wait for the wasm bundle to hydrate, so clicks hit live handlers.
 async function goto(page, url) {
@@ -74,10 +75,9 @@ test("header search suggests packages live and opens one", async ({ page }) => {
 test("search reports no matches and honors the provenance facet", async ({ page }) => {
   await goto(page, "/search?q=zzznotapackage");
   await expect(page.locator(".search-page")).toContainText("Nothing matched this search");
-  // veloxdemo is uploaded, so restricting to the cached facet excludes it.
-  await goto(page, "/search?q=veloxdemo&type=cached");
+  await goto(page, "/search?q=large-demo&type=uploaded");
   await expect(page.locator(".search-page")).toContainText("Nothing matched this search");
-  await expect(page.locator(".search-controls select[name='type']")).toHaveValue("cached");
+  await expect(page.locator(".search-controls select[name='type']")).toHaveValue("uploaded");
 });
 
 test("search form submission navigates with the query", async ({ page }) => {
@@ -109,7 +109,7 @@ test("project server render keeps the relative install snippet", async ({ page }
 test("project install snippet uses the browser origin when copied", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await goto(page, PROJECT_URL);
-  const command = "uv pip install --index-url http://127.0.0.1:4455/root/pypi/simple/ veloxdemo==1.0.0";
+  const command = `uv pip install --index-url http://${HOST}/root/pypi/simple/ veloxdemo==1.0.0`;
   await expect(page.locator(".install code")).toHaveText(command);
   await page.locator(".install button.copy").click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);
@@ -222,9 +222,69 @@ test("project page renders pypi.org-style metadata", async ({ page }) => {
   await expect(side.locator(".classifier-group", { hasText: "Development Status" })).toBeVisible();
   await expect(side.locator(".links-list a", { hasText: "Documentation" })).toBeVisible();
   // The file table shows size, hash, and the metadata badge.
-  const row = page.locator("table.files tbody tr");
+  const row = page.locator("table.files tbody tr", { hasText: "veloxdemo-1.0.0" });
   await expect(row.locator(".badge.meta-badge")).toBeVisible();
   await expect(row).toContainText("1.2 kB");
+});
+
+test("project page groups hosted and upstream releases", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  const groups = page.locator("section.release-files");
+  await expect(groups).toHaveCount(2);
+  await expect(groups.nth(0).getByRole("heading", { name: "Release 1.0.0" })).toBeVisible();
+  await expect(groups.nth(1).getByRole("heading", { name: "Release 0.9" })).toBeVisible();
+  await expect(groups.nth(0).locator("tr", { hasText: "veloxdemo-1.0.0" })).toHaveCount(1);
+  const upstream = groups.nth(1).locator("tr", { hasText: "veloxdemo-0.9" });
+  await expect(upstream).toHaveCount(1);
+  await expect(upstream.getByTitle("Upstream source")).toHaveText("fixture");
+});
+
+test("release links retain filename filters and select one exact group", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  await page.locator(".file-search").fill("0.9");
+  const release = page.getByRole("navigation", { name: "Project releases" }).getByRole("link", { name: "0.9" });
+  await release.click();
+
+  await expect(page).toHaveURL(/version=0\.9&filename=0\.9/);
+  await expect(release).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("section.release-files")).toHaveCount(1);
+  await expect(page.locator("tr", { hasText: "veloxdemo-0.9" })).toHaveCount(1);
+  await expect(page.locator("tr", { hasText: "veloxdemo-1.0.0" })).toHaveCount(0);
+  await expect(page.locator(".file-filter-count")).toContainText("1 file");
+});
+
+test("release navigation follows native keyboard order", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  const navigation = page.getByRole("navigation", { name: "Project releases" });
+  await navigation.getByRole("link", { name: "All releases" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(navigation.getByRole("link", { name: "1.0.0" })).toBeFocused();
+});
+
+test("large histories group without rendering unrelated releases", async ({ page }) => {
+  const detail = await page.request.get("/pypi/simple/large-demo/", {
+    headers: { accept: "application/vnd.pypi.simple.v1+json" },
+  });
+  expect((await detail.json()).files).toHaveLength(2_000);
+
+  await goto(page, "/browse?index=pypi&project=large-demo&version=99.0");
+  await expect(page.locator("section.release-files")).toHaveCount(1);
+  await expect(page.locator("section.release-files tbody tr")).toHaveCount(20);
+  await expect(page.locator(".file-filter-count")).toHaveText("20 files");
+});
+
+test("narrow project pages scroll only the file table", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await goto(page, `${PROJECT_URL}&version=1.0.0`);
+
+  const overflow = await page.evaluate(() => {
+    const wrapper = document.querySelector(".release-files .table-scroll");
+    return {
+      page: document.documentElement.scrollWidth > window.innerWidth + 1,
+      table: wrapper.scrollWidth > wrapper.clientWidth,
+    };
+  });
+  expect(overflow).toEqual({ page: false, table: true });
 });
 
 test("project file search keeps URL history", async ({ page }) => {
@@ -232,35 +292,35 @@ test("project file search keeps URL history", async ({ page }) => {
   const row = page.locator("table.files tbody tr", { hasText: "veloxdemo-1.0.0" });
   await expect(row).toBeVisible();
   await page.locator(".file-search").fill("missing");
-  await expect(page.locator("table.files .empty")).toContainText("No artifacts match");
-  await expect(page.locator(".file-filter-count")).toContainText("0 of 1 file");
+  await expect(page.locator(".release-empty")).toContainText("No artifacts match");
+  await expect(page.locator(".file-filter-count")).toContainText("0 of 2 files");
   await expect(page).toHaveURL(/filename=missing/);
 
   await page.goBack();
   await expect(row).toBeVisible();
-  await expect(page.locator(".file-filter-count")).toContainText("1 file");
+  await expect(page.locator(".file-filter-count")).toContainText("2 files");
   await expect(page).toHaveURL(/\/browse\?index=root%2Fpypi&project=veloxdemo$/);
 
   await page.goForward();
-  await expect(page.locator("table.files .empty")).toContainText("No artifacts match");
+  await expect(page.locator(".release-empty")).toContainText("No artifacts match");
 });
 
 test("project file regex errors keep the last results", async ({ page }) => {
   await goto(page, PROJECT_URL);
   const row = page.locator("table.files tbody tr", { hasText: "veloxdemo-1.0.0" });
-  await page.locator(".file-search").fill("veloxdemo.*\\.whl");
+  await page.locator(".file-search").fill("veloxdemo-1.*\\.whl");
   await page.locator(".file-filter-mode input").check();
   await expect(row).toBeVisible();
 
   await page.locator(".file-search").fill("[");
   await expect(page.locator(".error")).toContainText("Invalid regex");
   await expect(row).toBeVisible();
-  await expect(page.locator(".file-filter-count")).toContainText("1 file");
+  await expect(page.locator(".file-filter-count")).toContainText("1 of 2 files");
 });
 
 test("archive browser lists members and shows file content", async ({ page }) => {
   await goto(page, PROJECT_URL);
-  await page.locator("a.inspect").click();
+  await page.getByLabel("Release 1.0.0").getByRole("link", { name: "contents" }).click();
   await expect(page.locator(".archive-tree .archive-name.folder", { hasText: "veloxdemo-1.0.0.dist-info" })).toBeVisible();
   const metadataRow = page.locator(".archive-tree a.kind-text", { hasText: "METADATA" });
   await expect(metadataRow).toBeVisible();
@@ -274,12 +334,13 @@ test("admin panel yanks and un-yanks with the upload token", async ({ page }) =>
   await goto(page, PROJECT_URL);
   await page.locator(".admin summary").click();
   await page.locator(".token").fill(TOKEN);
+  const release = page.locator(".admin-table tr").filter({ hasText: "1.0.0" });
 
-  await page.locator(".admin-table button", { hasText: /^yank$/ }).click();
+  await release.getByRole("button", { name: "yank", exact: true }).click();
   await expect(page.locator(".outcome")).toContainText("200");
   await expect(page.locator("table.files .badge.yanked-badge")).toBeVisible();
 
-  await page.locator(".admin-table button", { hasText: "un-yank" }).click();
+  await release.getByRole("button", { name: "un-yank" }).click();
   await expect(page.locator("table.files .badge.yanked-badge")).toHaveCount(0);
 });
 
@@ -287,7 +348,11 @@ test("wrong token surfaces the auth failure", async ({ page }) => {
   await goto(page, PROJECT_URL);
   await page.locator(".admin summary").click();
   await page.locator(".token").fill("wrong");
-  await page.locator(".admin-table button", { hasText: /^yank$/ }).click();
+  await page
+    .locator(".admin-table tr")
+    .filter({ hasText: "1.0.0" })
+    .getByRole("button", { name: "yank", exact: true })
+    .click();
   await expect(page.locator(".outcome")).toContainText("401");
 });
 
@@ -345,7 +410,7 @@ test("browses an OCI repository's tags and its manifest", async ({ page }) => {
   await expect(page.locator(".page")).toContainText("Config: sha256:");
   await expect(page.locator(".page")).toContainText("application/vnd.oci.image.layer.v1.tar");
   // The manifest view offers a copyable pull command, with the host filled in after hydration.
-  await expect(page.locator(".install code")).toContainText("docker pull 127.0.0.1:4455/images/app:1.0");
+  await expect(page.locator(".install code")).toContainText(`docker pull ${HOST}/images/app:1.0`);
 });
 
 test("browses a layer's file contents and previews a text member", async ({ page }) => {

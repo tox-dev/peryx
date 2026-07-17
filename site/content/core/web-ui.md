@@ -46,8 +46,21 @@ stores the last selected size for the next search.
 
 An index card links to its project list, filterable as you type. For a PyPI index, a project page shows everything an
 index page carries: the rendered long description, summary, install command with a copy button, versions, dependencies,
-keywords, license, author, project links, grouped classifiers, and a file table with sizes, upload dates, sha256
-digests, and yank/metadata badges.
+keywords, license, author, project links, grouped classifiers, and release-grouped file tables with sizes, upload dates,
+sha256 digests, and yank/metadata badges. Release groups follow the page's existing newest-first
+[PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) order. When matching a file's
+version does not identify exactly one declared release, peryx keeps it visible in **Legacy or unassociated files**; this
+includes malformed filenames, undeclared versions, and ambiguous PEP 440-equivalent declarations.
+
+The version links select one exact displayed release through the `version` query parameter. A declared release with no
+files has a different empty state from an unknown release, which helps distinguish an empty publication from a stale
+link. Filename substring and regular-expression filters remain in the URL when moving between releases. People can share
+a filtered view, and browser history restores both selections.
+
+The release list uses native links in document order and adds `aria-current` to the current view. A heading labels each
+release section and its data table. At narrow widths the table scrolls inside its wrapper instead of widening the page.
+These choices follow [WCAG 2.2](https://www.w3.org/TR/WCAG22/) requirements for structure, focus order, link purpose,
+visible focus, and reflow.
 
 {{ screen(alt="A project page: description and files on the left, metadata panel on the right", name="project") }}
 

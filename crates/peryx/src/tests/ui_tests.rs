@@ -527,6 +527,20 @@ fn first_files_table(body: &str) -> &str {
     &rest[..rest.find("</table>").unwrap()]
 }
 
+fn files_table_containing<'a>(body: &'a str, marker: &str) -> &'a str {
+    let marker = body.find(marker).unwrap();
+    let table = body[..marker].rfind("<table class=\"files\"").unwrap();
+    let rest = &body[table..];
+    &rest[..rest.find("</table>").unwrap()]
+}
+
+fn rendered_main(body: &str) -> &str {
+    body.split_once("<main>")
+        .and_then(|(_, main)| main.split_once("</main>"))
+        .map(|(main, _)| main)
+        .expect("page renders one main element")
+}
+
 /// Upload the frontend fixture wheel through the router, so UI pages have a metadata-rich package.
 async fn upload_fixture(router: &axum::Router) {
     let wheel = include_bytes!("../../../../tests/frontend/fixtures/veloxdemo-1.0.0-py3-none-any.whl");
@@ -816,6 +830,114 @@ async fn test_ui_project_page_marks_a_release_its_publisher_yanked_whole() {
     );
 }
 
+#[tokio::test]
+async fn test_ui_project_page_groups_each_file_under_one_ordered_release() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0rc1", "2.0", "2.0+local.1", "legacy"],
+        "files": [
+            {"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/1.0.whl"},
+            {"filename": "veloxdemo-2.0rc1-py3-none-any.whl", "url": "/files/2.0rc1.whl"},
+            {"filename": "veloxdemo-2.0-py3-none-any.whl", "url": "/files/2.0.whl"},
+            {"filename": "veloxdemo-2.0+local.1-py3-none-any.whl", "url": "/files/2.0-local.whl"},
+            {"filename": "veloxdemo-legacy-py3-none-any.whl", "url": "/files/legacy.whl"},
+            {"filename": "notes.txt", "url": "/files/notes.txt"},
+        ],
+    }));
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    let headings = [
+        "Release 2.0+local.1",
+        "Release 2.0",
+        "Release 2.0rc1",
+        "Release 1.0",
+        "Release legacy",
+        "Legacy or unassociated files",
+    ];
+    let positions: Vec<usize> = headings
+        .iter()
+        .map(|heading| {
+            main.find(&format!(">{heading}<!"))
+                .unwrap_or_else(|| panic!("{heading} missing: {main}"))
+        })
+        .collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{body}");
+    for filename in [
+        "veloxdemo-1.0-py3-none-any.whl",
+        "veloxdemo-2.0rc1-py3-none-any.whl",
+        "veloxdemo-2.0-py3-none-any.whl",
+        "veloxdemo-2.0+local.1-py3-none-any.whl",
+        "veloxdemo-legacy-py3-none-any.whl",
+        "notes.txt",
+    ] {
+        assert_eq!(
+            main.matches(&format!(">{filename}</a>")).count(),
+            1,
+            "{filename} did not render once: {main}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_ui_project_page_keeps_ambiguous_equivalent_releases_unassociated() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "1.0.0"],
+        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/demo.whl"}],
+    }));
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    assert_eq!(
+        main.matches("No files are associated with this release.").count(),
+        2,
+        "{main}"
+    );
+    let legacy = main.split_once("Legacy or unassociated files").unwrap().1;
+    assert!(legacy.contains("veloxdemo-1.0-py3-none-any.whl"), "{main}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_selects_an_empty_declared_release() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0"],
+        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/demo.whl"}],
+    }));
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo&version=2.0").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    assert!(main.contains("Release 2.0"), "{main}");
+    assert!(main.contains("No files are associated with this release."), "{main}");
+    assert!(!main.contains("veloxdemo-1.0-py3-none-any.whl"), "{main}");
+    assert!(!main.contains("is not listed for this project"), "{main}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_distinguishes_an_unknown_release() {
+    let (_dir, router) = version_router(&["1.0"]);
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo&version=missing").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    assert!(
+        main.contains("Release <code>missing</code> is not listed for this project."),
+        "{main}"
+    );
+    assert!(!main.contains("No files are associated with this release."), "{main}");
+}
+
 fn version_router(versions: &[&str]) -> (tempfile::TempDir, axum::Router) {
     detail_router(&serde_json::json!({
         "meta": {"api-version": "1.1"},
@@ -979,7 +1101,7 @@ async fn test_ui_project_page_shows_yank_state(
     let (_dir, router) = yanked_router(&yanked);
     let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
-    let table = first_files_table(&body);
+    let table = files_table_containing(&body, ARTIFACT_FILENAME);
     for marker in present {
         assert!(table.contains(marker), "{body}");
     }

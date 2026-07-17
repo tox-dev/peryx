@@ -136,15 +136,43 @@ pub(crate) fn browse_layer_member_url(
 }
 
 #[must_use]
-pub(crate) fn browse_project_file_search_url(route: &str, project: &str, pattern: &str, regex: bool) -> String {
+pub(crate) fn browse_project_file_search_url(
+    route: &str,
+    project: &str,
+    version: Option<&str>,
+    pattern: &str,
+    regex: bool,
+) -> String {
     let mut url = browse_project_url(route, project);
+    append_project_file_search(&mut url, version, pattern, regex);
+    url
+}
+
+/// One release on a project page, with an optional filename filter that remains part of the direct
+/// link.
+#[must_use]
+pub(crate) fn browse_project_release_url(
+    route: &str,
+    project: &str,
+    version: &str,
+    pattern: &str,
+    regex: bool,
+) -> String {
+    let mut url = browse_project_url(route, project);
+    append_project_file_search(&mut url, Some(version), pattern, regex);
+    url
+}
+
+fn append_project_file_search(url: &mut String, version: Option<&str>, pattern: &str, regex: bool) {
+    if let Some(version) = version {
+        push_query(url, "version", version);
+    }
     if !pattern.is_empty() {
-        push_query(&mut url, "filename", pattern);
+        push_query(url, "filename", pattern);
     }
     if regex {
-        push_query(&mut url, "filename_match", "regex");
+        push_query(url, "filename_match", "regex");
     }
-    url
 }
 
 #[must_use]
@@ -350,9 +378,10 @@ mod tests {
 
     use super::{
         admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url,
-        browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_url, browser_http_origin,
-        inspect_url, search_api_url, search_page_url, simple_index_url, stats_api_url, stats_index_url,
-        stats_project_url, ui_manifest_url, ui_member_url, ui_members_url, ui_project_url, ui_projects_url,
+        browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_release_url,
+        browse_project_url, browser_http_origin, inspect_url, search_api_url, search_page_url, simple_index_url,
+        stats_api_url, stats_index_url, stats_project_url, ui_manifest_url, ui_member_url, ui_members_url,
+        ui_project_url, ui_projects_url,
     };
 
     #[rstest]
@@ -393,8 +422,12 @@ mod tests {
             "/browse?index=root%2Fpypi&project=pkg%20name&sha256=aa&file=pkg%201.0%23x%3F.whl"
         );
         assert_eq!(
-            browse_project_file_search_url("root/pypi", "pkg name", "cp313.*\\.whl", true),
+            browse_project_file_search_url("root/pypi", "pkg name", None, "cp313.*\\.whl", true),
             "/browse?index=root%2Fpypi&project=pkg%20name&filename=cp313.%2A%5C.whl&filename_match=regex"
+        );
+        assert_eq!(
+            browse_project_release_url("root/pypi", "pkg name", "1!2+local.1", "cp313", false),
+            "/browse?index=root%2Fpypi&project=pkg%20name&version=1%212%2Blocal.1&filename=cp313"
         );
     }
 
