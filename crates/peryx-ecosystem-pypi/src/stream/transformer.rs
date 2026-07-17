@@ -4,11 +4,12 @@ use std::collections::BTreeSet;
 
 use peryx_core::path::{is_local_file_url, local_file_url};
 use peryx_policy::PolicyAction;
+use serde::Serialize;
 
 use super::{PageContext, PageSummary, Registration, TransformError};
 use crate::policy::PypiPolicy;
 use crate::simple::absolutize;
-use crate::{CoreMetadata, File, parse_meta, to_json};
+use crate::{CoreMetadata, File, parse_meta};
 
 /// The most raw bytes peryx will read from one upstream Simple page before refusing it. The biggest
 /// real project pages (botocore and friends) sit in the low single-digit MiB; a page an order of
@@ -19,6 +20,7 @@ const MAX_PAGE_BYTES: usize = 64 * 1024 * 1024;
 /// per-element work: a page of many tiny file objects stays small yet still forces a parse, a policy
 /// check, and a registration each, so the element count is capped on its own.
 const MAX_PAGE_FILES: usize = 500_000;
+const MAX_KEY_BYTES: usize = b"versions".len();
 
 /// The transformer's lexer state, kept across chunk boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +47,9 @@ pub struct PageTransformer {
     depth: u32,
     in_string: bool,
     escaped: bool,
-    /// The most recent complete top-level string, a candidate object key.
-    key: Vec<u8>,
+    /// Unknown keys pass through, so storage stops at the longest key that changes output.
+    key: [u8; MAX_KEY_BYTES],
+    key_len: usize,
     capturing_key: bool,
     /// Set between a top-level `"name"` key's colon and its value, so the value is captured.
     expect_name_value: bool,
@@ -84,7 +87,8 @@ impl PageTransformer {
             depth: 0,
             in_string: false,
             escaped: false,
-            key: Vec::new(),
+            key: [0; MAX_KEY_BYTES],
+            key_len: 0,
             capturing_key: false,
             expect_name_value: false,
             capturing_name: false,
@@ -132,15 +136,29 @@ impl PageTransformer {
     /// Returns [`TransformError::Parse`] when a captured element is not valid JSON, or
     /// [`TransformError::TooLarge`] once the page passes [`MAX_PAGE_BYTES`].
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<u8>, TransformError> {
+        let mut out = Vec::with_capacity(chunk.len() + 64);
+        self.push_into(chunk, &mut out)?;
+        Ok(out)
+    }
+
+    /// Transform one chunk and append the downstream bytes to an existing buffer.
+    ///
+    /// Callers that collect chunks can reuse the destination allocation. Existing bytes stay at the
+    /// front of `out`.
+    ///
+    /// # Errors
+    /// Returns [`TransformError::Parse`] when a captured element is not valid JSON, or
+    /// [`TransformError::TooLarge`] once the page passes [`MAX_PAGE_BYTES`].
+    pub fn push_into(&mut self, chunk: &[u8], out: &mut Vec<u8>) -> Result<(), TransformError> {
         self.consumed = self.consumed.saturating_add(chunk.len());
         if self.consumed > MAX_PAGE_BYTES {
             return Err(TransformError::TooLarge);
         }
-        let mut out = Vec::with_capacity(chunk.len() + 64);
+        out.reserve(chunk.len());
         for &byte in chunk {
-            self.step(byte, &mut out)?;
+            self.step(byte, out)?;
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Finish the stream, validating that the document closed cleanly.
@@ -178,8 +196,8 @@ impl PageTransformer {
     fn step_passthrough(&mut self, byte: u8, out: &mut Vec<u8>) {
         if self.in_string {
             out.push(byte);
-            if self.capturing_key {
-                self.key.push(byte);
+            if self.capturing_key && (self.escaped || byte != b'"') {
+                self.capture_key_byte(byte);
             }
             if self.capturing_name {
                 self.name.push(byte);
@@ -190,9 +208,6 @@ impl PageTransformer {
                 self.escaped = true;
             } else if byte == b'"' {
                 self.in_string = false;
-                if self.capturing_key {
-                    self.key.pop();
-                }
                 if self.capturing_name {
                     self.name.pop();
                 }
@@ -214,7 +229,7 @@ impl PageTransformer {
                         self.capturing_name = true;
                         self.name.clear();
                     } else {
-                        self.key.clear();
+                        self.key_len = 0;
                         self.capturing_key = true;
                     }
                 }
@@ -227,7 +242,7 @@ impl PageTransformer {
                 self.depth += 1;
                 // `"files": [` or `"versions": [` at the top level switches modes; the bracket is
                 // emitted (files) or captured (versions merges into one emission).
-                if byte == b'{' && self.depth == 2 && self.key == b"meta" {
+                if byte == b'{' && self.depth == 2 && self.key() == b"meta" {
                     self.mode = Mode::Meta;
                     self.array_depth = self.depth;
                     self.capture.clear();
@@ -235,7 +250,7 @@ impl PageTransformer {
                     return;
                 }
                 if byte == b'[' && self.depth == 2 {
-                    if self.key == b"files" {
+                    if self.key() == b"files" {
                         out.push(byte);
                         self.mode = Mode::Files;
                         self.array_depth = self.depth;
@@ -243,7 +258,7 @@ impl PageTransformer {
                         self.emit_local_files(out);
                         return;
                     }
-                    if self.key == b"versions" {
+                    if self.key() == b"versions" {
                         self.mode = Mode::Versions;
                         self.array_depth = self.depth;
                         self.capture.clear();
@@ -261,8 +276,8 @@ impl PageTransformer {
                 out.push(byte);
             }
             b':' if self.depth == 1 => {
-                self.expect_name_value = self.key == b"name";
-                if !self.meta_seen && self.key == b"files" {
+                self.expect_name_value = self.key() == b"name";
+                if !self.meta_seen && self.key() == b"files" {
                     self.files_before_meta = true;
                 }
                 out.push(byte);
@@ -275,6 +290,17 @@ impl PageTransformer {
                 out.push(byte);
             }
         }
+    }
+
+    const fn capture_key_byte(&mut self, byte: u8) {
+        if self.key_len < MAX_KEY_BYTES {
+            self.key[self.key_len] = byte;
+        }
+        self.key_len += 1;
+    }
+
+    fn key(&self) -> &[u8] {
+        self.key.get(..self.key_len).unwrap_or_default()
     }
 
     fn step_meta(&mut self, byte: u8, out: &mut Vec<u8>) -> Result<(), TransformError> {
@@ -417,18 +443,16 @@ impl PageTransformer {
             {
                 continue;
             }
-            let json = self.context.yanked.get(&file.filename).map_or_else(
-                || to_json(file),
-                |yanked| {
-                    let mut file = file.clone();
-                    file.yanked = yanked.clone();
-                    to_json(&file)
-                },
-            );
             if self.emitted_in_array {
                 out.push(b',');
             }
-            out.extend_from_slice(json.as_bytes());
+            if let Some(yanked) = self.context.yanked.get(&file.filename) {
+                let mut file = file.clone();
+                file.yanked = yanked.clone();
+                write_json(out, &file);
+            } else {
+                write_json(out, file);
+            }
             self.emitted_in_array = true;
         }
     }
@@ -464,7 +488,7 @@ impl PageTransformer {
             if self.emitted_in_array {
                 out.push(b',');
             }
-            out.extend_from_slice(to_json(&file).as_bytes());
+            write_json(out, &file);
             self.emitted_in_array = true;
             return Ok(());
         }
@@ -510,7 +534,7 @@ impl PageTransformer {
         if self.emitted_in_array {
             out.push(b',');
         }
-        out.extend_from_slice(to_json(&file).as_bytes());
+        write_json(out, &file);
         self.emitted_in_array = true;
         Ok(())
     }
@@ -518,9 +542,9 @@ impl PageTransformer {
     /// Rewrite the upstream meta object to peryx's advertised API version.
     fn emit_meta(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let meta = parse_meta(&self.capture)?;
-        self.project_status.clone_from(&meta.project_status);
-        self.project_status_reason.clone_from(&meta.project_status_reason);
-        out.extend_from_slice(to_json(&meta).as_bytes());
+        write_json(out, &meta);
+        self.project_status = meta.project_status;
+        self.project_status_reason = meta.project_status_reason;
         self.meta_seen = true;
         Ok(())
     }
@@ -528,18 +552,22 @@ impl PageTransformer {
     /// Merge the buffered upstream version array with the local versions and emit it sorted.
     fn emit_versions(&self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let upstream: Vec<String> = serde_json::from_slice(&self.capture)?;
-        let merged: BTreeSet<String> = upstream
-            .into_iter()
-            .chain(self.context.local_versions.clone())
+        let merged: BTreeSet<&str> = upstream
+            .iter()
+            .chain(&self.context.local_versions)
+            .map(String::as_str)
             .collect();
-        let versions: Vec<String> = merged.into_iter().collect();
-        out.extend_from_slice(to_json(&versions).as_bytes());
+        write_json(out, &merged);
         Ok(())
     }
 
     fn project_is_quarantined(&self) -> bool {
         self.project_status.as_deref() == Some("quarantined")
     }
+}
+
+fn write_json(out: &mut Vec<u8>, value: &impl Serialize) {
+    serde_json::to_writer(out, value).expect("simple-API model always serializes to JSON");
 }
 
 /// The PEP 658 metadata sibling of a file URL: `.metadata` appended to the path, ahead of any query

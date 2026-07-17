@@ -121,6 +121,8 @@ tracing-subscriber.workspace = true
 redb.workspace = true
 insta.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
+hdrhistogram.workspace = true
+stats_alloc.workspace = true
 
 [[bench]]
 name = "serve"
@@ -142,6 +144,11 @@ harness = false
 [[bench]]
 name = "name_version"
 harness = false
+
+[[bench]]
+name = "transform"
+harness = false
+required-features = ["serving"]
 
 [lints]
 workspace = true

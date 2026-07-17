@@ -4,7 +4,9 @@ use peryx_policy::{Policy, PolicyConfig};
 
 use super::page_context;
 use crate::policy::{PackageType, PypiPolicyConfig, compile_rules};
-use crate::stream::{PageContext, PageTransformer, Registration, TransformError, page_context as build_page_context};
+use crate::stream::{
+    PageContext, PageSummary, PageTransformer, Registration, TransformError, page_context as build_page_context,
+};
 use crate::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
 
 fn upstream_page() -> String {
@@ -30,7 +32,7 @@ fn transform_summary(page: &str, context: PageContext, chunk: usize) -> (String,
     let mut transformer = PageTransformer::new(context);
     let mut out = Vec::new();
     for piece in page.as_bytes().chunks(chunk) {
-        out.extend(transformer.push(piece).unwrap());
+        transformer.push_into(piece, &mut out).unwrap();
     }
     let summary = transformer.finish().unwrap();
     (String::from_utf8(out).unwrap(), summary)
@@ -286,6 +288,59 @@ fn test_escapes_and_braces_inside_strings_survive() {
         assert_eq!(detail.files[0].url, "/root/pypi/files/ee55/a%7B1%7D-1.0.whl");
         assert_eq!(registrations[0].url, "https://up/a\"b[");
     }
+}
+
+#[test]
+fn test_chunk_boundaries_preserve_corpus_output_and_summary() {
+    for (page, expected_out, expected_name) in [
+        (
+            r#"{"meta":{"api-version":"1.4"},"name":"démo","versions":["1\u002e0"],"files":[]}"#,
+            r#"{"meta":{"api-version":"1.4"},"name":"démo","versions":["1.0"],"files":[]}"#,
+            "démo",
+        ),
+        (
+            r#"{"meta":{"api-version":"1.4","extra":{"nested":["}\"["]}},"name":"demo","files":[]}"#,
+            r#"{"meta":{"api-version":"1.4"},"name":"demo","files":[]}"#,
+            "demo",
+        ),
+        (
+            r#"{"versions-extra":["1\u002e0"],"versions":["2\u002e0"],"name":"demo","files":[]}"#,
+            r#"{"versions-extra":["1\u002e0"],"versions":["2.0"],"name":"demo","files":[]}"#,
+            "demo",
+        ),
+    ] {
+        for chunk in 1..=page.len().min(32) {
+            assert_eq!(
+                transform_summary(page, plain_context(), chunk),
+                (
+                    expected_out.to_owned(),
+                    PageSummary {
+                        registrations: Vec::new(),
+                        name: Some(expected_name.to_owned()),
+                        project_status: None,
+                        project_status_reason: None,
+                    },
+                ),
+                "chunk size {chunk}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_push_into_appends_without_replacing_existing_bytes() {
+    let mut transformer = PageTransformer::new(plain_context());
+    let mut out = b"prefix:".to_vec();
+
+    transformer
+        .push_into(br#"{"meta":{"api-version":"1.4"},"name":"demo","files":[]}"#, &mut out)
+        .unwrap();
+    transformer.finish().unwrap();
+
+    assert_eq!(
+        out,
+        br#"prefix:{"meta":{"api-version":"1.4"},"name":"demo","files":[]}"#
+    );
 }
 
 #[test]
