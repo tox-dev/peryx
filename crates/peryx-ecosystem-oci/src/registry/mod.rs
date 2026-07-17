@@ -662,7 +662,7 @@ fn version_ok() -> Response {
 }
 /// The per-blob lock concurrent misses share so a single upstream fetch serves them all, the same
 /// single-flight coalescing every cached fetch shares. Keyed in its own namespace on the blob digest.
-fn flight_gate(state: &ServingState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+fn flight_gate(state: &ServingState, key: &str) -> peryx_index::serving::FlightGate {
     peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 /// Find the OCI index whose route is the longest segment-aligned prefix of `name`, and the upstream

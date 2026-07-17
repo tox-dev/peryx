@@ -7,35 +7,110 @@
 //! long a page past its freshness window may still answer while the upstream is unreachable. Both live
 //! here so a `PyPI` page and an `OCI` manifest share one implementation rather than drifting apart.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Per-key single-flight locks. Concurrent misses for one key take the same lock, so exactly one
-/// fetches from upstream and stores the result while the rest wait and then serve it from cache.
-pub type Inflight = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 
-/// The lock concurrent misses for `key` share.
-///
-/// # Panics
-/// Panics if the inflight map's mutex was poisoned by a thread that panicked while holding it.
-#[must_use]
-pub fn flight_gate(inflight: &Inflight, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    inflight
-        .lock()
-        .expect("inflight lock")
-        .entry(key.to_owned())
-        .or_default()
-        .clone()
+/// Sharded per-key single-flight locks.
+#[derive(Clone, Debug, Default)]
+pub struct Inflight {
+    gates: Arc<DashMap<Arc<str>, Arc<Gate>>>,
 }
 
-/// Release a single-flight hold: unlock first so a waiter parked on the gate proceeds, then drop the
-/// map entry so later requests start fresh.
-///
-/// # Panics
-/// Panics if the inflight map's mutex was poisoned.
-pub fn release_flight(inflight: &Inflight, key: &str, guard: tokio::sync::OwnedMutexGuard<()>) {
+#[derive(Debug)]
+struct Gate {
+    mutex: Arc<tokio::sync::Mutex<()>>,
+    users: AtomicUsize,
+}
+
+impl Gate {
+    fn new() -> Self {
+        Self {
+            mutex: Arc::default(),
+            users: AtomicUsize::new(1),
+        }
+    }
+}
+
+/// A registered caller for one single-flight key.
+#[derive(Debug)]
+pub struct FlightGate {
+    inflight: Inflight,
+    key: Arc<str>,
+    gate: Arc<Gate>,
+}
+
+impl FlightGate {
+    /// Wait for this key's current producer.
+    pub async fn lock(self) -> FlightGuard {
+        self.lock_owned().await
+    }
+
+    /// Wait for this key's current producer with an owned guard.
+    pub async fn lock_owned(self) -> FlightGuard {
+        let guard = self.gate.mutex.clone().lock_owned().await;
+        FlightGuard {
+            _guard: guard,
+            flight: self,
+        }
+    }
+
+    /// Take this key's producer slot without waiting.
+    ///
+    /// # Errors
+    /// Returns Tokio's lock error while another caller holds the slot.
+    pub fn try_lock_owned(self) -> Result<FlightGuard, tokio::sync::TryLockError> {
+        let guard = self.gate.mutex.clone().try_lock_owned()?;
+        Ok(FlightGuard {
+            _guard: guard,
+            flight: self,
+        })
+    }
+}
+
+impl Drop for FlightGate {
+    fn drop(&mut self) {
+        if self.gate.users.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.inflight.gates.remove_if(&self.key, |_, gate| {
+                Arc::ptr_eq(gate, &self.gate) && gate.users.load(Ordering::Acquire) == 0
+            });
+        }
+    }
+}
+
+/// The held producer slot for one single-flight key.
+#[derive(Debug)]
+pub struct FlightGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    flight: FlightGate,
+}
+
+/// The lock concurrent misses for `key` share.
+#[must_use]
+pub fn flight_gate(inflight: &Inflight, key: &str) -> FlightGate {
+    let key = Arc::<str>::from(key);
+    let gate = match inflight.gates.entry(key.clone()) {
+        Entry::Occupied(entry) => {
+            entry.get().users.fetch_add(1, Ordering::Relaxed);
+            entry.get().clone()
+        }
+        Entry::Vacant(entry) => entry.insert(Arc::new(Gate::new())).clone(),
+    };
+    FlightGate {
+        inflight: inflight.clone(),
+        key,
+        gate,
+    }
+}
+
+/// Release a single-flight hold.
+pub fn release_flight(inflight: &Inflight, key: &str, guard: FlightGuard) {
+    debug_assert!(Arc::ptr_eq(&inflight.gates, &guard.flight.inflight.gates));
+    debug_assert_eq!(key, guard.flight.key.as_ref());
     drop(guard);
-    inflight.lock().expect("inflight lock").remove(key);
 }
 
 /// Whether a page past its freshness window may still answer while the upstream cannot be reached.
@@ -94,13 +169,11 @@ impl ServingCache {
         }
     }
 
-    /// Drop a single-flight entry after a fetch that held no owned guard, so later requests start
-    /// fresh.
-    ///
-    /// # Panics
-    /// Panics if the inflight map's mutex was poisoned.
+    /// Retire an uncontended flight before its guard returns.
     pub fn forget_flight(&self, key: &str) {
-        self.inflight.lock().expect("inflight lock").remove(key);
+        self.inflight
+            .gates
+            .remove_if(key, |_, gate| gate.users.load(Ordering::Acquire) == 1);
     }
 
     /// A hot-cache entry still within its freshness window at `now`; an expired entry misses.
@@ -183,7 +256,42 @@ impl ServingCache {
 
 #[cfg(test)]
 mod tests {
-    use super::within_stale_bound;
+    use super::{Inflight, flight_gate, within_stale_bound};
+
+    #[tokio::test]
+    async fn test_same_key_waiters_share_one_gate() {
+        let inflight = Inflight::default();
+        let first = flight_gate(&inflight, "digest").lock_owned().await;
+        assert!(flight_gate(&inflight, "digest").try_lock_owned().is_err());
+
+        drop(first);
+        drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_distinct_keys_lock_independently() {
+        let inflight = Inflight::default();
+        let first = flight_gate(&inflight, "first").lock().await;
+        let second = flight_gate(&inflight, "second").try_lock_owned().unwrap();
+
+        drop((first, second));
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_waiter_retires_its_registration() {
+        let inflight = Inflight::default();
+        let producer = flight_gate(&inflight, "digest").lock_owned().await;
+        let mut waiting = tokio::spawn(flight_gate(&inflight, "digest").lock_owned());
+        tokio::task::yield_now().await;
+
+        waiting.abort();
+        let cancelled = (&mut waiting).await.unwrap_err().is_cancelled();
+        drop(waiting);
+        assert!(cancelled);
+
+        drop(producer);
+        drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
+    }
 
     #[test]
     fn test_zero_max_stale_serves_any_age() {

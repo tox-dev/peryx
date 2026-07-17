@@ -224,13 +224,7 @@ async fn test_stage_cleanup_error_removes_the_live_download() {
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if !h
-                .state
-                .downloads
-                .lock()
-                .expect("downloads lock")
-                .contains_key(digest.as_str())
-            {
+            if h.state.downloads.get(digest.as_str()).is_none() {
                 break;
             }
             tokio::task::yield_now().await;

@@ -451,7 +451,7 @@ async fn revalidate(
     name: String,
     project: String,
     client: UpstreamClient,
-    guard: tokio::sync::OwnedMutexGuard<()>,
+    guard: peryx_index::serving::FlightGuard,
 ) {
     if let Err(err) = super::fetch::fetch_and_store(&state, &key, &name, &project, &client).await {
         tracing::debug!(?err, %key, "background revalidation failed");
@@ -570,7 +570,7 @@ mod tests {
 
         let body = state.meta.get_index("pypi/flask").unwrap().unwrap().body;
         assert!(String::from_utf8(body).unwrap().contains("2.0"));
-        assert!(state.cache.inflight.lock().unwrap().is_empty());
+        drop(flight_gate(&state, "pypi/flask").try_lock_owned().unwrap());
     }
 
     #[tokio::test]
@@ -618,6 +618,6 @@ mod tests {
         // The unparseable upstream response is rejected, so the stale page stays and the hold is freed.
         let body = state.meta.get_index("pypi/flask").unwrap().unwrap().body;
         assert!(String::from_utf8(body).unwrap().contains("1.0"));
-        assert!(state.cache.inflight.lock().unwrap().is_empty());
+        drop(flight_gate(&state, "pypi/flask").try_lock_owned().unwrap());
     }
 }

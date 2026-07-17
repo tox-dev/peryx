@@ -20,6 +20,7 @@ async-trait.workspace = true
 axum = { workspace = true, features = ["multipart"] }
 toml.workspace = true
 bytes.workspace = true
+dashmap.workspace = true
 futures-util.workspace = true
 httpdate.workspace = true
 ipnet.workspace = true

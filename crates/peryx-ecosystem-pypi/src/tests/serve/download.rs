@@ -211,29 +211,18 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
     assert_eq!(std::fs::read(lease.path()).unwrap(), b"wheel");
 }
 #[tokio::test]
-async fn test_file_path_abandoned_download_errors() {
+async fn test_cancelled_download_wakes_waiters_and_leaves_no_entry() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
-    let (sender, receiver) = tokio::sync::watch::channel(peryx_driver::download::DownloadProgress::default());
-    drop(sender);
     let pending = h.state.blobs.begin().await.unwrap();
-    let tail = pending.tail();
-    drop(pending);
-    h.state.downloads.lock().expect("downloads lock").insert(
-        digest.as_str().to_owned(),
-        peryx_driver::download::DownloadHandle::new(tail, receiver),
-    );
-    let err = cache::file_path(
-        h.state.serving.clone(),
-        digest.clone(),
-        "pypi".to_owned(),
-        "flask.whl".to_owned(),
-    )
-    .await
-    .unwrap_err();
+    let (mut handle, producer) = h.state.downloads.register(digest.as_str(), pending.tail()).unwrap();
+
+    drop(producer);
+
+    assert!(h.state.downloads.get(digest.as_str()).is_none());
     assert!(matches!(
-        err,
-        cache::CacheError::Stream(message) if message == "blob transfer abandoned"
+        handle.progress().borrow_and_update().done.as_ref(),
+        Some(Err(message)) if message == "blob transfer abandoned"
     ));
 }
 #[tokio::test]

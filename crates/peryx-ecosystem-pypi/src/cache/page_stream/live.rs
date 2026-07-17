@@ -18,7 +18,7 @@ pub(super) struct FreshJsonStream {
     pub(super) now: i64,
     pub(super) context: crate::stream::PageContext,
     pub(super) cached_present: bool,
-    pub(super) guard: tokio::sync::OwnedMutexGuard<()>,
+    pub(super) guard: peryx_index::serving::FlightGuard,
     pub(super) head: crate::simple_client::SimpleHead,
     pub(super) permit: UpstreamPermit,
 }
@@ -84,9 +84,8 @@ impl FreshJsonStream {
                         body,
                         transformer: *transformer,
                         flight: FlightGuard {
-                            state: self.state,
                             key: self.key,
-                            guard: Some(self.guard),
+                            _guard: self.guard,
                         },
                         hot_key: self.hot_key,
                         route: self.route,
@@ -232,21 +231,10 @@ fn prepend_chunk(
     }
 }
 
-/// Releases the single-flight hold however the live stream ends. Completion, a transform or upstream
-/// error, and a mid-page client disconnect all drop the owning `LiveStream`, so `Drop` is the one
-/// place that covers every terminal path; without it the error and disconnect paths would leak one
-/// map entry per distinct failing project. Unlock before forgetting, matching `release_flight`.
+/// Retains the single-flight hold until the live stream ends.
 struct FlightGuard {
-    state: Arc<ServingState>,
     key: String,
-    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
-}
-
-impl Drop for FlightGuard {
-    fn drop(&mut self) {
-        drop(self.guard.take());
-        self.state.cache.forget_flight(&self.key);
-    }
+    _guard: peryx_index::serving::FlightGuard,
 }
 
 /// Everything a live streaming fetch carries between polls.

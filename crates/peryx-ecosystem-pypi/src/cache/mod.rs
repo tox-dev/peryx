@@ -4,8 +4,6 @@
 //! The work is split into cohesive submodules; this spine holds the shared error type, the
 //! single-flight/permit/freshness primitives every path shares, and the module wiring.
 
-use std::sync::Arc;
-
 use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use crate::upload;
@@ -143,12 +141,12 @@ impl CacheError {
 }
 
 /// The per-page lock concurrent cache misses share.
-pub(crate) fn flight_gate(state: &ServingState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn flight_gate(state: &ServingState, key: &str) -> peryx_index::serving::FlightGate {
     peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 
 /// Release a single-flight hold.
-fn release_flight(state: &ServingState, key: &str, guard: tokio::sync::OwnedMutexGuard<()>) {
+fn release_flight(state: &ServingState, key: &str, guard: peryx_index::serving::FlightGuard) {
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
 }
 

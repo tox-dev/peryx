@@ -54,7 +54,7 @@ pub struct ServingState {
     pub cache: peryx_index::ServingCache,
     /// One live download per blob digest: concurrent cold requests for the same file all tail the
     /// one upstream transfer as it lands instead of waiting for it to finish.
-    pub downloads: Mutex<HashMap<String, crate::download::DownloadHandle>>,
+    pub downloads: crate::download::DownloadRegistry,
     /// Off-thread usage aggregation: index → project → file counters for the dashboard.
     pub metrics: Metrics,
     /// Derived package search index, refreshed from storage when the mutation epoch advances.

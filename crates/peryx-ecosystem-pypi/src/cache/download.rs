@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::project_of_filename;
 use crate::store::PypiStore as _;
 use bytes::Bytes;
-use peryx_driver::download::{DownloadHandle, DownloadProgress};
+use peryx_driver::download::{DownloadHandle, DownloadProducer};
 use peryx_driver::rate_limit::UpstreamPermit;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
@@ -20,8 +20,6 @@ use super::{CacheError, flight_gate, release_flight, source_artifact_client, sou
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, or another error on a
 /// store or upstream failure.
 ///
-/// # Panics
-/// Panics only if the downloads registry lock is poisoned by an earlier panic.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the connect gate stays held across start_download so racing inspectors attach instead of double-fetching"
@@ -106,8 +104,6 @@ pub enum FileOutcome {
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, or another error on a
 /// store or upstream failure.
 ///
-/// # Panics
-/// Never in practice: only if the downloads registry lock was poisoned by an earlier panic.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the connect gate stays held across start_download so racing clients attach instead of double-fetching"
@@ -156,13 +152,10 @@ async fn start_download(
     let permit = upstream_permit(state, &source.source).await?;
     let body = client.stream_bytes(&source.url).await?;
     let pending = state.blobs.begin().await?;
-    let (sender, receiver) = tokio::sync::watch::channel(DownloadProgress::default());
-    let handle = DownloadHandle::new(pending.tail(), receiver);
-    state
+    let (handle, producer) = state
         .downloads
-        .lock()
-        .expect("downloads lock")
-        .insert(digest.as_str().to_owned(), handle.clone());
+        .register(digest.as_str(), pending.tail())
+        .expect("connect gate serializes download registration");
     let pump_state = state.clone();
     let pump_digest = digest.clone();
     tokio::spawn(async move {
@@ -171,7 +164,7 @@ async fn start_download(
             pump_digest,
             body,
             pending,
-            sender,
+            producer,
             (route, filename, source.upstream),
             permit,
         )
@@ -182,12 +175,7 @@ async fn start_download(
 
 /// The in-flight download for `digest`, if one is pumping right now.
 fn existing_download(state: &ServingState, digest: &Digest) -> Option<DownloadHandle> {
-    state
-        .downloads
-        .lock()
-        .expect("downloads lock")
-        .get(digest.as_str())
-        .cloned()
+    state.downloads.get(digest.as_str())
 }
 
 async fn wait_for_download(handle: &mut DownloadHandle) -> Result<(), CacheError> {
@@ -197,9 +185,11 @@ async fn wait_for_download(handle: &mut DownloadHandle) -> Result<(), CacheError
             Some(Ok(())) => return Ok(()),
             Some(Err(message)) => return Err(CacheError::Stream(message)),
             None => {
-                if handle.progress().changed().await.is_err() {
-                    return Err(CacheError::Stream("blob transfer abandoned".to_owned()));
-                }
+                handle
+                    .progress()
+                    .changed()
+                    .await
+                    .expect("download producer publishes terminal progress");
             }
         }
     }
@@ -223,12 +213,12 @@ async fn pump_download(
     digest: Digest,
     body: impl futures_util::Stream<Item = Result<Bytes, peryx_upstream::UpstreamError>> + Send + 'static,
     mut pending: BlobWrite,
-    sender: tokio::sync::watch::Sender<DownloadProgress>,
+    producer: DownloadProducer,
     served_as: (String, String, Option<String>),
     permit: UpstreamPermit,
 ) {
     let started = std::time::Instant::now();
-    let outcome = match drain_to_blob(body, &mut pending, &sender).await {
+    let outcome = match drain_to_blob(body, &mut pending, &producer).await {
         Ok(()) => pending.commit(&digest).await.map_err(|err| err.to_string()),
         Err(error) => match pending.abort().await {
             Ok(()) => Err(error),
@@ -236,7 +226,7 @@ async fn pump_download(
         },
     };
     drop(permit);
-    let bytes = sender.borrow().flushed;
+    let bytes = producer.flushed();
     let elapsed_ms = started.elapsed().as_millis();
     let (route, filename, upstream) = served_as;
     let upstream = upstream.as_deref().unwrap_or("");
@@ -247,10 +237,7 @@ async fn pump_download(
         let project = project_of_filename(&filename);
         state.metrics.record(Event::BlobRejected { route, project });
     }
-    // Commit lands before the entry disappears and the entry disappears before done broadcasts,
-    // so a request arriving at any point sees the blob, the live download, or nothing stale.
-    state.downloads.lock().expect("downloads lock").remove(digest.as_str());
-    sender.send_modify(|progress| progress.done = Some(outcome));
+    producer.finish(outcome);
 }
 
 /// Tee the upstream body into the pending blob, publishing progress at every flush. Errors map to
@@ -258,7 +245,7 @@ async fn pump_download(
 async fn drain_to_blob(
     body: impl futures_util::Stream<Item = Result<Bytes, peryx_upstream::UpstreamError>> + Send + 'static,
     pending: &mut BlobWrite,
-    sender: &tokio::sync::watch::Sender<DownloadProgress>,
+    producer: &DownloadProducer,
 ) -> Result<(), String> {
     use futures_util::StreamExt as _;
     let mut body = std::pin::pin!(body);
@@ -271,11 +258,11 @@ async fn drain_to_blob(
         written += chunk_len;
         if written - flushed >= FLUSH_EVERY {
             flushed = string_result(pending.flush().await)?;
-            sender.send_modify(|progress| progress.flushed = flushed);
+            producer.publish_flushed(flushed);
         }
     }
     let flushed = string_result(pending.flush().await)?;
-    sender.send_modify(|progress| progress.flushed = flushed);
+    producer.publish_flushed(flushed);
     Ok(())
 }
 

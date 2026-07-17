@@ -212,7 +212,11 @@ async fn test_live_stream_error_releases_the_inflight_entry() {
     .await;
     let items = stream_outcome(&h.state).await;
     assert!(items.last().is_some_and(Result::is_err));
-    assert!(h.state.serving.cache.inflight.lock().unwrap().is_empty());
+    drop(
+        cache::flight_gate(&h.state.serving, "pypi/flask")
+            .try_lock_owned()
+            .unwrap(),
+    );
 }
 #[tokio::test]
 async fn test_client_disconnect_releases_the_inflight_entry() {
@@ -237,9 +241,17 @@ async fn test_client_disconnect_releases_the_inflight_entry() {
     else {
         panic!("expected a streaming outcome");
     };
-    assert!(!state.serving.cache.inflight.lock().unwrap().is_empty());
+    assert!(
+        cache::flight_gate(&state.serving, "pypi/flask")
+            .try_lock_owned()
+            .is_err()
+    );
     drop(stream);
-    assert!(state.serving.cache.inflight.lock().unwrap().is_empty());
+    drop(
+        cache::flight_gate(&state.serving, "pypi/flask")
+            .try_lock_owned()
+            .unwrap(),
+    );
 }
 #[tokio::test]
 async fn test_live_stream_forwards_a_broken_upstream_transfer() {
@@ -300,7 +312,11 @@ async fn test_buffered_files_before_meta_surfaces_parse_errors() {
     mount_json_page(&h.server, r#"{"name":"flask","files":[{"bad": }]}"#).await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned()).await;
     assert!(matches!(outcome, Err(cache::CacheError::Simple(_))));
-    assert!(h.state.serving.cache.inflight.lock().unwrap().is_empty());
+    drop(
+        cache::flight_gate(&h.state.serving, "pypi/flask")
+            .try_lock_owned()
+            .unwrap(),
+    );
 }
 #[tokio::test]
 async fn test_live_stream_buffers_downloadable_files_before_meta() {

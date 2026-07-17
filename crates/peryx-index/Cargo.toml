@@ -13,6 +13,7 @@ peryx-identity.workspace = true
 peryx-policy.workspace = true
 peryx-upstream.workspace = true
 bytes.workspace = true
+dashmap.workspace = true
 moka = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 

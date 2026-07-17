@@ -298,7 +298,7 @@ impl AppState {
                 route_resolver: peryx_index::RouteResolver::new(&indexes),
                 indexes,
                 cache: peryx_index::ServingCache::new(hot_cache_bytes, ttl_secs),
-                downloads: Mutex::new(HashMap::new()),
+                downloads: crate::download::DownloadRegistry::default(),
                 metrics,
                 search,
                 rate_limits: RateLimiter::new(rate_limit),
