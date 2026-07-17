@@ -152,7 +152,7 @@ async fn test_policy_sizes_a_cached_download_from_the_stored_blob() {
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let wheel = b"wheelcontent";
-    let digest = h.state.blobs.write(wheel).unwrap();
+    let digest = h.state.blobs.put_bytes(wheel).await.unwrap();
     let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -167,7 +167,7 @@ async fn test_policy_denies_a_cached_download_over_the_size_limit() {
         neutral.max_file_size_bytes = Some(4);
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
-    let digest = h.state.blobs.write(b"wheelcontent").unwrap();
+    let digest = h.state.blobs.put_bytes(b"wheelcontent").await.unwrap();
     let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, Some("application/json")).await;

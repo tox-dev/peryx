@@ -57,7 +57,7 @@ async fn test_status_admin_details_include_bounded_summaries() {
 async fn test_status_redacts_upstream_and_upload_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![
         Index {
             name: "private".to_owned(),
@@ -98,7 +98,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
 async fn test_status_reports_routed_upstream_health() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let primary = NamedUpstream::new(
         "primary",
         UpstreamClient::with_auth(
@@ -230,7 +230,7 @@ async fn test_metrics_omit_hostile_values_and_bound_series_count() {
         .collect();
     let mut app = AppState::new(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
-        BlobStore::new(dir.path().join("blobs")),
+        BlobStorage::filesystem(dir.path().join("blobs")),
         60,
         indexes,
     );

@@ -264,7 +264,8 @@ pub fn blob_count(state: &AppState) -> u64 {
     let mut count = 0;
     state
         .blobs
-        .scan(|_entry| {
+        .blocking()
+        .visit(|_entry| {
             count += 1;
             Ok::<(), std::io::Error>(())
         })
@@ -301,7 +302,7 @@ pub fn put_local_file(state: &AppState, filename: &str, bytes: &[u8], version: &
 }
 pub fn put_local_project(state: &AppState, project: &str, filename: &str, bytes: &[u8], version: &str) -> Digest {
     let digest = Digest::of(bytes);
-    state.blobs.write_verified(bytes, &digest).unwrap();
+    state.blobs.blocking().put_bytes_as(bytes, &digest).unwrap();
     let uploaded = upload_record(
         filename,
         version,

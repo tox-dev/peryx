@@ -2,7 +2,7 @@
 
 use peryx_core::{Ecosystem, Lexicon, LexiconRegistry};
 use peryx_index::Index;
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
 /// The stores and indexes an ecosystem's [`PackageIndexer`](crate::PackageIndexer) walks to derive
@@ -14,7 +14,7 @@ use peryx_storage::meta::MetaStore;
 pub struct IndexerCtx<'a> {
     pub indexes: &'a [Index],
     pub meta: &'a MetaStore,
-    pub blobs: &'a BlobStore,
+    pub blobs: &'a BlobStorage,
 }
 
 impl IndexerCtx<'_> {

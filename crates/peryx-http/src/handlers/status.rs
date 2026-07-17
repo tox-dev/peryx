@@ -29,8 +29,25 @@ const STATUS_RECENT_UPLOADS: usize = 5;
 /// dashboard refreshes from this document.
 pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<StatusQuery>) -> Response {
     let serial = state.meta.current_serial();
-    let summaries = (query.details.as_deref() == Some("admin")).then(|| state.index_summaries(STATUS_RECENT_UPLOADS));
-    let indexes: Vec<serde_json::Value> = state
+    let blobs = state.blobs.health().await.is_ok();
+    let indexes = index_documents(&state, query.details.as_deref() == Some("admin"));
+    axum::Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "serial": serial.as_ref().copied().unwrap_or(0),
+        "role": if state.read_only { "replica" } else { "writer" },
+        "health": health_document(&state, serial.is_ok(), blobs),
+        "blob_storage": blob_storage_document(&state.blobs),
+        "requests": state.requests.load(Ordering::Relaxed),
+        "by_ecosystem": ecosystem_summaries(&state),
+        "metric_families": family_descriptors(&state),
+        "indexes": indexes,
+    }))
+    .into_response()
+}
+
+fn index_documents(state: &AppState, details: bool) -> Vec<serde_json::Value> {
+    let summaries = details.then(|| state.index_summaries(STATUS_RECENT_UPLOADS));
+    state
         .describe_indexes()
         .into_iter()
         .map(|index| {
@@ -114,18 +131,7 @@ pub async fn status(State(state): State<Arc<AppState>>, Query(query): Query<Stat
             }
             serde_json::Value::Object(object)
         })
-        .collect();
-    axum::Json(serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "serial": serial.as_ref().copied().unwrap_or(0),
-        "role": if state.read_only { "replica" } else { "writer" },
-        "health": health_document(&state, serial.is_ok()),
-        "requests": state.requests.load(Ordering::Relaxed),
-        "by_ecosystem": ecosystem_summaries(&state),
-        "metric_families": family_descriptors(&state),
-        "indexes": indexes,
-    }))
-    .into_response()
+        .collect()
 }
 
 /// `GET /+health`: process liveness for restart decisions.
@@ -135,7 +141,7 @@ pub async fn health() -> Response {
 
 /// `GET /+ready`: read readiness by default, or writer readiness with `?writes=true`.
 pub async fn readiness(State(state): State<Arc<AppState>>, Query(query): Query<ReadinessQuery>) -> Response {
-    if state.is_ready(query.writes) {
+    if state.is_ready(query.writes).await {
         probe_response(StatusCode::OK, r#"{"status":"ready"}"#)
     } else {
         probe_response(StatusCode::SERVICE_UNAVAILABLE, r#"{"status":"not_ready"}"#)
@@ -154,8 +160,7 @@ fn probe_response(status: StatusCode, body: &'static str) -> Response {
         .into_response()
 }
 
-fn health_document(state: &AppState, metadata: bool) -> serde_json::Value {
-    let blobs = blob_store_available(&state.blobs);
+fn health_document(state: &AppState, metadata: bool, blobs: bool) -> serde_json::Value {
     let mut reachable = 0;
     let mut unreachable = 0;
     let mut unknown = 0;
@@ -187,6 +192,18 @@ fn health_document(state: &AppState, metadata: bool) -> serde_json::Value {
     })
 }
 
-fn blob_store_available(blobs: &peryx_storage::blob::BlobStore) -> bool {
-    blobs.health_check().is_ok()
+fn blob_storage_document(blobs: &peryx_storage::blob::BlobStorage) -> serde_json::Value {
+    let capabilities = blobs.capabilities();
+    serde_json::json!({
+        "backend": blobs.name(),
+        "capabilities": {
+            "durability": capabilities.durability.as_str(),
+            "conditional_write": capabilities.create_if_absent.as_str(),
+            "range": capabilities.range.as_str(),
+            "checksum": capabilities.checksum.as_str(),
+            "delete": capabilities.delete.as_str(),
+            "listing": capabilities.list.as_str(),
+            "local_staging": capabilities.local_tail.as_str(),
+        },
+    })
 }

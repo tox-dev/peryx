@@ -10,7 +10,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bytes::Bytes;
 use futures_util::{Stream, TryStreamExt as _};
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobErrorKind, BlobRead, BlobReadBody, BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use reqwest::Url;
 use serde::Deserialize;
@@ -158,7 +158,7 @@ struct PrimaryHttpState {
     source: String,
     token: String,
     meta: MetaStore,
-    blobs: BlobStore,
+    blobs: BlobStorage,
 }
 
 #[derive(Deserialize)]
@@ -175,7 +175,7 @@ pub fn primary_router(
     source: impl Into<String>,
     token: impl Into<String>,
     meta: MetaStore,
-    blobs: BlobStore,
+    blobs: impl Into<BlobStorage>,
 ) -> Result<Router, PrimaryHttpConfigError> {
     let source = source.into();
     if source.is_empty() {
@@ -192,7 +192,7 @@ pub fn primary_router(
             source,
             token,
             meta,
-            blobs,
+            blobs: blobs.into(),
         }))
 }
 
@@ -239,16 +239,23 @@ async fn serve_blob(
     let Some(digest) = Digest::from_hex(&encoded) else {
         return (StatusCode::BAD_REQUEST, "invalid sha256 digest").into_response();
     };
-    let file = match tokio::fs::File::open(state.blobs.path_for(&digest)).await {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
+    let read = match state.blobs.open(&digest, None).await {
+        Ok(read) => read,
+        Err(error) if error.kind() == BlobErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CACHE_CONTROL, "private, no-store")
-        .body(Body::from_stream(ReaderStream::new(file)))
+        .body(blob_body(read))
         .expect("static replication response headers are valid")
+}
+
+pub fn blob_body(read: BlobRead) -> Body {
+    match read.body {
+        BlobReadBody::File(file) => Body::from_stream(ReaderStream::new(tokio::fs::File::from_std(file))),
+        BlobReadBody::Stream(stream) => Body::from_stream(stream),
+    }
 }
 
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {

@@ -337,9 +337,16 @@ impl Mirror<'_> {
             ));
             return;
         };
-        if self.state.blobs.exists(&storage) {
-            rows.push(MirrorRow::cached("blob", repo, digest, digest));
-            return;
+        match self.state.blobs.head(&storage).await {
+            Ok(Some(_)) => {
+                rows.push(MirrorRow::cached("blob", repo, digest, digest));
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                rows.push(MirrorRow::error("blob", repo, digest, digest, err.to_string()));
+                return;
+            }
         }
         if self.mode == MirrorMode::Verify {
             rows.push(MirrorRow::error(
@@ -356,36 +363,13 @@ impl Mirror<'_> {
             .blob(&self.base, &self.auth, &self.upstream_repo(repo), digest)
             .await
         {
-            Ok(response) => {
-                if download_blob(&self.state.blobs, &storage, response).await.is_ok() {
-                    rows.push(MirrorRow::synced(
-                        "blob",
-                        repo,
-                        digest,
-                        digest,
-                        blob_size(self.state, &storage),
-                    ));
-                } else {
-                    rows.push(MirrorRow::error(
-                        "blob",
-                        repo,
-                        digest,
-                        digest,
-                        "digest verification failed".to_owned(),
-                    ));
+            Ok(response) => match download_blob(&self.state.blobs, &storage, response).await {
+                Ok(bytes) => rows.push(MirrorRow::synced("blob", repo, digest, digest, bytes)),
+                Err(err) => {
+                    rows.push(MirrorRow::error("blob", repo, digest, digest, err.to_string()));
                 }
-            }
+            },
             Err(err) => rows.push(MirrorRow::error("blob", repo, digest, digest, err.to_string())),
         }
     }
-}
-
-/// The on-disk size of a stored blob, or `0` when its file cannot be stat'd.
-fn blob_size(state: &ServingState, storage: &Digest) -> u64 {
-    state
-        .blobs
-        .path_for(storage)
-        .metadata()
-        .map(|metadata| metadata.len())
-        .unwrap_or_default()
 }

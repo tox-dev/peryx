@@ -80,6 +80,52 @@ async fn test_policy_rejects_chunked_upload_over_limit(#[case] hosted_limit: u64
     );
     assert_eq!(std::fs::read_dir(h.dir.path().join("blobs")).unwrap().count(), 0);
 }
+
+#[tokio::test]
+async fn test_upload_body_failure_removes_the_stage() {
+    let h = harness().await;
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    let (content_type, body) = multipart_body(&upload_fields(), Some((filename, b"content")));
+    let split = body
+        .windows(b"content".len())
+        .rposition(|window| window == b"content")
+        .unwrap()
+        + 3;
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    sender.send(Ok(Bytes::copy_from_slice(&body[..split]))).await.unwrap();
+    let state = h.state.clone();
+    let request = tokio::spawn(async move {
+        post_upload_body_response(
+            &state,
+            "/hosted/",
+            Some(&upload_auth()),
+            &content_type,
+            Body::from_stream(futures_util::stream::unfold(receiver, |mut receiver| async {
+                receiver.recv().await.map(|item| (item, receiver))
+            })),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if std::fs::read_dir(h.dir.path().join("blobs")).is_ok_and(|mut entries| entries.next().is_some()) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    sender.send(Err(std::io::Error::other("reset"))).await.unwrap();
+
+    let (status, _) = request.await.unwrap();
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        std::fs::read_dir(h.dir.path().join("blobs")).map_or(0, Iterator::count),
+        0
+    );
+}
 #[tokio::test]
 async fn test_policy_accepts_upload_at_size_limit() {
     let wheel = fixture_wheel();
@@ -1136,7 +1182,7 @@ async fn test_upload_storage_failure_is_server_error() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("blobs"), b"not a directory").unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![Index {
         name: "hosted".to_owned(),
         route: "hosted".to_owned(),
@@ -1171,7 +1217,7 @@ async fn test_upload_corrupt_existing_record_is_server_error() {
 async fn test_upload_target_resolving_to_non_local_is_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
     // A deliberately inconsistent virtual index whose upload target points at the cached.
     let indexes = vec![
@@ -1243,7 +1289,7 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
     // Seed one valid record in every remaining metadata table plus a blob, so every maintenance
     // scan walks a non-empty table and its per-record work runs.
     let sibling = Digest::of(b"the metadata sibling");
-    blobs.write_verified(b"a wheel", &digest).unwrap();
+    blobs.put_bytes_as(b"a wheel", &digest).await.unwrap();
     meta.put_file_url(digest.as_str(), &file_url, "pypi").unwrap();
     meta.put_metadata(digest.as_str(), &file_url, sibling.as_str(), "pypi")
         .unwrap();
@@ -1314,7 +1360,7 @@ async fn test_pypi_policy_dry_run_writes_a_denial() {
 fn scoped(glob: &str) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![Index {
         name: "hosted".to_owned(),
         route: "hosted".to_owned(),
@@ -1377,7 +1423,7 @@ fn state_with_trusted_publishing(enabled: bool) -> (tempfile::TempDir, Arc<AppSt
     let signer = Signer::new(b"realm-key", "peryx");
     let mut state = AppState::new(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
-        BlobStore::new(dir.path().join("blobs")),
+        BlobStorage::filesystem(dir.path().join("blobs")),
         60,
         vec![
             Index {

@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use peryx_driver::{AppState, PrometheusSource};
 use peryx_replication::{HttpPrimary, Replica, SyncOutcome, primary_router};
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
 use crate::config::{Config, ReplicationConfig};
@@ -161,7 +161,7 @@ async fn replica_health(State(monitor): State<Arc<ReplicaMonitor>>) -> Response 
 struct ReplicaLoop {
     primary: HttpPrimary,
     meta: MetaStore,
-    blobs: BlobStore,
+    blobs: BlobStorage,
     page_size: std::num::NonZeroUsize,
     poll_interval: Duration,
     monitor: Arc<ReplicaMonitor>,

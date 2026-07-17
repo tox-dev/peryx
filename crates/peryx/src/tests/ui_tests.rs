@@ -596,7 +596,7 @@ async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
 
 fn put_file(state: &peryx_driver::AppState, filename: &str, content: &[u8], core_metadata: CoreMetadata) -> Digest {
     let digest = Digest::of(content);
-    state.blobs.write_verified(content, &digest).unwrap();
+    state.blobs.blocking().put_bytes_as(content, &digest).unwrap();
     let uploaded = Uploaded {
         version: "1.0.0".to_owned(),
         file: File {
@@ -988,7 +988,7 @@ async fn test_ui_project_page_sanitizes_metadata_links() {
         "Description-Content-Type: text/markdown\n\n",
         "[guide](https://example.com/guide) [unsafe](data:text/html;base64,PHNjcmlwdD4=)\n",
     );
-    let metadata_digest = state.blobs.write(metadata.as_bytes()).unwrap();
+    let metadata_digest = state.blobs.put_bytes(metadata.as_bytes()).await.unwrap();
     put_file(
         &state,
         "veloxdemo-1.0.0-py3-none-any.whl",

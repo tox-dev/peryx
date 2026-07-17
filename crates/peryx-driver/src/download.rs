@@ -6,8 +6,7 @@
 //! live in the core serving crate and `AppState` holds the live-download registry. The ecosystem
 //! driver owns only the format-specific decision of which digest to fetch.
 
-use std::path::{Path, PathBuf};
-
+use peryx_storage::blob::BlobTail;
 use tokio::sync::watch;
 
 /// Where one in-flight blob download stands; every client tailing it watches this value.
@@ -22,21 +21,24 @@ pub struct DownloadProgress {
 /// A live download other requests for the same digest can attach to.
 #[derive(Clone, Debug)]
 pub struct DownloadHandle {
-    path: PathBuf,
+    tail: Option<BlobTail>,
     progress: watch::Receiver<DownloadProgress>,
 }
 
 impl DownloadHandle {
-    /// Register a started transfer landing in `path`, watched through `progress`.
+    /// Register a started transfer and its progress watch.
     #[must_use]
-    pub const fn new(path: PathBuf, progress: watch::Receiver<DownloadProgress>) -> Self {
-        Self { path, progress }
+    pub fn new(tail: impl Into<Option<BlobTail>>, progress: watch::Receiver<DownloadProgress>) -> Self {
+        Self {
+            tail: tail.into(),
+            progress,
+        }
     }
 
-    /// The temp file the transfer lands in until commit renames it.
+    /// Opaque access to bytes flushed by the transfer.
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub const fn tail(&self) -> Option<&BlobTail> {
+        self.tail.as_ref()
     }
 
     /// The progress watch a tailing client reads and awaits changes on.

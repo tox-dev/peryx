@@ -238,7 +238,7 @@ async fn test_blob_head_and_unsatisfiable_range() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted(&dir);
     let blob = b"0123456789";
-    let stored = state.blobs.write(blob).unwrap();
+    let stored = state.blobs.put_bytes(blob).await.unwrap();
     let digest = format!("sha256:{}", stored.as_str());
     crate::store::record_blob_membership(&state.meta, "store", "app", &digest).unwrap();
     let uri = format!("/v2/store/app/blobs/{digest}");
@@ -280,7 +280,7 @@ fn layer_etag() -> String {
 fn stored_layer(dir: &tempfile::TempDir) -> (axum::Router, String) {
     let (state, app) = hosted(dir);
     let digest = oci_digest(LAYER);
-    state.blobs.write(LAYER).unwrap();
+    state.blobs.blocking().put_bytes(LAYER).unwrap();
     crate::store::record_blob_membership(&state.meta, "store", "app", &digest).unwrap();
     (app, format!("/v2/store/app/blobs/{digest}"))
 }
@@ -490,7 +490,7 @@ async fn test_blob_suffix_and_open_ended_ranges() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted(&dir);
     let blob = b"0123456789";
-    let stored = state.blobs.write(blob).unwrap();
+    let stored = state.blobs.put_bytes(blob).await.unwrap();
     let digest = format!("sha256:{}", stored.as_str());
     crate::store::record_blob_membership(&state.meta, "store", "app", &digest).unwrap();
     let uri = format!("/v2/store/app/blobs/{digest}");
@@ -565,7 +565,7 @@ async fn test_blob_range_that_is_not_a_range_serves_the_whole_blob() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted(&dir);
     let blob = b"0123456789";
-    let stored = state.blobs.write(blob).unwrap();
+    let stored = state.blobs.put_bytes(blob).await.unwrap();
     let digest = format!("sha256:{}", stored.as_str());
     crate::store::record_blob_membership(&state.meta, "store", "app", &digest).unwrap();
     let uri = format!("/v2/store/app/blobs/{digest}");

@@ -282,7 +282,7 @@ fn cache_error_message(err: &CacheError, context: CacheContext<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use peryx_storage::blob::BlobError;
+    use peryx_storage::blob::{BlobError, Digest};
     use peryx_storage::meta::MetaError;
 
     use super::*;
@@ -296,7 +296,7 @@ mod tests {
         );
         assert_eq!(
             cache_error_status(
-                &CacheError::Blob(BlobError::NotFound("sha256:abc".to_owned())),
+                &CacheError::Blob(BlobError::not_found(&Digest::of(b"missing"))),
                 &context
             ),
             StatusCode::INTERNAL_SERVER_ERROR

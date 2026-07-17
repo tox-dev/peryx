@@ -64,8 +64,13 @@ pub async fn metadata_bytes(
     }
     if let Some((url, metadata_hex, source)) = state.meta.get_metadata(artifact_digest.as_str())? {
         let metadata_digest = Digest::from_hex(&metadata_hex).ok_or(CacheError::FileNotFound)?;
-        if state.blobs.exists(&metadata_digest) {
-            return Ok(Bytes::from(state.blobs.read(&metadata_digest)?));
+        if state.blobs.head(&metadata_digest).await?.is_some() {
+            return Ok(Bytes::from(
+                state
+                    .blobs
+                    .read_bytes(&metadata_digest, crate::archive::MAX_WHEEL_METADATA_BYTES)
+                    .await?,
+            ));
         }
         if url != GENERATED_METADATA_URL {
             let upstream = state
@@ -80,7 +85,7 @@ pub async fn metadata_bytes(
                 }
                 Err(err) => return Err(err),
             };
-            state.blobs.write_verified(&bytes, &metadata_digest)?;
+            state.blobs.put_bytes_as(&bytes, &metadata_digest).await?;
             return Ok(bytes);
         }
     }
@@ -94,7 +99,7 @@ async fn write_generated_metadata(
     artifact_filename: &str,
 ) -> Result<Bytes, CacheError> {
     let (bytes, source) = generated_metadata_bytes(state, artifact_digest, route, artifact_filename).await?;
-    let metadata_digest = state.blobs.write(&bytes)?;
+    let metadata_digest = state.blobs.put_bytes(&bytes).await?;
     let source = source.unwrap_or_else(|| GENERATED_METADATA_URL.to_owned());
     let artifact_sha256 = artifact_digest.as_str();
     let metadata_sha256 = metadata_digest.as_str();
@@ -114,9 +119,9 @@ async fn generated_metadata_bytes(
     filename: &str,
 ) -> Result<(Vec<u8>, Option<String>), CacheError> {
     let source = state.meta.get_file_url(artifact_digest.as_str())?;
-    if state.blobs.exists(artifact_digest) {
-        let metadata = metadata_from_artifact_path(filename, &state.blobs.path_for(artifact_digest))?
-            .ok_or(CacheError::FileNotFound)?;
+    if state.blobs.head(artifact_digest).await?.is_some() {
+        let lease = state.blobs.materialize(artifact_digest).await?;
+        let metadata = metadata_from_artifact_path(filename, lease.path())?.ok_or(CacheError::FileNotFound)?;
         return Ok((metadata, source.map(|source| source.source)));
     }
     let Some(source) = source else {
@@ -135,7 +140,7 @@ async fn generated_metadata_bytes(
         filename.to_owned(),
     )
     .await?;
-    let metadata = metadata_from_artifact_path(filename, &path)?.ok_or(CacheError::FileNotFound)?;
+    let metadata = metadata_from_artifact_path(filename, path.path())?.ok_or(CacheError::FileNotFound)?;
     Ok((metadata, Some(source.source)))
 }
 
@@ -371,7 +376,7 @@ mod tests {
     async fn test_metadata_bytes_regenerates_missing_generated_blob() {
         let (_dir, state) = test_state();
         let wheel = test_wheel(b"Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n");
-        let digest = state.blobs.write(&wheel).unwrap();
+        let digest = state.blobs.put_bytes(&wheel).await.unwrap();
         state
             .meta
             .put_metadata(
@@ -404,7 +409,7 @@ mod tests {
             )
             .unwrap();
         let wheel = test_wheel(b"Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n");
-        let digest = state.blobs.write(&wheel).unwrap();
+        let digest = state.blobs.put_bytes(&wheel).await.unwrap();
 
         run_metadata_backfill_candidates(
             state.clone(),

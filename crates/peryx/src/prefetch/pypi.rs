@@ -167,7 +167,7 @@ pub(super) async fn pypi_verify(
                 digest_hex: &file.digest,
                 url: &file.url,
             };
-            problems += verify_blob(out, state, &target, project, check)?;
+            problems += verify_blob(out, state, &target, project, check).await?;
             if let Some(metadata) = &file.metadata {
                 let metadata_filename = format!("{}.metadata", file.filename);
                 let check = BlobCheck {
@@ -176,7 +176,7 @@ pub(super) async fn pypi_verify(
                     digest_hex: &metadata.digest,
                     url: &metadata.url,
                 };
-                problems += verify_blob(out, state, &target, project, check)?;
+                problems += verify_blob(out, state, &target, project, check).await?;
             }
         }
     }
@@ -279,8 +279,8 @@ async fn sync_file(
     file: &PrefetchFile,
 ) -> Result<SyncOutcome, peryx_ecosystem_pypi::cache::CacheError> {
     let digest = Digest::from_hex(&file.digest).ok_or(peryx_ecosystem_pypi::cache::CacheError::FileNotFound)?;
-    if state.blobs.exists(&digest) {
-        return Ok(SyncOutcome::Cached(blob_size(&state, &digest)));
+    if state.blobs.head(&digest).await?.is_some() {
+        return Ok(SyncOutcome::Cached(blob_size(&state, &digest).await));
     }
     let path = peryx_ecosystem_pypi::cache::file_path(
         state.serving.clone(),
@@ -290,7 +290,10 @@ async fn sync_file(
     )
     .await?;
     Ok(SyncOutcome::Downloaded(
-        path.metadata().map(|metadata| metadata.len()).unwrap_or_default(),
+        path.path()
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default(),
     ))
 }
 
@@ -303,8 +306,8 @@ async fn sync_metadata(
 ) -> Result<SyncOutcome, peryx_ecosystem_pypi::cache::CacheError> {
     let artifact = Digest::from_hex(artifact_digest).ok_or(peryx_ecosystem_pypi::cache::CacheError::FileNotFound)?;
     let metadata = Digest::from_hex(metadata_digest).ok_or(peryx_ecosystem_pypi::cache::CacheError::FileNotFound)?;
-    if state.blobs.exists(&metadata) {
-        return Ok(SyncOutcome::Cached(blob_size(state, &metadata)));
+    if state.blobs.head(&metadata).await?.is_some() {
+        return Ok(SyncOutcome::Cached(blob_size(state, &metadata).await));
     }
     Ok(SyncOutcome::Downloaded(
         peryx_ecosystem_pypi::cache::metadata_bytes(&state.serving, &artifact, route, metadata_filename)
@@ -313,7 +316,7 @@ async fn sync_metadata(
     ))
 }
 
-fn verify_blob(
+async fn verify_blob(
     out: &mut Output,
     state: &Arc<AppState>,
     target: &Target,
@@ -332,7 +335,7 @@ fn verify_blob(
         write_row(out, row)?;
         return Ok(1);
     };
-    if !state.blobs.exists(&digest) {
+    if state.blobs.head(&digest).await?.is_none() {
         let row = Row::check(
             &target.index,
             project,
@@ -344,7 +347,7 @@ fn verify_blob(
         write_row(out, row)?;
         return Ok(1);
     }
-    match state.blobs.verify(&digest) {
+    match state.blobs.verify(&digest).await {
         Ok(true) => Ok(0),
         Ok(false) => {
             let row = Row::check(

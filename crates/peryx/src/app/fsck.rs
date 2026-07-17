@@ -17,7 +17,8 @@ pub(super) fn fsck_cache(stores: &CacheStores, out: &mut dyn Write) -> anyhow::R
     }
     stores
         .blobs
-        .scan(|entry| {
+        .blocking()
+        .visit(|entry| {
             problems += check_blob(stores, &entry, out)?;
             Ok::<(), std::io::Error>(())
         })
@@ -39,7 +40,7 @@ fn check_blob(stores: &CacheStores, entry: &BlobEntry, out: &mut dyn Write) -> s
         )?;
         return Ok(1);
     };
-    match stores.blobs.verify(digest) {
+    match stores.blobs.blocking().verify(digest) {
         Ok(true) => Ok(0),
         Ok(false) => {
             writeln!(out, "blob\thash\t{}\tdigest mismatch", digest.as_str())?;

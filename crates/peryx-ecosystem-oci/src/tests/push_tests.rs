@@ -89,7 +89,10 @@ async fn test_monolithic_upload() {
     assert!(
         state
             .blobs
-            .exists(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap())
+            .head(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap())
+            .await
+            .unwrap()
+            .is_some()
     );
 }
 
@@ -497,7 +500,8 @@ async fn test_blob_delete_clears_a_link_whose_bytes_are_missing() {
     let digest = upload_blob(&app, "store/app", b"lost-bytes").await;
     state
         .blobs
-        .remove(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap())
+        .delete(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap())
+        .await
         .unwrap();
 
     let (first_status, _, _) = send_body(
@@ -827,6 +831,23 @@ async fn test_manifest_push_rejects_missing_referenced_blob() {
     assert!(body_has_code(&body, "MANIFEST_BLOB_UNKNOWN"), "{body:?}");
 }
 
+#[tokio::test]
+async fn test_manifest_push_rejects_an_unsupported_blob_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let manifest = br#"{"schemaVersion":2,"config":{"digest":"md5:00112233445566778899aabbccddeeff"},"layers":[]}"#;
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "MANIFEST_BLOB_UNKNOWN"), "{body:?}");
+}
+
 #[rstest]
 #[case::same_repository("store/app", StatusCode::CREATED, None)]
 #[case::other_repository("store/other", StatusCode::BAD_REQUEST, Some("MANIFEST_BLOB_UNKNOWN"))]
@@ -1086,7 +1107,7 @@ async fn test_blob_delete_retains_a_referenced_blob() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     // Retained: a manifest still references it, so the shared blob is not unlinked.
-    assert!(state.blobs.exists(&layer));
+    assert!(state.blobs.head(&layer).await.unwrap().is_some());
 }
 
 #[tokio::test]
@@ -1118,7 +1139,10 @@ async fn test_blob_delete_removes_only_the_target_repository_link() {
             got.as_ref(),
             state
                 .blobs
-                .exists(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap()),
+                .head(&Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap())
+                .await
+                .unwrap()
+                .is_some(),
         ),
         (
             StatusCode::OK,
@@ -1268,6 +1292,31 @@ async fn test_background_sweep_removes_an_abandoned_upload_file() {
         .await;
 
     assert_eq!(reclaimed, 1);
+    assert!(!staged.exists());
+}
+
+#[tokio::test]
+async fn test_cancel_removes_the_upload_file_before_responding() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let location = start_session(&app, "store/app", TOKEN).await;
+    let staged = std::fs::read_dir(dir.path().join("blobs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::DELETE,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(!staged.exists());
 }
 

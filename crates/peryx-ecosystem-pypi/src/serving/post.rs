@@ -159,7 +159,7 @@ async fn accept_upload(
         emit_upload_status_event(&audit, &block);
         return block.response;
     }
-    upload_store_response(state, &audit, cache::store_upload(state, &hosted.name, prepared))
+    upload_store_response(state, &audit, cache::store_upload(state, &hosted.name, prepared).await)
 }
 
 fn upload_policy_response(

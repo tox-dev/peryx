@@ -100,7 +100,7 @@ async fn test_broken_upstream_transfer_forwards_the_error() {
         saw_error |= item.is_err();
     }
     assert!(saw_error);
-    assert!(!h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_none());
 }
 #[tokio::test]
 async fn test_buffered_fetch_registers_metadata_siblings() {
@@ -331,7 +331,8 @@ async fn test_project_page_reads_metadata_from_the_default_release(
     for (index, (release, ..)) in files.iter().enumerate() {
         h.state
             .blobs
-            .write(release_metadata(index, release).as_bytes())
+            .put_bytes(release_metadata(index, release).as_bytes())
+            .await
             .unwrap();
     }
     let (_, meta) = crate::serving::PypiServing
@@ -446,7 +447,7 @@ async fn test_project_page_marks_cached_and_remote_only_files() {
     use peryx_driver::serving::EcosystemDriver as _;
 
     let h = harness().await;
-    let cached = h.state.blobs.write(b"cached wheel bytes").unwrap();
+    let cached = h.state.blobs.put_bytes(b"cached wheel bytes").await.unwrap();
     let page = crate::to_json(&serde_json::json!({
         "meta": {"api-version": "1.1"},
         "name": "flask",
@@ -484,6 +485,39 @@ async fn test_project_page_marks_cached_and_remote_only_files() {
     assert_eq!(availability("flask-2.0-py3-none-any.whl"), UiAvailability::RemoteOnly);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_project_page_reports_a_blob_presence_error() {
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let h = harness().await;
+    let digest = Digest::of(b"loop");
+    let page = crate::to_json(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "flask",
+        "versions": ["1.0"],
+        "files": [{
+            "filename": "flask-1.0-py3-none-any.whl",
+            "url": "https://files.example/flask-1.0-py3-none-any.whl",
+            "hashes": {"sha256": digest.as_str()},
+        }],
+    }));
+    mount_json_page(&h.server, &page).await;
+    let hex = digest.as_str();
+    let path = h
+        .dir
+        .path()
+        .join(format!("blobs/sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+
+    let error = crate::serving::PypiServing
+        .project_page(h.state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("blob availability: filesystem blob backend head"));
+}
+
 #[tokio::test]
 async fn test_project_page_marks_a_hosted_upload_over_its_cached_blob() {
     use peryx_core::UiAvailability;
@@ -492,7 +526,7 @@ async fn test_project_page_marks_a_hosted_upload_over_its_cached_blob() {
     let h = harness().await;
     let filename = "flask-1.0-py3-none-any.whl";
     // The blob is present, so a name-blind check would read `Cached`; the hosted upload must win.
-    let digest = h.state.blobs.write(b"hosted wheel bytes").unwrap();
+    let digest = h.state.blobs.put_bytes(b"hosted wheel bytes").await.unwrap();
     let uploaded = serde_json::json!({
         "version": "1.0",
         "file": {

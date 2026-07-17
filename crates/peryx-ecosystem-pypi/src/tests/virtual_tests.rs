@@ -12,7 +12,7 @@ use peryx_driver::state::AppState;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
 use wiremock::matchers::{method, path};
@@ -121,7 +121,7 @@ fn assert_upload_shadows_upstream(detail: &str, hosted: &Digest) {
 
 fn state_for(server: &MockServer, dir: &tempfile::TempDir, cached_policy: Policy) -> Arc<AppState> {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     super::wired(AppState::new(
         meta,

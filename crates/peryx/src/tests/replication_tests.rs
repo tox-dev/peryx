@@ -201,7 +201,7 @@ async fn test_replica_runtime_copies_primary_blobs() {
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
 
     assert_eq!(runtime.sync_cycle().await, Some(true));
-    assert_eq!(state.blobs.read(&digest).unwrap(), b"artifact");
+    assert_eq!(state.blobs.read_bytes(&digest, 8).await.unwrap(), b"artifact");
 }
 
 #[tokio::test]
@@ -246,7 +246,7 @@ async fn test_replica_runtime_forwards_blobs_to_a_follower() {
             .await,
         Some(true)
     );
-    assert_eq!(follower_state.blobs.read(&digest).unwrap(), b"artifact");
+    assert_eq!(follower_state.blobs.read_bytes(&digest, 8).await.unwrap(), b"artifact");
 }
 
 #[tokio::test]

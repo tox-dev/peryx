@@ -62,7 +62,7 @@ async fn test_put_suffix_inside_segment_is_not_an_action() {
 async fn test_longest_prefix_wins() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     // Routes "a" and "a/b" both prefix "a/b/simple/"; the longer must win.
     let indexes = vec![
         Index {

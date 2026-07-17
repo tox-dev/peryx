@@ -5,7 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{Context as _, bail};
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 
 use super::snapshot::config_snapshot;
@@ -36,7 +36,7 @@ pub fn backup_create(config: &Config, path: &Path, out: &mut dyn Write) -> anyho
     )
     .context(metadata_context)?;
 
-    let source_blobs = BlobStore::new(config.data_dir.join("blobs"));
+    let source_blobs = BlobStorage::filesystem(config.data_dir.join("blobs"));
     let mut blob_count = 0_u64;
     let mut blob_bytes = 0_u64;
     {
@@ -45,16 +45,12 @@ pub fn backup_create(config: &Config, path: &Path, out: &mut dyn Write) -> anyho
         writeln!(index, "{BLOB_INDEX_HEADER}")?;
         for digest in crate::app::referenced_blob_digests(&meta).context("scan metadata blob references")? {
             let digest = Digest::from_hex(&digest).context("metadata scan returned an invalid digest")?;
-            let source = source_blobs.path_for(&digest);
-            if !source.is_file() {
-                bail!(
-                    "referenced blob {} is missing from {}",
-                    digest.as_str(),
-                    source.display()
-                );
-            }
+            let source = source_blobs
+                .blocking()
+                .materialize(&digest)
+                .with_context(|| format!("referenced blob {} is missing", digest.as_str()))?;
             let backup_path = backup_blob_path(path, &digest);
-            let copied = copy_hashed(&source, &backup_path, &backup_blob_relpath(&digest))
+            let copied = copy_hashed(source.path(), &backup_path, &backup_blob_relpath(&digest))
                 .context(format!("copy referenced blob {}", digest.as_str()))?;
             if copied.sha256 != digest.as_str() {
                 bail!(

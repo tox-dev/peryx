@@ -20,7 +20,7 @@ fn commit_placement(persisted: Result<(), std::io::Error>, dest: &Path) -> Resul
             Ok(())
         }
         Err(_) if dest.is_file() => Ok(()),
-        Err(err) => Err(BlobError::Io(err)),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -28,9 +28,9 @@ fn commit_placement(persisted: Result<(), std::io::Error>, dest: &Path) -> Resul
 /// filesystem whether the path is a file beforehand only re-walks the same directories.
 fn absent_or_io(err: std::io::Error, digest: &Digest) -> BlobError {
     if err.kind() == std::io::ErrorKind::NotFound {
-        return BlobError::NotFound(digest.as_str().to_owned());
+        return BlobError::not_found(digest);
     }
-    BlobError::Io(err)
+    err.into()
 }
 
 /// A file found while walking the content-addressed blob tree.
@@ -45,13 +45,25 @@ pub struct BlobEntry {
 #[derive(Debug, Clone)]
 pub struct BlobStore {
     root: PathBuf,
+    workers: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl BlobStore {
     /// Create a store rooted at `root`. The directory is created lazily on first write.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            workers: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
+        }
+    }
+
+    pub(crate) async fn worker_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.workers
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the private blob worker semaphore is never closed")
     }
 
     /// The on-disk path a digest maps to.
@@ -59,6 +71,10 @@ impl BlobStore {
     pub fn path_for(&self, digest: &Digest) -> PathBuf {
         let hex = digest.as_str();
         self.root.join("sha256").join(&hex[0..2]).join(&hex[2..4]).join(hex)
+    }
+
+    pub(crate) fn lease_dir(&self) -> PathBuf {
+        self.root.join(".leases")
     }
 
     /// Whether the blob is present.
@@ -74,6 +90,38 @@ impl BlobStore {
     pub fn health_check(&self) -> Result<(), BlobError> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::read_dir(&self.root)?;
+        self.cleanup_leases()?;
+        Ok(())
+    }
+
+    fn cleanup_leases(&self) -> Result<(), BlobError> {
+        let lease_dir = self.lease_dir();
+        if !lease_dir.is_dir() {
+            return Ok(());
+        }
+        let coordination = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(lease_dir.join(".cleanup.lock"))?;
+        fs4::fs_std::FileExt::lock_exclusive(&coordination)?;
+        for entry in std::fs::read_dir(lease_dir)? {
+            let entry = entry?;
+            if !entry.file_name().to_string_lossy().starts_with(".peryx-lease-") {
+                continue;
+            }
+            let file = match std::fs::File::open(entry.path()) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if fs4::fs_std::FileExt::try_lock_exclusive(&file)? {
+                fs4::fs_std::FileExt::unlock(&file)?;
+                drop(file);
+                std::fs::remove_file(entry.path())?;
+            }
+        }
         Ok(())
     }
 
@@ -105,10 +153,7 @@ impl BlobStore {
     pub fn write_verified(&self, bytes: &[u8], expected: &Digest) -> Result<(), BlobError> {
         let actual = Digest::of(bytes);
         if &actual != expected {
-            return Err(BlobError::DigestMismatch {
-                expected: expected.as_str().to_owned(),
-                actual: actual.0,
-            });
+            return Err(BlobError::digest_mismatch(expected, &actual));
         }
         self.write(bytes)?;
         Ok(())
@@ -129,10 +174,13 @@ impl BlobStore {
     /// Returns [`BlobError::Io`] if the path exists but its metadata cannot be read.
     pub fn head(&self, digest: &Digest) -> Result<Option<BlobMetadata>, BlobError> {
         match std::fs::metadata(self.path_for(digest)) {
-            Ok(metadata) if metadata.is_file() => Ok(Some(BlobMetadata { bytes: metadata.len() })),
+            Ok(metadata) if metadata.is_file() => Ok(Some(BlobMetadata {
+                bytes: metadata.len(),
+                modified: metadata.modified().ok(),
+            })),
             Ok(_) => Ok(None),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(BlobError::Io(err)),
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -144,12 +192,7 @@ impl BlobStore {
     pub fn read_range(&self, digest: &Digest, range: Range<u64>) -> Result<Vec<u8>, BlobError> {
         let mut file = std::fs::File::open(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))?;
         let bytes = file.metadata()?.len();
-        let invalid = || BlobError::InvalidRange {
-            digest: digest.as_str().to_owned(),
-            start: range.start,
-            end: range.end,
-            bytes,
-        };
+        let invalid = || BlobError::invalid_range(range.start, range.end, bytes);
         if range.start > range.end || range.end > bytes {
             return Err(invalid());
         }
@@ -220,7 +263,7 @@ impl BlobStore {
         match std::fs::remove_file(self.path_for(digest)) {
             Ok(()) => Ok(true),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(BlobError::Io(err)),
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -321,16 +364,23 @@ impl BlobStore {
     pub fn commit(&self, pending: PendingBlob, expected: &Digest) -> Result<(), BlobError> {
         let staged = pending.finish()?;
         if staged.digest() != expected {
-            return Err(BlobError::DigestMismatch {
-                expected: expected.as_str().to_owned(),
-                actual: staged.digest().as_str().to_owned(),
-            });
+            return Err(BlobError::digest_mismatch(expected, staged.digest()));
         }
         self.commit_staged(staged)
     }
 }
 
 impl PendingBlob {
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Append one chunk.
     ///
     /// # Errors
@@ -372,6 +422,13 @@ impl PendingBlob {
             len: self.len,
         })
     }
+
+    pub(crate) fn abort(self) -> Result<(), BlobError> {
+        let (file, _) = self.file.into_parts();
+        drop(file);
+        self.path.close()?;
+        Ok(())
+    }
 }
 
 impl StagedBlob {
@@ -398,13 +455,16 @@ impl StagedBlob {
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    pub(crate) fn abort(self) -> Result<(), BlobError> {
+        self.path.close()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod placement_tests {
     use super::commit_placement;
-    use crate::blob::error::BlobError;
-
     #[test]
     fn test_commit_placement_succeeds_on_a_clean_move() {
         let dir = tempfile::tempdir().unwrap();
@@ -427,6 +487,9 @@ mod placement_tests {
         let dir = tempfile::tempdir().unwrap();
         let absent = dir.path().join("nothing-here");
         let failure = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        assert!(matches!(commit_placement(Err(failure), &absent), Err(BlobError::Io(_))));
+        assert_eq!(
+            commit_placement(Err(failure), &absent).unwrap_err().kind(),
+            crate::blob::BlobErrorKind::Io
+        );
     }
 }

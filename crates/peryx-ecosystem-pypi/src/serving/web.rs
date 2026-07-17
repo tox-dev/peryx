@@ -7,7 +7,7 @@ use std::sync::Arc;
 use peryx_core::{UiAvailability, UiMeta, UiProject};
 use peryx_driver::ServingState;
 use peryx_index::{Index, IndexKind};
-use peryx_storage::blob::Digest;
+use peryx_storage::blob::{BlobLease, Digest};
 
 use crate::cache::{self, CacheError};
 use crate::store::PypiStore as _;
@@ -45,7 +45,7 @@ pub(super) async fn project_page(
     // `to_json` serializes the detail, so parsing it straight back cannot fail.
     let value = serde_json::from_str(&to_json(&detail)).expect("to_json emits JSON that round-trips");
     let mut ui = ui_project_from_detail(&value);
-    apply_availability(&state, &hosted, &mut ui);
+    apply_availability(&state, &hosted, &mut ui).await?;
     let default = default_version(&ui);
     // A pre-PEP 700 upstream names no versions, so no release owns a file and the newest sibling stands in.
     let sibling = match default.as_deref() {
@@ -104,7 +104,20 @@ fn collect_hosted_filenames(
 /// when the blob is in local storage, else `RemoteOnly`. This is the axis the page badges and its
 /// `Local only` filter cut on. Hosted outranks cached because a hosted upload shadows a same-named
 /// upstream file, the dependency-confusion order [`cache::resolve_detail`] merged the page by.
-fn apply_availability(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiProject) {
+async fn apply_availability(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiProject) -> Result<(), String> {
+    let present = match state
+        .blobs
+        .present(
+            ui.files
+                .iter()
+                .filter_map(|file| Digest::from_hex(&file.sha256))
+                .collect(),
+        )
+        .await
+    {
+        Ok(present) => present,
+        Err(error) => return Err(format!("blob availability: {error}")),
+    };
     for file in &mut ui.files {
         let hosted = hosted.contains(&file.filename);
         let source = if hosted {
@@ -115,12 +128,13 @@ fn apply_availability(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut 
         file.upstream = source.as_ref().and_then(|source| source.upstream.clone());
         file.availability = if hosted {
             UiAvailability::Hosted
-        } else if Digest::from_hex(&file.sha256).is_some_and(|digest| state.blobs.exists(&digest)) {
+        } else if Digest::from_hex(&file.sha256).is_some_and(|digest| present.contains(&digest)) {
             UiAvailability::Cached
         } else {
             UiAvailability::RemoteOnly
         };
     }
+    Ok(())
 }
 
 /// The release the project page defaults to. An active release (one the publisher has not yanked
@@ -183,7 +197,7 @@ pub(super) async fn artifact_path(
     position: usize,
     digest_hex: String,
     filename: String,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<BlobLease, String> {
     let route = state.index_at(position).route.clone();
     let Some(digest) = Digest::from_hex(&digest_hex) else {
         return Err(format!(

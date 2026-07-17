@@ -360,7 +360,9 @@ mod tests {
         ));
         assert!(matches!(CacheError::from(err), CacheError::Meta(_)));
 
-        let err = upload::UploadStoreError::Blob(peryx_storage::blob::BlobError::NotFound("sha256:abc".to_owned()));
+        let err = upload::UploadStoreError::Blob(peryx_storage::blob::BlobError::not_found(
+            &peryx_storage::blob::Digest::of(b"missing"),
+        ));
         assert!(matches!(CacheError::from(err), CacheError::Blob(_)));
     }
 }

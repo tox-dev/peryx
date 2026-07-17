@@ -146,19 +146,24 @@ impl Upstream {
     }
 
     /// Check a blob's existence and size with a `HEAD`, so a client's pre-flight `HEAD` need not pull
-    /// the whole layer. Returns the `Content-Length`, or `0` when the upstream omits it.
+    /// the whole layer. Returns the `Content-Length` when the upstream provides one.
     ///
     /// # Errors
     /// Returns [`UpstreamError`] on a non-success status (a `404` means absent) or a transport failure.
-    pub async fn blob_head(&self, base: &str, auth: &Auth, repo: &str, digest: &str) -> Result<u64, UpstreamError> {
+    pub async fn blob_head(
+        &self,
+        base: &str,
+        auth: &Auth,
+        repo: &str,
+        digest: &str,
+    ) -> Result<Option<u64>, UpstreamError> {
         let url = format!("{base}v2/{repo}/blobs/{digest}");
         let response = self.send(Method::HEAD, base, auth, &url, repo, None).await?;
         Ok(response
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0))
+            .and_then(|value| value.parse().ok()))
     }
 
     /// Fetch the referrers index for `repo`/`digest`: the manifests upstream records as declaring the

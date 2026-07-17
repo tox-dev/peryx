@@ -252,7 +252,7 @@ async fn test_ranged_download_counts_only_the_transmitted_bytes() {
     let harness = harness().await;
     let wheel = b"wheelcontent";
     let digest = Digest::of(wheel);
-    harness.state.blobs.write_verified(wheel, &digest).unwrap();
+    harness.state.blobs.put_bytes_as(wheel, &digest).await.unwrap();
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, ..) = get_bytes_with_headers(&harness.state, &uri, &[("range", "bytes=2-5")]).await;

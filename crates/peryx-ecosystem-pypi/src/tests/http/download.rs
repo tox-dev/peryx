@@ -84,7 +84,7 @@ async fn test_routed_file_download_verifies_the_advertising_source(#[case] artif
     let body = response.into_body().collect().await;
     if valid {
         assert_eq!(body.unwrap().to_bytes(), wheel.as_slice());
-        assert!(state.blobs.exists(&digest));
+        assert!(state.blobs.head(&digest).await.unwrap().is_some());
     } else {
         assert!(body.is_err());
         for _ in 0..500 {
@@ -93,7 +93,7 @@ async fn test_routed_file_download_verifies_the_advertising_source(#[case] artif
             }
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
-        assert!(!state.blobs.exists(&digest));
+        assert!(state.blobs.head(&digest).await.unwrap().is_none());
         assert!(state.metrics.index_totals()["pypi"].base.rejected >= 1);
     }
     artifact_server.verify().await;
@@ -149,10 +149,10 @@ async fn test_artifact_mirror_honors_repository_fallback(
     assert_eq!(status, expected_status);
     if fallback {
         assert_eq!(body, "wheelcontent");
-        assert!(state.blobs.exists(&digest));
+        assert!(state.blobs.head(&digest).await.unwrap().is_some());
     } else {
         assert!(body.contains("upstream returned 404 Not Found"));
-        assert!(!state.blobs.exists(&digest));
+        assert!(state.blobs.head(&digest).await.unwrap().is_none());
     }
 }
 #[tokio::test]
@@ -197,7 +197,7 @@ async fn test_file_download_status_store_error_is_server_error() {
     MetaStore::open(&db_path).unwrap();
     put_raw_project_status(&db_path, "pypi/flask", b"not json");
     let meta = MetaStore::open(&db_path).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
     let indexes = vec![Index {
         name: "pypi".to_owned(),
@@ -295,14 +295,14 @@ async fn test_file_digest_mismatch_fails_the_body_and_never_persists() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    assert!(!h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_none());
     assert_eq!(h.state.metrics.index_totals()["pypi"].base.rejected, 1);
 }
 const WHEEL: &[u8] = b"wheelcontent";
 
 fn cached_wheel_uri(h: &Harness) -> String {
     let digest = Digest::of(WHEEL);
-    h.state.blobs.write_verified(WHEEL, &digest).unwrap();
+    h.state.blobs.blocking().put_bytes_as(WHEEL, &digest).unwrap();
     format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str())
 }
 
@@ -466,7 +466,7 @@ async fn test_matching_if_none_match_never_fetches_an_uncached_artifact() {
     assert_eq!(status, StatusCode::NOT_MODIFIED);
     assert_eq!(headers[header::ETAG], wheel_etag());
     assert!(body.is_empty());
-    assert!(!h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_none());
 }
 async fn wheel_last_modified(h: &Harness, uri: &str) -> String {
     let (_, headers, _) = get_bytes(&h.state, uri, None).await;
@@ -691,7 +691,7 @@ async fn test_head_of_an_uncached_file_on_an_offline_mirror_is_unavailable() {
     }];
     let state = crate::tests::wired(AppState::new(
         meta,
-        BlobStore::new(dir.path().join("blobs")),
+        BlobStorage::filesystem(dir.path().join("blobs")),
         60,
         indexes,
     ));
@@ -712,7 +712,7 @@ async fn test_head_of_an_uncached_file_never_fetches_the_artifact() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(body.is_empty());
-    assert!(!h.state.blobs.exists(&Digest::of(WHEEL)));
+    assert!(h.state.blobs.head(&Digest::of(WHEEL)).await.unwrap().is_none());
 }
 #[tokio::test]
 async fn test_head_of_an_uncached_file_carries_the_headers_of_its_download() {

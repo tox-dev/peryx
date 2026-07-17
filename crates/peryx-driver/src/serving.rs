@@ -181,7 +181,7 @@ pub trait EcosystemDriver: Send + Sync {
     fn fsck_metadata(
         &self,
         _meta: &peryx_storage::meta::MetaStore,
-        _blobs: &peryx_storage::blob::BlobStore,
+        _blobs: &peryx_storage::blob::BlobStorage,
         _out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
         Ok(0)
@@ -277,7 +277,7 @@ pub trait EcosystemDriver: Send + Sync {
     fn import_dir(
         &self,
         _meta: &peryx_storage::meta::MetaStore,
-        _blobs: &peryx_storage::blob::BlobStore,
+        _blobs: &peryx_storage::blob::BlobStorage,
         _target_name: &str,
         _target_route: &str,
         _dir: &std::path::Path,
@@ -399,9 +399,8 @@ pub trait EcosystemDriver: Send + Sync {
         Ok(UiMemberChunk::default())
     }
 
-    /// Ensure the artifact `digest_hex`/`filename` on the index at `position` is present locally,
-    /// fetching it through the proxy on a miss, and return its path in the blob store. The web archive
-    /// browser reads members from this path with the neutral archive engine. Default: unsupported.
+    /// Return a seekable artifact, fetching or materializing it when needed. The returned lease
+    /// keeps the local representation alive while the archive engine reads it. Default: unsupported.
     ///
     /// # Errors
     /// Returns a user-visible message when the artifact cannot be found or fetched.
@@ -411,7 +410,7 @@ pub trait EcosystemDriver: Send + Sync {
         _position: usize,
         _digest_hex: String,
         _filename: String,
-    ) -> Result<std::path::PathBuf, String> {
+    ) -> Result<peryx_storage::blob::BlobLease, String> {
         Err("this ecosystem does not serve artifact files".to_owned())
     }
 

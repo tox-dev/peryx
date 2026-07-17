@@ -9,7 +9,7 @@ use std::io::Write;
 use peryx_driver::serving::{CachePage, PurgeReport};
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 
 use crate::store::CachedIndex;
@@ -336,7 +336,7 @@ fn add_index_refs(refs: &mut CacheRefs, record: &CachedIndex) -> Result<(), Stri
 ///
 /// # Errors
 /// Returns a message when the store cannot be read or `out` cannot be written.
-pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStore, out: &mut dyn Write) -> Result<u64, String> {
+pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write) -> Result<u64, String> {
     let mut problems = 0_u64;
     meta.scan_index_records(|key, bytes| {
         match CachedIndex::decode(bytes) {
@@ -392,7 +392,7 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStore, out: &mut dyn Write) -
             return Ok(());
         }
         for digest in digests {
-            if !blobs.exists(&digest) {
+            if blobs.blocking().head(&digest).map_err(std::io::Error::other)?.is_none() {
                 problems += 1;
                 writeln!(out, "metadata\tupload\t{key}\tmissing blob {}", digest.as_str())?;
             }
@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn test_fsck_metadata_reports_every_invalid_record_kind() {
         let (dir, meta) = store();
-        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let blobs = BlobStore::new(dir.path().join("blobs")).into();
         meta.put_driver_value("pypi\u{0}i\u{0}pypi/flask", b"garbage").unwrap();
         meta.put_driver_value("pypi\u{0}f\u{0}not-hex", b"u\npypi").unwrap();
         meta.put_driver_value("pypi\u{0}d\u{0}not-hex", b"u\nm\npypi").unwrap();

@@ -4,7 +4,7 @@
 //! An OCI request is `/v2/<name>/(manifests|blobs|tags)/...`; `<name>` (which may contain slashes)
 //! resolves to a configured `oci`-ecosystem index by longest route prefix, the same rule peryx
 //! resolves any index route by. Blobs are `sha256`-addressed and map straight onto
-//! [`peryx_storage::blob::BlobStore`]; manifests are stored byte-for-byte so their digest is stable.
+//! [`peryx_storage::blob::BlobStorage`]; manifests are stored byte-for-byte so their digest is stable.
 
 use std::sync::Arc;
 

@@ -9,7 +9,7 @@ pub(super) use crate::store::CachedIndex;
 pub(super) use crate::store::PypiStore as _;
 pub(super) use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
 pub(super) use axum::http::StatusCode;
-pub(super) use peryx_storage::blob::{BlobStore, Digest};
+pub(super) use peryx_storage::blob::{BlobStorage, Digest};
 pub(super) use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 pub(super) use peryx_upstream::UpstreamClient;
 
@@ -51,7 +51,7 @@ pub(super) fn put_uploaded_package_with_metadata(
 ) {
     let filename = format!("{normalized}-1.0-py3-none-any.whl");
     let artifact_digest = Digest::of(filename.as_bytes());
-    let metadata_digest = state.blobs.write(metadata.as_bytes()).unwrap();
+    let metadata_digest = state.blobs.blocking().put_bytes(metadata.as_bytes()).unwrap();
     state
         .meta
         .put_metadata(artifact_digest.as_str(), "uploaded", metadata_digest.as_str(), "hosted")
@@ -100,7 +100,7 @@ pub(super) fn put_cached_package(
 pub(super) fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![
         Index {
             name: "pypi".to_owned(),

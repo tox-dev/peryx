@@ -34,7 +34,7 @@ use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_identity::{Action, Denial, Identity};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
-use peryx_storage::blob::PendingBlob;
+use peryx_storage::blob::BlobWrite;
 use peryx_storage::meta::MetaError;
 use peryx_upstream::UpstreamClient;
 use std::borrow::Cow;
@@ -172,7 +172,7 @@ impl<S: BuildHasher> BlobMembershipCache<S> {
     }
 }
 struct UploadSession {
-    pending: PendingBlob,
+    pending: BlobWrite,
     offset: u64,
     index: String,
     name: String,
@@ -368,7 +368,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
     }
 
     async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
-        uploads::reclaim_expired(&mut *self.uploads.lock().await, (state.clock)())
+        let uploads = uploads::reclaim_expired(&mut *self.uploads.lock().await, (state.clock)());
+        let reclaimed = uploads.len();
+        uploads::abort_uploads(uploads).await;
+        reclaimed
     }
 }
 
@@ -657,16 +660,6 @@ fn version_ok() -> Response {
     )
         .into_response()
 }
-/// The `Content-Length` a served blob response carries, for the downloaded-bytes counter. A full
-/// serve reports the blob size; a range serves the partial length it delivered.
-fn served_bytes(response: &Response) -> u64 {
-    response
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
-}
 /// The per-blob lock concurrent misses share so a single upstream fetch serves them all, the same
 /// single-flight coalescing every cached fetch shares. Keyed in its own namespace on the blob digest.
 fn flight_gate(state: &ServingState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -771,7 +764,7 @@ mod tests {
             StatusCode::BAD_GATEWAY
         );
         assert_eq!(
-            ServeError::Io(std::io::Error::other("disk")).into_response().status(),
+            ServeError::from(std::io::Error::other("disk")).into_response().status(),
             StatusCode::BAD_GATEWAY
         );
         assert_eq!(

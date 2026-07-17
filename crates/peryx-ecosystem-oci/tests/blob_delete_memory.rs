@@ -9,7 +9,7 @@ use peryx_driver::AppState;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use tower::ServiceExt as _;
@@ -25,7 +25,7 @@ static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 async fn test_blob_delete_uses_bounded_memory() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let index = Index {
         name: "store".to_owned(),
         route: "store".to_owned(),
@@ -48,9 +48,10 @@ async fn test_blob_delete_uses_bounded_memory() {
         .body(Body::from(bytes.as_slice()))
         .unwrap();
     assert_eq!(app.clone().oneshot(upload).await.unwrap().status(), StatusCode::CREATED);
+    let lease = state.blobs.materialize(&digest).await.unwrap();
     std::fs::OpenOptions::new()
         .write(true)
-        .open(state.blobs.path_for(&digest))
+        .open(lease.path())
         .unwrap()
         .set_len(LARGE_BLOB_BYTES)
         .unwrap();
@@ -67,7 +68,7 @@ async fn test_blob_delete_uses_bounded_memory() {
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert!(allocated < MAX_DELETE_ALLOCATION, "delete allocated {allocated} bytes");
-    assert!(state.blobs.exists(&digest));
+    assert!(state.blobs.head(&digest).await.unwrap().is_some());
 }
 
 fn authorization() -> String {

@@ -233,7 +233,7 @@ async fn test_legacy_json_unsupported_upstream_content_type_is_bad_gateway() {
 async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
     let state = crate::tests::wired(AppState::new(
         meta,

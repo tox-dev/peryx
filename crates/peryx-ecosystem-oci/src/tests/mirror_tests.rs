@@ -76,8 +76,8 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
     assert_eq!(rows.last().unwrap().kind, "summary");
     assert_eq!(rows.last().unwrap().status, "synced");
     // Both blobs are now on disk.
-    assert!(state.blobs.exists(&store_digest(config)));
-    assert!(state.blobs.exists(&store_digest(layer)));
+    assert!(state.blobs.head(&store_digest(config)).await.unwrap().is_some());
+    assert!(state.blobs.head(&store_digest(layer)).await.unwrap().is_some());
 
     // A second pass finds everything cached, touching no upstream error.
     let verify = mirror(&state.serving, &state.indexes[0], &refs, MirrorMode::Verify)
@@ -443,7 +443,130 @@ async fn test_mirror_rejects_a_corrupt_blob() {
     )
     .await
     .unwrap();
-    assert!(rows.iter().any(|row| row.reason == "digest verification failed"));
+    let reason = &rows
+        .iter()
+        .find(|row| row.kind == "blob" && row.digest == oci_digest(layer))
+        .unwrap()
+        .reason;
+    assert!(reason.contains("digest mismatch"), "{reason}");
+}
+
+#[tokio::test]
+async fn test_mirror_reports_blob_body_failures() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let config = b"{}";
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[]}}"#,
+        oci_digest(config),
+    )
+    .into_bytes();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 1024];
+        let _ = socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: {MANIFEST_TYPE}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    manifest.len(),
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.write_all(&manifest).await.unwrap();
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\nconnection: close\r\n\r\nshort")
+            .await
+            .unwrap();
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &base, false);
+    let rows = mirror(
+        &state.serving,
+        &state.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), upstream)
+        .await
+        .unwrap()
+        .unwrap();
+    let reason = &rows.iter().find(|row| row.kind == "blob").unwrap().reason;
+    assert!(reason.contains("blob body read failed"), "{reason}");
+}
+
+#[tokio::test]
+async fn test_mirror_reports_blob_store_failures() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[]}}"#,
+        oci_digest(config),
+    )
+    .into_bytes();
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    let dir = tempfile::tempdir().unwrap();
+    let blob_root = dir.path().join("blobs");
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/library/app/blobs/{}", oci_digest(config))))
+        .respond_with(move |_: &wiremock::Request| {
+            std::fs::write(&blob_root, b"not a directory").unwrap();
+            ResponseTemplate::new(200).set_body_raw(config.to_vec(), "application/octet-stream")
+        })
+        .mount(&server)
+        .await;
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let rows = mirror(
+        &state.serving,
+        &state.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+    let reason = &rows.iter().find(|row| row.kind == "blob").unwrap().reason;
+    assert!(reason.contains("blob store error"), "{reason}");
+    assert!(reason.contains("I/O error"), "{reason}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_mirror_reports_a_blob_head_failure() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let manifest = image_manifest(config, &[]);
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    let dir = tempfile::tempdir().unwrap();
+    let digest = Digest::of(config);
+    let hex = digest.as_str();
+    let path = dir
+        .path()
+        .join(format!("blobs/sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let rows = mirror(
+        &state.serving,
+        &state.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    let reason = &rows.iter().find(|row| row.kind == "blob").unwrap().reason;
+    assert!(reason.contains("filesystem blob backend head"), "{reason}");
 }
 
 #[tokio::test]

@@ -312,7 +312,7 @@ async fn test_metadata_backfill_reads_cached_wheel_blob() {
     let h = harness().await;
     let metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
     let wheel = fixture_wheel_with_metadata(metadata);
-    let digest = h.state.blobs.write(&wheel).unwrap();
+    let digest = h.state.blobs.put_bytes(&wheel).await.unwrap();
     let filename = "peryxpkg-1.0-py3-none-any.whl";
     h.state
         .meta
@@ -350,7 +350,7 @@ async fn test_metadata_backfill_downloads_when_ranges_fail() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_bytes(), metadata);
-    assert!(h.state.blobs.exists(&digest));
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_some());
 }
 #[tokio::test]
 async fn test_metadata_backfill_downloads_sdist_without_ranges() {
@@ -607,7 +607,13 @@ async fn test_metadata_digest_mismatch_is_server_error() {
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(body.contains("metadata fetch on index \"pypi\" for file \"pkg.whl.metadata\""));
-    assert!(body.contains("blob store error: digest mismatch"));
+    assert!(
+        body.contains(&format!(
+            "blob store error: filesystem blob backend commit for {}: digest mismatch",
+            metadata.as_str()
+        )),
+        "{body}"
+    );
 }
 
 fn oversized_metadata_server() -> String {

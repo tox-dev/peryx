@@ -16,13 +16,14 @@ pub async fn members(
     filename: &str,
     containers: &[String],
 ) -> Result<Vec<UiMember>, String> {
-    let path = artifact_path(route, sha256, filename).await?;
+    let lease = artifact_path(route, sha256, filename).await?;
     let archive = filename.to_owned();
     let containers = containers.to_vec();
-    let members = tokio::task::spawn_blocking(move || archive::list_members_nested_path(&archive, &path, &containers))
-        .await
-        .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?
-        .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?;
+    let members =
+        tokio::task::spawn_blocking(move || archive::list_members_nested_path(&archive, lease.path(), &containers))
+            .await
+            .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?
+            .map_err(|err| format!("archive listing on index {route:?} for file {filename:?}: {err}"))?;
     Ok(members
         .into_iter()
         .map(|member| UiMember {
@@ -46,14 +47,14 @@ pub async fn member_chunk(
     member: &str,
     offset: u64,
 ) -> Result<UiMemberChunk, String> {
-    let path = artifact_path(route, sha256, filename).await?;
+    let lease = artifact_path(route, sha256, filename).await?;
     let archive = filename.to_owned();
     let containers = containers.to_vec();
     let selected = member.to_owned();
     let chunk = tokio::task::spawn_blocking(move || {
         archive::read_text_member_chunk_nested_path(
             &archive,
-            &path,
+            lease.path(),
             &containers,
             &selected,
             offset,
@@ -75,7 +76,7 @@ pub async fn member_chunk(
 
 /// The local path of the artifact `sha256`/`filename` on the index at `route`, fetched through that
 /// index's ecosystem driver so this crate carries no format-specific fetch logic.
-async fn artifact_path(route: &str, sha256: &str, filename: &str) -> Result<std::path::PathBuf, String> {
+async fn artifact_path(route: &str, sha256: &str, filename: &str) -> Result<peryx_storage::blob::BlobLease, String> {
     let app = expect_context::<Arc<AppState>>();
     let position = app
         .indexes

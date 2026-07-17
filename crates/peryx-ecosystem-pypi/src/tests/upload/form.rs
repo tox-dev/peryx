@@ -32,7 +32,9 @@ fn test_prepare_accepts_only_md5_for_a_large_upload() {
 fn test_prepare_rejects_unreadable_content_for_declared_md5() {
     let wheel = wheel_metadata("Flask", "1.0");
     let (_dir, staged) = staged_upload(&wheel);
-    std::fs::remove_file(staged.blob.path()).unwrap();
+    staged
+        .blob
+        .with_materialized(|path| std::fs::remove_file(path).unwrap());
     let mut form = staged_form(&wheel);
     form.sha256_digest = None;
     form.md5_digest = Some(md5_hex(&wheel));

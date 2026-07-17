@@ -13,7 +13,7 @@ pub(super) use blake2::digest::{FixedOutput as _, Update as _, VariableOutput as
 pub(super) use flate2::Compression;
 pub(super) use flate2::write::GzEncoder;
 pub(super) use md5::Md5;
-pub(super) use peryx_storage::blob::{BlobStore, Digest};
+pub(super) use peryx_storage::blob::{BlobStorage, Digest};
 pub(super) use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
 pub(super) use crate::upload::{StagedUpload, UploadError, UploadForm, prepare};
@@ -41,9 +41,8 @@ pub(super) fn staged_form(bytes: &[u8]) -> UploadForm {
 
 pub(super) fn staged_upload(bytes: &[u8]) -> (tempfile::TempDir, StagedUpload) {
     let dir = tempfile::tempdir().unwrap();
-    let store = BlobStore::new(dir.path().join("blobs"));
-    let mut pending = store.begin().unwrap();
-    pending.write(bytes).unwrap();
+    let store = BlobStorage::filesystem(dir.path().join("blobs"));
+    let blob = store.blocking().stage_bytes(bytes).unwrap();
     let mut blake2 = Blake2bVar::new(32).unwrap();
     blake2.update(bytes);
     let mut digest = [0; 32];
@@ -51,7 +50,7 @@ pub(super) fn staged_upload(bytes: &[u8]) -> (tempfile::TempDir, StagedUpload) {
     (
         dir,
         StagedUpload {
-            blob: pending.finish().unwrap(),
+            blob,
             blake2_256: hex(&digest),
         },
     )

@@ -16,7 +16,7 @@ use crate::{
     MetadataError, Provenance, Yanked, is_valid_name, normalize_name, normalize_name_cow, parse_distribution_filename,
     parse_metadata, parse_version, parse_version_specifiers, to_json,
 };
-use peryx_storage::blob::{BlobError, BlobStore, Digest, StagedBlob};
+use peryx_storage::blob::{BlobError, BlobStaged, BlobStorage, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use crate::store::PypiStore as _;
@@ -77,7 +77,7 @@ pub struct UploadForm {
 /// An upload body staged on disk while the multipart stream was read.
 #[derive(Debug)]
 pub struct StagedUpload {
-    pub blob: StagedBlob,
+    pub blob: BlobStaged,
     pub blake2_256: String,
 }
 
@@ -154,10 +154,21 @@ pub struct PreparedUpload {
     pub display_name: String,
     pub filename: String,
     pub digest: Digest,
-    pub content: StagedBlob,
+    pub content: BlobStaged,
     pub metadata: Vec<u8>,
     pub record: Uploaded,
     pub submitted_at_unix: i64,
+}
+
+struct PreparedRecord {
+    normalized: String,
+    display_name: String,
+    filename: String,
+    digest: Digest,
+    content_size: u64,
+    metadata: Vec<u8>,
+    record: Uploaded,
+    submitted_at_unix: i64,
 }
 
 /// An error while committing a validated upload to storage.
@@ -219,18 +230,22 @@ pub fn prepare(
             actual: filetype,
         });
     }
-    verify_declared_hashes(
-        form.sha256_digest.as_deref(),
-        form.blake2_256_digest.as_deref(),
-        form.md5_digest.as_deref(),
-        staged.blob.digest(),
-        &staged.blake2_256,
-        staged.blob.path(),
-    )?;
+    staged.blob.with_materialized(|path| {
+        verify_declared_hashes(
+            form.sha256_digest.as_deref(),
+            form.blake2_256_digest.as_deref(),
+            form.md5_digest.as_deref(),
+            staged.blob.digest(),
+            &staged.blake2_256,
+            path,
+        )
+    })?;
     let ValidatedArchive {
         metadata,
         missing_license_files,
-    } = validate_archive(&parsed, &filename, staged.blob.path())?;
+    } = staged
+        .blob
+        .with_materialized(|path| validate_archive(&parsed, &filename, path))?;
     let metadata_text = std::str::from_utf8(&metadata).map_err(|_| UploadError::InvalidMetadataUtf8)?;
     let metadata_doc = parse_metadata(metadata_text).map_err(UploadError::MalformedMetadata)?;
     let form_requires_python = form
@@ -287,25 +302,82 @@ pub fn prepare(
 ///
 /// # Errors
 /// Returns [`UploadStoreError`] if a blob write, metadata write, or existing-record decode fails.
-pub fn store_prepared(
+pub async fn store_prepared(
     meta: &MetaStore,
-    blobs: &BlobStore,
+    blobs: &BlobStorage,
     name: &str,
     prepared: PreparedUpload,
 ) -> Result<bool, UploadStoreError> {
+    let metadata = blobs.stage_bytes(&prepared.metadata).await?;
+    let metadata_digest = metadata.digest().clone();
+    let (content, record) = split_prepared(prepared);
+    content.commit().await?;
+    metadata.commit().await?;
+    store_record(meta, name, record, &metadata_digest)
+}
+
+/// Blocking counterpart for offline import commands.
+///
+/// # Errors
+/// Returns [`UploadStoreError`] if staging or publication fails.
+pub fn store_prepared_blocking(
+    meta: &MetaStore,
+    blobs: &BlobStorage,
+    name: &str,
+    prepared: PreparedUpload,
+) -> Result<bool, UploadStoreError> {
+    let blocking = blobs.blocking();
+    let metadata = blocking.stage_bytes(&prepared.metadata)?;
+    let metadata_digest = metadata.digest().clone();
+    let (content, record) = split_prepared(prepared);
+    blocking.commit(content)?;
+    blocking.commit(metadata)?;
+    store_record(meta, name, record, &metadata_digest)
+}
+
+fn split_prepared(prepared: PreparedUpload) -> (BlobStaged, PreparedRecord) {
     let PreparedUpload {
         normalized,
         display_name,
         filename,
-        digest: content_digest,
+        digest,
         content,
+        metadata,
+        record,
+        submitted_at_unix,
+    } = prepared;
+    let content_size = content.len();
+    (
+        content,
+        PreparedRecord {
+            normalized,
+            display_name,
+            filename,
+            digest,
+            content_size,
+            metadata,
+            record,
+            submitted_at_unix,
+        },
+    )
+}
+
+fn store_record(
+    meta: &MetaStore,
+    name: &str,
+    prepared: PreparedRecord,
+    metadata_digest: &Digest,
+) -> Result<bool, UploadStoreError> {
+    let PreparedRecord {
+        normalized,
+        display_name,
+        filename,
+        digest: content_digest,
+        content_size,
         metadata,
         mut record,
         submitted_at_unix,
     } = prepared;
-    let content_size = content.len();
-    blobs.commit_staged(content)?;
-    let metadata_digest = blobs.write(&metadata)?;
     let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
     record.file.set_metadata(CoreMetadata::Hashes(hashes));
     let body = to_json(&record).into_bytes();

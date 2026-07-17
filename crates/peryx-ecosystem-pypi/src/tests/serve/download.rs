@@ -142,9 +142,10 @@ fn test_cache_error_user_message_describes_store_and_policy_errors() {
             .user_message()
             .starts_with("metadata store error:")
     );
+    let missing = Digest::of(b"missing");
     assert_eq!(
-        cache::CacheError::Blob(BlobError::NotFound("sha256:abc".to_owned())).user_message(),
-        "blob store error: blob sha256:abc not found"
+        cache::CacheError::Blob(BlobError::not_found(&missing)).user_message(),
+        format!("blob store error: blob {} not found", missing.as_str())
     );
     assert_eq!(
         cache::CacheError::NotVolatile.user_message(),
@@ -187,9 +188,10 @@ async fn test_concurrent_inspect_misses_share_one_fetch() {
     let uri = format!("/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
     let (first, second) = tokio::join!(get(&h.state, &uri, None), get(&h.state, &uri, None));
     assert_eq!(
-        (first.0, second.0, h.state.blobs.exists(&digest)),
-        (StatusCode::UNPROCESSABLE_ENTITY, StatusCode::UNPROCESSABLE_ENTITY, true)
+        (first.0, second.0),
+        (StatusCode::UNPROCESSABLE_ENTITY, StatusCode::UNPROCESSABLE_ENTITY)
     );
+    assert!(h.state.blobs.head(&digest).await.unwrap().is_some());
 }
 #[tokio::test]
 async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
@@ -203,10 +205,10 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
         "flask.whl".to_owned(),
     ));
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    h.state.blobs.write_verified(b"wheel", &digest).unwrap();
+    h.state.blobs.put_bytes_as(b"wheel", &digest).await.unwrap();
     drop(guard);
-    let path = task.await.unwrap().unwrap();
-    assert_eq!(path, h.state.blobs.path_for(&digest));
+    let lease = task.await.unwrap().unwrap();
+    assert_eq!(std::fs::read(lease.path()).unwrap(), b"wheel");
 }
 #[tokio::test]
 async fn test_file_path_abandoned_download_errors() {
@@ -214,9 +216,12 @@ async fn test_file_path_abandoned_download_errors() {
     let digest = Digest::of(b"wheel");
     let (sender, receiver) = tokio::sync::watch::channel(peryx_driver::download::DownloadProgress::default());
     drop(sender);
+    let pending = h.state.blobs.begin().await.unwrap();
+    let tail = pending.tail();
+    drop(pending);
     h.state.downloads.lock().expect("downloads lock").insert(
         digest.as_str().to_owned(),
-        peryx_driver::download::DownloadHandle::new(h.state.blobs.path_for(&digest), receiver),
+        peryx_driver::download::DownloadHandle::new(tail, receiver),
     );
     let err = cache::file_path(
         h.state.serving.clone(),
@@ -278,10 +283,37 @@ async fn test_unreadable_cached_blob_is_not_found() {
     let h = harness().await;
     let wheel = b"wheelcontent";
     let digest = Digest::of(wheel);
-    h.state.blobs.write_verified(wheel, &digest).unwrap();
-    let path = h.state.blobs.path_for(&digest);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    h.state.blobs.put_bytes_as(wheel, &digest).await.unwrap();
+    let lease = h.state.blobs.materialize(&digest).await.unwrap();
+    std::fs::set_permissions(lease.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_download_policy_reports_a_blob_head_error() {
+    let active = Policy::compile(
+        &PolicyConfig {
+            max_file_size_bytes: Some(1024),
+            ..PolicyConfig::default()
+        },
+        crate::normalize_name,
+    );
+    let h = crate::tests::http::harness_with_policies(true, true, active, Policy::default(), Policy::default()).await;
+    let digest = Digest::of(b"loop");
+    let hex = digest.as_str();
+    let path = h
+        .dir
+        .path()
+        .join(format!("blobs/sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+
+    let uri = format!("/pypi/files/{}/flask-1.0.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("filesystem blob backend head"), "{body}");
 }

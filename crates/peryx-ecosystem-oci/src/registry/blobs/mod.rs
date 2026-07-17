@@ -22,7 +22,7 @@ use peryx_events::metrics::Event;
 use peryx_events::webhook::WebhookEventKind;
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
-use peryx_storage::blob::{BlobError, BlobStore, Digest, PendingBlob};
+use peryx_storage::blob::{BlobError, BlobErrorKind, BlobMetadata, BlobStorage, BlobWrite, Digest};
 use std::sync::Arc;
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
@@ -56,18 +56,32 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if head {
             return self.head_blob(state, index, repo, digest, &storage, &asked).await;
         }
-        let response = match self.ensure_blob(state, index, repo, digest, &storage).await? {
-            BlobFetch::Stored => serve_stored_blob(&state.blobs, &storage, digest, &asked).await?,
+        let mut response = match self.ensure_blob(state, index, repo, digest, &storage).await? {
+            BlobFetch::Stored(metadata) => {
+                serve_stored_blob(&state.blobs, &storage, digest, metadata.bytes, &asked).await?
+            }
             BlobFetch::Absent => error_response(ErrorCode::BlobUnknown, "blob unknown"),
             BlobFetch::Gateway(response) => response,
         };
-        // A blob served to a GET is a download (a HEAD returned earlier, above).
         if response.status().is_success() {
-            state.metrics.record(Event::Download {
-                route: index.route.clone(),
-                project: repo.to_owned(),
-                filename: digest.to_owned(),
-                bytes: served_bytes(&response),
+            let expected = response
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let metrics = state.metrics.clone();
+            let route = index.route.clone();
+            let project = repo.to_owned();
+            let filename = digest.to_owned();
+            let body = std::mem::replace(response.body_mut(), Body::empty());
+            *response.body_mut() = peryx_driver::body::on_body_complete(body, expected, move |bytes| {
+                metrics.record(Event::Download {
+                    route,
+                    project,
+                    filename,
+                    bytes,
+                });
             });
         }
         Ok(response)
@@ -84,8 +98,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         storage: &Digest,
         asked: &BlobRequest<'_>,
     ) -> Result<Response, ServeError> {
-        if state.blobs.exists(storage) && self.blob_authorized(state, index, repo, digest)? {
-            return serve_stored_blob(&state.blobs, storage, digest, asked).await;
+        if let Some(metadata) = state.blobs.head(storage).await.map_err(blob_fault)?
+            && self.blob_authorized(state, index, repo, digest)?
+        {
+            return serve_stored_blob(&state.blobs, storage, digest, metadata.bytes, asked).await;
         }
         for member in serving_members(state, index) {
             let Some(client) = member.proxy_client() else {
@@ -123,14 +139,18 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         digest: &str,
         storage: &Digest,
     ) -> Result<BlobFetch, ServeError> {
-        if state.blobs.exists(storage) && self.blob_authorized(state, index, repo, digest)? {
-            return Ok(BlobFetch::Stored);
+        if let Some(metadata) = state.blobs.head(storage).await.map_err(blob_fault)?
+            && self.blob_authorized(state, index, repo, digest)?
+        {
+            return Ok(BlobFetch::Stored(metadata));
         }
         let gate_key = format!("oci\0blob\0{digest}");
         let gate = flight_gate(state, &gate_key);
         let _guard = gate.lock().await;
-        if state.blobs.exists(storage) && self.blob_authorized(state, index, repo, digest)? {
-            return Ok(BlobFetch::Stored);
+        if let Some(metadata) = state.blobs.head(storage).await.map_err(blob_fault)?
+            && self.blob_authorized(state, index, repo, digest)?
+        {
+            return Ok(BlobFetch::Stored(metadata));
         }
         let members = serving_members(state, index);
         let fetched = self.fetch_blob(state, &members, repo, digest, storage).await;
@@ -162,14 +182,14 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             ));
         };
         match self.ensure_blob(state, index, repo, digest, &storage).await? {
-            BlobFetch::Stored => {}
+            BlobFetch::Stored(_) => {}
             BlobFetch::Absent => return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown")),
             BlobFetch::Gateway(response) => return Ok(response),
         }
-        let path = state.blobs.path_for(&storage);
+        let lease = state.blobs.materialize(&storage).await.map_err(blob_fault)?;
         let selected = layer_query_member(query);
         Ok(
-            tokio::task::spawn_blocking(move || layer_contents_response(&path, selected))
+            tokio::task::spawn_blocking(move || layer_contents_response(lease.path(), selected))
                 .await
                 .expect("layer inspection task panicked"),
         )
@@ -185,12 +205,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         digest: &str,
         storage: &Digest,
     ) -> Result<BlobFetch, ServeError> {
-        let stored = state.blobs.exists(storage);
+        let stored = state.blobs.head(storage).await.map_err(blob_fault)?;
         for member in members {
             let Some(client) = member.proxy_client() else {
                 continue;
             };
-            if stored {
+            if let Some(metadata) = stored {
                 match self
                     .upstream
                     .blob_head(
@@ -203,7 +223,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 {
                     Ok(_) => {
                         store::record_blob_membership(&state.meta, &member.name, repo, digest)?;
-                        return Ok(BlobFetch::Stored);
+                        return Ok(BlobFetch::Stored(metadata));
                     }
                     Err(UpstreamError::Status(status)) if absent_upstream(status) => continue,
                     Err(err) => return Ok(BlobFetch::Gateway(upstream_error_response(&err, "blob"))),
@@ -220,11 +240,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 .await
             {
                 Ok(response) => {
-                    if let Err(response) = download_blob(&state.blobs, storage, response).await {
-                        return Ok(BlobFetch::Gateway(response));
-                    }
+                    let bytes = match download_blob(&state.blobs, storage, response).await {
+                        Ok(bytes) => bytes,
+                        Err(err) => return Ok(BlobFetch::Gateway(download_error_response(err))),
+                    };
                     store::record_blob_membership(&state.meta, &member.name, repo, digest)?;
-                    return Ok(BlobFetch::Stored);
+                    return Ok(BlobFetch::Stored(BlobMetadata { bytes, modified: None }));
                 }
                 Err(UpstreamError::Status(status)) if absent_upstream(status) => {}
                 Err(err) => {
@@ -315,7 +336,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
 /// The outcome of fetching a missed blob from a virtual index's proxy members.
 enum BlobFetch {
     /// The blob was fetched from an upstream and is now in the store.
-    Stored,
+    Stored(BlobMetadata),
     /// No proxy member has the blob; the client gets a `404`.
     Absent,
     /// A member erred mid-fetch; this ready gateway response carries the reason.
@@ -327,6 +348,24 @@ enum BlobFetch {
 pub enum DownloadError {
     Blob(BlobError),
     Stream(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blob(err) => write!(formatter, "blob store error: {err}"),
+            Self::Stream(err) => write!(formatter, "blob body read failed: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Blob(err) => Some(err),
+            Self::Stream(_) => None,
+        }
+    }
 }
 
 impl From<BlobError> for DownloadError {
@@ -344,45 +383,60 @@ pub(super) fn blob_fault(err: BlobError) -> ServeError {
 }
 
 /// Stream an upstream blob into the store, verifying its digest on commit.
-pub async fn download_blob(blobs: &BlobStore, storage: &Digest, response: reqwest::Response) -> Result<(), Response> {
+pub async fn download_blob(
+    blobs: &BlobStorage,
+    storage: &Digest,
+    response: reqwest::Response,
+) -> Result<u64, DownloadError> {
     let stream = response.bytes_stream().map_err(|err| err.to_string());
-    ingest_blob(blobs, storage, stream)
-        .await
-        .map_err(download_error_response)
+    ingest_blob(blobs, storage, stream).await
 }
 
 /// Drain a byte stream into a staged blob and commit it under `storage`. Takes the transfer error
 /// pre-stringified so this stays one instantiation a test can drive with a plain-string failure.
 async fn ingest_blob(
-    blobs: &BlobStore,
+    blobs: &BlobStorage,
     storage: &Digest,
     stream: impl Stream<Item = Result<bytes::Bytes, String>> + Send,
-) -> Result<(), DownloadError> {
-    let mut pending = blobs.begin()?;
+) -> Result<u64, DownloadError> {
+    let mut pending = blobs.begin().await?;
     let mut stream = std::pin::pin!(stream);
+    let mut bytes = 0u64;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(DownloadError::Stream)?;
-        pending.write(&chunk)?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                return Err(match pending.abort().await {
+                    Ok(()) => DownloadError::Stream(error),
+                    Err(cleanup) => DownloadError::Blob(cleanup),
+                });
+            }
+        };
+        bytes = bytes.saturating_add(chunk.len() as u64);
+        pending.write_chunk(chunk).await?;
     }
-    blobs.commit(pending, storage)?;
-    Ok(())
+    pending.commit(storage).await?;
+    Ok(bytes)
 }
 
 /// Map a failed ingest to a client response: a digest mismatch is the client's fault, the rest ours.
 fn download_error_response(err: DownloadError) -> Response {
     match err {
-        DownloadError::Blob(BlobError::DigestMismatch { expected, actual }) => error_response(
-            ErrorCode::DigestInvalid,
-            &format!("blob digest mismatch: expected {expected}, got {actual}"),
-        ),
+        DownloadError::Blob(err) if err.kind() == BlobErrorKind::DigestMismatch => {
+            let (expected, actual) = err.mismatch().expect("digest mismatch carries both digests");
+            error_response(
+                ErrorCode::DigestInvalid,
+                &format!("blob digest mismatch: expected {expected}, got {actual}"),
+            )
+        }
         DownloadError::Blob(err) => gateway_error(&format!("blob store error: {err}")),
         DownloadError::Stream(err) => gateway_error(&format!("blob body read failed: {err}")),
     }
 }
 
-pub(super) fn commit_blob(
+pub(super) async fn commit_blob(
     state: &ServingState,
-    pending: PendingBlob,
+    pending: BlobWrite,
     index: &str,
     repo: &str,
     name: &str,
@@ -394,7 +448,7 @@ pub(super) fn commit_blob(
             "only sha256 blob digests are supported",
         ));
     };
-    match state.blobs.commit(pending, &storage) {
+    match pending.commit(&storage).await {
         Ok(()) => {
             store::record_blob_membership(&state.meta, index, repo, digest)?;
             Ok(blob_created(name, digest))
@@ -419,14 +473,12 @@ struct BlobRequest<'a> {
 
 /// Stream a stored blob, honoring a single-range request with `206`/`Content-Range`.
 async fn serve_stored_blob(
-    blobs: &BlobStore,
+    blobs: &BlobStorage,
     storage: &Digest,
     digest: &str,
+    size: u64,
     asked: &BlobRequest<'_>,
 ) -> Result<Response, ServeError> {
-    let path = blobs.path_for(storage);
-    let file = tokio::fs::File::open(&path).await?;
-    let size = file.metadata().await?.len();
     let common = [
         (header::CONTENT_TYPE, HeaderValue::from_static(OCTET_STREAM)),
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
@@ -445,7 +497,7 @@ async fn serve_stored_blob(
             let body = if asked.head {
                 Body::empty()
             } else {
-                peryx_driver::body::pipelined_file(file.into_std().await, 0, size)
+                peryx_driver::body::blob_read(blobs.open(storage, None).await.map_err(blob_fault)?)
             };
             return Ok(builder
                 .body(body)
@@ -466,38 +518,48 @@ async fn serve_stored_blob(
         return Ok(builder.body(Body::empty()).expect("range head response builds"));
     }
     Ok(builder
-        .body(peryx_driver::body::pipelined_file(file.into_std().await, start, length))
+        .body(peryx_driver::body::blob_read(
+            blobs.open(storage, Some(start..end + 1)).await.map_err(blob_fault)?,
+        ))
         .expect("range response builds from validated header parts"))
 }
 
 /// A blob `HEAD` response: the size and digest headers a client needs to decide whether to pull, with
 /// no body.
-fn blob_head_response(digest: &str, size: u64, asked: &BlobRequest<'_>) -> Response {
+fn blob_head_response(digest: &str, size: Option<u64>, asked: &BlobRequest<'_>) -> Response {
     // A `HEAD` answers a `Range` the way the matching `GET` would. Ignoring it here while honouring
     // it for a cached blob made one request give two answers depending on what the store happened to
     // hold, which is the one thing a client checking a layer must not see.
-    let spec = asked.range.map_or(RangeSpec::Ignore, |value| parse_range(value, size));
-    let (status, length, content_range) = match spec {
-        RangeSpec::Ignore => (StatusCode::OK, size, None),
-        RangeSpec::Unsatisfiable => return unsatisfiable_range(size),
-        RangeSpec::Satisfiable(start, end) => (
-            StatusCode::PARTIAL_CONTENT,
-            end - start + 1,
-            Some(format!("bytes {start}-{end}/{size}")),
-        ),
+    let (status, length, content_range) = match size {
+        None => (StatusCode::OK, None, None),
+        Some(size) => match asked.range.map_or(RangeSpec::Ignore, |value| parse_range(value, size)) {
+            RangeSpec::Ignore => (StatusCode::OK, Some(size), None),
+            RangeSpec::Unsatisfiable => return unsatisfiable_range(size),
+            RangeSpec::Satisfiable(start, end) => (
+                StatusCode::PARTIAL_CONTENT,
+                Some(end - start + 1),
+                Some(format!("bytes {start}-{end}/{size}")),
+            ),
+        },
     };
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, OCTET_STREAM)
-        .header(header::CONTENT_LENGTH, length)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, header_value(asked.etag))
         .header(DOCKER_CONTENT_DIGEST, header_value(digest));
+    if let Some(length) = length {
+        builder = builder.header(header::CONTENT_LENGTH, length);
+    }
     if let Some(content_range) = content_range {
         builder = builder.header(header::CONTENT_RANGE, content_range);
     }
+    let body = length.map_or_else(
+        || Body::from_stream(futures_util::stream::empty::<Result<bytes::Bytes, std::io::Error>>()),
+        |_| Body::empty(),
+    );
     builder
-        .body(Body::empty())
+        .body(body)
         .expect("blob head response builds from validated parts")
 }
 
@@ -511,12 +573,9 @@ mod tests {
 
     #[test]
     fn test_download_error_maps_mismatch_to_client_and_the_rest_to_gateway() {
-        let mismatch = DownloadError::Blob(BlobError::DigestMismatch {
-            expected: "a".to_owned(),
-            actual: "b".to_owned(),
-        });
+        let mismatch = DownloadError::Blob(BlobError::digest_mismatch(&Digest::of(b"a"), &Digest::of(b"b")));
         assert_eq!(download_error_response(mismatch).status(), StatusCode::BAD_REQUEST);
-        let io = DownloadError::Blob(BlobError::Io(std::io::Error::other("disk")));
+        let io = DownloadError::Blob(BlobError::io(std::io::Error::other("disk")));
         assert_eq!(download_error_response(io).status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
             download_error_response(DownloadError::Stream("reset".to_owned())).status(),
@@ -525,9 +584,27 @@ mod tests {
     }
 
     #[test]
+    fn test_download_blob_error_reports_a_source() {
+        use std::error::Error as _;
+
+        assert!(
+            DownloadError::Blob(BlobError::io(std::io::Error::other("disk")))
+                .source()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_download_stream_error_has_no_source() {
+        use std::error::Error as _;
+
+        assert!(DownloadError::Stream("reset".to_owned()).source().is_none());
+    }
+
+    #[test]
     fn test_blob_fault_is_a_transport_error() {
         assert!(matches!(
-            blob_fault(BlobError::NotFound("x".to_owned())),
+            blob_fault(BlobError::not_found(&Digest::of(b"x"))),
             ServeError::Transport(_)
         ));
     }
@@ -535,10 +612,26 @@ mod tests {
     #[tokio::test]
     async fn test_ingest_blob_reports_a_stream_error() {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
         let storage = Digest::of(b"x");
         let stream = futures_util::stream::iter(vec![Err("boom".to_owned())]);
         let err = ingest_blob(&blobs, &storage, stream).await.unwrap_err();
         assert!(matches!(err, DownloadError::Stream(message) if message == "boom"));
+    }
+
+    #[tokio::test]
+    async fn test_ingest_blob_reports_a_cleanup_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("blobs");
+        let blobs = BlobStorage::filesystem(&root);
+        let storage = Digest::of(b"x");
+        let stream = futures_util::stream::once(async move {
+            let stage = std::fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
+            std::fs::remove_file(&stage).unwrap();
+            std::fs::create_dir(&stage).unwrap();
+            Err("boom".to_owned())
+        });
+        let err = ingest_blob(&blobs, &storage, stream).await.unwrap_err();
+        assert!(matches!(err, DownloadError::Blob(_)));
     }
 }

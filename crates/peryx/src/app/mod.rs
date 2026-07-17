@@ -1,7 +1,7 @@
 //! Command actions that do not touch global state.
 
 use anyhow::Context as _;
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
 use crate::config::Config;
@@ -21,7 +21,7 @@ pub(crate) use purge::referenced_blob_digests;
 
 struct CacheStores {
     meta: MetaStore,
-    blobs: BlobStore,
+    blobs: BlobStorage,
 }
 
 impl CacheStores {
@@ -29,7 +29,7 @@ impl CacheStores {
         Ok(Self {
             meta: MetaStore::open_existing(config.data_dir.join("peryx.redb"))
                 .with_context(|| format!("open metadata store {}", config.data_dir.join("peryx.redb").display()))?,
-            blobs: BlobStore::new(config.data_dir.join("blobs")),
+            blobs: BlobStorage::filesystem(config.data_dir.join("blobs")),
         })
     }
 }

@@ -45,6 +45,11 @@ topology next to the same cache-health counters listed below, plus observed proj
 uploads, cached index URLs, and redacted token/authentication state. The page does not fetch upstreams or read artifacts
 while it renders.
 
+The top-level `blob_storage` object names the selected backend. Its fields report durability and a support level for
+each operation, including local staging. The backend implements `native` operations; peryx composes `emulated`
+operations from lower-level calls. `filesystem` durability reports acknowledgment from the configured filesystem, whose
+mount determines crash and replication guarantees. `health.blob_store` reports the current reachability check.
+
 ## What the cache-health counters mean
 
 | Counter           | Signal                                                                      |
