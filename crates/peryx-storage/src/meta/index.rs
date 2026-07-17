@@ -143,7 +143,7 @@ impl MetaStore {
         &self,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
-        self.commit_driver_txn_at(None, None, body)
+        self.commit_driver_txn_at(None, None, |_| Ok(()), body)
     }
 
     /// Commit driver rows and publish the catalog generation that produced their policy inputs in
@@ -158,7 +158,7 @@ impl MetaStore {
         catalog_generation: u64,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
-        self.commit_driver_txn_at(None, Some((repository, catalog_generation)), body)
+        self.commit_driver_txn_at(None, Some((repository, catalog_generation)), |_| Ok(()), body)
     }
 
     /// Apply replicated driver rows and copied journal entries only when the local serial matches
@@ -175,13 +175,14 @@ impl MetaStore {
         expected_serial: u64,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
-        self.commit_driver_txn_at(Some(expected_serial), None, body)
+        self.commit_driver_txn_at(Some(expected_serial), None, |_| Ok(()), body)
     }
 
-    fn commit_driver_txn_at<T, E: From<MetaError>>(
+    pub(super) fn commit_driver_txn_at<T, E: From<MetaError>>(
         &self,
         expected_serial: Option<u64>,
         catalog_generation: Option<(&str, u64)>,
+        finalize: impl FnOnce(&redb::WriteTransaction) -> Result<(), E>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
         let txn = self.db.begin_write().map_err(MetaError::from)?;
@@ -262,6 +263,7 @@ impl MetaStore {
                 .insert(repository, encoded.as_slice())
                 .map_err(MetaError::from)?;
         }
+        finalize(&txn)?;
         txn.commit().map_err(MetaError::from)?;
         Ok(value)
     }

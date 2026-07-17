@@ -15,6 +15,7 @@ mod index;
 mod job;
 mod journal;
 mod policy_decision;
+mod quota;
 mod user;
 mod webhook;
 mod writer;
@@ -28,6 +29,10 @@ pub use policy_decision::{
     NewPolicyDecision, PolicyDecisionItem, PolicyDecisionPage, PolicyDecisionQuery, PolicyDecisionQueryError,
     PolicyDecisionRecord, PolicyDecisionStoreError, PolicyInputGeneration,
 };
+pub use quota::{
+    AccountingClass, NewQuotaReservation, QuotaError, QuotaLimit, QuotaLimits, QuotaProjectUsage, QuotaRepairReport,
+    QuotaReservationRecord, QuotaReservationState, QuotaUsage, QuotaValue,
+};
 pub use user::UserStoreError;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
@@ -39,6 +44,12 @@ const POLICY_DECISION: TableDefinition<&str, &[u8]> = TableDefinition::new("poli
 const POLICY_DECISION_CURRENT: TableDefinition<&str, &str> = TableDefinition::new("policy_decision_current");
 const POLICY_DECISION_CURRENT_ID: TableDefinition<&str, &str> = TableDefinition::new("policy_decision_current_id");
 const POLICY_INPUT_GENERATION: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_input_generation");
+const QUOTA_USAGE: TableDefinition<&str, &[u8]> = TableDefinition::new("quota_usage");
+const QUOTA_PROJECT: TableDefinition<&str, &[u8]> = TableDefinition::new("quota_project");
+const QUOTA_VERSION: TableDefinition<&str, &[u8]> = TableDefinition::new("quota_version");
+const QUOTA_BLOB: TableDefinition<&str, &[u8]> = TableDefinition::new("quota_blob");
+const QUOTA_RESERVATION: TableDefinition<&str, &[u8]> = TableDefinition::new("quota_reservation");
+const QUOTA_PENDING: TableDefinition<u128, u8> = TableDefinition::new("quota_pending");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("journal");
 const WRITER: TableDefinition<&str, &str> = TableDefinition::new("writer");
 const JOURNAL_MUTATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_mutations");
@@ -112,6 +123,12 @@ impl MetaStore {
             txn.open_table(POLICY_DECISION_CURRENT)?;
             txn.open_table(POLICY_DECISION_CURRENT_ID)?;
             txn.open_table(POLICY_INPUT_GENERATION)?;
+            txn.open_table(QUOTA_USAGE)?;
+            txn.open_table(QUOTA_PROJECT)?;
+            txn.open_table(QUOTA_VERSION)?;
+            txn.open_table(QUOTA_BLOB)?;
+            txn.open_table(QUOTA_RESERVATION)?;
+            txn.open_table(QUOTA_PENDING)?;
             txn.open_table(JOURNAL)?;
             txn.open_table(WRITER)?;
             txn.open_table(JOURNAL_MUTATIONS)?;
