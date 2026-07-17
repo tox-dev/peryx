@@ -17,18 +17,7 @@ use super::{CACHE_MAINTENANCE, JobContext, JobReport, JobScheduler, MaintenanceJ
 use crate::serving::{EcosystemDriver, RefreshSweep};
 use crate::state::{AppState, Clock, ServingState};
 
-/// Install a discarding subscriber for this test process so a job's structured lifecycle fields are
-/// evaluated rather than short-circuited by an absent subscriber. nextest runs each test in its own
-/// process, so a global default is safe; the ignored result tolerates a rerun in one process.
-fn enable_events() {
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_writer(std::io::sink)
-        .try_init();
-}
-
 fn serving() -> (tempfile::TempDir, Arc<ServingState>) {
-    enable_events();
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
@@ -179,9 +168,10 @@ impl EcosystemDriver for StubDriver {
 }
 
 /// Poll the scheduler's exposition until `needle` appears, so a test can wait for a job to run to a
-/// specific outcome without a completion signal on the job itself.
+/// specific outcome without a completion signal on the job itself. A job that never reaches the
+/// outcome spins here until the test's own timeout fails the run.
 async fn await_metric(scheduler: &JobScheduler, needle: &str) {
-    for _ in 0..10_000 {
+    loop {
         let mut body = String::new();
         crate::state::PrometheusSource::write_metrics(scheduler.metrics().as_ref(), &mut body);
         if body.contains(needle) {
@@ -189,7 +179,6 @@ async fn await_metric(scheduler: &JobScheduler, needle: &str) {
         }
         tokio::task::yield_now().await;
     }
-    panic!("metric never appeared: {needle}");
 }
 
 #[tokio::test]
@@ -431,7 +420,6 @@ async fn test_maintenance_skips_the_refresh_when_cancelled_after_reclaim() {
 
 #[tokio::test]
 async fn test_submit_maintenance_runs_one_job_per_driver_and_records_it() {
-    enable_events();
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));

@@ -212,13 +212,7 @@ async fn execute(job: &dyn NodeJob, state: &Arc<ServingState>, cancel: &Cancella
         match run_persisted(job, state, cancel).await {
             Ok(_) if cancel.is_cancelled() => Outcome::Cancelled,
             Ok(report) => {
-                tracing::info!(
-                    kind,
-                    scope = job.scope(),
-                    processed = report.processed,
-                    changed = report.changed,
-                    "node-local job finished"
-                );
+                tracing::info!(kind, scope = job.scope(), ?report, "node-local job finished");
                 Outcome::Succeeded
             }
             Err(error) => {

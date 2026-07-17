@@ -123,12 +123,7 @@ impl NodeJob for MaintenanceJob {
         }
         let sweep = self.driver.refresh_stale(ctx.state().clone()).await?;
         if sweep.checked > 0 {
-            tracing::info!(
-                ecosystem = %ecosystem,
-                checked = sweep.checked,
-                changed = sweep.changed,
-                "background refresh sweep"
-            );
+            tracing::info!(ecosystem = %ecosystem, ?sweep, "background refresh sweep");
         }
         Ok(JobReport {
             processed: sweep.checked as u64,
