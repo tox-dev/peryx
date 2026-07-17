@@ -160,7 +160,7 @@ pub fn publish_catalog_generation(
     expected_active: Option<u64>,
     generation: CatalogGeneration,
 ) -> Result<(), MetaError> {
-    meta.commit_driver_txn(|txn| {
+    meta.commit_driver_txn_with_catalog_generation(index, generation.generation, |txn| {
         let mut state = decode_catalog_state(txn.get(&catalog_key(index))?)?;
         if state.staging != Some(generation.generation)
             || state.active.as_ref().map(|active| active.generation) != expected_active

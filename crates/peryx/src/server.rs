@@ -13,9 +13,9 @@ use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
 use peryx_identity::{Action, Signer};
-use peryx_policy::Policy;
+use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
 use peryx_storage::blob::BlobStore;
-use peryx_storage::meta::MetaStore;
+use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use peryx_upstream::{Auth, NamedUpstream, Netrc, UpstreamClient, UpstreamRouter, UpstreamTls, redact_url};
 
 use crate::config::{
@@ -86,6 +86,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
             }
         }
     }
+    attach_policy_decision_recorders(&meta, &mut indexes)?;
     let oci_settings = build_index_settings(&configs)?;
     let webhooks = build_webhooks(&configs)?;
     let search_path = config.data_dir.join("search-v1");
@@ -158,6 +159,45 @@ fn trusted_publishing(config: &Config, signer: Signer) -> anyhow::Result<Option<
     peryx_identity::OidcRuntime::new(bindings, signer, config.auth.token_ttl_secs)
         .map(Some)
         .context("configure trusted publishers")
+}
+
+#[derive(Debug)]
+struct StoredPolicyDecisionRecorder {
+    meta: MetaStore,
+    repository: String,
+}
+
+impl PolicyDecisionRecorder for StoredPolicyDecisionRecorder {
+    fn record(&self, evaluation: PolicyEvaluation<'_>) {
+        if let Err(error) = self.meta.record_policy_decision(NewPolicyDecision {
+            repository: &self.repository,
+            project: evaluation.project,
+            version: evaluation.version,
+            filename: evaluation.filename,
+            source: evaluation.source,
+            action: evaluation.action,
+            state: evaluation.state,
+            rule: evaluation.rule,
+            reason: evaluation.reason,
+            evaluated_at_unix: time::OffsetDateTime::now_utc().unix_timestamp(),
+            next_eligible_at_unix: evaluation.next_eligible_at_unix,
+        }) {
+            tracing::error!(repository = self.repository, %error, "failed to record policy decision");
+        }
+    }
+}
+
+fn attach_policy_decision_recorders(meta: &MetaStore, indexes: &mut [Index]) -> anyhow::Result<()> {
+    for index in indexes {
+        meta.advance_policy_generation(&index.name)
+            .with_context(|| format!("advance policy generation for {}", index.name))?;
+        index.policy =
+            std::mem::take(&mut index.policy).with_decision_recorder(Arc::new(StoredPolicyDecisionRecorder {
+                meta: meta.clone(),
+                repository: index.name.clone(),
+            }));
+    }
+    Ok(())
 }
 
 fn make_replica_configs(configs: &mut [IndexConfig]) {

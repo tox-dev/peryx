@@ -7,7 +7,7 @@ use axum::http::{Request, StatusCode};
 use futures_util::TryStreamExt as _;
 use http_body_util::BodyExt as _;
 use peryx_driver::IndexKind as RuntimeKind;
-use peryx_storage::meta::MetaStore;
+use peryx_storage::meta::{MetaStore, PolicyDecisionQuery};
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
@@ -471,6 +471,85 @@ fn test_build_state_claims_configured_writer_identity() {
     let state = build_state(&config).unwrap();
 
     assert_eq!(state.meta.writer_identity().unwrap().as_deref(), Some("writer-a"));
+}
+
+#[test]
+fn test_build_state_records_policy_decisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = hosted("private");
+    index.policy.block_projects = vec!["blocked".to_owned()];
+    let state = build_state(&config_with(&dir, vec![index])).unwrap();
+
+    state.indexes[0]
+        .policy
+        .check_facts(
+            peryx_policy::PolicyAction::Serve,
+            &peryx_policy::ArtifactFacts {
+                project: "blocked".to_owned(),
+                filename: Some("blocked-1.0.whl".to_owned()),
+                version: Some("1.0".to_owned()),
+                source: Some("pypi".to_owned()),
+                ..peryx_policy::ArtifactFacts::default()
+            },
+        )
+        .unwrap_err();
+    let mut record = serde_json::to_value(
+        &state
+            .meta
+            .query_policy_decisions(&PolicyDecisionQuery {
+                repository: Some("private".to_owned()),
+                limit: 1,
+                ..PolicyDecisionQuery::default()
+            })
+            .unwrap()
+            .decisions[0]
+            .record,
+    )
+    .unwrap();
+    let object = record.as_object_mut().unwrap();
+    object.remove("id");
+    object.remove("evaluated_at_unix");
+
+    assert_eq!(
+        record,
+        serde_json::json!({
+            "repository": "private",
+            "project": "blocked",
+            "version": "1.0",
+            "filename": "blocked-1.0.whl",
+            "source": "pypi",
+            "action": "serve",
+            "state": "deny",
+            "rule": "project-block-list",
+            "reason": "project \"blocked\" is blocked",
+            "input_generation": {"repository": 0, "catalog": 0, "policy": 1},
+            "next_eligible_at_unix": null
+        })
+    );
+}
+
+#[test]
+fn test_policy_recording_failure_does_not_change_the_decision() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&config_with(&dir, vec![hosted("private")])).unwrap();
+
+    assert_eq!(
+        (
+            state.indexes[0]
+                .policy
+                .check_project(peryx_policy::PolicyAction::Serve, &"x".repeat(513)),
+            state
+                .meta
+                .query_policy_decisions(&PolicyDecisionQuery {
+                    repository: Some("private".to_owned()),
+                    limit: 1,
+                    ..PolicyDecisionQuery::default()
+                })
+                .unwrap()
+                .decisions,
+        ),
+        (Ok(()), Vec::new())
+    );
 }
 
 #[test]

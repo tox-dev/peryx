@@ -13,6 +13,7 @@ peryx-driver.workspace = true
 peryx-events.workspace = true
 peryx-index.workspace = true
 peryx-identity.workspace = true
+peryx-policy.workspace = true
 peryx-search.workspace = true
 peryx-storage.workspace = true
 axum = { workspace = true, features = ["multipart"] }
@@ -25,7 +26,6 @@ tokio = { workspace = true, features = ["sync", "rt", "fs"] }
 [dev-dependencies]
 async-trait.workspace = true
 base64.workspace = true
-peryx-policy.workspace = true
 peryx-upstream.workspace = true
 rstest.workspace = true
 tokio.workspace = true

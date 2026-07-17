@@ -197,6 +197,141 @@
         }
       }
     },
+    "/+policy/decisions": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Repository policy decisions",
+        "description": "Bounded policy decision history for one repository. The repository's administering token is required; records contain package subjects and matched rule IDs without credentials or request headers. `fresh` is false after repository data, catalog, or policy inputs change.",
+        "parameters": [
+          {
+            "name": "repository",
+            "in": "query",
+            "description": "Repository route to inspect",
+            "required": true,
+            "example": "private"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Filter by `allow`, `deny`, or `wait`",
+            "required": false,
+            "example": "deny"
+          },
+          {
+            "name": "rule",
+            "in": "query",
+            "description": "Filter by matched rule ID",
+            "required": false,
+            "example": "blocked-project"
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Filter by routed source",
+            "required": false,
+            "example": "pypi"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Minimum evaluation Unix timestamp",
+            "required": false,
+            "example": 1700000000
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Maximum evaluation Unix timestamp",
+            "required": false,
+            "example": 1800000000
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Exclusive cursor from the prior page",
+            "required": false,
+            "example": "pd_000000000000002a"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows to return, from 1 through 100; defaults to 25",
+            "required": false,
+            "example": 25
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The matching decisions, newest first",
+            "content": {
+              "application/json": {
+                "example": {
+                  "decisions": [
+                    {
+                      "action": "serve",
+                      "evaluated_at_unix": 1800000000,
+                      "filename": "example-1.0-py3-none-any.whl",
+                      "fresh": true,
+                      "id": "550e8400-e29b-41d4-a716-446655440000",
+                      "input_generation": {
+                        "catalog": 7,
+                        "policy": 3,
+                        "repository": 42
+                      },
+                      "next_eligible_at_unix": null,
+                      "project": "example",
+                      "reason": "project is blocked",
+                      "repository": "private",
+                      "rule": "blocked-project",
+                      "source": "pypi",
+                      "state": "deny",
+                      "version": "1.0"
+                    }
+                  ],
+                  "next_cursor": "pd_000000000000002a"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The limit or cursor is invalid",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "limit must be between 1 and 100"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential the repository accepts was presented"
+          },
+          "403": {
+            "description": "The credential does not administer this repository"
+          },
+          "404": {
+            "description": "No repository has this route"
+          },
+          "500": {
+            "description": "The decision store could not complete the query",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "policy decision query failed"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ]
+      }
+    },
     "/+ready": {
       "get": {
         "tags": [

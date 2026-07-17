@@ -38,14 +38,15 @@ impl PolicyConfig {
 
 /// One artifact's neutral facts, filled by ecosystem code and matched by [`Policy`] and its rules.
 ///
-/// The core fields (project, size) drive the neutral rules; `version` is a plain string a rule may
-/// parse in its own format, and `attributes` carries any extra format-specific values (a wheel's
-/// Python or platform tag, a package type) as named strings so the engine never sees a format type.
+/// The core fields (project, size) drive the neutral rules; `source` identifies the routed input when
+/// known, `version` is a plain string a rule may parse in its own format, and `attributes` carries any
+/// extra format-specific values as named strings so the engine never sees a format type.
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactFacts {
     pub project: String,
     pub filename: Option<String>,
     pub version: Option<String>,
+    pub source: Option<String>,
     pub size: Option<u64>,
     /// The artifact's upstream publish time as a Unix timestamp, when the source declares one. A rule
     /// that ages a release (a supply-chain quarantine) reads it; `None` means the source gave no time.
@@ -96,6 +97,34 @@ pub trait ArtifactRule: Send + Sync + fmt::Debug {
     /// Returns a [`PolicyDenial`] when the facts match this rule's block criteria or miss its allow
     /// criteria.
     fn check(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial>;
+}
+
+/// The result retained for one policy subject and action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyDecisionState {
+    Allow,
+    Deny,
+    Wait,
+}
+
+/// One completed policy evaluation, borrowed for the duration of a recorder call.
+#[derive(Debug, Clone, Copy)]
+pub struct PolicyEvaluation<'a> {
+    pub action: PolicyAction,
+    pub project: &'a str,
+    pub filename: Option<&'a str>,
+    pub version: Option<&'a str>,
+    pub source: Option<&'a str>,
+    pub state: PolicyDecisionState,
+    pub rule: Option<&'static str>,
+    pub reason: Option<&'a str>,
+    pub next_eligible_at_unix: Option<i64>,
+}
+
+/// A synchronous audit sink attached by the runtime after it opens metadata storage.
+pub trait PolicyDecisionRecorder: Send + Sync + fmt::Debug {
+    fn record(&self, evaluation: PolicyEvaluation<'_>);
 }
 
 /// Names an operator reserves so a request for them never falls back to an upstream mirror. This is
@@ -154,6 +183,7 @@ pub struct Policy {
     max_file_size_bytes: Option<u64>,
     max_project_size_bytes: Option<u64>,
     rules: Vec<Arc<dyn ArtifactRule>>,
+    recorder: Option<Arc<dyn PolicyDecisionRecorder>>,
     active: bool,
 }
 
@@ -175,6 +205,7 @@ impl Policy {
             max_file_size_bytes: config.max_file_size_bytes,
             max_project_size_bytes: config.max_project_size_bytes,
             rules: Vec::new(),
+            recorder: None,
             active: false,
         };
         Self {
@@ -188,6 +219,13 @@ impl Policy {
     pub fn with_rules(mut self, rules: Vec<Arc<dyn ArtifactRule>>) -> Self {
         self.rules = rules;
         self.active = self.compute_active();
+        self
+    }
+
+    /// Attach the runtime's durable decision recorder.
+    #[must_use]
+    pub fn with_decision_recorder(mut self, recorder: Arc<dyn PolicyDecisionRecorder>) -> Self {
+        self.recorder = Some(recorder);
         self
     }
 
@@ -232,6 +270,12 @@ impl Policy {
     /// Returns a denial when the project misses an allow list, matches a block list, or is protected
     /// from upstream fallback.
     pub fn check_project(&self, action: PolicyAction, project: &str) -> Result<(), PolicyDenial> {
+        let result = self.evaluate_project(action, project);
+        self.record(action, project, None, None, None, &result);
+        result
+    }
+
+    fn evaluate_project(&self, action: PolicyAction, project: &str) -> Result<(), PolicyDenial> {
         if action == PolicyAction::Cached
             && let Some(rule) = self.protected_names.matched(project)
         {
@@ -275,12 +319,16 @@ impl Policy {
     /// # Errors
     /// Returns a denial when the facts match a configured policy rule.
     pub fn check_facts(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
-        self.check_project(action, &facts.project)?;
-        self.check_file_size(action, facts)?;
-        for rule in &self.rules {
-            rule.check(action, facts)?;
-        }
-        Ok(())
+        let result = self.evaluate_facts(action, facts);
+        self.record(
+            action,
+            &facts.project,
+            facts.filename.as_deref(),
+            facts.version.as_deref(),
+            facts.source.as_deref(),
+            &result,
+        );
+        result
     }
 
     /// Check an upload's project name and byte size: the neutral rules an ecosystem with no
@@ -289,7 +337,22 @@ impl Policy {
     /// # Errors
     /// Returns a denial when the project is disallowed or the size exceeds `max_file_size_bytes`.
     pub fn check_size(&self, action: PolicyAction, project: &str, size: u64) -> Result<(), PolicyDenial> {
-        self.check_project(action, project)?;
+        let result = self.evaluate_size(action, project, size);
+        self.record(action, project, None, None, None, &result);
+        result
+    }
+
+    fn evaluate_facts(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
+        self.evaluate_project(action, &facts.project)?;
+        self.check_file_size(action, facts)?;
+        for rule in &self.rules {
+            rule.check(action, facts)?;
+        }
+        Ok(())
+    }
+
+    fn evaluate_size(&self, action: PolicyAction, project: &str, size: u64) -> Result<(), PolicyDenial> {
+        self.evaluate_project(action, project)?;
         if let Some(limit) = self.max_file_size_bytes
             && size > limit
         {
@@ -304,6 +367,39 @@ impl Policy {
             ));
         }
         Ok(())
+    }
+
+    fn record(
+        &self,
+        action: PolicyAction,
+        project: &str,
+        filename: Option<&str>,
+        version: Option<&str>,
+        source: Option<&str>,
+        result: &Result<(), PolicyDenial>,
+    ) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        let (state, rule, reason) = match result {
+            Ok(()) => (PolicyDecisionState::Allow, None, None),
+            Err(denial) => (
+                PolicyDecisionState::Deny,
+                Some(denial.rule),
+                Some(denial.reason.as_ref()),
+            ),
+        };
+        recorder.record(PolicyEvaluation {
+            action,
+            project,
+            filename,
+            version,
+            source,
+            state,
+            rule,
+            reason,
+            next_eligible_at_unix: None,
+        });
     }
 
     fn check_file_size(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
@@ -324,7 +420,7 @@ impl Policy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyAction {
     Upload,

@@ -31,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/+acl", get(handlers::acl))
         .route("/+stats", get(handlers::stats))
         .route("/+analytics/top-packages", get(handlers::top_packages))
+        .route("/+policy/decisions", get(handlers::policy_decisions))
         .route("/+ui/projects", get(handlers::ui_projects))
         .route("/+ui/project", get(handlers::ui_project))
         .route("/+ui/manifest", get(handlers::ui_manifest))

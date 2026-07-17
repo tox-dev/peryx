@@ -14,6 +14,7 @@ mod error;
 mod index;
 mod job;
 mod journal;
+mod policy_decision;
 mod user;
 mod webhook;
 mod writer;
@@ -23,6 +24,10 @@ pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use index::DriverTxn;
 pub use job::{JobKind, JobOutcome, JobRunRecord, JobState, NewJobRun};
 pub use journal::{DriverBlobReference, DriverMutation, JournalRecord, JournalSnapshot};
+pub use policy_decision::{
+    NewPolicyDecision, PolicyDecisionItem, PolicyDecisionPage, PolicyDecisionQuery, PolicyDecisionQueryError,
+    PolicyDecisionRecord, PolicyDecisionStoreError, PolicyInputGeneration,
+};
 pub use user::UserStoreError;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
@@ -30,6 +35,10 @@ const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
 const WEBHOOK_DELIVERY: TableDefinition<&str, &[u8]> = TableDefinition::new("webhook_delivery");
 const WEBHOOK_DUE: TableDefinition<&str, &str> = TableDefinition::new("webhook_due");
 const JOB_RUN: TableDefinition<&str, &[u8]> = TableDefinition::new("job_run");
+const POLICY_DECISION: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_decision");
+const POLICY_DECISION_CURRENT: TableDefinition<&str, &str> = TableDefinition::new("policy_decision_current");
+const POLICY_DECISION_CURRENT_ID: TableDefinition<&str, &str> = TableDefinition::new("policy_decision_current_id");
+const POLICY_INPUT_GENERATION: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_input_generation");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("journal");
 const WRITER: TableDefinition<&str, &str> = TableDefinition::new("writer");
 const JOURNAL_MUTATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_mutations");
@@ -47,6 +56,7 @@ const USER_EVENT: TableDefinition<&str, &[u8]> = TableDefinition::new("server_us
 const SERIAL_KEY: &str = "serial";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
+const POLICY_DECISION_SERIAL_KEY: &str = "policy_decision";
 const ANALYTICS_KEY: &str = "downloads";
 const WRITER_KEY: &str = "active";
 
@@ -98,6 +108,10 @@ impl MetaStore {
             txn.open_table(WEBHOOK_DELIVERY)?;
             txn.open_table(WEBHOOK_DUE)?;
             txn.open_table(JOB_RUN)?;
+            txn.open_table(POLICY_DECISION)?;
+            txn.open_table(POLICY_DECISION_CURRENT)?;
+            txn.open_table(POLICY_DECISION_CURRENT_ID)?;
+            txn.open_table(POLICY_INPUT_GENERATION)?;
             txn.open_table(JOURNAL)?;
             txn.open_table(WRITER)?;
             txn.open_table(JOURNAL_MUTATIONS)?;

@@ -6,6 +6,7 @@ mod error_tests;
 mod integration_tests;
 mod job_tests;
 mod journal_tests;
+mod policy_decision_tests;
 mod replica_tests;
 mod user_tests;
 mod webhook_tests;

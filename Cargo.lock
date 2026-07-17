@@ -3943,6 +3943,7 @@ version = "0.0.1"
 dependencies = [
  "flate2",
  "peryx-identity",
+ "peryx-policy",
  "redb",
  "serde",
  "serde_json",
@@ -3951,6 +3952,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
  "zip",
 ]
 

@@ -47,6 +47,12 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
                 .build(),
         )
         .path(
+            "/+policy/decisions",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, policy_decisions())
+                .build(),
+        )
+        .path(
             "/metrics",
             PathItemBuilder::new().operation(HttpMethod::Get, metrics()).build(),
         )
@@ -328,6 +334,94 @@ fn top_packages() -> OperationBuilder {
                 json!({"error": "limit must be between 1 and 100"}),
             ),
         )
+}
+
+fn policy_decisions() -> OperationBuilder {
+    let mut operation = OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Repository policy decisions"))
+        .description(Some(
+            "Bounded policy decision history for one repository. The repository's administering token is required; \
+             records contain package subjects and matched rule IDs without credentials or request headers. `fresh` is \
+             false after repository data, catalog, or policy inputs change.",
+        ))
+        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .response(
+            "200",
+            api_json_response(
+                "The matching decisions, newest first",
+                json!({
+                    "decisions": [{
+                        "id": "550e8400-e29b-41d4-a716-446655440000",
+                        "repository": "private",
+                        "project": "example",
+                        "version": "1.0",
+                        "filename": "example-1.0-py3-none-any.whl",
+                        "source": "pypi",
+                        "action": "serve",
+                        "state": "deny",
+                        "rule": "blocked-project",
+                        "reason": "project is blocked",
+                        "evaluated_at_unix": 1_800_000_000,
+                        "input_generation": {"repository": 42, "catalog": 7, "policy": 3},
+                        "next_eligible_at_unix": null,
+                        "fresh": true
+                    }],
+                    "next_cursor": "pd_000000000000002a"
+                }),
+            ),
+        )
+        .response(
+            "400",
+            api_json_response(
+                "The limit or cursor is invalid",
+                json!({"error": "limit must be between 1 and 100"}),
+            ),
+        )
+        .response(
+            "401",
+            ResponseBuilder::new().description("No credential the repository accepts was presented"),
+        )
+        .response(
+            "403",
+            ResponseBuilder::new().description("The credential does not administer this repository"),
+        )
+        .response(
+            "404",
+            ResponseBuilder::new().description("No repository has this route"),
+        )
+        .response(
+            "500",
+            api_json_response(
+                "The decision store could not complete the query",
+                json!({"error": "policy decision query failed"}),
+            ),
+        );
+    for (name, description, example) in [
+        ("repository", "Repository route to inspect", json!("private")),
+        ("state", "Filter by `allow`, `deny`, or `wait`", json!("deny")),
+        ("rule", "Filter by matched rule ID", json!("blocked-project")),
+        ("source", "Filter by routed source", json!("pypi")),
+        ("from", "Minimum evaluation Unix timestamp", json!(1_700_000_000)),
+        ("to", "Maximum evaluation Unix timestamp", json!(1_800_000_000)),
+        (
+            "cursor",
+            "Exclusive cursor from the prior page",
+            json!("pd_000000000000002a"),
+        ),
+        ("limit", "Rows to return, from 1 through 100; defaults to 25", json!(25)),
+    ] {
+        let mut parameter = ParameterBuilder::new()
+            .name(name)
+            .parameter_in(ParameterIn::Query)
+            .description(Some(description))
+            .example(Some(example));
+        if name == "repository" {
+            parameter = parameter.required(Required::True);
+        }
+        operation = operation.parameter(parameter);
+    }
+    operation
 }
 
 fn metrics() -> OperationBuilder {

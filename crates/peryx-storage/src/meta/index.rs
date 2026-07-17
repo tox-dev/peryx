@@ -3,7 +3,7 @@ use redb::{ReadableDatabase as _, ReadableTable as _};
 use super::error::MetaError;
 use super::{
     DRIVER_KV, DriverBatch, DriverBlobReference, DriverMutation, JOURNAL, JOURNAL_BLOBS, JOURNAL_MUTATIONS, MetaStore,
-    SERIAL, SERIAL_KEY,
+    POLICY_INPUT_GENERATION, PolicyInputGeneration, SERIAL, SERIAL_KEY,
 };
 
 impl MetaStore {
@@ -143,7 +143,22 @@ impl MetaStore {
         &self,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
-        self.commit_driver_txn_at(None, body)
+        self.commit_driver_txn_at(None, None, body)
+    }
+
+    /// Commit driver rows and publish the catalog generation that produced their policy inputs in
+    /// the same transaction.
+    ///
+    /// # Errors
+    /// Returns the body's error, or a store error mapped into it, if the transaction cannot be read,
+    /// encoded, or committed.
+    pub fn commit_driver_txn_with_catalog_generation<T, E: From<MetaError>>(
+        &self,
+        repository: &str,
+        catalog_generation: u64,
+        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
+    ) -> Result<T, E> {
+        self.commit_driver_txn_at(None, Some((repository, catalog_generation)), body)
     }
 
     /// Apply replicated driver rows and copied journal entries only when the local serial matches
@@ -160,12 +175,13 @@ impl MetaStore {
         expected_serial: u64,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
-        self.commit_driver_txn_at(Some(expected_serial), body)
+        self.commit_driver_txn_at(Some(expected_serial), None, body)
     }
 
     fn commit_driver_txn_at<T, E: From<MetaError>>(
         &self,
         expected_serial: Option<u64>,
+        catalog_generation: Option<(&str, u64)>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
         let txn = self.db.begin_write().map_err(MetaError::from)?;
@@ -224,6 +240,27 @@ impl MetaStore {
                     .map_err(MetaError::from)?;
             }
             serials.insert(SERIAL_KEY, next).map_err(MetaError::from)?;
+        }
+        if let Some((repository, catalog)) = catalog_generation {
+            let mut generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
+            let mut generation = generations
+                .get(repository)
+                .map_err(MetaError::from)?
+                .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
+                .transpose()
+                .map_err(MetaError::from)?
+                .unwrap_or_default();
+            generation.repository = txn
+                .open_table(SERIAL)
+                .map_err(MetaError::from)?
+                .get(SERIAL_KEY)
+                .map_err(MetaError::from)?
+                .map_or(0, |value| value.value());
+            generation.catalog = catalog;
+            let encoded = serde_json::to_vec(&generation).map_err(MetaError::from)?;
+            generations
+                .insert(repository, encoded.as_slice())
+                .map_err(MetaError::from)?;
         }
         txn.commit().map_err(MetaError::from)?;
         Ok(value)
