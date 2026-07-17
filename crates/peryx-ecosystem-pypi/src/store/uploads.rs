@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 
 use super::journal::JournalEntry;
-use super::{OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, metadata_value, override_key, project_key, upload_key};
+use super::{
+    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, metadata_value, override_key, project_key, provenance_key,
+    provenance_value, upload_key,
+};
 use crate::distribution_version_segment;
 
 /// The PEP 658 metadata sibling recorded alongside a published file.
@@ -16,6 +19,14 @@ pub struct MetadataSibling<'a> {
     pub size: u64,
     /// The index that owns it.
     pub source: &'a str,
+}
+
+/// The PEP 740 provenance blob published alongside a distribution that carried attestations.
+pub struct ProvenanceSibling<'a> {
+    /// The provenance blob's own sha256, which serving and the blob reference both key on.
+    pub provenance_sha256: &'a str,
+    /// The provenance blob's byte length.
+    pub size: u64,
 }
 
 /// Everything one published file writes to the store.
@@ -40,6 +51,8 @@ pub struct PublishedFile<'a> {
     pub submitted_at_unix: i64,
     /// The file's metadata sibling, when it has one.
     pub metadata: Option<MetadataSibling<'a>>,
+    /// The file's PEP 740 provenance sibling, when the upload carried valid attestations.
+    pub provenance: Option<ProvenanceSibling<'a>>,
 }
 
 /// Everything one release promotion writes to the store.
@@ -105,6 +118,11 @@ pub fn publish_file_if<E: From<MetaError>>(
                 let value = metadata_value(sibling.url, sibling.metadata_sha256, sibling.source);
                 txn.put(&metadata_key(file.artifact_sha256), value.as_bytes())?;
                 txn.reference_blob(sibling.metadata_sha256, sibling.size);
+            }
+            if let Some(sibling) = &file.provenance {
+                let value = provenance_value(sibling.provenance_sha256, sibling.size);
+                txn.put(&provenance_key(file.artifact_sha256), value.as_bytes())?;
+                txn.reference_blob(sibling.provenance_sha256, sibling.size);
             }
             txn.put(&upload, file.record)?;
             txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
@@ -454,8 +472,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Guard, MetaError, MetaStore, MetadataSibling, PromotedRelease, PublishedFile, UploadMutation, override_key,
-        upload_key,
+        Guard, MetaError, MetaStore, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile,
+        UploadMutation, override_key, upload_key,
     };
     use crate::store::{PypiStore as _, read_journal_entries};
 
@@ -482,6 +500,7 @@ mod tests {
                 size: 8,
                 source: "hosted",
             }),
+            provenance: None,
         }
     }
 
@@ -562,6 +581,47 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_publish_file_if_writes_the_provenance_row_and_references_its_blob() {
+        let (_dir, meta) = store();
+
+        meta.publish_file_if(
+            &PublishedFile {
+                provenance: Some(ProvenanceSibling {
+                    provenance_sha256: "provenance-sha",
+                    size: 16,
+                }),
+                ..published()
+            },
+            |_existing| Ok::<_, MetaError>(Guard::Commit),
+        )
+        .unwrap();
+
+        assert_eq!(
+            meta.get_provenance("artifact-sha").unwrap(),
+            Some(("provenance-sha".to_owned(), 16))
+        );
+        assert!(
+            meta.journal_after(0, 1).unwrap()[0]
+                .blobs
+                .contains(&peryx_storage::meta::DriverBlobReference {
+                    sha256: "provenance-sha".to_owned(),
+                    size: 16,
+                }),
+            "the provenance blob is recorded so a purge keeps it"
+        );
+    }
+
+    #[test]
+    fn test_publish_file_if_without_provenance_writes_no_provenance_row() {
+        let (_dir, meta) = store();
+
+        meta.publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
+            .unwrap();
+
+        assert!(meta.get_provenance("artifact-sha").unwrap().is_none());
     }
 
     #[test]

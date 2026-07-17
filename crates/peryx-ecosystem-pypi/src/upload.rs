@@ -11,6 +11,7 @@ use md5::{Digest as _, Md5};
 use url::Url;
 
 use crate::archive::ValidatedArchive;
+use crate::attestation::{self, AttestationError};
 use crate::{
     CoreMetadata, CoreMetadataDoc, DistributionFilename, DistributionFilenameError, DistributionKind, File,
     MetadataError, Provenance, Yanked, is_valid_name, normalize_name, normalize_name_cow, parse_distribution_filename,
@@ -20,7 +21,7 @@ use peryx_storage::blob::{BlobError, BlobStaged, BlobStorage, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use crate::store::PypiStore as _;
-use crate::store::{Guard, MetadataSibling, PublishedFile};
+use crate::store::{Guard, MetadataSibling, ProvenanceSibling, PublishedFile};
 use serde::{Deserialize, Serialize};
 
 use peryx_core::path::{local_file_url, validate_filename};
@@ -72,6 +73,9 @@ pub struct UploadForm {
     pub blake2_256_digest: Option<String>,
     pub md5_digest: Option<String>,
     pub filename: Option<String>,
+    /// The PEP 740 `attestations` field: a JSON array of attestation objects, when the publisher
+    /// attached any.
+    pub attestations: Option<String>,
 }
 
 /// An upload body staged on disk while the multipart stream was read.
@@ -145,6 +149,8 @@ pub enum UploadError {
     },
     /// The upload time could not be represented as RFC 3339.
     InvalidUploadTime,
+    /// The `attestations` field was malformed or did not bind to the uploaded distribution.
+    Attestation(AttestationError),
 }
 
 /// A validated, content-addressed upload ready to be stored.
@@ -156,6 +162,8 @@ pub struct PreparedUpload {
     pub digest: Digest,
     pub content: BlobStaged,
     pub metadata: Vec<u8>,
+    /// The serialized PEP 740 provenance object, when the upload carried valid attestations.
+    pub provenance: Option<Vec<u8>>,
     pub record: Uploaded,
     pub submitted_at_unix: i64,
 }
@@ -268,19 +276,18 @@ pub fn prepare(
         .or(form_requires_python);
     let upload_time = upload_time(upload_time_unix)?;
     let digest = staged.blob.digest().clone();
-    let file = File {
+    let url = local_file_url(index, digest.as_str(), &filename);
+    let (provenance, provenance_marker) =
+        prepared_provenance(form.attestations.as_deref(), digest.as_str(), &filename, &url)?;
+    let file = uploaded_file(UploadedFile {
         filename: filename.clone(),
-        url: local_file_url(index, digest.as_str(), &filename),
-        hashes: BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+        url,
+        provenance: provenance_marker,
+        digest: &digest,
+        size: staged.blob.len(),
+        upload_time,
         requires_python,
-        size: Some(staged.blob.len()),
-        upload_time: Some(upload_time),
-        yanked: Yanked::No,
-        core_metadata: CoreMetadata::Absent,
-        dist_info_metadata: CoreMetadata::Absent,
-        gpg_sig: None,
-        provenance: Provenance::Absent,
-    };
+    });
     Ok(PreparedUpload {
         normalized,
         display_name: metadata_doc.name,
@@ -288,6 +295,7 @@ pub fn prepare(
         digest,
         content: staged.blob,
         metadata,
+        provenance,
         record: Uploaded {
             version,
             file,
@@ -295,6 +303,52 @@ pub fn prepare(
         },
         submitted_at_unix: upload_time_unix,
     })
+}
+
+/// The pieces a prepared upload's served [`File`] is assembled from.
+struct UploadedFile<'a> {
+    filename: String,
+    url: String,
+    provenance: Provenance,
+    digest: &'a Digest,
+    size: u64,
+    upload_time: String,
+    requires_python: Option<String>,
+}
+
+fn uploaded_file(file: UploadedFile<'_>) -> File {
+    File {
+        filename: file.filename,
+        url: file.url,
+        hashes: BTreeMap::from([("sha256".to_owned(), file.digest.as_str().to_owned())]),
+        requires_python: file.requires_python,
+        size: Some(file.size),
+        upload_time: Some(file.upload_time),
+        yanked: Yanked::No,
+        core_metadata: CoreMetadata::Absent,
+        dist_info_metadata: CoreMetadata::Absent,
+        gpg_sig: None,
+        provenance: file.provenance,
+    }
+}
+
+/// Validate any attached PEP 740 attestations and, when present, return the provenance object to
+/// store and the `Provenance::Url` marker the file advertises. An empty or absent field publishes
+/// no provenance.
+fn prepared_provenance(
+    attestations: Option<&str>,
+    sha256: &str,
+    filename: &str,
+    url: &str,
+) -> Result<(Option<Vec<u8>>, Provenance), UploadError> {
+    let Some(attestations) = attestations.filter(|field| !field.trim().is_empty()) else {
+        return Ok((None, Provenance::Absent));
+    };
+    let provenance = attestation::build_provenance(attestations, sha256, filename).map_err(UploadError::Attestation)?;
+    Ok((
+        Some(provenance),
+        Provenance::Url(format!("{url}{}", attestation::PROVENANCE_SUFFIX)),
+    ))
 }
 
 /// Persist a validated upload into a local store. Returns `false` when the same file and digest are
@@ -310,10 +364,18 @@ pub async fn store_prepared(
 ) -> Result<bool, UploadStoreError> {
     let metadata = blobs.stage_bytes(&prepared.metadata).await?;
     let metadata_digest = metadata.digest().clone();
+    let provenance = match &prepared.provenance {
+        Some(bytes) => Some(blobs.stage_bytes(bytes).await?),
+        None => None,
+    };
+    let provenance_ref = provenance.as_ref().map(staged_reference);
     let (content, record) = split_prepared(prepared);
     content.commit().await?;
     metadata.commit().await?;
-    store_record(meta, name, record, &metadata_digest)
+    if let Some(provenance) = provenance {
+        provenance.commit().await?;
+    }
+    store_record(meta, name, record, &metadata_digest, provenance_ref.as_ref())
 }
 
 /// Blocking counterpart for offline import commands.
@@ -329,10 +391,24 @@ pub fn store_prepared_blocking(
     let blocking = blobs.blocking();
     let metadata = blocking.stage_bytes(&prepared.metadata)?;
     let metadata_digest = metadata.digest().clone();
+    let provenance = prepared
+        .provenance
+        .as_deref()
+        .map(|bytes| blocking.stage_bytes(bytes))
+        .transpose()?;
+    let provenance_ref = provenance.as_ref().map(staged_reference);
     let (content, record) = split_prepared(prepared);
     blocking.commit(content)?;
     blocking.commit(metadata)?;
-    store_record(meta, name, record, &metadata_digest)
+    if let Some(provenance) = provenance {
+        blocking.commit(provenance)?;
+    }
+    store_record(meta, name, record, &metadata_digest, provenance_ref.as_ref())
+}
+
+/// The digest and byte length a staged provenance blob contributes to its store record.
+fn staged_reference(blob: &BlobStaged) -> (Digest, u64) {
+    (blob.digest().clone(), blob.len())
 }
 
 fn split_prepared(prepared: PreparedUpload) -> (BlobStaged, PreparedRecord) {
@@ -343,6 +419,7 @@ fn split_prepared(prepared: PreparedUpload) -> (BlobStaged, PreparedRecord) {
         digest,
         content,
         metadata,
+        provenance: _,
         record,
         submitted_at_unix,
     } = prepared;
@@ -367,6 +444,7 @@ fn store_record(
     name: &str,
     prepared: PreparedRecord,
     metadata_digest: &Digest,
+    provenance: Option<&(Digest, u64)>,
 ) -> Result<bool, UploadStoreError> {
     let PreparedRecord {
         normalized,
@@ -397,6 +475,10 @@ fn store_record(
                 metadata_sha256: metadata_digest.as_str(),
                 size: metadata.len() as u64,
                 source: name,
+            }),
+            provenance: provenance.map(|(digest, size)| ProvenanceSibling {
+                provenance_sha256: digest.as_str(),
+                size: *size,
             }),
         },
         |existing| upload_conflict(existing, content_digest.as_str(), &filename),

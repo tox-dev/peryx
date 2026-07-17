@@ -8,6 +8,8 @@ mod admin;
 #[cfg(feature = "serving")]
 pub mod archive;
 #[cfg(feature = "serving")]
+pub mod attestation;
+#[cfg(feature = "serving")]
 pub mod cache;
 #[cfg(feature = "serving")]
 pub mod catalog;

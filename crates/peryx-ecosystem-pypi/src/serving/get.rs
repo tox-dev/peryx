@@ -26,9 +26,10 @@ use crate::policy::PypiPolicy;
 use super::inspect::inspect_route;
 use super::response::{
     CacheContext, cache_error_response, detail_response, file_response, html_bytes_response, index_response,
-    json_bytes_response, legacy_bytes_response, legacy_json_response, policy_denial_response,
+    json_bytes_response, legacy_bytes_response, legacy_json_response, policy_denial_response, provenance_response,
 };
-use super::{Format, METADATA_FAMILY, negotiate, path_error_response, safe_filename};
+use super::{Format, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_response, safe_filename};
+use crate::attestation;
 
 /// `GET /{route}/...` serves the project list, project detail, or a file/metadata download for the
 /// index the neutral router already resolved to `position`. The peryx-owned `+api`/`+search` routes run
@@ -223,6 +224,18 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
         return file_response(
             cache::metadata_bytes(state, &digest, &route, &filename).await,
             CacheContext::metadata(&route, digest.as_str(), &filename),
+        );
+    }
+    if filename.ends_with(attestation::PROVENANCE_SUFFIX) {
+        state.metrics.record(Event::Ecosystem {
+            route: route.clone(),
+            project: crate::project_of_filename(&filename),
+            filename: Some(filename.clone()),
+            family: PROVENANCE_FAMILY.key,
+        });
+        return provenance_response(
+            cache::provenance_bytes(state, &digest).await,
+            CacheContext::provenance(&route, digest.as_str(), &filename),
         );
     }
     let etag = format!("\"{}\"", digest.as_str());

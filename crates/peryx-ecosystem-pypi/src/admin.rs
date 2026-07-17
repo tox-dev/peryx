@@ -58,7 +58,25 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
         Ok::<(), String>(())
     })
     .map_err(crate::error_message)?;
+    meta.scan_provenance_records(|digest, value| {
+        let Some(provenance_digest) = valid_provenance(digest, value) else {
+            return Err(format!("invalid provenance record for digest {digest:?}"));
+        };
+        digests.insert(provenance_digest.to_owned());
+        Ok(())
+    })
+    .map_err(crate::error_message)?;
     Ok(digests)
+}
+
+/// The provenance blob digest a record names, when both its artifact key and its blob digest are
+/// valid sha256 hex.
+fn valid_provenance<'a>(artifact_digest: &str, value: &'a str) -> Option<&'a str> {
+    let (provenance_digest, size) = value.split_once('\n')?;
+    (Digest::from_hex(artifact_digest).is_some()
+        && Digest::from_hex(provenance_digest).is_some()
+        && size.parse::<u64>().is_ok())
+    .then_some(provenance_digest)
 }
 
 /// This driver's cached index pages, each key split into `(index, project)`, for `cache list`/`cache
@@ -96,6 +114,7 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
     let mut projects = 0_u64;
     let mut uploads = 0_u64;
     let mut overrides = 0_u64;
+    let mut provenance = 0_u64;
     meta.scan_file_urls(|_digest, _value| {
         file_urls += 1;
         Ok::<(), std::convert::Infallible>(())
@@ -121,12 +140,18 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
         Ok::<(), std::convert::Infallible>(())
     })
     .map_err(crate::error_message)?;
+    meta.scan_provenance_records(|_digest, _value| {
+        provenance += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(crate::error_message)?;
     Ok(vec![
         ("file_url_records".to_owned(), file_urls),
         ("metadata_records".to_owned(), metadata),
         ("project_records".to_owned(), projects),
         ("upload_records".to_owned(), uploads),
         ("override_records".to_owned(), overrides),
+        ("provenance_records".to_owned(), provenance),
     ])
 }
 
@@ -266,6 +291,7 @@ pub fn purge_project(meta: &MetaStore, index: &str, project: &str, apply: bool) 
             ("project_records".to_owned(), counts.project_records as u64),
             ("file_url_records".to_owned(), counts.file_url_records as u64),
             ("metadata_records".to_owned(), counts.metadata_records as u64),
+            ("provenance_records".to_owned(), counts.provenance_records as u64),
         ],
     })
 }
@@ -404,6 +430,14 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         if !valid_upload_key(key) || !matches!(kind, "hidden" | "yanked") {
             problems += 1;
             writeln!(out, "metadata\toverride\t{key}\tinvalid record")?;
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .map_err(crate::error_message)?;
+    meta.scan_provenance_records(|digest, value| {
+        if valid_provenance(digest, value).is_none() {
+            problems += 1;
+            writeln!(out, "metadata\tprovenance\t{digest}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })

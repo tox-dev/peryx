@@ -16,6 +16,8 @@ each endpoint down with copyable example requests and responses.
 - `GET /{route}/{project}/{version}/json`: legacy PyPI release JSON for one version.
 - `GET /{route}/files/{sha256}/{filename}`: artifact download, cached content-addressed.
 - `GET /{route}/files/{sha256}/{filename}.metadata`: [PEP 658](https://peps.python.org/pep-0658/) core-metadata sibling.
+- `GET /{route}/files/{sha256}/{filename}.provenance`: [PEP 740](https://peps.python.org/pep-0740/) provenance object
+  (`application/vnd.pypi.integrity.v1+json`), served for a file uploaded with attestations.
 - `POST /{route}/`: upload ([legacy API](https://docs.pypi.org/api/upload/), used by
   [twine](https://twine.readthedocs.io/) and `uv publish`).
 - `GET /{route}/+api`: index discovery, absolute URLs, capabilities, and redacted client config.
@@ -213,6 +215,7 @@ and role are summed before rendering. Each family is scoped to the role that rep
 - Hosted indexes only: `peryx_artifacts_uploaded_total`.
 - Ecosystem families: `peryx_metadata_served_total` is PyPI's PEP 658/714 `.metadata` sibling counter. A rising value
   proves clients resolve through the metadata fast path instead of downloading artifacts.
+  `peryx_provenance_served_total` is the PEP 740 provenance-object counter.
 
 The label vocabulary is fixed by peryx: five request classes, two ecosystems, and three roles. Repository names, package
 names, user or actor identifiers, request paths, raw errors, credentials, tokens, and URLs never become metric names or

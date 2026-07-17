@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
 
-use super::{FILE_PREFIX, METADATA_PREFIX, file_key, file_source_value, metadata_key, metadata_value};
+use super::{
+    FILE_PREFIX, METADATA_PREFIX, PROVENANCE_PREFIX, file_key, file_source_value, metadata_key, metadata_value,
+    provenance_key, provenance_value,
+};
 
 /// The upstream source for a cached artifact digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +127,57 @@ pub fn scan_metadata_records<E>(
         }
     }
     Ok(())
+}
+
+/// Record a distribution's PEP 740 provenance sibling: keyed by the artifact's digest, storing the
+/// provenance blob's own sha256 and its byte length.
+///
+/// # Errors
+/// Returns a store error if the write fails.
+pub fn put_provenance(
+    meta: &MetaStore,
+    artifact_sha256: &str,
+    provenance_sha256: &str,
+    size: u64,
+) -> Result<(), MetaError> {
+    meta.put_driver_value(
+        &provenance_key(artifact_sha256),
+        provenance_value(provenance_sha256, size).as_bytes(),
+    )
+}
+
+/// Look up an artifact's provenance sibling: `(provenance sha256, byte length)`.
+///
+/// # Errors
+/// Returns a store error if the read fails.
+pub fn get_provenance(meta: &MetaStore, artifact_sha256: &str) -> Result<Option<(String, u64)>, MetaError> {
+    Ok(meta
+        .get_driver_value(&provenance_key(artifact_sha256))?
+        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|value| split_provenance(&value)))
+}
+
+/// Visit raw provenance records, keyed by artifact digest.
+///
+/// # Errors
+/// Returns a scan error if the store read fails or the visitor returns an error.
+pub fn scan_provenance_records<E>(
+    meta: &MetaStore,
+    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+) -> Result<(), MetaScanError<E>> {
+    for key in meta.driver_prefix_keys(PROVENANCE_PREFIX)? {
+        if let Some(value) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
+            visit(&key[PROVENANCE_PREFIX.len()..], &value).map_err(MetaScanError::Visit)?;
+        }
+    }
+    Ok(())
+}
+
+/// Split a provenance value into `(provenance sha256, byte length)`, rejecting a record missing
+/// either field.
+fn split_provenance(value: &str) -> Option<(String, u64)> {
+    let (sha256, size) = value.split_once('\n')?;
+    Some((sha256.to_owned(), size.parse().ok()?))
 }
 
 fn split_file_source(value: &str) -> Option<FileSource> {

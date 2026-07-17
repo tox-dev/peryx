@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key,
-    project_key, project_status_key,
+    project_key, project_status_key, provenance_key,
 };
 
 const CATALOG_DELETE_BATCH: usize = 10_000;
@@ -243,6 +243,7 @@ pub struct ProjectCachePurgeCounts {
     pub project_status_records: usize,
     pub file_url_records: usize,
     pub metadata_records: usize,
+    pub provenance_records: usize,
 }
 
 /// Record that `display` (a project's display name) has been observed on `index`, keyed by its
@@ -328,12 +329,18 @@ pub fn count_project_cache_purge(
     for digest in metadata_digests {
         metadata_records += usize::from(meta.get_driver_value(&metadata_key(digest))?.is_some());
     }
+    // Provenance is keyed by the artifact's own digest, the same key space the file-URL rows use.
+    let mut provenance_records = 0;
+    for digest in file_digests {
+        provenance_records += usize::from(meta.get_driver_value(&provenance_key(digest))?.is_some());
+    }
     Ok(ProjectCachePurgeCounts {
         index_pages: usize::from(meta.get_driver_value(&index_key(&key))?.is_some()),
         project_records: usize::from(meta.get_driver_value(&project_key(index, normalized))?.is_some()),
         project_status_records: usize::from(meta.get_driver_value(&project_status_key(index, normalized))?.is_some()),
         file_url_records,
         metadata_records,
+        provenance_records,
     })
 }
 
@@ -360,6 +367,9 @@ pub fn delete_project_cache(
     }
     for digest in metadata_digests {
         batch.delete(metadata_key(digest));
+    }
+    for digest in file_digests {
+        batch.delete(provenance_key(digest));
     }
     meta.commit_driver_batch(&batch, true)?;
     Ok(counts)
@@ -556,6 +566,7 @@ mod tests {
             project_status_records: 1,
             file_url_records: 1,
             metadata_records: 1,
+            provenance_records: 0,
         };
         assert_eq!(
             meta.count_project_cache_purge("pypi", "flask", &file_digests, &metadata_digests)

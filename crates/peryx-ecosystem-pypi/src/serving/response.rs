@@ -146,6 +146,22 @@ pub fn file_response(result: Result<bytes::Bytes, CacheError>, context: CacheCon
     }
 }
 
+/// Map a provenance-bytes result to a response, tagged with the PEP 740 integrity media type and the
+/// same immutable caching a distribution's other digest-addressed representations carry.
+pub fn provenance_response(result: Result<bytes::Bytes, CacheError>, context: CacheContext<'_>) -> Response {
+    match result {
+        Ok(body) => (
+            [
+                (header::CONTENT_TYPE, crate::attestation::PROVENANCE_MEDIA_TYPE),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(err) => cache_error_response(&err, context),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct CacheContext<'a> {
     operation: &'static str,
@@ -189,6 +205,16 @@ impl<'a> CacheContext<'a> {
     pub(super) const fn metadata(index: &'a str, digest: &'a str, filename: &'a str) -> Self {
         Self {
             operation: "metadata fetch",
+            index: Some(index),
+            project: None,
+            digest: Some(digest),
+            filename: Some(filename),
+        }
+    }
+
+    pub(super) const fn provenance(index: &'a str, digest: &'a str, filename: &'a str) -> Self {
+        Self {
+            operation: "provenance fetch",
             index: Some(index),
             project: None,
             digest: Some(digest),

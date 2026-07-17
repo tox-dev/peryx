@@ -31,6 +31,7 @@ use peryx_identity::{
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 
+use crate::attestation;
 use crate::cache::{self};
 use crate::discovery;
 
@@ -201,7 +202,17 @@ const METADATA_FAMILY: MetricFamily = MetricFamily {
     roles: &[Role::Cached, Role::Hosted, Role::Virtual],
 };
 
-const PYPI_FAMILIES: &[MetricFamily] = &[METADATA_FAMILY];
+/// The PEP 740 provenance object: a distribution's uploaded attestations, served alongside the file
+/// by any role that serves files, so it is not role-scoped.
+const PROVENANCE_FAMILY: MetricFamily = MetricFamily {
+    key: "provenance",
+    prom_name: "peryx_provenance_served_total",
+    help: "PEP 740 provenance objects served.",
+    ui_label: "PEP 740 provenance hits",
+    roles: &[Role::Cached, Role::Hosted, Role::Virtual],
+};
+
+const PYPI_FAMILIES: &[MetricFamily] = &[METADATA_FAMILY, PROVENANCE_FAMILY];
 
 #[async_trait]
 impl EcosystemDriver for PypiServing {
@@ -249,7 +260,7 @@ impl EcosystemDriver for PypiServing {
     /// `files/` or `inspect/` path is an artifact, and everything else is a project listing.
     fn classify_route(&self, path: &str) -> RouteClass {
         let path = path.trim_start_matches('/');
-        if path.contains("/files/") && path.ends_with(".metadata") {
+        if path.contains("/files/") && (path.ends_with(".metadata") || path.ends_with(attestation::PROVENANCE_SUFFIX)) {
             RouteClass::Metadata
         } else if path.contains("/files/") || path.contains("/inspect/") {
             RouteClass::Artifact

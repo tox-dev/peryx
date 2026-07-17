@@ -202,6 +202,51 @@ This does not loosen anything. A real yank still needs its `.../yank` suffix beh
 the token and a volatile hosted layer. peryx stopped treating a lone verb as an action; it did not stop treating a
 suffixed verb as one.
 
+## Hosted attestations
+
+peryx accepts [PEP 740](https://peps.python.org/pep-0740/) attestations attached to a hosted upload, binds each one to
+the distribution it rode in with, stores the bundle, and serves it back as a provenance object on the Simple API. A
+publisher that attaches attestations to a `twine upload` against pypi.org attaches them the same way against peryx.
+
+### The binding peryx enforces
+
+peryx does not verify Sigstore signatures, certificate identities, or transparency-log inclusion; those are the
+consumer's to check, and a build-service identity policy is out of scope. What peryx enforces is the binding a consumer
+relies on before it ever looks at a signature: every attestation must name *this* distribution. Each attestation's
+in-toto subject has to carry the uploaded file's SHA-256 digest, and if it names a filename, that filename has to be the
+one being uploaded. An attestation whose subject digest is for some other file, or whose subject names a different
+wheel, is a bundle issued for a different artifact, and peryx rejects it.
+
+That binding is the whole point of storing the attestation next to the file: a client that fetches the provenance knows
+it describes the bytes it downloaded, not a look-alike an attacker swapped in. Everything past the binding — the
+certificate chain, the log proofs, the predicate — peryx keeps verbatim and hands to the verifier without interpreting.
+
+### Publish is all-or-nothing
+
+The attestation and the distribution publish in one transaction, so a bad bundle takes both down with it. A subject
+mismatch, a malformed envelope, a statement that is not valid base64 or not a valid in-toto statement, an unsupported
+version, a bundle nested past the JSON parser's depth limit, or a field over its size limit — any of these fails the
+upload with a `400`, and neither the file nor its provenance becomes visible. There is no half-published state where the
+wheel is installable but its provenance is missing, or the reverse.
+
+### What visibility does to the association
+
+The provenance follows the distribution's visibility, because it is only ever reachable through the file's advertised
+provenance URL. Yank a release and its files stay on the page (marked yanked) with their provenance URLs intact. Trash a
+file and it drops off every served page, and its provenance link goes with it. Restore it and both come back — the
+provenance blob is kept through the trash, keyed by the artifact's own digest, so a restore never has to re-derive it.
+The association a client sees always matches what the index is willing to serve.
+
+### The threat model, briefly
+
+Untrusted input arrives in the `attestations` field: attacker-controlled JSON, an attacker-chosen certificate, an
+attacker-written predicate. peryx bounds it before it parses it (aggregate field size, per-attestation size, statement
+size, parser depth) so a hostile bundle cannot exhaust memory or stack. It never interprets the predicate or the
+verification material; it stores them as opaque bytes and serves them only inside the JSON provenance body, where
+metacharacters stay inert string data. The provenance URL is peryx's own digest-addressed route, so nothing an uploader
+controls reaches the HTML page except through that fixed, escaped attribute. peryx holds no signing material at any
+point; it stores and serves what a publisher signed elsewhere.
+
 ## In practice
 
 - The exact accept and reject rules, tables, and error strings: [upload rules](@/ecosystems/pypi/reference/uploads.md)

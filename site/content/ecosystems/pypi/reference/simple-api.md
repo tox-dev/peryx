@@ -113,6 +113,27 @@ For a content-addressed file, peryx serves exactly two things under its file rou
 which peryx has replaced with its own for a content-addressed file, so dropping the marker keeps the page honest about
 what is reachable.
 
+## Provenance and attestations
+
+A file uploaded with [PEP 740](https://peps.python.org/pep-0740/) attestations advertises a provenance object; a file
+without them advertises none. `{route}` below is the index's route.
+
+| Surface      | Key / attribute   | With attestations                               | Without |
+| ------------ | ----------------- | ----------------------------------------------- | ------- |
+| PEP 691 JSON | `provenance`      | `/{route}/files/{sha256}/{filename}.provenance` | omitted |
+| PEP 503 HTML | `data-provenance` | the same URL, as an escaped attribute           | omitted |
+
+- **Route.** `GET /{route}/files/{sha256}/{filename}.provenance` returns the provenance object, resolved from the
+  artifact's SHA-256 by a single keyed lookup. Media type `application/vnd.pypi.integrity.v1+json`, cached immutable. A
+  digest with no stored provenance returns `404`.
+- **Body.** `{"version": 1, "attestation_bundles": [{"publisher": null, "attestations": [...]}]}`. The `publisher` is
+  `null` — peryx does not resolve a Trusted Publisher identity. The uploaded attestations are served verbatim.
+- **Upstream provenance.** A `provenance` URL a cached upstream advertises is preserved as-is, pointing at the upstream;
+  peryx only mints its own provenance URL for a distribution uploaded to a hosted index with attestations.
+- **Visibility.** The provenance is reachable only through the file's `provenance` URL, so it tracks the file: a yanked
+  file keeps it, a trashed file drops it, a restore returns it. The upload rules cover the
+  [validation and limits](@/ecosystems/pypi/reference/uploads.md#attestations).
+
 ## Trailing-slash redirects
 
 The [Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) canonical URLs end in a

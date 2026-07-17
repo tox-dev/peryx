@@ -124,6 +124,45 @@ peryx does not advertise MD5 downstream. The simple-index entry for a stored fil
 so clients read and verify the artifact by SHA-256 regardless of which digest the uploader declared. MD5 is a weak hash;
 peryx accepts it on upload for parity with the index it fronts, not as a content guarantee it re-serves.
 
+## Attestations
+
+The upload multipart form may carry an `attestations` field: a JSON array of
+[PEP 740](https://peps.python.org/pep-0740/) attestation objects. When present and valid, peryx stores the bundle and
+publishes a `provenance` URL on the file's Simple API entry; when absent, the file publishes with no provenance.
+
+### What peryx validates
+
+Validation binds every attestation to the uploaded distribution and bounds the untrusted input. peryx does not verify
+signatures, certificates, or transparency-log inclusion.
+
+| Check                | Rule                                                                             |
+| -------------------- | -------------------------------------------------------------------------------- |
+| Field shape          | A JSON array of at least one object; at most 32 attestations                     |
+| Version              | Each attestation's `version` is `1`                                              |
+| Envelope             | `envelope.statement` is base64 that decodes to a valid in-toto statement         |
+| Subject digest       | Some subject's `digest.sha256` equals the uploaded file's SHA-256                |
+| Subject name         | If that subject names a file, the name equals the upload filename                |
+| Per-attestation size | Each attestation is at most 256 KiB                                              |
+| Aggregate field size | The whole `attestations` field is at most 1 MiB                                  |
+| Statement size       | A decoded statement is at most 64 KiB                                            |
+| Parser depth         | The field must parse within the JSON recursion limit; deeper nesting is rejected |
+
+### Publication is atomic
+
+A valid bundle and its distribution publish in one transaction. Any validation failure returns `400` and publishes
+neither the file nor its provenance. The `400` body names the offending attestation by index and the reason, for example
+`attestation 0 subject digest does not match the uploaded distribution` or
+`attestations field carries 40 attestations; at most 32 are accepted`.
+
+### What peryx stores and serves
+
+peryx wraps the accepted attestations into a provenance object
+`{"version": 1, "attestation_bundles": [{"publisher": null, "attestations": [...]}]}`, stores it content-addressed in
+the blob store keyed by the artifact's digest, and serves it at `.../files/{sha256}/{filename}.provenance` with media
+type `application/vnd.pypi.integrity.v1+json`. The `publisher` is `null` because peryx does not resolve a Trusted
+Publisher identity. See [Simple API serving](@/ecosystems/pypi/reference/simple-api.md#provenance-and-attestations) for
+the served shape.
+
 ## Version matching for admin operations
 
 The version-scoped admin operations address a release by version: yank, un-yank, delete, and promote. Each reads the

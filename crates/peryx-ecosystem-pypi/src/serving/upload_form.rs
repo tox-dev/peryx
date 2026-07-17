@@ -18,6 +18,11 @@ use super::response::policy_denial_response;
 
 const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
 
+/// The aggregate cap on the PEP 740 `attestations` field. A bundle carries certificates and
+/// transparency proofs, so it needs more room than a metadata line, but this bounds what one
+/// untrusted field can buffer before parsing splits it into per-attestation limits.
+const MAX_ATTESTATIONS_FIELD_BYTES: usize = 1024 * 1024;
+
 /// Drain a multipart body into an [`UploadForm`], staging the `content` part on disk while the rest
 /// stays as UTF-8 text. Unknown fields are ignored, as the upload API carries many metadata fields
 /// peryx does not need. Every read or decode error funnels through [`reject`] as a 400.
@@ -37,7 +42,7 @@ pub(super) async fn collect_form(
             form.filename = field.file_name().map(str::to_owned);
             staged = Some(stage_content(field, blobs, max_file_size, &form).await?);
         } else if let Some(upload_field) = upload_text_field(&field_name) {
-            let value = read_text_field(field, &field_name).await?;
+            let value = read_text_field(field, &field_name, text_field_limit(upload_field)).await?;
             set_upload_text_field(&mut form, upload_field, value);
         } else {
             drain_field(field).await?;
@@ -63,6 +68,16 @@ enum UploadTextField {
     Sha256Digest,
     Blake2Digest,
     Md5Digest,
+    Attestations,
+}
+
+/// The byte cap for a text field. The `attestations` bundle gets its own aggregate ceiling; every
+/// other field is a short metadata line.
+const fn text_field_limit(field: UploadTextField) -> usize {
+    match field {
+        UploadTextField::Attestations => MAX_ATTESTATIONS_FIELD_BYTES,
+        _ => MAX_UPLOAD_TEXT_FIELD_BYTES,
+    }
 }
 
 fn upload_text_field(name: &str) -> Option<UploadTextField> {
@@ -82,6 +97,7 @@ fn upload_text_field(name: &str) -> Option<UploadTextField> {
         "sha256_digest" => Some(UploadTextField::Sha256Digest),
         "blake2_256_digest" => Some(UploadTextField::Blake2Digest),
         "md5_digest" => Some(UploadTextField::Md5Digest),
+        "attestations" => Some(UploadTextField::Attestations),
         _ => None,
     }
 }
@@ -103,16 +119,21 @@ fn set_upload_text_field(form: &mut UploadForm, field: UploadTextField, value: S
         UploadTextField::Sha256Digest => form.sha256_digest = Some(value),
         UploadTextField::Blake2Digest => form.blake2_256_digest = Some(value),
         UploadTextField::Md5Digest => form.md5_digest = Some(value),
+        UploadTextField::Attestations => form.attestations = Some(value),
     }
 }
 
-async fn read_text_field(mut field: axum::extract::multipart::Field<'_>, name: &str) -> Result<String, Response> {
+async fn read_text_field(
+    mut field: axum::extract::multipart::Field<'_>,
+    name: &str,
+    limit: usize,
+) -> Result<String, Response> {
     let mut bytes = Vec::new();
     while let Some(chunk) = field.chunk().await.map_err(reject)? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_UPLOAD_TEXT_FIELD_BYTES {
+        if bytes.len().saturating_add(chunk.len()) > limit {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("upload field {name:?} exceeds {MAX_UPLOAD_TEXT_FIELD_BYTES} bytes"),
+                format!("upload field {name:?} exceeds {limit} bytes"),
             )
                 .into_response());
         }
@@ -290,12 +311,7 @@ pub(super) fn upload_error_message(err: &UploadError) -> (StatusCode, String) {
             StatusCode::BAD_REQUEST,
             "artifact metadata is missing required Metadata-Version".to_owned(),
         ),
-        UploadError::UnsupportedMetadataVersion(value) => (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "invalid metadata Metadata-Version {value:?}: supported values are 1.0 through 1.2 and 2.1 through 2.6"
-            ),
-        ),
+        UploadError::UnsupportedMetadataVersion(value) => unsupported_metadata_version_message(value),
         UploadError::InvalidMetadataValue { field, value, reason } => (
             StatusCode::BAD_REQUEST,
             format!("metadata {field} value {value:?} {reason}"),
@@ -315,7 +331,17 @@ pub(super) fn upload_error_message(err: &UploadError) -> (StatusCode, String) {
             StatusCode::INTERNAL_SERVER_ERROR,
             "configured clock produced an invalid upload timestamp".to_owned(),
         ),
+        UploadError::Attestation(error) => (StatusCode::BAD_REQUEST, error.message()),
     }
+}
+
+fn unsupported_metadata_version_message(value: &str) -> (StatusCode, String) {
+    (
+        StatusCode::BAD_REQUEST,
+        format!(
+            "invalid metadata Metadata-Version {value:?}: supported values are 1.0 through 1.2 and 2.1 through 2.6"
+        ),
+    )
 }
 
 fn upload_metadata_field_mismatch_message(field: &str, metadata: &str, form: &str) -> (StatusCode, String) {

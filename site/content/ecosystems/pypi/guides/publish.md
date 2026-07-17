@@ -222,6 +222,59 @@ offline setup, print the same snippet from the config file:
 peryx config-snippet --base-url http://127.0.0.1:4433 --index root/pypi .pypirc
 ```
 
+## Publish with attestations
+
+peryx accepts [PEP 740](https://peps.python.org/pep-0740/) attestations attached to a hosted upload, binds each one to
+the distribution, and serves it as provenance on the Simple API. The attestations are generated where the build runs;
+peryx stores and serves what you signed, without holding any signing material.
+
+### From GitHub Actions
+
+`pypa/gh-action-pypi-publish` signs each distribution with the workflow's OIDC identity and uploads the attestations
+alongside the files. Point it at your peryx index and turn attestations on:
+
+```yaml
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # mint the OIDC token the attestation is signed with
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: dist, path: dist/}
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://peryx.example/root/pypi/
+          attestations: true
+          password: ${{ secrets.PERYX_TOKEN }}
+```
+
+### From twine
+
+[twine](https://twine.readthedocs.io/) 6.1+ generates and uploads attestations when you pass `--attestations` (it needs
+an ambient OIDC identity, so this runs in CI, not on a laptop):
+
+```shell
+twine upload --attestations -r peryx dist/*
+```
+
+### Confirm the provenance
+
+After a successful upload, the file's Simple API entry carries a `provenance` URL; fetch it to see the bundle:
+
+```shell
+curl -s https://peryx.example/root/pypi/simple/mypkg/ \
+  -H 'Accept: application/vnd.pypi.simple.v1+json' | jq '.files[].provenance'
+# https://peryx.example/root/pypi/files/<sha256>/mypkg-1.0-py3-none-any.whl.provenance
+
+curl -s https://peryx.example/root/pypi/files/<sha256>/mypkg-1.0-py3-none-any.whl.provenance | jq '.version'
+# 1
+```
+
+An attestation whose subject digest or filename does not match the distribution fails the upload with `400`, and neither
+the file nor its provenance is published. The [upload rules](@/ecosystems/pypi/reference/uploads.md#attestations) list
+every check and limit.
+
 ## Upload failures
 
 Validation failures return `400` with the field or archive check that failed. Common causes:
@@ -233,6 +286,7 @@ Validation failures return `400` with the field or archive check that failed. Co
 - A Metadata 2.4+ sdist lists a `License-File` that is missing from the archive.
 - A declared sha256 or blake2b-256 digest does not match the received bytes.
 - The same filename was already uploaded with different bytes.
+- An attached attestation does not bind to the distribution, or the `attestations` field is malformed or oversized.
 
 ## Related
 

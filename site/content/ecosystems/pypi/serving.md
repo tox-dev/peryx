@@ -100,6 +100,39 @@ because the upstream `.asc` is still reachable next to that URL. Pass-through ha
 content-address the file by and so leaves the URL alone. There the marker is still true, so peryx passes it through
 untouched. The marker tracks one fact only: whether the URL peryx hands out has a signature next to it.
 
+## Provenance and attestations
+
+A file uploaded with [PEP 740](https://peps.python.org/pep-0740/) attestations carries a `provenance` key on its Simple
+API entry (a `data-provenance` attribute in HTML), pointing at the provenance object peryx serves for that distribution.
+The URL is peryx's own, alongside the file's download URL: `.../files/{sha256}/{filename}.provenance`, the same
+digest-addressed shape as the `.metadata` sibling.
+
+### Served by digest, not by history
+
+The provenance route resolves the distribution's stored bundle from the artifact's SHA-256 alone, a single keyed lookup,
+never a scan of the project's releases. That keeps a provenance fetch as cheap as a metadata fetch no matter how many
+versions a project has, and it is why the provenance is keyed by the file's own digest rather than by project and
+version. The response is the provenance object — `{"version": 1, "attestation_bundles": [...]}` — served with the
+`application/vnd.pypi.integrity.v1+json` media type PEP 740 assigns it, and cached as immutable, because a digest names
+exactly one set of bytes.
+
+### What the bundle holds
+
+peryx wraps the attestations a publisher uploaded into one provenance object. The `publisher` field is `null`: peryx
+does not resolve the uploader to a Trusted Publisher identity, and PEP 740 makes the field nullable for exactly that
+case. The attestations themselves — envelope, signature, certificate, transparency entries, predicate — are served back
+verbatim, so a verifier sees precisely what was signed. peryx stores the bundle in its blob store, content-addressed,
+with a small digest-keyed pointer row, the way it stores a PEP 658 metadata sibling; the metadata store never buffers
+the whole bundle.
+
+### Visibility tracks the distribution
+
+The provenance is reachable only through the file's advertised `provenance` URL, so it appears and disappears with the
+file. A yanked file keeps its provenance (it is still served, just marked yanked); a trashed file loses it from every
+page; a restore brings it back, since the bundle is kept through the trash and re-advertised with the file. A direct
+fetch of a provenance URL for a distribution the index no longer holds returns `404`, the same as a fetch for the file
+itself would.
+
 ## The canonical trailing slash
 
 A Simple API index is `.../simple/` and a project is `.../simple/{project}/`. Both end in a slash. Ask for either

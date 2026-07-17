@@ -285,7 +285,10 @@ pub async fn project_status(
 /// # Errors
 /// Returns [`CacheError`] when the store cannot be read.
 pub fn download_status(state: &ServingState, index: &Index, filename: &str) -> Result<ProjectStatus, CacheError> {
-    let artifact = filename.strip_suffix(".metadata").unwrap_or(filename);
+    let artifact = filename
+        .strip_suffix(".metadata")
+        .or_else(|| filename.strip_suffix(crate::attestation::PROVENANCE_SUFFIX))
+        .unwrap_or(filename);
     let Ok(parsed) = parse_distribution_filename(artifact) else {
         return Ok(ProjectStatus::Active);
     };

@@ -17,8 +17,8 @@ mod summary;
 mod uploads;
 
 pub use files::{
-    FileSource, get_file_url, get_metadata, get_metadata_digests, put_file_url, put_metadata, scan_file_urls,
-    scan_metadata_records,
+    FileSource, get_file_url, get_metadata, get_metadata_digests, get_provenance, put_file_url, put_metadata,
+    put_provenance, scan_file_urls, scan_metadata_records, scan_provenance_records,
 };
 pub use index::{
     get_index, get_project_status, list_index_pages, put_cached_page, put_index, scan_index_pages, scan_index_records,
@@ -36,9 +36,9 @@ pub use projects::{
 pub use record::{CachedIndex, CachedIndexPage, CachedIndexSummary, FreshnessOverlay, ProjectStatusRecord};
 pub use summary::summarize_indexes;
 pub use uploads::{
-    Guard, MetadataSibling, PromotedRelease, PublishedFile, UploadMutation, delete_override, delete_upload,
-    list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if, put_override,
-    put_upload, scan_override_records, scan_upload_records,
+    Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, UploadMutation, delete_override,
+    delete_upload, list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if,
+    put_override, put_upload, scan_override_records, scan_upload_records,
 };
 
 /// The former `index_document` table: cached simple-index pages, keyed by the caller's route key.
@@ -50,6 +50,9 @@ const FRESHNESS_PREFIX: &str = "pypi\u{0}h\u{0}";
 const FILE_PREFIX: &str = "pypi\u{0}f\u{0}";
 /// The former `metadata_sidecar` table: PEP 658 siblings, keyed by artifact digest.
 const METADATA_PREFIX: &str = "pypi\u{0}d\u{0}";
+/// PEP 740 provenance objects, keyed by artifact digest so a `.provenance` request resolves by
+/// digest without scanning a project's uploads.
+const PROVENANCE_PREFIX: &str = "pypi\u{0}a\u{0}";
 /// The former `projects` table: observed display names, keyed by `{index}/{normalized}`.
 const PROJECTS_PREFIX: &str = "pypi\u{0}p\u{0}";
 const CATALOG_PREFIX: &str = "pypi\u{0}c\u{0}";
@@ -75,6 +78,10 @@ fn file_key(sha256: &str) -> String {
 
 fn metadata_key(sha256: &str) -> String {
     format!("{METADATA_PREFIX}{sha256}")
+}
+
+fn provenance_key(sha256: &str) -> String {
+    format!("{PROVENANCE_PREFIX}{sha256}")
 }
 
 fn project_key(index: &str, normalized: &str) -> String {
@@ -109,6 +116,11 @@ fn file_source_value(url: &str, source: &str, size: Option<u64>, upstream: Optio
 /// The `metadata_sidecar` value: URL, the sibling's own sha256, and the source index, newline-joined.
 fn metadata_value(url: &str, metadata_sha256: &str, source: &str) -> String {
     format!("{url}\n{metadata_sha256}\n{source}")
+}
+
+/// The provenance value: the provenance blob's own sha256 and its byte length, newline-joined.
+fn provenance_value(provenance_sha256: &str, size: u64) -> String {
+    format!("{provenance_sha256}\n{size}")
 }
 
 /// The `PyPI` metadata surface as inherent-style methods on the neutral [`MetaStore`].
@@ -258,6 +270,32 @@ pub trait PypiStore {
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_metadata_records<E>(
+        &self,
+        visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
+
+    /// Record a distribution's PEP 740 provenance sibling, keyed by the artifact digest.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    fn put_provenance(
+        &self,
+        artifact_sha256: &str,
+        provenance_sha256: &str,
+        size: u64,
+    ) -> Result<(), peryx_storage::meta::MetaError>;
+
+    /// Look up an artifact's provenance sibling: `(provenance sha256, byte length)`.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    fn get_provenance(&self, artifact_sha256: &str) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError>;
+
+    /// Visit raw provenance records, keyed by artifact digest.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor fails.
+    fn scan_provenance_records<E>(
         &self,
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
@@ -572,6 +610,26 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
         files::scan_metadata_records(self, visit)
+    }
+
+    fn put_provenance(
+        &self,
+        artifact_sha256: &str,
+        provenance_sha256: &str,
+        size: u64,
+    ) -> Result<(), peryx_storage::meta::MetaError> {
+        files::put_provenance(self, artifact_sha256, provenance_sha256, size)
+    }
+
+    fn get_provenance(&self, artifact_sha256: &str) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError> {
+        files::get_provenance(self, artifact_sha256)
+    }
+
+    fn scan_provenance_records<E>(
+        &self,
+        visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
+        files::scan_provenance_records(self, visit)
     }
 
     fn put_project(&self, index: &str, normalized: &str, display: &str) -> Result<(), peryx_storage::meta::MetaError> {
