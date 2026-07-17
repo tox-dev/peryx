@@ -19,7 +19,7 @@
 use leptos::prelude::*;
 use leptos_meta::{MetaTags, Style, Title, provide_meta_context};
 use leptos_router::components::{Route, Router, Routes};
-use leptos_router::path;
+use leptos_router::{SsrMode, path};
 
 use crate::data::load_search;
 use crate::markdown::external_link_rel;
@@ -72,12 +72,17 @@ pub fn App() -> impl IntoView {
         <Router>
             <Header />
             <main>
+                // These pages read runtime state through a `Suspense`. `SsrMode::Async` resolves those
+                // resources before the server emits the document, instead of streaming the `loading`
+                // fallback first and swapping the content in. Out-of-order streaming truncates that
+                // fallback into the response under load — on the live server, not only in tests — so a
+                // full resolve is both deterministic to assert on and correct for no-JS and slow clients.
                 <Routes fallback=|| view! { <p class="dim">"not found"</p> }>
-                    <Route path=path!("/") view=Dashboard />
-                    <Route path=path!("/admin/status") view=AdminStatus />
-                    <Route path=path!("/browse") view=Browse />
-                    <Route path=path!("/search") view=Search />
-                    <Route path=path!("/stats") view=Stats />
+                    <Route path=path!("/") view=Dashboard ssr=SsrMode::Async />
+                    <Route path=path!("/admin/status") view=AdminStatus ssr=SsrMode::Async />
+                    <Route path=path!("/browse") view=Browse ssr=SsrMode::Async />
+                    <Route path=path!("/search") view=Search ssr=SsrMode::Async />
+                    <Route path=path!("/stats") view=Stats ssr=SsrMode::Async />
                 </Routes>
             </main>
         </Router>
