@@ -19,11 +19,11 @@ pub(crate) use merge::classify_tls;
 pub use model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
     IndexKind, LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig,
-    TokenConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
+    TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
-    RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
+    RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawTrustedPublisher, RawUpstream, RawWebhook,
 };
 
 /// An error while assembling configuration.
@@ -43,6 +43,8 @@ pub enum ConfigError {
     },
     #[error("auth: {reason}")]
     Auth { reason: &'static str },
+    #[error("trusted publisher {id}: {reason}")]
+    TrustedPublisher { id: String, reason: &'static str },
     #[error("replication: {reason}")]
     Replication { reason: &'static str },
     #[error("writer identity: {reason}")]

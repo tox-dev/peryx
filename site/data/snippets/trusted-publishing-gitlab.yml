@@ -1,0 +1,14 @@
+publish:
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm
+  id_tokens:
+    PERYX_ID_TOKEN:
+      aud: https://packages.example/_/oidc
+  script:
+    - >-
+      PERYX_TOKEN=$(jq -n --arg token "$PERYX_ID_TOKEN" '{token:$token}' |
+      curl -fsS -H 'Content-Type: application/json' --data-binary
+      @-
+      https://packages.example/_/oidc/mint-token | jq -r .token)
+    - >-
+      uv publish --publish-url https://packages.example/root/pypi/ --username __token__
+      --password "$PERYX_TOKEN" dist/*

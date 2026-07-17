@@ -14,8 +14,8 @@ use std::collections::HashSet;
 use super::ConfigError;
 use super::model::{
     AcmeConfig, AuthConfig, Config, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig,
-    IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, UpstreamConfig,
-    UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
+    IndexKind, LogConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig,
+    UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit, RawAcme, RawIndex,
@@ -313,10 +313,45 @@ impl AuthConfig {
                 reason: "`token_ttl_secs` must be positive",
             });
         }
+        let oidc_audience = partial.oidc_audience.unwrap_or(self.oidc_audience);
+        if oidc_audience.trim().is_empty() {
+            return Err(ConfigError::Auth {
+                reason: "`oidc_audience` must not be empty",
+            });
+        }
+        let trusted_publishers = partial
+            .trusted_publishers
+            .map_or(self.trusted_publishers, |publishers| {
+                publishers
+                    .into_iter()
+                    .map(|publisher| TrustedPublisherConfig {
+                        id: publisher.id,
+                        issuer: publisher.issuer,
+                        repository: publisher.repository,
+                        subject: publisher.subject,
+                        projects: publisher.projects,
+                        claims: publisher.claims,
+                    })
+                    .collect()
+            });
+        if trusted_publishers.iter().any(|publisher| {
+            publisher.id.trim().is_empty()
+                || publisher.issuer.trim().is_empty()
+                || publisher.repository.trim().is_empty()
+                || publisher.subject.trim().is_empty()
+                || publisher.projects.is_empty()
+                || publisher.projects.iter().any(|project| project.trim().is_empty())
+        }) {
+            return Err(ConfigError::Auth {
+                reason: "trusted publisher fields and project lists must not be empty",
+            });
+        }
         Ok(Self {
             signing_key: signing_key.or(self.signing_key),
             token_ttl_secs,
             default_anonymous_read: partial.default_anonymous_read.unwrap_or(self.default_anonymous_read),
+            oidc_audience,
+            trusted_publishers,
         })
     }
 }

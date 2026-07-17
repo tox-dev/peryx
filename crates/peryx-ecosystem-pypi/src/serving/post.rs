@@ -14,7 +14,7 @@ use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
-use peryx_identity::{Action, Identity};
+use peryx_identity::Action;
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
 
@@ -52,7 +52,7 @@ pub async fn pypi_dispatch_post(
             .emit();
         return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
     };
-    if let Err(response) = authorize(hosted, &identity, None, Action::Write, &headers) {
+    if let Err(response) = authorize(&index.route, hosted, &identity, None, Action::Write, &headers) {
         return response;
     }
     accept_upload(&state, index, hosted, &identity, &headers, actor.as_deref(), multipart).await
@@ -62,7 +62,7 @@ async fn accept_upload(
     state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
-    identity: &Identity,
+    identity: &super::UploadIdentity,
     headers: &HeaderMap,
     actor: Option<&str>,
     multipart: Multipart,
@@ -108,7 +108,7 @@ async fn accept_upload(
         }
     };
     let project = prepared.normalized.clone();
-    if let Err(response) = authorize(hosted, identity, Some(&project), Action::Write, headers) {
+    if let Err(response) = authorize(&index.route, hosted, identity, Some(&project), Action::Write, headers) {
         return response;
     }
     let version = prepared.record.version.clone();

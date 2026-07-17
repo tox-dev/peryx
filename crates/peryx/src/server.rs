@@ -112,10 +112,11 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         if key.trim().is_empty() {
             bail!("token realm signing key must not be empty");
         }
-        state.set_token_realm(
-            Signer::new(key.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE),
-            config.auth.token_ttl_secs,
-        );
+        let signer = Signer::new(key.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE);
+        if let Some(runtime) = trusted_publishing(config, signer.clone())? {
+            state.set_trusted_publishing(runtime);
+        }
+        state.set_token_realm(signer, config.auth.token_ttl_secs);
     }
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
@@ -123,6 +124,39 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         peryx_events::webhook::kick(state.serving.clone());
     }
     Ok(state)
+}
+
+fn trusted_publishing(config: &Config, signer: Signer) -> anyhow::Result<Option<peryx_identity::OidcRuntime>> {
+    if config.auth.trusted_publishers.is_empty() {
+        return Ok(None);
+    }
+    let repositories = config
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let bindings = config
+        .auth
+        .trusted_publishers
+        .iter()
+        .map(|publisher| {
+            let repository = repositories[publisher.repository.as_str()];
+            peryx_identity::PublisherBinding {
+                id: publisher.id.clone(),
+                repository: repository.route.clone(),
+                publisher: peryx_identity::TrustedPublisher {
+                    issuer: publisher.issuer.clone(),
+                    audience: config.auth.oidc_audience.clone(),
+                    subject: peryx_identity::Glob::new(&publisher.subject),
+                    claims: publisher.claims.clone(),
+                    projects: publisher.projects.iter().map(peryx_identity::Glob::new).collect(),
+                },
+            }
+        })
+        .collect();
+    peryx_identity::OidcRuntime::new(bindings, signer, config.auth.token_ttl_secs)
+        .map(Some)
+        .context("configure trusted publishers")
 }
 
 fn make_replica_configs(configs: &mut [IndexConfig]) {

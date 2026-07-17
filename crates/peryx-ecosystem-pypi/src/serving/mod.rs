@@ -25,7 +25,9 @@ use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{EcosystemDriver, RefreshSweep};
 use peryx_driver::state::{IndexDescription, ServingState};
 use peryx_events::metrics::MetricFamily;
-use peryx_identity::{Action, Denial, Identity};
+use peryx_identity::{
+    Action, Denial, Grant, Identity, VerifiedToken, authorize_grants, parse_basic, strip_auth_scheme,
+};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 
@@ -268,6 +270,7 @@ impl EcosystemDriver for PypiServing {
             headers,
         )
         .principal
+        .clone()
     }
 
     fn metric_families(&self) -> &'static [MetricFamily] {
@@ -444,12 +447,46 @@ fn upload_target<'a>(state: &'a ServingState, index: &'a Index) -> Option<&'a In
 
 /// Resolve the request's credential against the ACL that decides its writes: the hosted target's when
 /// the index has one, else the index's own, which grants nothing but still names the actor for audit.
-fn identify(state: &ServingState, index: &Index, headers: &HeaderMap) -> Identity {
+fn identify(state: &ServingState, index: &Index, headers: &HeaderMap) -> UploadIdentity {
     let header = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    upload_target(state, index)
-        .unwrap_or(index)
-        .acl
-        .identify(header, (state.clock)())
+    if state.trusted_publishing.is_some()
+        && let Some(token) = header.and_then(|header| {
+            strip_auth_scheme(header, "Bearer").map(str::to_owned).or_else(|| {
+                let basic = parse_basic(header)?;
+                (basic.user == "__token__").then_some(basic.password)
+            })
+        })
+        && let Some(signer) = &state.signer
+        && let Ok(token) = signer.verify_trusted(&token)
+    {
+        return UploadIdentity {
+            identity: Identity {
+                principal: token.principal.clone(),
+                user: None,
+            },
+            bearer: Some(token),
+        };
+    }
+    UploadIdentity {
+        identity: upload_target(state, index)
+            .unwrap_or(index)
+            .acl
+            .identify(header, (state.clock)()),
+        bearer: None,
+    }
+}
+
+struct UploadIdentity {
+    identity: Identity,
+    bearer: Option<VerifiedToken>,
+}
+
+impl std::ops::Deref for UploadIdentity {
+    type Target = Identity;
+
+    fn deref(&self) -> &Identity {
+        &self.identity
+    }
 }
 
 /// Check `identity` against the hosted index's ACL, returning a ready response on any refusal.
@@ -458,8 +495,9 @@ fn identify(state: &ServingState, index: &Index, headers: &HeaderMap) -> Identit
 /// learned the project name; that pass asks only whether the principal may write anything here, and
 /// leaves the success to the named pass, so one upload logs one `token_use`.
 fn authorize(
+    route: &str,
     hosted: &Index,
-    identity: &Identity,
+    identity: &UploadIdentity,
     project: Option<&str>,
     action: Action,
     headers: &HeaderMap,
@@ -468,13 +506,31 @@ fn authorize(
         return Err(not_found());
     }
     let actor = peryx_events::security::actor(identity);
-    let Err(denial) = peryx_identity::authorize(&identity.principal, &hosted.acl, project, action) else {
+    let denial = identity.bearer.as_ref().map_or_else(
+        || peryx_identity::authorize(&identity.principal, &hosted.acl, project, action),
+        |token| authorize_bearer(&token.grants, route, project, action),
+    );
+    let Err(denial) = denial else {
         if project.is_some() {
-            security_token_event(headers, actor.as_deref(), &hosted.name, "success", "");
+            security_token_event(
+                headers,
+                actor.as_deref(),
+                identity.bearer.as_ref().map(|token| token.id.as_str()),
+                &hosted.name,
+                "success",
+                "",
+            );
         }
         return Ok(());
     };
-    security_token_event(headers, actor.as_deref(), &hosted.name, "denied", denial_reason(denial));
+    security_token_event(
+        headers,
+        actor.as_deref(),
+        identity.bearer.as_ref().map(|token| token.id.as_str()),
+        &hosted.name,
+        "denied",
+        denial_reason(denial),
+    );
     Err(match denial {
         Denial::Unauthenticated => (
             StatusCode::UNAUTHORIZED,
@@ -484,6 +540,28 @@ fn authorize(
             .into_response(),
         denial => (StatusCode::FORBIDDEN, denial_reason(denial)).into_response(),
     })
+}
+
+fn authorize_bearer(grants: &[Grant], route: &str, project: Option<&str>, action: Action) -> Result<(), Denial> {
+    let prefix = (!route.is_empty()).then(|| format!("{route}/"));
+    if let Some(project) = project {
+        return authorize_grants(
+            grants,
+            Some(&prefix.map_or_else(|| project.to_owned(), |prefix| format!("{prefix}{project}"))),
+            action,
+        );
+    }
+    grants
+        .iter()
+        .any(|grant| {
+            grant.actions.contains(&action)
+                && grant
+                    .projects
+                    .iter()
+                    .any(|project| prefix.as_deref().is_none_or(|prefix| project.matches_prefix(prefix)))
+        })
+        .then_some(())
+        .ok_or(Denial::Forbidden)
 }
 
 /// What an audit record says about a refusal, and what a client that may retry with better credentials
@@ -503,11 +581,21 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn security_token_event(headers: &HeaderMap, actor: Option<&str>, route: &str, result: &'static str, reason: &str) {
-    let event = peryx_events::security::Event::new("token_use", result)
+fn security_token_event(
+    headers: &HeaderMap,
+    actor: Option<&str>,
+    token_id: Option<&str>,
+    route: &str,
+    result: &'static str,
+    reason: &str,
+) {
+    let mut event = peryx_events::security::Event::new("token_use", result)
         .actor(actor)
         .index(route)
         .request(headers);
+    if let Some(token_id) = token_id {
+        event = event.token_id(token_id);
+    }
     if reason.is_empty() {
         event.emit();
     } else {

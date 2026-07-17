@@ -30,10 +30,18 @@ pub fn authorize_publish(
     claims: &PublishClaims,
     now: i64,
 ) -> Result<Vec<Grant>, PublishDenial> {
+    authorize_publish_index(publishers, claims, now).map(|(_, grants)| grants)
+}
+
+pub fn authorize_publish_index(
+    publishers: &[TrustedPublisher],
+    claims: &PublishClaims,
+    now: i64,
+) -> Result<(usize, Vec<Grant>), PublishDenial> {
     let mut denial = PublishDenial::UnknownIssuer;
-    for publisher in publishers {
+    for (position, publisher) in publishers.iter().enumerate() {
         match publisher.authorize(claims, now) {
-            Ok(grants) => return Ok(grants),
+            Ok(grants) => return Ok((position, grants)),
             Err(reason) if reason.rank() >= denial.rank() => denial = reason,
             Err(_) => {}
         }

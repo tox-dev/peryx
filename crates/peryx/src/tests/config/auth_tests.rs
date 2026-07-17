@@ -30,6 +30,65 @@ fn test_auth_defaults_to_open_reads_and_a_five_minute_token() {
     assert_eq!(auth.signing_key, None);
     assert_eq!(auth.token_ttl_secs, 300);
     assert!(auth.default_anonymous_read);
+    assert_eq!(auth.oidc_audience, "peryx");
+    assert!(auth.trusted_publishers.is_empty());
+}
+
+#[test]
+fn test_trusted_publisher_config_resolves_and_validates() {
+    let config = toml_config(
+        "[auth]\nsigning_key = \"key\"\noidc_audience = \"packages.example\"\n\
+         [[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://token.actions.githubusercontent.com\"\n\
+         repository = \"hosted\"\nsubject = \"repo:org/app:*\"\nprojects = [\"app\"]\n\
+         [auth.trusted_publisher.claims]\nrepository_id = \"42\"\n\
+         [[index]]\nname = \"hosted\"\nhosted = true\n",
+    );
+    config.validate().unwrap();
+    assert_eq!(config.auth.oidc_audience, "packages.example");
+    assert_eq!(config.auth.trusted_publishers[0].id, "release");
+    assert_eq!(config.auth.trusted_publishers[0].claims["repository_id"], "42");
+}
+
+#[test]
+fn test_trusted_publisher_accepts_a_writable_virtual_repository() {
+    let config = toml_config(
+        "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"all\"\nsubject = \"*\"\nprojects = [\"app\"]\n[[index]]\nname = \"hosted\"\nhosted = true\n[[index]]\nname = \"all\"\nlayers = [\"hosted\"]\nupload = \"hosted\"\n",
+    );
+    config.validate().unwrap();
+}
+
+#[rstest]
+#[case::no_signing_key(
+    "[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"hosted\"\nsubject = \"*\"\nprojects = [\"app\"]\n[[index]]\nname = \"hosted\"\nhosted = true\n",
+    "auth: `signing_key` is required when trusted publishers are configured"
+)]
+#[case::wrong_repository(
+    "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"missing\"\nsubject = \"*\"\nprojects = [\"app\"]\n",
+    "trusted publisher release: repository must name a writable PyPI index"
+)]
+#[case::wrong_ecosystem(
+    "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"images\"\nsubject = \"*\"\nprojects = [\"app\"]\n[[index]]\nname = \"images\"\necosystem = \"oci\"\nhosted = true\n",
+    "trusted publisher release: repository must name a writable PyPI index"
+)]
+#[case::read_only_repository(
+    "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"cache\"\nsubject = \"*\"\nprojects = [\"app\"]\n[[index]]\nname = \"cache\"\ncached = \"https://pypi.org/simple/\"\n",
+    "trusted publisher release: repository must name a writable PyPI index"
+)]
+fn test_trusted_publisher_relationship_is_rejected(#[case] text: &str, #[case] expected: &str) {
+    let config = toml_config(text);
+    assert_eq!(config.validate().unwrap_err().to_string(), expected);
+}
+
+#[test]
+fn test_trusted_publisher_ids_are_unique() {
+    let publisher = "[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"hosted\"\nsubject = \"*\"\nprojects = [\"app\"]\n";
+    let config = toml_config(&format!(
+        "[auth]\nsigning_key = \"key\"\n{publisher}{publisher}[[index]]\nname = \"hosted\"\nhosted = true\n"
+    ));
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "trusted publisher release: publisher IDs must be unique"
+    );
 }
 
 #[test]
@@ -55,6 +114,11 @@ fn test_signing_key_reads_from_a_file() {
     "auth: set at most one of a secret and its `_file` sibling"
 )]
 #[case::zero_ttl("[auth]\ntoken_ttl_secs = 0\n", "auth: `token_ttl_secs` must be positive")]
+#[case::empty_audience("[auth]\noidc_audience = \" \"\n", "auth: `oidc_audience` must not be empty")]
+#[case::empty_publisher(
+    "[[auth.trusted_publisher]]\nid = \"\"\nissuer = \"https://issuer.example\"\nrepository = \"repo\"\nsubject = \"*\"\nprojects = [\"app\"]\n",
+    "auth: trusted publisher fields and project lists must not be empty"
+)]
 fn test_auth_table_is_rejected(#[case] text: &str, #[case] expected: &str) {
     assert_eq!(toml_error(text), expected);
 }

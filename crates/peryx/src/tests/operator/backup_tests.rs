@@ -119,6 +119,17 @@ window_secs = 52
 signing_key_file = "/run/secrets/signing-key"
 token_ttl_secs = 601
 default_anonymous_read = false
+oidc_audience = "https://packages.example/_/oidc"
+
+[[auth.trusted_publisher]]
+id = "release"
+issuer = "https://token.actions.githubusercontent.com"
+repository = "root/pypi"
+subject = "repo:tox-dev/peryx:*"
+projects = ["peryx"]
+
+[auth.trusted_publisher.claims]
+repository_id = "123456789"
 
 [[index]]
 name = "python"

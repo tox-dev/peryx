@@ -492,6 +492,88 @@
         }
       }
     },
+    "/_/oidc/audience": {
+      "get": {
+        "tags": [
+          "trusted publishing"
+        ],
+        "summary": "Discover the CI identity audience",
+        "description": "Peryx returns the audience a CI provider must put in its OIDC identity. Peryx adds this route after an operator configures a trusted publisher.",
+        "responses": {
+          "200": {
+            "description": "The configured OIDC audience",
+            "content": {
+              "application/json": {
+                "example": {
+                  "audience": "packages.example"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No trusted publisher exists"
+          }
+        }
+      }
+    },
+    "/_/oidc/mint-token": {
+      "post": {
+        "tags": [
+          "trusted publishing"
+        ],
+        "summary": "Exchange a CI identity for an upload token",
+        "description": "Peryx verifies one external OIDC identity against a configured publisher and returns a short-lived token restricted to that publisher's repository and projects.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "token": "eyJhbGciOiJSUzI1NiIs..."
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A repository- and project-scoped upload token",
+            "content": {
+              "application/json": {
+                "example": {
+                  "expires": 1800000000,
+                  "token": "eyJhbGciOiJIUzI1NiIs..."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No trusted publisher exists"
+          },
+          "413": {
+            "description": "The exchange request exceeds the fixed body limit"
+          },
+          "422": {
+            "description": "The external identity is invalid or unauthorized",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "identity token rejected"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The identity provider or replay guard is unavailable",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "identity provider unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api-docs/openapi.json": {
       "get": {
         "tags": [

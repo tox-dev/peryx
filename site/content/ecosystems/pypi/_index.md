@@ -108,8 +108,9 @@ poetry source add --priority=primary peryx http://127.0.0.1:4433/root/pypi/simpl
 
 ### Publish
 
-Publishing needs a [hosted layer with an `upload_token`](@/ecosystems/pypi/guides/publish.md). peryx accepts any
-username; the token is the password, matching pypi.org's `__token__` convention.
+Publishing can use a [hosted layer with an upload token](@/ecosystems/pypi/guides/publish.md) or exchange a
+[GitHub Actions or GitLab CI identity](@/ecosystems/pypi/guides/trusted-publishing.md) for a short-lived token. The CI
+flow scopes that token to one repository route and the configured project globs.
 
 {% tabs(names="twine, uv, .pypirc") %}
 

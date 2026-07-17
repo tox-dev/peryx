@@ -17,8 +17,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use peryx_ecosystem_oci::LibraryPrefix;
 
 use crate::config::{
-    AuthConfig, Config, IndexConfig, IndexKind, ReplicationConfig, SecretSource, UpstreamConfig, UpstreamRoutingConfig,
-    WebhookConfig, WebhookSecret,
+    AuthConfig, Config, IndexConfig, IndexKind, ReplicationConfig, SecretSource, TrustedPublisherConfig,
+    UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 use crate::server::{build_index_settings, build_indexes, build_router, build_state, upstream_auth};
 
@@ -689,6 +689,36 @@ fn test_build_state_wires_the_token_realm_signing_key() {
 
     assert!(state.signer.is_some());
     assert_eq!(state.token_ttl_secs, 900);
+}
+
+#[test]
+fn test_build_state_installs_trusted_publishing_for_a_resolved_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![hosted("private")],
+        auth: AuthConfig {
+            signing_key: Some(SecretSource::Literal("super-secret".to_owned())),
+            oidc_audience: "packages.example".to_owned(),
+            trusted_publishers: vec![TrustedPublisherConfig {
+                id: "release".to_owned(),
+                issuer: "https://issuer.example".to_owned(),
+                repository: "private".to_owned(),
+                subject: "repo:org/app:*".to_owned(),
+                projects: vec!["app".to_owned()],
+                claims: std::collections::BTreeMap::new(),
+            }],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(
+        state.trusted_publishing.as_ref().unwrap().audience(),
+        "packages.example"
+    );
 }
 
 #[test]

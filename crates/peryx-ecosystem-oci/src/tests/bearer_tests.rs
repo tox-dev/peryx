@@ -1,6 +1,7 @@
 //! The OCI Bearer token realm end to end: the `/v2/` challenge, the `/v2/token` endpoint, and the
 //! scoped enforcement on resource routes that together make `docker login` validate.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -11,7 +12,7 @@ use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use rstest::rstest;
 use tower::ServiceExt as _;
 
-use peryx_identity::Action;
+use peryx_identity::{Action, Glob, Grant, Principal};
 
 use super::{
     auth, body_has_code, current_unix_time, hosted_writable, oci_digest, realm_app, realm_app_with_clock_and_limits,
@@ -524,6 +525,39 @@ async fn test_an_invalid_bearer_is_named_invalid_token() {
         Method::GET,
         "/v2/store/team/app/manifests/latest",
         &[("authorization", "Bearer not-a-real-token")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers[header::WWW_AUTHENTICATE],
+        "Bearer realm=\"/v2/token\",service=\"peryx\",scope=\"repository:store/team/app:pull\",error=\"invalid_token\""
+    );
+}
+
+#[tokio::test]
+async fn test_trusted_publishing_token_is_invalid_at_oci_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = realm_app(
+        &dir,
+        vec![scoped_index("store", "store", "ci", SECRET, "team/*", &[Action::Read])],
+    );
+    let token = state.signer.as_ref().unwrap().mint_trusted(
+        &Principal::Named {
+            subject: "trusted-publisher:release".to_owned(),
+        },
+        &[Grant {
+            projects: vec![Glob::new("store/team/app")],
+            actions: BTreeSet::from([Action::Read]),
+        }],
+        current_unix_time(),
+        300,
+        "trusted-token",
+    );
+    let (status, headers, _) = send_with(
+        &app,
+        Method::GET,
+        "/v2/store/team/app/manifests/latest",
+        &[("authorization", &format!("Bearer {token}"))],
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

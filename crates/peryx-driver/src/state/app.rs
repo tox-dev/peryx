@@ -71,6 +71,9 @@ pub struct ServingState {
     pub signer: Option<peryx_identity::Signer>,
     /// How long a token the realm mints stays valid, in seconds.
     pub token_ttl_secs: i64,
+    /// CI identity exchange runtime. Absent means the OIDC endpoints stay disabled and no issuer
+    /// client or replay state exists.
+    pub trusted_publishing: Option<Arc<dyn peryx_identity::IdentityExchange>>,
 }
 
 /// The whole process state: the serving data every handler needs, plus the driver registry only the

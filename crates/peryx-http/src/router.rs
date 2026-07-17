@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, get, post};
+use axum::{Extension, Router};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
@@ -37,6 +37,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/+ui/members", get(handlers::ui_members))
         .route("/+ui/member", get(handlers::ui_member))
         .route("/metrics", get(handlers::metrics));
+    if let Some(runtime) = &state.trusted_publishing {
+        router = router.merge(
+            Router::new()
+                .route("/_/oidc/audience", get(handlers::oidc_audience))
+                .route(
+                    "/_/oidc/mint-token",
+                    post(handlers::oidc_mint_token).layer(DefaultBodyLimit::max(40 * 1024)),
+                )
+                .layer(Extension(runtime.clone())),
+        );
+    }
     // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.
     for (prefix, driver) in state.absolute_mounts() {

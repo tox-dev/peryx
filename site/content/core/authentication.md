@@ -42,8 +42,9 @@ requests, and search apply the same read ACLs, so they do not disclose inaccessi
 
 PyPI's Simple API, JSON, metadata, and artifact routes do not consult read ACLs yet. The neutral discovery, status,
 usage, and metrics endpoints also remain public. Setting `anonymous_read = false` does not protect those surfaces until
-their handlers gain access checks. External identity sources (LDAP, OIDC), token revocation, and per-mirror upstream
-credential refresh are also out of this release.
+their handlers gain access checks. LDAP, token revocation, and per-mirror upstream credential refresh are also out of
+this release. PyPI publishing can use a configured CI provider's OIDC identity without making OIDC a general login
+source.
 
 ## Project globs
 
@@ -70,9 +71,14 @@ The `[auth]` table holds the settings every index's access rules share. All keys
 | `signing_key_file`       | Path to read `signing_key` from instead of inlining it               | (none)  |
 | `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive             | `300`   |
 | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it | `true`  |
+| `oidc_audience`          | Audience external CI identity tokens must carry                      | `peryx` |
 
-`signing_key` and `token_ttl_secs` configure the OCI Bearer token realm. peryx reads the key at startup and uses it to
-sign the repository-scoped tokens it mints. Set at most one of `signing_key` and `signing_key_file`.
+`signing_key` and `token_ttl_secs` configure the token realm used by OCI and PyPI trusted publishing. peryx reads the
+key at startup and uses it to sign repository-scoped tokens. Set at most one of `signing_key` and `signing_key_file`.
+
+Each `[[auth.trusted_publisher]]` binds one CI issuer, subject, required claim set, writable PyPI repository, and
+project glob list. Peryx adds the exchange routes after an operator configures a binding. See
+[publish from CI identities](@/ecosystems/pypi/guides/trusted-publishing.md) for the full table and provider examples.
 
 `default_anonymous_read = false` makes every index's ACL deny anonymous reads by default. It closes the enforced OCI and
 project-presentation paths; the public paths listed above stay open. An index that should stay open sets

@@ -1,0 +1,3 @@
+{%- set source = load_data(path="data/snippets/trusted-publishing-github.yml", format="plain") -%}
+{%- set block = "```yaml\n" ~ source ~ "```" -%}
+{{ block | markdown | safe }}

@@ -1,0 +1,23 @@
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: distributions
+          path: dist
+      - name: Exchange CI identity and publish
+        env:
+          PERYX_URL: https://packages.example
+        run: |
+          audience=$(curl -fsS "$PERYX_URL/_/oidc/audience" | jq -r .audience)
+          identity=$(curl -fsS \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            --get --data-urlencode "audience=$audience" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r .value)
+          token=$(jq -n --arg token "$identity" '{token:$token}' | \
+            curl -fsS -H 'Content-Type: application/json' --data-binary @- \
+              "$PERYX_URL/_/oidc/mint-token" | jq -r .token)
+          uv publish --publish-url "$PERYX_URL/root/pypi/" --username __token__ --password "$token" dist/*

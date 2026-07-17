@@ -1,10 +1,12 @@
 //! Publishing to a hosted index through the multipart upload API.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
+use peryx_identity::{
+    Action, Glob, Grant, IndexAcl, NamedToken, OidcRuntime, Principal, PublisherBinding, Signer, TrustedPublisher,
+};
 
 use super::support::*;
 
@@ -1364,6 +1366,257 @@ async fn test_a_scoped_token_may_not_upload_outside_its_glob() {
 
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body, "token does not grant this action");
+}
+
+pub(super) fn trusted_publishing() -> (tempfile::TempDir, Arc<AppState>, Signer) {
+    state_with_trusted_publishing(true)
+}
+
+fn state_with_trusted_publishing(enabled: bool) -> (tempfile::TempDir, Arc<AppState>, Signer) {
+    let dir = tempfile::tempdir().unwrap();
+    let signer = Signer::new(b"realm-key", "peryx");
+    let mut state = AppState::new(
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        BlobStore::new(dir.path().join("blobs")),
+        60,
+        vec![
+            Index {
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
+                policy: Policy::default(),
+                acl: IndexAcl::default(),
+                ecosystem: peryx_core::Ecosystem::Pypi,
+                kind: IndexKind::Hosted { volatile: true },
+            },
+            Index {
+                name: "release".to_owned(),
+                route: "release".to_owned(),
+                policy: Policy::default(),
+                acl: IndexAcl::default(),
+                ecosystem: peryx_core::Ecosystem::Pypi,
+                kind: IndexKind::Virtual {
+                    layers: vec![0],
+                    upload: Some(0),
+                },
+            },
+            Index {
+                name: "root".to_owned(),
+                route: String::new(),
+                policy: Policy::default(),
+                acl: IndexAcl::default(),
+                ecosystem: peryx_core::Ecosystem::Pypi,
+                kind: IndexKind::Hosted { volatile: true },
+            },
+        ],
+    );
+    state.set_token_realm(signer.clone(), 300);
+    if enabled {
+        state.set_trusted_publishing(
+            OidcRuntime::new(
+                vec![PublisherBinding {
+                    id: "release".to_owned(),
+                    repository: "hosted".to_owned(),
+                    publisher: TrustedPublisher {
+                        issuer: "https://issuer.example".to_owned(),
+                        audience: "peryx".to_owned(),
+                        subject: Glob::new("*"),
+                        claims: BTreeMap::new(),
+                        projects: vec![Glob::new("*")],
+                    },
+                }],
+                signer.clone(),
+                300,
+            )
+            .unwrap(),
+        );
+    }
+    (dir, crate::tests::wired(state), signer)
+}
+
+pub(super) fn trusted_token(signer: &Signer, resource: &str) -> String {
+    signer.mint_trusted(
+        &Principal::Named {
+            subject: "trusted-publisher:release".to_owned(),
+        },
+        &[Grant {
+            projects: vec![Glob::new(resource)],
+            actions: BTreeSet::from([Action::Write]),
+        }],
+        1,
+        i64::MAX / 2,
+        "trusted-token",
+    )
+}
+
+pub(super) fn token_basic(user: &str, token: &str) -> String {
+    format!("Basic {}", STANDARD.encode(format!("{user}:{token}")))
+}
+
+#[rstest]
+#[case::basic(Some("__token__"))]
+#[case::bearer(None)]
+#[tokio::test]
+async fn test_trusted_token_uploads_with_supported_auth(#[case] basic_user: Option<&str>) {
+    let (_dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "hosted/peryxpkg");
+    let auth = basic_user.map_or_else(|| format!("Bearer {token}"), |user| token_basic(user, &token));
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    assert_eq!(
+        post_upload(&state, "/hosted/", Some(&auth), &content_type, body,).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn test_trusted_token_uploads_to_the_root_route() {
+    use axum::extract::FromRequest as _;
+    use peryx_driver::serving::EcosystemDriver as _;
+
+    let (_dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "peryxpkg");
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    let request = Request::builder()
+        .header(header::AUTHORIZATION, token_basic("__token__", &token))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+    let headers = request.headers().clone();
+    let multipart = axum::extract::Multipart::from_request(request, &()).await.unwrap();
+    assert_eq!(
+        crate::serving::PypiServing
+            .post(state.serving.clone(), String::new(), headers, multipart)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn test_oci_realm_token_is_not_accepted_for_pypi_upload() {
+    let (_dir, state, signer) = trusted_publishing();
+    let token = signer.mint(
+        &Principal::Named {
+            subject: "ci".to_owned(),
+        },
+        &[Grant {
+            projects: vec![Glob::new("hosted/peryxpkg")],
+            actions: BTreeSet::from([Action::Write]),
+        }],
+        1,
+        i64::MAX / 2,
+    );
+    let (content_type, body) = multipart_body(&upload_fields(), None);
+    assert_eq!(
+        post_upload(
+            &state,
+            "/hosted/",
+            Some(&token_basic("__token__", &token)),
+            &content_type,
+            body,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn test_trusted_token_is_not_checked_when_trusted_publishing_is_disabled() {
+    let (_dir, state, signer) = state_with_trusted_publishing(false);
+    let token = trusted_token(&signer, "hosted/peryxpkg");
+    let (content_type, body) = multipart_body(&upload_fields(), None);
+    assert_eq!(
+        post_upload(
+            &state,
+            "/hosted/",
+            Some(&token_basic("__token__", &token)),
+            &content_type,
+            body,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[rstest]
+#[case::wrong_user(Some("alice"))]
+#[case::malformed(None)]
+#[tokio::test]
+async fn test_trusted_token_is_not_unwrapped_from_another_basic_form(#[case] user: Option<&str>) {
+    let (_dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "hosted/peryxpkg");
+    let auth = user.map_or_else(|| "Basic !!!".to_owned(), |user| token_basic(user, &token));
+    let (content_type, body) = multipart_body(&upload_fields(), None);
+    assert_eq!(
+        post_upload(&state, "/hosted/", Some(&auth), &content_type, body).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn test_trusted_token_wrong_route_is_denied_before_multipart_is_read() {
+    let (dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "release/peryxpkg");
+    let (content_type, body) = multipart_body(&upload_fields(), None);
+    assert_eq!(
+        post_upload(
+            &state,
+            "/hosted/",
+            Some(&token_basic("__token__", &token)),
+            &content_type,
+            body,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert!(!dir.path().join("blobs").exists());
+}
+
+#[tokio::test]
+async fn test_trusted_token_wrong_project_is_denied_after_named_check() {
+    let (_dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "hosted/other");
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    assert_eq!(
+        post_upload(
+            &state,
+            "/hosted/",
+            Some(&token_basic("__token__", &token)),
+            &content_type,
+            body,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn test_trusted_token_binds_the_virtual_route() {
+    let (_dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "release/peryxpkg");
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    assert_eq!(
+        post_upload(
+            &state,
+            "/release/",
+            Some(&token_basic("__token__", &token)),
+            &content_type,
+            body,
+        )
+        .await,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

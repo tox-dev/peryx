@@ -52,6 +52,46 @@ impl Signer {
     /// fixed struct of strings and integers.
     #[must_use]
     pub fn mint(&self, principal: &Principal, grants: &[Grant], issued_at: i64, ttl_secs: i64) -> String {
+        self.mint_with_id(
+            principal,
+            grants,
+            issued_at,
+            ttl_secs,
+            &uuid::Uuid::new_v4().to_string(),
+            TokenPurpose::Realm,
+        )
+    }
+
+    /// Mint a token that only the trusted-publishing upload path accepts.
+    #[must_use]
+    pub fn mint_trusted(
+        &self,
+        principal: &Principal,
+        grants: &[Grant],
+        issued_at: i64,
+        ttl_secs: i64,
+        token_id: &str,
+    ) -> String {
+        self.mint_with_id(
+            principal,
+            grants,
+            issued_at,
+            ttl_secs,
+            token_id,
+            TokenPurpose::TrustedPublishing,
+        )
+    }
+
+    #[must_use]
+    fn mint_with_id(
+        &self,
+        principal: &Principal,
+        grants: &[Grant],
+        issued_at: i64,
+        ttl_secs: i64,
+        token_id: &str,
+        purpose: TokenPurpose,
+    ) -> String {
         let claims = MintedClaims {
             sub: match principal {
                 Principal::Anonymous => "",
@@ -60,6 +100,8 @@ impl Signer {
             aud: &self.audience,
             iat: issued_at,
             exp: issued_at + ttl_secs,
+            jti: token_id,
+            purpose,
             grants,
         };
         jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &self.encoding)
@@ -72,16 +114,47 @@ impl Signer {
     /// # Errors
     /// Returns [`TokenError`] when the token fails signature, structure, audience, or expiry validation.
     pub fn verify(&self, token: &str) -> Result<(Principal, Vec<Grant>), TokenError> {
+        let token = self.verify_identified(token)?;
+        Ok((token.principal, token.grants))
+    }
+
+    fn verify_identified(&self, token: &str) -> Result<VerifiedToken, TokenError> {
+        self.verify_for(token, TokenPurpose::Realm)
+    }
+
+    /// Verify a trusted-publishing token and return its audit ID.
+    ///
+    /// # Errors
+    /// Returns [`TokenError`] for an invalid trusted-publishing token or a token minted for another purpose.
+    pub fn verify_trusted(&self, token: &str) -> Result<VerifiedToken, TokenError> {
+        self.verify_for(token, TokenPurpose::TrustedPublishing)
+    }
+
+    fn verify_for(&self, token: &str, purpose: TokenPurpose) -> Result<VerifiedToken, TokenError> {
         let claims = jsonwebtoken::decode::<VerifiedClaims>(token, &self.decoding, &self.validation)
             .map_err(TokenError)?
             .claims;
+        if claims.purpose != purpose {
+            return Err(TokenError(jsonwebtoken::errors::ErrorKind::InvalidToken.into()));
+        }
         let principal = if claims.sub.is_empty() {
             Principal::Anonymous
         } else {
             Principal::Named { subject: claims.sub }
         };
-        Ok((principal, claims.grants))
+        Ok(VerifiedToken {
+            principal,
+            grants: claims.grants,
+            id: claims.jti,
+        })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedToken {
+    pub principal: Principal,
+    pub grants: Vec<Grant>,
+    pub id: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,11 +167,25 @@ struct MintedClaims<'a> {
     aud: &'a str,
     iat: i64,
     exp: i64,
+    jti: &'a str,
+    purpose: TokenPurpose,
     grants: &'a [Grant],
 }
 
 #[derive(Deserialize)]
 struct VerifiedClaims {
     sub: String,
+    #[serde(default)]
+    jti: String,
+    #[serde(default)]
+    purpose: TokenPurpose,
     grants: Vec<Grant>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum TokenPurpose {
+    #[default]
+    Realm,
+    TrustedPublishing,
 }

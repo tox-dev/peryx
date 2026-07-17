@@ -13,7 +13,7 @@ use peryx_core::path::{self};
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
-use peryx_identity::{Action, Identity};
+use peryx_identity::Action;
 use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self, CacheError};
@@ -290,12 +290,19 @@ fn removal_target<'a>(
     path: &'a str,
     headers: &HeaderMap,
     action: Action,
-) -> Result<(&'a Index, &'a Index, &'a str, Identity), Response> {
+) -> Result<(&'a Index, &'a Index, &'a str, super::UploadIdentity), Response> {
     let (index, rest) = state.resolve(path).ok_or_else(not_found)?;
     let hosted = upload_target(state, index)
         .ok_or_else(|| (StatusCode::METHOD_NOT_ALLOWED, "index is read-only").into_response())?;
     let identity = identify(state, index, headers);
-    authorize(hosted, &identity, mutation_project(rest).as_deref(), action, headers)?;
+    authorize(
+        &index.route,
+        hosted,
+        &identity,
+        mutation_project(rest).as_deref(),
+        action,
+        headers,
+    )?;
     Ok((index, hosted, rest, identity))
 }
 

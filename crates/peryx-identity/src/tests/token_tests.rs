@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use serde_json::json;
+
 use crate::{Action, Glob, Grant, Principal, Signer};
 
 const HOUR: i64 = 3600;
@@ -25,6 +28,26 @@ fn named(subject: &str) -> Principal {
 /// `verify` checks expiry against the real clock, so a token minted for a test has to sit on it.
 fn now() -> i64 {
     i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap()
+}
+
+fn encoded_with_purpose(purpose: Option<&str>) -> String {
+    let mut claims = json!({
+        "sub": "ci",
+        "aud": "peryx",
+        "iat": now(),
+        "exp": now() + HOUR,
+        "jti": "token-id",
+        "grants": grants(),
+    });
+    if let Some(purpose) = purpose {
+        claims["purpose"] = json!(purpose);
+    }
+    jsonwebtoken::encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(b"signing-key"),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -84,4 +107,34 @@ fn test_verify_rejects_a_token_for_another_audience() {
         signer().verify(&token).unwrap_err().to_string(),
         "invalid token: InvalidAudience"
     );
+}
+
+#[test]
+fn test_realm_verifier_rejects_a_trusted_publishing_token() {
+    let signer = signer();
+    let token = signer.mint_trusted(&named("ci"), &grants(), now(), HOUR, "token-id");
+    assert!(signer.verify(&token).is_err());
+}
+
+#[test]
+fn test_trusted_publishing_verifier_rejects_a_realm_token() {
+    let signer = signer();
+    let token = signer.mint(&named("ci"), &grants(), now(), HOUR);
+    assert!(signer.verify_trusted(&token).is_err());
+}
+
+#[test]
+fn test_absent_purpose_is_compatible_with_the_realm_only() {
+    let signer = signer();
+    let token = encoded_with_purpose(None);
+    assert_eq!(signer.verify(&token).unwrap(), (named("ci"), grants()));
+    assert!(signer.verify_trusted(&token).is_err());
+}
+
+#[test]
+fn test_unknown_purpose_is_rejected_by_every_verifier() {
+    let signer = signer();
+    let token = encoded_with_purpose(Some("other"));
+    assert!(signer.verify(&token).is_err());
+    assert!(signer.verify_trusted(&token).is_err());
 }

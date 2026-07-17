@@ -2,6 +2,7 @@
 //! with the credential that was presented.
 
 use super::support::*;
+use super::upload::{token_basic, trusted_publishing, trusted_token};
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_security_logs_upload_success_without_token_secret() {
@@ -61,6 +62,45 @@ async fn test_security_logs_invalid_token_without_secret() {
     assert_eq!(field(token, "actor"), Some("alice"));
     assert_eq!(field(token, "index"), Some("hosted"));
     assert_eq!(field(token, "reason"), Some("invalid upload token"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_security_logs_trusted_token_id_without_the_token() {
+    let (_dir, state, signer) = trusted_publishing();
+    let token = trusted_token(&signer, "hosted/peryxpkg");
+    let token_id = signer.verify_trusted(&token).unwrap().id;
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        post_upload(
+            &state,
+            "/hosted/",
+            Some(&token_basic("__token__", &token)),
+            &content_type,
+            body,
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    drop(guard);
+    let text = logs.text();
+    assert!(!text.contains(&token));
+    assert!(!text.contains("realm-key"));
+    let event = logs
+        .security_events()
+        .into_iter()
+        .find(|event| field(event, "action") == Some("token_use") && field(event, "result") == Some("success"))
+        .unwrap();
+    assert_eq!(
+        (field(&event, "actor"), field(&event, "token_id")),
+        (Some("trusted-publisher:release"), Some(token_id.as_str()))
+    );
 }
 #[tokio::test(flavor = "current_thread")]
 async fn test_security_logs_delete_policy_denial() {

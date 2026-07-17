@@ -3,6 +3,7 @@
 use serde_json::json;
 use utoipa::openapi::content::ContentBuilder;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
+use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
 
 use peryx_driver::openapi::{api_json_response, package_search, text_response};
@@ -53,6 +54,18 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
             "/api-docs/openapi.json",
             PathItemBuilder::new()
                 .operation(HttpMethod::Get, openapi_endpoint())
+                .build(),
+        )
+        .path(
+            "/_/oidc/audience",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, oidc_audience())
+                .build(),
+        )
+        .path(
+            "/_/oidc/mint-token",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Post, oidc_mint_token())
                 .build(),
         )
 }
@@ -345,5 +358,68 @@ fn openapi_endpoint() -> OperationBuilder {
             ResponseBuilder::new()
                 .description("The OpenAPI 3.1 description of this server")
                 .content("application/json", ContentBuilder::new().build()),
+        )
+}
+
+fn oidc_audience() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("trusted publishing")
+        .summary(Some("Discover the CI identity audience"))
+        .description(Some(
+            "Peryx returns the audience a CI provider must put in its OIDC identity. Peryx adds this route after an operator configures a trusted publisher.",
+        ))
+        .response(
+            "200",
+            api_json_response(
+                "The configured OIDC audience",
+                json!({"audience": "packages.example"}),
+            ),
+        )
+        .response("404", ResponseBuilder::new().description("No trusted publisher exists"))
+}
+
+fn oidc_mint_token() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("trusted publishing")
+        .summary(Some("Exchange a CI identity for an upload token"))
+        .description(Some(
+            "Peryx verifies one external OIDC identity against a configured publisher and returns a short-lived token restricted to that publisher's repository and projects.",
+        ))
+        .request_body(Some(
+            RequestBodyBuilder::new()
+                .required(Some(Required::True))
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .example(Some(json!({"token": "eyJhbGciOiJSUzI1NiIs..."})))
+                        .build(),
+                )
+                .build(),
+        ))
+        .response(
+            "200",
+            api_json_response(
+                "A repository- and project-scoped upload token",
+                json!({"token": "eyJhbGciOiJIUzI1NiIs...", "expires": 1_800_000_000_i64}),
+            ),
+        )
+        .response("404", ResponseBuilder::new().description("No trusted publisher exists"))
+        .response(
+            "413",
+            ResponseBuilder::new().description("The exchange request exceeds the fixed body limit"),
+        )
+        .response(
+            "422",
+            api_json_response(
+                "The external identity is invalid or unauthorized",
+                json!({"message": "identity token rejected"}),
+            ),
+        )
+        .response(
+            "503",
+            api_json_response(
+                "The identity provider or replay guard is unavailable",
+                json!({"message": "identity provider unavailable"}),
+            ),
         )
 }

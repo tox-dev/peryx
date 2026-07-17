@@ -9,6 +9,8 @@ pub struct Event<'a> {
     action: &'static str,
     result: &'static str,
     actor: Option<&'a str>,
+    publisher_id: Option<&'a str>,
+    token_id: Option<&'a str>,
     index: Option<&'a str>,
     source_index: Option<&'a str>,
     hosted_index: Option<&'a str>,
@@ -30,6 +32,8 @@ impl<'a> Event<'a> {
             action,
             result,
             actor: None,
+            publisher_id: None,
+            token_id: None,
             index: None,
             source_index: None,
             hosted_index: None,
@@ -48,6 +52,18 @@ impl<'a> Event<'a> {
     #[must_use]
     pub const fn actor(mut self, actor: Option<&'a str>) -> Self {
         self.actor = actor;
+        self
+    }
+
+    #[must_use]
+    pub const fn publisher_id(mut self, publisher_id: &'a str) -> Self {
+        self.publisher_id = Some(publisher_id);
+        self
+    }
+
+    #[must_use]
+    pub const fn token_id(mut self, token_id: &'a str) -> Self {
+        self.token_id = Some(token_id);
         self
     }
 
@@ -120,6 +136,8 @@ impl<'a> Event<'a> {
 
     pub fn emit(&self) {
         let actor = text(self.actor);
+        let publisher_id = text(self.publisher_id);
+        let token_id = text(self.token_id);
         let index = text(self.index);
         let source_index = text(self.source_index);
         let hosted_index = text(self.hosted_index);
@@ -137,6 +155,8 @@ impl<'a> Event<'a> {
             action = self.action,
             result = self.result,
             actor,
+            publisher_id,
+            token_id,
             index,
             source_index,
             hosted_index,

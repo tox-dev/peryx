@@ -34,6 +34,8 @@ each endpoint down with copyable example requests and responses.
 - `GET /+status`: JSON health, version, counters, index descriptions.
 - `GET /+stats`: usage counters, drillable to project and file level.
 - `GET /metrics`: [Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/) text exposition.
+- `GET /_/oidc/audience`: trusted-publishing audience discovery; `404` without a publisher.
+- `POST /_/oidc/mint-token`: exchange a verified CI identity for a short-lived upload token.
 
 The web UI lives outside the index namespace: `GET /` (dashboard), `GET /admin/status` (read-only operational status),
 `GET /browse` (package browser), `GET /search` (package search), `GET /stats` (usage drill-down), and `GET /pkg/*` (the
@@ -97,8 +99,10 @@ for all indexes.
 
 ## Authentication
 
-`POST`, `PUT`, and `DELETE` require `Authorization: Basic` where the password is the `upload_token` for the target
-hosted index; the username is ignored. Promotion authenticates against the target route. Responses:
+`POST`, `PUT`, and `DELETE` accept a configured long-lived Basic credential. A token from the OIDC exchange instead uses
+the exact username `__token__` with the minted token as its password, or the raw Bearer scheme. Its grant includes the
+public repository route and project; a token for a virtual route cannot write through a sibling or its hosted layer's
+direct route. Promotion authenticates against the target route. Responses:
 
 - `200`: accepted; removal responses state how many files changed.
 - `400`: malformed upload, bad promotion query, or unsafe path segment.

@@ -20,6 +20,7 @@
 //! grants `mint` signs — trusted publishing without a long-lived credential to rotate.
 
 mod acl;
+mod oidc;
 mod token;
 mod trusted_publisher;
 mod user;
@@ -31,7 +32,8 @@ pub use acl::{
     Action, Denial, Glob, Grant, Identity, IndexAcl, NamedToken, Principal, UPLOAD_TOKEN_NAME, authorize,
     authorize_all, authorize_exact_grants, authorize_grants,
 };
-pub use token::{Signer, TokenError};
+pub use oidc::{ExchangeError, ExchangedToken, IdentityExchange, OidcRuntime, PublisherBinding};
+pub use token::{Signer, TokenError, VerifiedToken};
 pub use trusted_publisher::{PublishClaims, PublishDenial, TrustedPublisher, authorize_publish};
 pub use user::{ServerUser, UserId, UserLifecycleChange, UserLifecycleEvent, UserName, UserNameError, UserState};
 

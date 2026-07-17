@@ -300,6 +300,7 @@ impl AppState {
                 webhooks,
                 signer: None,
                 token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,
+                trusted_publishing: None,
             }),
             drivers: std::array::from_fn(|_| None),
             absolute_prefixes: Vec::new(),

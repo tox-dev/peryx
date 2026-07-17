@@ -101,6 +101,22 @@ pub struct PartialAuthConfig {
     pub signing_key_file: Option<PathBuf>,
     pub token_ttl_secs: Option<i64>,
     pub default_anonymous_read: Option<bool>,
+    pub oidc_audience: Option<String>,
+    #[serde(rename = "trusted_publisher")]
+    pub trusted_publishers: Option<Vec<RawTrustedPublisher>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawTrustedPublisher {
+    pub id: String,
+    pub issuer: String,
+    pub repository: String,
+    pub subject: String,
+    #[serde(default)]
+    pub projects: Vec<String>,
+    #[serde(default)]
+    pub claims: BTreeMap<String, String>,
 }
 
 /// The raw `[tls]` table before validation.

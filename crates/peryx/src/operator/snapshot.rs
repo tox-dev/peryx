@@ -213,6 +213,19 @@ struct SnapshotAuth<'a> {
     signing_key_file: Option<&'a Path>,
     token_ttl_secs: i64,
     default_anonymous_read: bool,
+    oidc_audience: &'a str,
+    #[serde(rename = "trusted_publisher", skip_serializing_if = "Vec::is_empty")]
+    trusted_publishers: Vec<SnapshotTrustedPublisher<'a>>,
+}
+
+#[derive(Serialize)]
+struct SnapshotTrustedPublisher<'a> {
+    id: &'a str,
+    issuer: &'a str,
+    repository: &'a str,
+    subject: &'a str,
+    projects: &'a [String],
+    claims: &'a std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -265,6 +278,8 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         signing_key,
         token_ttl_secs,
         default_anonymous_read,
+        oidc_audience,
+        trusted_publishers,
     } = auth;
     let (tls, acme) = snapshot_tls(tls.as_ref());
     let (signing_key, signing_key_file) = secret_parts(signing_key.as_ref());
@@ -294,6 +309,18 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
             signing_key_file,
             token_ttl_secs: *token_ttl_secs,
             default_anonymous_read: *default_anonymous_read,
+            oidc_audience,
+            trusted_publishers: trusted_publishers
+                .iter()
+                .map(|publisher| SnapshotTrustedPublisher {
+                    id: &publisher.id,
+                    issuer: &publisher.issuer,
+                    repository: &publisher.repository,
+                    subject: &publisher.subject,
+                    projects: &publisher.projects,
+                    claims: &publisher.claims,
+                })
+                .collect(),
         },
         replication: snapshot_replication(replication.as_ref()),
     };

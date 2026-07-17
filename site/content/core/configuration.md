@@ -456,6 +456,7 @@ a minted token, and the default each index's `anonymous_read` takes. All keys ar
 signing_key_file = "/run/secrets/peryx-signing-key"
 token_ttl_secs = 300
 default_anonymous_read = false
+oidc_audience = "https://packages.example/_/oidc"
 ```
 
 | Key                      | Meaning                                                              | Default |
@@ -464,11 +465,14 @@ default_anonymous_read = false
 | `signing_key_file`       | Path to read `signing_key` from instead of inlining it               | (none)  |
 | `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive             | `300`   |
 | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it | `true`  |
+| `oidc_audience`          | Audience external CI identity tokens must carry                      | `peryx` |
 
-Set at most one of `signing_key` and `signing_key_file`. `signing_key` and `token_ttl_secs` configure the token realm
-the forthcoming OCI Bearer flow mints from; peryx reads the key at startup so a deployment can stage it, and nothing
-mints a token from it in this release. `default_anonymous_read = false` makes a fully private server one knob instead of
-a flag per index. The full model is in [authentication and access control](@/core/authentication.md).
+Set at most one of `signing_key` and `signing_key_file`. peryx reads the key at startup and uses it to mint OCI and
+trusted-publishing tokens whose maximum lifetime is `token_ttl_secs`. `default_anonymous_read = false` sets the
+anonymous-read default once instead of adding a flag to each index. Each `[[auth.trusted_publisher]]` requires `id`,
+`issuer`, `repository`, `subject`, and a non-empty `projects` list; its `claims` table is optional. The repository is a
+configured writable PyPI index name. See [publish from CI identities](@/ecosystems/pypi/guides/trusted-publishing.md)
+for the provider contract and examples.
 
 ## `[[index.webhook]]`
 

@@ -156,4 +156,9 @@ impl AppState {
         serving.signer = Some(signer);
         serving.token_ttl_secs = ttl_secs;
     }
+
+    /// Keep issuer clients and replay state absent until configuration enables the exchange.
+    pub fn set_trusted_publishing(&mut self, runtime: impl peryx_identity::IdentityExchange + 'static) {
+        self.serving_mut().trusted_publishing = Some(Arc::new(runtime));
+    }
 }

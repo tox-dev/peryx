@@ -1,6 +1,6 @@
 //! The fully resolved configuration types and their defaults.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,6 +73,33 @@ impl Config {
     /// Returns [`ConfigError::WriterIdentity`] when an identity is blank or replica mode has no
     /// identity to use during promotion.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !self.auth.trusted_publishers.is_empty() && self.auth.signing_key.is_none() {
+            return Err(ConfigError::Auth {
+                reason: "`signing_key` is required when trusted publishers are configured",
+            });
+        }
+        let mut publisher_ids = HashSet::new();
+        for publisher in &self.auth.trusted_publishers {
+            if !publisher_ids.insert(&publisher.id) {
+                return Err(ConfigError::TrustedPublisher {
+                    id: publisher.id.clone(),
+                    reason: "publisher IDs must be unique",
+                });
+            }
+            let repository = self.indexes.iter().find(|index| index.name == publisher.repository);
+            if !repository.is_some_and(|index| {
+                index.ecosystem == Ecosystem::Pypi
+                    && matches!(
+                        index.kind,
+                        IndexKind::Hosted { .. } | IndexKind::Virtual { upload: Some(_), .. }
+                    )
+            }) {
+                return Err(ConfigError::TrustedPublisher {
+                    id: publisher.id.clone(),
+                    reason: "repository must name a writable PyPI index",
+                });
+            }
+        }
         match self.writer_identity.as_deref() {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
@@ -97,6 +124,9 @@ pub struct AuthConfig {
     /// What an index's `anonymous_read` defaults to. Set it to `false` to close a whole server's reads
     /// with one key instead of one per index.
     pub default_anonymous_read: bool,
+    /// Audience CI providers must mint identities for.
+    pub oidc_audience: String,
+    pub trusted_publishers: Vec<TrustedPublisherConfig>,
 }
 
 impl Default for AuthConfig {
@@ -105,8 +135,20 @@ impl Default for AuthConfig {
             signing_key: None,
             token_ttl_secs: 300,
             default_anonymous_read: true,
+            oidc_audience: "peryx".to_owned(),
+            trusted_publishers: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedPublisherConfig {
+    pub id: String,
+    pub issuer: String,
+    pub repository: String,
+    pub subject: String,
+    pub projects: Vec<String>,
+    pub claims: BTreeMap<String, String>,
 }
 
 /// Where a secret's value comes from. A `*_file` sibling keeps the value out of the config file, so a
