@@ -65,11 +65,18 @@ pub async fn request_response(
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
+/// A detail page whose wheel advertises a PEP 658 `core-metadata` sibling by default, so serving it
+/// registers the sibling and spawns no metadata backfill. That detached backfill fetches the wheel
+/// from upstream to read its `METADATA` member; under load it races the mock windows these tests set
+/// up, tripping verify-on-drop `.expect(N)` counts. Tests that mean to exercise the no-metadata or
+/// backfill path build their own page or seed state directly rather than call this helper.
 pub fn detail_json(digest: &str, file_url: &str) -> String {
+    let metadata = Digest::of(b"flask metadata");
     format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
-         \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}"
+         \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{metadata}\"}}}}]}}",
+        metadata = metadata.as_str(),
     )
 }
 pub async fn mount_detail(server: &MockServer, digest: &str, file_url: &str, etag: Option<&str>) {
