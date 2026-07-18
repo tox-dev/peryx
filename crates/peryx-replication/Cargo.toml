@@ -23,11 +23,17 @@ tokio = { workspace = true, features = ["fs"] }
 tokio-util.workspace = true
 
 [dev-dependencies]
+hdrhistogram.workspace = true
 http-body-util.workspace = true
 redb.workspace = true
+stats_alloc.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
+
+[[bench]]
+name = "operation_envelope"
+harness = false
 
 [lints]
 workspace = true
