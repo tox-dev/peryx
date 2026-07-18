@@ -24,8 +24,8 @@ pub use model::{
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
-    RawAcme, RawIndex, RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawTrustedPublisher,
-    RawUpstream, RawWebhook,
+    RawAcme, RawIndex, RawJobSchedule, RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken,
+    RawTrustedPublisher, RawUpstream, RawWebhook,
 };
 
 /// An error while assembling configuration.
@@ -49,6 +49,8 @@ pub enum ConfigError {
     TrustedPublisher { id: String, reason: &'static str },
     #[error("replication: {reason}")]
     Replication { reason: &'static str },
+    #[error("jobs schedule [{index}]: {reason}")]
+    Jobs { index: usize, reason: &'static str },
     #[error("writer identity: {reason}")]
     WriterIdentity { reason: &'static str },
     #[error("secret file {path} holds no secret")]

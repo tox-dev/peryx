@@ -585,6 +585,34 @@ mode = "none"
 one that should only serve. A [read replica](@/core/high-availability.md) runs no maintenance regardless of this
 setting.
 
+### Schedules
+
+By default a node runs cache maintenance once a minute. Replace that with an explicit `[[jobs.schedule]]` array to
+choose which jobs run and how often. Each entry names one registered job and a positive interval in seconds; peryx
+rejects a non-positive interval at startup, naming the schedule's index (`jobs schedule [0]`).
+
+```toml
+[[jobs.schedule]]
+job = "cache_maintenance"
+interval_secs = 300
+```
+
+| Key             | Meaning                                        | Default    |
+| --------------- | ---------------------------------------------- | ---------- |
+| `job`           | The registered job to run; `cache_maintenance` | (required) |
+| `interval_secs` | Seconds between runs, must be positive         | (required) |
+
+`cache_maintenance` reclaims expired process resources and revalidates stale cached pages, fanning out one run per
+installed ecosystem so independent repositories sweep together while one repository never sweeps itself twice at once.
+
+One bounded timer drives every schedule, so a large set costs no per-tick scan. When a tick arrives while the same job's
+previous run is still going, peryx skips it rather than queueing it, and counts the skip in the job metrics. Pick an
+interval longer than a sweep takes, and stagger it clear of your peak request hours so maintenance and traffic do not
+contend for upstream bandwidth.
+
+The timer keeps no durable state. On restart it sets each schedule's next run one full interval after startup and drops
+the occurrences missed while the process was down rather than replaying them as a backlog.
+
 ## `[auth]`
 
 The `[auth]` table holds the access settings every index shares: the signing key of peryx's token realm, the lifetime of

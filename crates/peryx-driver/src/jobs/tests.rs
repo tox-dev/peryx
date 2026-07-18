@@ -13,7 +13,10 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::scheduler::{JobLimits, Submit};
-use super::{CACHE_MAINTENANCE, JobContext, JobReport, JobScheduler, MaintenanceJob, NodeJob, submit_maintenance};
+use super::{
+    CACHE_MAINTENANCE, JobContext, JobReport, JobScheduler, MaintenanceJob, NodeJob, Schedule, ScheduledJob,
+    run_schedules, submit_maintenance,
+};
 use crate::serving::{EcosystemDriver, RefreshSweep};
 use crate::state::{AppState, Clock, ServingState};
 
@@ -122,6 +125,9 @@ struct StubDriver {
     reclaim_calls: Arc<AtomicUsize>,
     refresh_calls: Arc<AtomicUsize>,
     refresh_started: Arc<Notify>,
+    /// When set, a refresh parks here after signalling `refresh_started`, so a test can hold a run
+    /// in flight and observe an overlapping schedule tick being skipped.
+    hold: Option<Arc<Notify>>,
 }
 
 impl StubDriver {
@@ -133,6 +139,14 @@ impl StubDriver {
             reclaim_calls: Arc::new(AtomicUsize::new(0)),
             refresh_calls: Arc::new(AtomicUsize::new(0)),
             refresh_started: Arc::new(Notify::new()),
+            hold: None,
+        }
+    }
+
+    fn holding(reclaim: usize, refresh: Result<RefreshSweep, String>, hold: Arc<Notify>) -> Self {
+        Self {
+            hold: Some(hold),
+            ..Self::new(reclaim, refresh)
         }
     }
 }
@@ -163,6 +177,9 @@ impl EcosystemDriver for StubDriver {
     async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
         self.refresh_calls.fetch_add(1, Ordering::SeqCst);
         self.refresh_started.notify_one();
+        if let Some(hold) = &self.hold {
+            hold.notified().await;
+        }
         self.refresh.clone()
     }
 }
@@ -464,4 +481,182 @@ impl NodeJob for BareJob {
 #[test]
 fn test_a_job_defaults_to_running_without_a_persisted_record() {
     assert_eq!(BareJob { scope: String::new() }.persist_as(), None);
+}
+
+fn scheduled_app(driver: Arc<StubDriver>) -> (tempfile::TempDir, Arc<AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let clock: Clock = Arc::new(|| 1_000);
+    let mut state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock);
+    state.register_ecosystem(driver, Arc::new(peryx_search::EmptyIndexer));
+    (dir, Arc::new(state))
+}
+
+fn cache_schedule(secs: u64) -> Vec<Schedule> {
+    vec![Schedule {
+        job: ScheduledJob::CacheMaintenance,
+        interval: Duration::from_secs(secs),
+    }]
+}
+
+#[test]
+fn test_a_scheduled_job_reports_its_stable_label() {
+    assert_eq!(ScheduledJob::CacheMaintenance.as_str(), CACHE_MAINTENANCE);
+}
+
+#[test]
+fn test_reschedule_steps_from_the_due_instant_when_on_time() {
+    let base = tokio::time::Instant::now();
+    assert_eq!(
+        super::timer::reschedule(base, base, Duration::from_mins(1)),
+        base + Duration::from_mins(1)
+    );
+}
+
+#[test]
+fn test_reschedule_steps_from_the_wake_instant_when_it_woke_late() {
+    let base = tokio::time::Instant::now();
+    let woke = base + Duration::from_secs(200);
+    assert_eq!(
+        super::timer::reschedule(base, woke, Duration::from_mins(1)),
+        woke + Duration::from_mins(1)
+    );
+}
+
+#[tokio::test]
+async fn test_no_schedules_returns_at_once() {
+    let (_dir, app) = scheduled_app(Arc::new(StubDriver::new(0, Ok(RefreshSweep::default()))));
+    let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
+    run_schedules(app, scheduler, Vec::new(), CancellationToken::new()).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_schedule_fires_its_job_when_the_interval_elapses() {
+    let driver = Arc::new(StubDriver::new(1, Ok(RefreshSweep { checked: 2, changed: 1 })));
+    let refresh_started = driver.refresh_started.clone();
+    let refresh_calls = driver.refresh_calls.clone();
+    let (_dir, app) = scheduled_app(driver);
+    let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
+    let cancel = CancellationToken::new();
+    tokio::spawn(run_schedules(
+        app,
+        scheduler.clone(),
+        cache_schedule(60),
+        cancel.clone(),
+    ));
+
+    tokio::time::advance(Duration::from_mins(1)).await;
+    refresh_started.notified().await;
+
+    assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+    cancel.cancel();
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_schedule_fires_again_on_each_interval() {
+    let driver = Arc::new(StubDriver::new(1, Ok(RefreshSweep { checked: 2, changed: 1 })));
+    let refresh_started = driver.refresh_started.clone();
+    let refresh_calls = driver.refresh_calls.clone();
+    let (_dir, app) = scheduled_app(driver);
+    let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
+    let cancel = CancellationToken::new();
+    tokio::spawn(run_schedules(
+        app,
+        scheduler.clone(),
+        cache_schedule(60),
+        cancel.clone(),
+    ));
+
+    tokio::time::advance(Duration::from_mins(1)).await;
+    refresh_started.notified().await;
+    tokio::time::advance(Duration::from_mins(1)).await;
+    refresh_started.notified().await;
+
+    assert_eq!(refresh_calls.load(Ordering::SeqCst), 2);
+    cancel.cancel();
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_schedule_that_wakes_late_does_not_replay_missed_runs() {
+    let driver = Arc::new(StubDriver::new(1, Ok(RefreshSweep { checked: 2, changed: 1 })));
+    let refresh_started = driver.refresh_started.clone();
+    let refresh_calls = driver.refresh_calls.clone();
+    let (_dir, app) = scheduled_app(driver);
+    let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
+    let cancel = CancellationToken::new();
+    tokio::spawn(run_schedules(
+        app,
+        scheduler.clone(),
+        cache_schedule(60),
+        cancel.clone(),
+    ));
+
+    // Jump past three intervals in one step: the misfire policy collapses the missed runs into a
+    // single fire rather than replaying a backlog.
+    tokio::time::advance(Duration::from_secs(200)).await;
+    refresh_started.notified().await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+    cancel.cancel();
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_tick_overlapping_a_running_job_is_skipped() {
+    let hold = Arc::new(Notify::new());
+    let driver = Arc::new(StubDriver::holding(
+        1,
+        Ok(RefreshSweep { checked: 2, changed: 1 }),
+        hold.clone(),
+    ));
+    let refresh_started = driver.refresh_started.clone();
+    let refresh_calls = driver.refresh_calls.clone();
+    let (_dir, app) = scheduled_app(driver);
+    let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
+    let cancel = CancellationToken::new();
+    tokio::spawn(run_schedules(
+        app,
+        scheduler.clone(),
+        cache_schedule(60),
+        cancel.clone(),
+    ));
+
+    tokio::time::advance(Duration::from_mins(1)).await;
+    refresh_started.notified().await;
+    tokio::time::advance(Duration::from_mins(1)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        refresh_calls.load(Ordering::SeqCst),
+        1,
+        "the second tick conflicts with the still-running first run and is dropped"
+    );
+    hold.notify_one();
+    cancel.cancel();
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_the_timer_stops_when_cancelled() {
+    let (_dir, app) = scheduled_app(Arc::new(StubDriver::new(0, Ok(RefreshSweep::default()))));
+    let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
+    let cancel = CancellationToken::new();
+    let timer = tokio::spawn(run_schedules(
+        app,
+        scheduler.clone(),
+        cache_schedule(60),
+        cancel.clone(),
+    ));
+
+    cancel.cancel();
+    timer.await.unwrap();
+    scheduler.shutdown().await;
 }

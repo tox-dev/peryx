@@ -54,6 +54,7 @@ futures-util.workspace = true
 ipnet.workspace = true
 mimalloc.workspace = true
 tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

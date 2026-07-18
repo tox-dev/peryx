@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use peryx_core::Ecosystem;
+use peryx_driver::jobs::Schedule;
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
 use peryx_identity::UPLOAD_TOKEN_NAME;
 use time::OffsetDateTime;
@@ -19,7 +20,7 @@ use super::model::{
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
-    RawAcme, RawIndex, RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
+    RawAcme, RawIndex, RawJobSchedule, RawReplication, RawTls, RawToken, RawUpstream, RawWebhook,
 };
 
 impl Config {
@@ -74,19 +75,38 @@ impl Config {
         if let Some(replication) = partial.replication {
             self.replication = Some(classify_replication(replication)?);
         }
-        self.jobs = self.jobs.apply(partial.jobs);
+        self.jobs = self.jobs.apply(partial.jobs)?;
         Ok(self)
     }
 }
 
 impl JobsConfig {
-    #[must_use]
-    const fn apply(mut self, partial: PartialJobsConfig) -> Self {
+    fn apply(mut self, partial: PartialJobsConfig) -> Result<Self, ConfigError> {
         if let Some(mode) = partial.mode {
             self.mode = mode;
         }
-        self
+        if let Some(schedules) = partial.schedules {
+            self.schedules = schedules
+                .into_iter()
+                .enumerate()
+                .map(|(index, raw)| classify_schedule(index, raw))
+                .collect::<Result<_, _>>()?;
+        }
+        Ok(self)
     }
+}
+
+const fn classify_schedule(index: usize, raw: RawJobSchedule) -> Result<Schedule, ConfigError> {
+    let Some(interval) = std::num::NonZeroU64::new(raw.interval_secs) else {
+        return Err(ConfigError::Jobs {
+            index,
+            reason: "`interval_secs` must be positive",
+        });
+    };
+    Ok(Schedule {
+        job: raw.job,
+        interval: Duration::from_secs(interval.get()),
+    })
 }
 
 fn classify_replication(raw: RawReplication) -> Result<ReplicationConfig, ConfigError> {

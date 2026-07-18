@@ -14,6 +14,7 @@
 
 mod metrics;
 mod scheduler;
+mod timer;
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +30,7 @@ use crate::state::{AppState, ServingState};
 
 pub use metrics::JobMetrics;
 pub use scheduler::{JobLimits, JobScheduler, Submit};
+pub use timer::{Schedule, ScheduledJob, run_schedules};
 
 /// How often the server runs a maintenance pass when node-local jobs are enabled.
 pub const MAINTENANCE_INTERVAL: Duration = Duration::from_mins(1);

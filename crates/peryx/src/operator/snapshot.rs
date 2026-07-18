@@ -51,7 +51,16 @@ struct SnapshotConfig<'a> {
 
 #[derive(Serialize)]
 struct SnapshotJobs {
-    mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
+    #[serde(rename = "schedule", skip_serializing_if = "Vec::is_empty")]
+    schedules: Vec<SnapshotSchedule>,
+}
+
+#[derive(Serialize)]
+struct SnapshotSchedule {
+    job: &'static str,
+    interval_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -356,18 +365,35 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
                 .collect(),
         },
         replication: snapshot_replication(replication.as_ref()),
-        jobs: snapshot_jobs(*jobs),
+        jobs: snapshot_jobs(jobs),
     };
     Ok(toml::to_string_pretty(&snapshot)?)
 }
 
 /// A snapshot carries the `[jobs]` table only when it departs from the default, so an unset backup
-/// stays terse and restores to the same default.
-const fn snapshot_jobs(jobs: JobsConfig) -> Option<SnapshotJobs> {
-    match jobs.mode {
+/// stays terse and restores to the same default. It keeps a non-default `mode` or a schedule set
+/// other than the built-in cache-maintenance default, and omits the default schedule set so restore
+/// rebuilds it.
+fn snapshot_jobs(jobs: &JobsConfig) -> Option<SnapshotJobs> {
+    let mode = match jobs.mode {
         JobsMode::Local => None,
-        JobsMode::None => Some(SnapshotJobs { mode: "none" }),
+        JobsMode::None => Some("none"),
+    };
+    let schedules = if jobs.schedules == JobsConfig::default().schedules {
+        Vec::new()
+    } else {
+        jobs.schedules
+            .iter()
+            .map(|schedule| SnapshotSchedule {
+                job: schedule.job.as_str(),
+                interval_secs: schedule.interval.as_secs(),
+            })
+            .collect()
+    };
+    if mode.is_none() && schedules.is_empty() {
+        return None;
     }
+    Some(SnapshotJobs { mode, schedules })
 }
 
 fn snapshot_replication(replication: Option<&ReplicationConfig>) -> Option<SnapshotReplication<'_>> {

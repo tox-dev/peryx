@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use peryx_core::Ecosystem;
+use peryx_driver::jobs::{MAINTENANCE_INTERVAL, Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
@@ -53,9 +54,24 @@ pub struct Config {
 }
 
 /// The `[jobs]` table: how this node runs its background maintenance.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobsConfig {
     pub mode: JobsMode,
+    /// The node-local jobs this node runs on a timer, each on its own interval. Defaults to cache
+    /// maintenance once a minute; a `[[jobs.schedule]]` array replaces the default set.
+    pub schedules: Vec<Schedule>,
+}
+
+impl Default for JobsConfig {
+    fn default() -> Self {
+        Self {
+            mode: JobsMode::default(),
+            schedules: vec![Schedule {
+                job: ScheduledJob::CacheMaintenance,
+                interval: MAINTENANCE_INTERVAL,
+            }],
+        }
+    }
 }
 
 /// Whether a node runs its own background maintenance jobs.

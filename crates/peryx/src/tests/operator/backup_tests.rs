@@ -389,7 +389,10 @@ fn test_backup_snapshots_disabled_jobs_but_omits_the_default() {
     );
 
     let disabled = Config {
-        jobs: JobsConfig { mode: JobsMode::None },
+        jobs: JobsConfig {
+            mode: JobsMode::None,
+            ..JobsConfig::default()
+        },
         ..default
     };
     let backup = root.path().join("backup-none");
@@ -399,6 +402,38 @@ fn test_backup_snapshots_disabled_jobs_but_omits_the_default() {
         .apply(config::from_toml(PathBuf::from("config.toml"), &snapshot).unwrap())
         .unwrap();
     assert_eq!(restored.jobs.mode, JobsMode::None);
+}
+
+#[test]
+fn test_backup_roundtrips_custom_job_schedules() {
+    use peryx_driver::jobs::{Schedule, ScheduledJob};
+
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    drop(MetaStore::open(data_dir.join("peryx.redb")).unwrap());
+    let backup = root.path().join("backup");
+
+    let schedules = vec![Schedule {
+        job: ScheduledJob::CacheMaintenance,
+        interval: std::time::Duration::from_mins(5),
+    }];
+    let config = Config {
+        data_dir,
+        jobs: JobsConfig {
+            mode: JobsMode::Local,
+            schedules: schedules.clone(),
+        },
+        ..Config::default()
+    };
+    operator::backup_create(&config, &backup, &mut Vec::new()).unwrap();
+    let snapshot = std::fs::read_to_string(backup.join("config.toml")).unwrap();
+    assert!(snapshot.contains("[[jobs.schedule]]"), "{snapshot}");
+
+    let restored = Config::default()
+        .apply(config::from_toml(PathBuf::from("config.toml"), &snapshot).unwrap())
+        .unwrap();
+    assert_eq!(restored.jobs.schedules, schedules);
 }
 
 #[rstest]

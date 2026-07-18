@@ -9,6 +9,8 @@ use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
 
+use peryx_driver::jobs::ScheduledJob;
+
 use super::model::{JobsMode, LogFormat, LogSink, PrefetchConfig, PrefetchMode};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
@@ -78,10 +80,23 @@ pub struct PartialConfig {
 }
 
 /// The `[jobs]` half of [`PartialConfig`].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PartialJobsConfig {
     pub mode: Option<JobsMode>,
+    /// The `[[jobs.schedule]]` array. When present it replaces the default schedule set.
+    #[serde(rename = "schedule")]
+    pub schedules: Option<Vec<RawJobSchedule>>,
+}
+
+/// One `[[jobs.schedule]]` table before cadence validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawJobSchedule {
+    /// The registered job kind to run.
+    pub job: ScheduledJob,
+    /// Seconds between runs; validated positive.
+    pub interval_secs: u64,
 }
 
 /// One process replication role before secret and numeric validation.

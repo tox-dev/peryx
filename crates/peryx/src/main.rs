@@ -115,17 +115,14 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
                 peryx_driver::jobs::JobLimits::node_local(),
             ));
             state.register_prometheus(scheduler.metrics());
-            let maintainer = state.clone();
-            tokio::spawn(async move {
-                // One process-wide tick fans a maintenance job out to each driver, rather than a task
-                // and timer per cached page or upload.
-                let mut ticker = tokio::time::interval(peryx_driver::jobs::MAINTENANCE_INTERVAL);
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    peryx_driver::jobs::submit_maintenance(&maintainer, &scheduler);
-                }
-            });
+            // One bounded timer drives every configured schedule, fanning each fire out to the
+            // registered jobs, rather than a task and timer per cached page or upload.
+            tokio::spawn(peryx_driver::jobs::run_schedules(
+                state.clone(),
+                scheduler,
+                config.jobs.schedules.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            ));
         }
         let router = replication.mount(peryx::server::router_for(state));
         let _replication = replication.start();
