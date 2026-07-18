@@ -10,5 +10,13 @@ description = "Ecosystem-neutral index policy engine for peryx: name allow/deny,
 [dependencies]
 serde.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "retention"
+harness = false
+
 [lints]
 workspace = true

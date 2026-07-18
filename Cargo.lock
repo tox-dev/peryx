@@ -3945,7 +3945,9 @@ dependencies = [
 name = "peryx-policy"
 version = "0.0.1"
 dependencies = [
+ "codspeed-criterion-compat",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

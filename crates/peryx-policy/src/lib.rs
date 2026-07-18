@@ -12,6 +12,13 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+mod retention;
+
+pub use retention::{
+    RetentionCandidate, RetentionClass, RetentionConfig, RetentionDecision, RetentionFrontier, RetentionOutcome,
+    RetentionPolicy, RetentionSelector, RetentionSummary, RetentionVisibility,
+};
+
 /// The ecosystem-neutral policy keys. A driver parses its own format-specific keys separately and
 /// compiles them into [`ArtifactRule`]s.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
