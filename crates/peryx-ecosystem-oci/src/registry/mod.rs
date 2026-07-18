@@ -95,6 +95,11 @@ impl From<reqwest::Error> for ServeError {
         Self::Transport(err.to_string())
     }
 }
+impl From<peryx_storage::meta::QuotaError> for ServeError {
+    fn from(err: peryx_storage::meta::QuotaError) -> Self {
+        Self::Transport(err.to_string())
+    }
+}
 impl ServeError {
     /// A user-visible one-line description of the fault, for the web view methods that surface a
     /// message rather than a `/v2/` response.
@@ -220,6 +225,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
 impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRegistryWithHasher<S> {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
         peryx_core::Ecosystem::Oci
+    }
+
+    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
+        crate::quota::QUOTA_FAMILIES
     }
 
     fn mount(&self) -> RouteMount {

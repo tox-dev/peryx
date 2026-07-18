@@ -441,10 +441,11 @@ fn download_error_response(err: DownloadError) -> Response {
 pub(super) async fn commit_blob(
     state: &ServingState,
     pending: BlobWrite,
-    index: &str,
+    index: &Index,
     repo: &str,
     name: &str,
     digest: &str,
+    bytes: u64,
 ) -> Result<Response, ServeError> {
     let Some(storage) = store::blob_digest(digest) else {
         return Ok(error_response(
@@ -452,12 +453,30 @@ pub(super) async fn commit_blob(
             "only sha256 blob digests are supported",
         ));
     };
+    // A digest this repository already serves is accounted; re-pushing it must not reserve again.
+    let reservation = if store::blob_is_member(&state.meta, &index.name, repo, digest)? {
+        None
+    } else {
+        match crate::quota::admit_push(state, index, repo, None, digest, bytes)? {
+            crate::quota::Admission::Rejected(response) => {
+                pending.abort().await.map_err(blob_fault)?;
+                return Ok(response);
+            }
+            crate::quota::Admission::Unmetered => None,
+            crate::quota::Admission::Reserved(record) => Some(record),
+        }
+    };
     match pending.commit(&storage).await {
         Ok(()) => {
-            store::record_blob_membership(&state.meta, index, repo, digest)?;
+            crate::quota::commit_blob_membership(&state.meta, &index.name, repo, digest, reservation)?;
             Ok(blob_created(name, digest))
         }
-        Err(err) => Ok(download_error_response(DownloadError::Blob(err))),
+        Err(err) => {
+            if let Some(record) = reservation {
+                state.meta.release_quota_reservation(record.id)?;
+            }
+            Ok(download_error_response(DownloadError::Blob(err)))
+        }
     }
 }
 

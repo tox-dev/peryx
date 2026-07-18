@@ -33,13 +33,25 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
             if let Some((source_index, source_repo)) = resolve(&state.indexes, source)
                 && !policy_blocks(source_index, PolicyAction::Serve, source_repo)
-                && state.blobs.head(&storage).await.map_err(blob_fault)?.is_some()
+                && let Some(metadata) = state.blobs.head(&storage).await.map_err(blob_fault)?
                 && self.blob_authorized(state, source_index, source_repo, mount)?
             {
                 if policy_blocks(index, PolicyAction::Upload, &repo) {
                     return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
                 }
-                store::record_blob_membership(&state.meta, &index.name, &repo, mount)?;
+                // A mount publishes an existing blob into this repository without a transfer, so it
+                // reserves the mounted digest's bytes exactly as an upload of them would; a digest
+                // already served here is not reserved again.
+                let reservation = if store::blob_is_member(&state.meta, &index.name, &repo, mount)? {
+                    None
+                } else {
+                    match crate::quota::admit_push(state, index, &repo, None, mount, metadata.bytes)? {
+                        crate::quota::Admission::Rejected(response) => return Ok(response),
+                        crate::quota::Admission::Unmetered => None,
+                        crate::quota::Admission::Reserved(record) => Some(record),
+                    }
+                };
+                crate::quota::commit_blob_membership(&state.meta, &index.name, &repo, mount, reservation)?;
                 return Ok(blob_created(name, mount));
             }
         }
@@ -49,7 +61,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             if let Err(err) = append_body(&mut pending, &mut size, body, index, &repo).await {
                 return err.into_response();
             }
-            return commit_blob(state, pending, &index.name, &repo, name, digest).await;
+            return commit_blob(state, pending, index, &repo, name, digest, size).await;
         }
         let now = (state.clock)();
         let session = Self::random_session()?;
@@ -228,7 +240,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 "finishing an upload requires a digest",
             ));
         };
-        commit_blob(state, entry.pending, &index.name, &repo, name, &digest).await
+        commit_blob(state, entry.pending, index, &repo, name, &digest, entry.offset).await
     }
 }
 

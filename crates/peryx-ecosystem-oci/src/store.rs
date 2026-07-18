@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use peryx_storage::meta::{MetaError, MetaStore};
+use peryx_storage::meta::{DriverTxn, MetaError, MetaStore};
 
 /// The driver-KV prefix every manifest is keyed under, its digest following.
 mod descriptors;
@@ -66,10 +66,13 @@ fn tag_prefix(index: &str, repo: &str) -> String {
     format!("{TAG_PREFIX}{index}\u{0}{repo}\u{0}")
 }
 
-/// Store a manifest under its digest.
+/// Store a manifest under its digest, without recording membership — a test seed for the by-digest
+/// read and delete paths that expects a manifest present in the global pool but served by no
+/// repository.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
+#[cfg(test)]
 pub fn put_manifest(meta: &MetaStore, digest: &str, manifest: &Manifest) -> Result<(), MetaError> {
     meta.put_driver_value(&manifest_key(digest), &manifest.encode())
 }
@@ -88,25 +91,38 @@ pub fn record_manifest(
     digest: &str,
     manifest: &Manifest,
 ) -> Result<(), MetaError> {
-    put_manifest(meta, digest, manifest)?;
-    record_membership(meta, index, repo, digest)?;
+    meta.commit_driver_txn(|txn| {
+        record_manifest_txn(txn, index, repo, digest, manifest)?;
+        Ok(((), Vec::new()))
+    })
+}
+
+/// Stage a manifest and its `(index, repo)` memberships inside an open transaction, so a caller can
+/// publish it atomically with a quota-reservation commit.
+///
+/// # Errors
+/// Returns a store error if a write fails.
+pub fn record_manifest_txn(
+    txn: &mut DriverTxn,
+    index: &str,
+    repo: &str,
+    digest: &str,
+    manifest: &Manifest,
+) -> Result<(), MetaError> {
+    txn.put(&manifest_key(digest), &manifest.encode())?;
+    txn.put(&membership_key(index, repo, digest), &[])?;
     let (children, blobs) = manifest_descriptors(&manifest.bytes);
     for child in children {
-        record_membership(meta, index, repo, &child)?;
+        txn.put(&membership_key(index, repo, &child), &[])?;
     }
     for blob in blobs {
-        record_blob_membership(meta, index, repo, &blob)?;
+        txn.put(&blob_membership_key(index, repo, &blob), &[])?;
     }
     Ok(())
 }
 
-/// Record that `(index, repo)` serves `digest`. The value is empty: the key's presence is the
-/// authorization a by-digest read checks.
-fn record_membership(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<(), MetaError> {
-    meta.put_driver_value(&membership_key(index, repo, digest), &[])
-}
-
-/// The driver-KV key marking that `(index, repo)` serves `digest`.
+/// The driver-KV key marking that `(index, repo)` serves `digest`. The value is empty: the key's
+/// presence is the authorization a by-digest read checks.
 fn membership_key(index: &str, repo: &str, digest: &str) -> String {
     format!("{MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}{digest}")
 }
@@ -163,7 +179,16 @@ pub fn blob_membership_key(index: &str, repo: &str, digest: &str) -> String {
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str, digest: &str) -> Result<bool, MetaError> {
-    meta.commit_driver_txn(|txn| Ok((txn.upsert(&tag_key(index, repo, tag), digest.as_bytes())?, Vec::new())))
+    meta.commit_driver_txn(|txn| Ok((put_tag_txn(txn, index, repo, tag, digest)?, Vec::new())))
+}
+
+/// Point `tag` at `digest` inside an open transaction, reporting whether the searchable tag set grew,
+/// so a caller can publish it atomically with a quota-reservation commit.
+///
+/// # Errors
+/// Returns a store error if the write fails.
+pub fn put_tag_txn(txn: &mut DriverTxn, index: &str, repo: &str, tag: &str, digest: &str) -> Result<bool, MetaError> {
+    txn.upsert(&tag_key(index, repo, tag), digest.as_bytes())
 }
 
 /// Resolve a tag to its cached manifest digest.

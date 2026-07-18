@@ -72,10 +72,31 @@ pub(in crate::registry) async fn put_manifest(
         media_type: media_type.clone(),
         bytes: bytes.to_vec(),
     };
-    store::record_manifest(&state.meta, &index.name, &repo, &canonical, &manifest)?;
-    if let Reference::Tag(tag) = reference
-        && store::put_tag(&state.meta, &index.name, &repo, tag, &canonical)?
-    {
+    let version = match reference {
+        Reference::Tag(tag) => Some(tag.as_str()),
+        Reference::Digest(_) => None,
+    };
+    // A re-push of the same manifest under the same reference is already accounted, so it must not
+    // reserve a fresh version or byte allocation.
+    let reservation =
+        if crate::quota::manifest_already_published(&state.meta, &index.name, &repo, &canonical, reference)? {
+            None
+        } else {
+            match crate::quota::admit_push(state, index, &repo, version, &canonical, bytes.len() as u64)? {
+                crate::quota::Admission::Rejected(response) => return Ok(response),
+                crate::quota::Admission::Unmetered => None,
+                crate::quota::Admission::Reserved(record) => Some(record),
+            }
+        };
+    if crate::quota::publish_manifest(
+        &state.meta,
+        &index.name,
+        &repo,
+        &canonical,
+        &manifest,
+        reference,
+        reservation,
+    )? {
         state.bump_search_epoch();
     }
     let subject = record_referrer(state, &index.name, &repo, &canonical, &media_type, &bytes)?;
