@@ -239,6 +239,20 @@ test("project page groups hosted and upstream releases", async ({ page }) => {
   await expect(upstream.getByTitle("Upstream source")).toHaveText("fixture");
 });
 
+test("project page links a file's advertised provenance without hiding files that lack it", async ({ page }) => {
+  await goto(page, PROJECT_URL);
+  const groups = page.locator("section.release-files");
+  // The mirrored 0.9 file advertises PEP 740 provenance, so its row carries a labelled external link.
+  const upstream = groups.nth(1).locator("tr", { hasText: "veloxdemo-0.9" });
+  const link = upstream.getByRole("link", { name: "provenance" });
+  await expect(link).toHaveAttribute("href", /veloxdemo-0\.9-py3-none-any\.whl\.provenance$/);
+  await expect(link).toHaveAttribute("rel", /noopener/);
+  // The uploaded 1.0.0 file carries none, yet its row still lists the artifact.
+  const hosted = groups.nth(0).locator("tr", { hasText: "veloxdemo-1.0.0" });
+  await expect(hosted).toBeVisible();
+  await expect(hosted.getByRole("link", { name: "provenance" })).toHaveCount(0);
+});
+
 test("release links retain filename filters and select one exact group", async ({ page }) => {
   await goto(page, PROJECT_URL);
   await page.locator(".file-search").fill("0.9");

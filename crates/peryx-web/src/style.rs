@@ -323,6 +323,7 @@ tr.yanked td a { text-decoration: line-through; color: var(--text-soft); }
 }
 .button-link:hover { border-color: var(--accent); text-decoration: none; }
 .inspect { font-size: 0.85rem; }
+.provenance { font-size: 0.85rem; }
 .links-list { list-style: none; padding: 0; }
 .admin { margin-top: 2rem; border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1.2rem; }
 .admin summary { cursor: pointer; font-weight: 600; }

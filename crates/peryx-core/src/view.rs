@@ -137,6 +137,15 @@ pub struct UiFile {
     /// The configured upstream source that advertised this artifact, when routing is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
+    /// The PEP 740 provenance URL this file advertises, exactly as the index published it. `None` when
+    /// the file names no provenance, spells it as an explicit `null`, or gives an empty URL.
+    ///
+    /// This carries the advertised location only: peryx neither fetches the document nor verifies the
+    /// attestation it wraps, so its presence attests that the publisher claimed provenance, not that
+    /// any signature was checked. The renderer applies the page's URL-scheme and external-link policy
+    /// before it becomes a link, so an unsafe value is dropped without hiding the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
     /// Whether the artifact is served from local storage (hosted or cached) or remains upstream-only.
     pub availability: UiAvailability,
 }
@@ -234,13 +243,39 @@ mod tests {
             yanked_reason: None,
             has_metadata: false,
             upstream: Some("mirror".to_owned()),
+            provenance: Some("https://pypi.example/files/aa/pkg-1.0-py3-none-any.whl.provenance".to_owned()),
             availability: UiAvailability::RemoteOnly,
         };
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains("\"availability\":\"remote_only\""), "{json}");
         assert!(json.contains("\"upstream\":\"mirror\""), "{json}");
         assert!(json.contains("\"release\":\"1.0\""), "{json}");
+        assert!(
+            json.contains("\"provenance\":\"https://pypi.example/files/aa/pkg-1.0-py3-none-any.whl.provenance\""),
+            "{json}"
+        );
         assert_eq!(serde_json::from_str::<UiFile>(&json).unwrap(), file);
+    }
+
+    #[test]
+    fn test_ui_file_omits_absent_provenance_from_the_wire() {
+        let file = UiFile {
+            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
+            release: None,
+            url: "/pypi/files/aa/pkg-1.0-py3-none-any.whl".to_owned(),
+            sha256: "aa".to_owned(),
+            size: None,
+            upload_time: None,
+            yanked: false,
+            yanked_reason: None,
+            has_metadata: false,
+            upstream: None,
+            provenance: None,
+            availability: UiAvailability::RemoteOnly,
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        assert!(!json.contains("provenance"), "{json}");
+        assert_eq!(serde_json::from_str::<UiFile>(&json).unwrap().provenance, None);
     }
 
     #[test]

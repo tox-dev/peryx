@@ -542,6 +542,19 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
     };
     let inspect = (supports_archive_browser(&file.filename) && is_sha256_hex(&file.sha256))
         .then(|| browse_archive_url(route, project, &file.sha256, &file.filename));
+    // A labelled link to the advertised PEP 740 document. peryx shows where provenance lives; it does
+    // not fetch or verify it, so an unsafe scheme is dropped and the file stays listed regardless.
+    let provenance = file
+        .provenance
+        .clone()
+        .filter(|url| is_safe_artifact_link(url))
+        .map(|url| {
+            let rel = external_link_rel(&url);
+            view! {
+                " · "
+                <a class="provenance" href=url rel=rel>"provenance"</a>
+            }
+        });
     let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
     view! {
         <tr class=class>
@@ -551,6 +564,7 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
                     " · "
                     <a class="inspect" href=href>"contents"</a>
                 })}
+                {provenance}
             </td>
             <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
             <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |time| time.chars().take(10).collect())}</td>
@@ -862,6 +876,23 @@ mod tests {
 
     use super::{UiProjectStatus, file_row, install_command, project_status_badge, shell_quote};
 
+    fn file(filename: &str) -> UiFile {
+        UiFile {
+            filename: filename.to_owned(),
+            release: Some("1.0".to_owned()),
+            url: format!("/pypi/files/aa/{filename}"),
+            sha256: "aa".repeat(32),
+            size: None,
+            upload_time: None,
+            yanked: false,
+            yanked_reason: None,
+            has_metadata: false,
+            upstream: None,
+            provenance: None,
+            availability: UiAvailability::Hosted,
+        }
+    }
+
     #[rstest]
     #[case::plain("flask", "flask")]
     #[case::normalized("ruamel.yaml-clib", "ruamel.yaml-clib")]
@@ -928,25 +959,59 @@ mod tests {
 
     #[test]
     fn test_file_row_names_the_routed_upstream() {
-        let html = file_row(
-            "pypi",
-            "flask",
-            &UiFile {
-                filename: "flask-1.0.whl".to_owned(),
-                release: Some("1.0".to_owned()),
-                url: "/pypi/files/aa/flask-1.0.whl".to_owned(),
-                sha256: "aa".repeat(32),
-                size: None,
-                upload_time: None,
-                yanked: false,
-                yanked_reason: None,
-                has_metadata: false,
-                upstream: Some("corporate".to_owned()),
-                availability: UiAvailability::RemoteOnly,
-            },
-        )
-        .to_html();
+        let mut file = file("flask-1.0.whl");
+        file.upstream = Some("corporate".to_owned());
+        file.availability = UiAvailability::RemoteOnly;
+        let html = file_row("pypi", "flask", &file).to_html();
         assert!(html.contains(r#"title="Upstream source""#), "{html}");
         assert!(html.contains(">corporate</span>"), "{html}");
+    }
+
+    #[test]
+    fn test_file_row_links_an_upstream_provenance_document_as_external() {
+        let mut file = file("flask-1.0.whl");
+        file.provenance = Some("https://pypi.example/flask-1.0.whl.provenance".to_owned());
+        let html = file_row("pypi", "flask", &file).to_html();
+        assert!(
+            html.contains(r#"<a href="https://pypi.example/flask-1.0.whl.provenance" rel="external nofollow noopener noreferrer" class="provenance">provenance</a>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn test_file_row_links_a_hosted_provenance_route_without_the_external_relationship() {
+        let mut file = file("flask-1.0.whl");
+        file.provenance = Some("/pypi/files/aa/flask-1.0.whl.provenance".to_owned());
+        let html = file_row("pypi", "flask", &file).to_html();
+        assert!(
+            html.contains(r#"<a href="/pypi/files/aa/flask-1.0.whl.provenance" class="provenance">provenance</a>"#),
+            "{html}"
+        );
+        assert!(!html.contains("nofollow"), "{html}");
+    }
+
+    #[rstest]
+    #[case::absent(None)]
+    #[case::javascript("javascript:alert(1)")]
+    #[case::data("data:text/html,evil")]
+    fn test_file_row_renders_no_link_for_absent_or_unsafe_provenance(
+        #[case] provenance: impl Into<Option<&'static str>>,
+    ) {
+        let mut file = file("flask-1.0.whl");
+        file.provenance = provenance.into().map(str::to_owned);
+        let html = file_row("pypi", "flask", &file).to_html();
+        assert!(!html.contains("class=\"provenance\""), "{html}");
+        assert!(!html.contains("javascript:") && !html.contains("data:text"), "{html}");
+        assert!(html.contains("flask-1.0.whl"), "{html}");
+    }
+
+    #[test]
+    fn test_file_row_escapes_an_untrusted_provenance_url() {
+        let mut file = file("flask-1.0.whl");
+        file.provenance = Some("https://evil.example/\"><script>pwn()</script>".to_owned());
+        let html = file_row("pypi", "flask", &file).to_html();
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(!html.contains("\"><script"), "{html}");
+        assert!(html.contains("flask-1.0.whl"), "{html}");
     }
 }

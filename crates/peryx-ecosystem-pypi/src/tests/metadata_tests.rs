@@ -27,6 +27,68 @@ fn test_ui_project_from_detail_maps_files() {
 }
 
 #[rstest]
+#[case::url(Some(serde_json::json!("https://pypi.example/aa.whl.provenance")), Some("https://pypi.example/aa.whl.provenance"))]
+#[case::relative(Some(serde_json::json!("/pypi/files/aa/aa.whl.provenance")), Some("/pypi/files/aa/aa.whl.provenance"))]
+#[case::explicit_null(Some(serde_json::Value::Null), None)]
+#[case::empty(Some(serde_json::json!("")), None)]
+#[case::absent_key(None, None)]
+fn test_ui_project_from_detail_carries_only_a_named_provenance_url(
+    #[case] provenance: Option<serde_json::Value>,
+    #[case] expected: Option<&str>,
+) {
+    let mut file = serde_json::json!({"filename": "veloxdemo-1.0-py3-none-any.whl"});
+    if let Some(provenance) = provenance {
+        file["provenance"] = provenance;
+    }
+    let project = ui_project_from_detail(&serde_json::json!({
+        "name": "veloxdemo",
+        "versions": ["1.0"],
+        "files": [file],
+    }));
+    assert_eq!(project.files[0].provenance.as_deref(), expected);
+}
+
+#[test]
+fn test_ui_project_from_detail_attaches_provenance_only_to_the_matching_artifact() {
+    let project = ui_project_from_detail(&serde_json::json!({
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0"],
+        "files": [
+            {"filename": "veloxdemo-1.0-py3-none-any.whl", "provenance": "https://pypi.example/one.provenance"},
+            {"filename": "veloxdemo-2.0-py3-none-any.whl", "yanked": "broken"},
+            {"filename": "veloxdemo-2.0.tar.gz", "provenance": "https://pypi.example/two.provenance"},
+        ],
+    }));
+    let by_name: Vec<_> = project
+        .files
+        .iter()
+        .map(|file| {
+            (
+                file.filename.as_str(),
+                file.release.as_deref(),
+                file.provenance.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        by_name,
+        [
+            (
+                "veloxdemo-1.0-py3-none-any.whl",
+                Some("1.0"),
+                Some("https://pypi.example/one.provenance")
+            ),
+            ("veloxdemo-2.0-py3-none-any.whl", Some("2.0"), None),
+            (
+                "veloxdemo-2.0.tar.gz",
+                Some("2.0"),
+                Some("https://pypi.example/two.provenance")
+            ),
+        ]
+    );
+}
+
+#[rstest]
 #[case::pep440_equivalent(&["1.0.0"], "veloxdemo-1.0-py3-none-any.whl", Some("1.0.0"))]
 #[case::local(&["1.0+acme.1"], "veloxdemo-1.0+acme.1-py3-none-any.whl", Some("1.0+acme.1"))]
 #[case::legacy_exact(&["legacy"], "veloxdemo-legacy-py3-none-any.whl", Some("legacy"))]

@@ -51,7 +51,12 @@ const simplePages = new Map([
       meta: { "api-version": "1.1" },
       name: "veloxdemo",
       versions: ["0.9"],
-      files: [file("veloxdemo-0.9-py3-none-any.whl")],
+      files: [
+        {
+          ...file("veloxdemo-0.9-py3-none-any.whl"),
+          provenance: `${upstreamBase}/files/veloxdemo-0.9-py3-none-any.whl.provenance`,
+        },
+      ],
     },
   ],
   [
