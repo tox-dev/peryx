@@ -9,7 +9,7 @@
 //! transparency entries, the in-toto predicate) is bounded and preserved as opaque JSON, never
 //! interpreted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -110,21 +110,36 @@ impl AttestationError {
     }
 }
 
-/// Parse and bind the `attestations` upload field, returning the provenance object peryx stores and
-/// serves for the distribution `filename` whose content is `sha256`.
+/// A validated attestation bundle: the provenance object peryx stores and serves, and the set of
+/// in-toto predicate types the bundle carries, which a required-attestation policy matches against.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BuiltProvenance {
+    pub document: Vec<u8>,
+    pub predicate_types: BTreeSet<String>,
+}
+
+/// Parse and bind the `attestations` upload field for the distribution `filename` whose content is
+/// `sha256`.
 ///
-/// Every attestation must name this exact distribution, so a subject mismatch or a malformed envelope
-/// rejects the whole upload before either object is published.
+/// The result carries the provenance object peryx stores and serves and the predicate types the
+/// bundle declares. Every attestation must name this exact distribution, so a subject mismatch or a
+/// malformed envelope rejects the whole upload before either object is published.
 ///
 /// # Errors
 /// Returns [`AttestationError`] when the field is malformed, oversized, over-nested, or carries an
 /// attestation whose subject does not bind to `sha256` and `filename`.
-pub fn build_provenance(raw: &str, sha256: &str, filename: &str) -> Result<Vec<u8>, AttestationError> {
+pub fn build_provenance(raw: &str, sha256: &str, filename: &str) -> Result<BuiltProvenance, AttestationError> {
     let attestations = parse_attestations(raw)?;
+    let mut predicate_types = BTreeSet::new();
     for (index, attestation) in attestations.iter().enumerate() {
-        validate_attestation(index, attestation, sha256, filename)?;
+        if let Some(predicate_type) = validate_attestation(index, attestation, sha256, filename)? {
+            predicate_types.insert(predicate_type);
+        }
     }
-    Ok(provenance_document(&attestations))
+    Ok(BuiltProvenance {
+        document: provenance_document(&attestations),
+        predicate_types,
+    })
 }
 
 fn provenance_document(attestations: &[Value]) -> Vec<u8> {
@@ -163,12 +178,14 @@ fn parse_attestations(raw: &str) -> Result<Vec<Value>, AttestationError> {
     Ok(attestations)
 }
 
+/// Validate one attestation and, on success, return the in-toto predicate type it declares, when the
+/// statement carries one.
 fn validate_attestation(
     index: usize,
     attestation: &Value,
     sha256: &str,
     filename: &str,
-) -> Result<(), AttestationError> {
+) -> Result<Option<String>, AttestationError> {
     match &attestation["version"] {
         Value::Number(version) if version.as_u64() == Some(SUPPORTED_VERSION) => {}
         version => {
@@ -179,7 +196,8 @@ fn validate_attestation(
         }
     }
     let statement = decode_statement(index, attestation)?;
-    bind_subject(index, &statement, sha256, filename)
+    bind_subject(index, &statement, sha256, filename)?;
+    Ok(statement.predicate_type)
 }
 
 fn decode_statement(index: usize, attestation: &Value) -> Result<Statement, AttestationError> {
@@ -217,6 +235,8 @@ fn bind_subject(index: usize, statement: &Statement, sha256: &str, filename: &st
 #[derive(serde::Deserialize)]
 struct Statement {
     subject: Vec<Subject>,
+    #[serde(rename = "predicateType", default)]
+    predicate_type: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -262,7 +282,8 @@ mod tests {
     fn test_build_provenance_wraps_a_bound_attestation() {
         let raw = field(&[attestation(FILENAME, SHA)]);
 
-        let document: Value = serde_json::from_slice(&build_provenance(&raw, SHA, FILENAME).unwrap()).unwrap();
+        let built = build_provenance(&raw, SHA, FILENAME).unwrap();
+        let document: Value = serde_json::from_slice(&built.document).unwrap();
 
         assert_eq!(document["version"], 1);
         let bundle = &document["attestation_bundles"][0];
@@ -275,10 +296,22 @@ mod tests {
     fn test_build_provenance_preserves_untrusted_material_verbatim() {
         let raw = field(&[attestation(FILENAME, SHA)]);
 
-        let document: Value = serde_json::from_slice(&build_provenance(&raw, SHA, FILENAME).unwrap()).unwrap();
+        let document: Value = serde_json::from_slice(&build_provenance(&raw, SHA, FILENAME).unwrap().document).unwrap();
 
         let material = &document["attestation_bundles"][0]["attestations"][0]["verification_material"];
         assert_eq!(material["certificate"], "Zm9v");
+    }
+
+    #[test]
+    fn test_build_provenance_collects_the_declared_predicate_types() {
+        let raw = field(&[attestation(FILENAME, SHA)]);
+
+        let built = build_provenance(&raw, SHA, FILENAME).unwrap();
+
+        assert_eq!(
+            built.predicate_types,
+            BTreeSet::from(["https://docs.pypi.org/attestations/publish/v1".to_owned()])
+        );
     }
 
     #[test]

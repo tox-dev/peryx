@@ -30,6 +30,10 @@ pub struct PypiPolicyConfig {
     pub allow_wheel_platforms: Vec<String>,
     pub block_wheel_platforms: Vec<String>,
     pub min_release_age_secs: Option<u64>,
+    /// The in-toto predicate types an upload must carry a PEP 740 attestation for. Empty leaves
+    /// uploads unconstrained; any entry turns the [`AttestationMode`] rule on.
+    pub required_attestations: Vec<String>,
+    pub attestation_mode: AttestationMode,
 }
 
 impl PypiPolicyConfig {
@@ -45,7 +49,40 @@ impl PypiPolicyConfig {
         "allow_wheel_platforms",
         "block_wheel_platforms",
         "min_release_age_secs",
+        "required_attestations",
+        "attestation_mode",
     ];
+}
+
+/// Whether an unmet required-attestation rule blocks the upload or only records what it would block.
+///
+/// Each mode carries its own denial rule name (see [`AttestationMode::rule_name`]), which reaches the
+/// upload handler through the persisted decision, so the handler tells an audit observation from an
+/// enforced rejection.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AttestationMode {
+    /// Reject an upload that is missing a required predicate type.
+    #[default]
+    Enforce,
+    /// Record the unmet requirement but publish the upload anyway.
+    Audit,
+}
+
+/// The denial rule an enforcing required-attestation policy raises.
+pub const REQUIRED_ATTESTATION_RULE: &str = "required-attestation";
+
+/// The denial rule an auditing required-attestation policy raises; the upload handler treats it as a
+/// recorded observation rather than a rejection.
+pub const REQUIRED_ATTESTATION_AUDIT_RULE: &str = "required-attestation-audit";
+
+impl AttestationMode {
+    const fn rule_name(self) -> &'static str {
+        match self {
+            Self::Enforce => REQUIRED_ATTESTATION_RULE,
+            Self::Audit => REQUIRED_ATTESTATION_AUDIT_RULE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -85,6 +122,8 @@ pub enum PypiPolicyError {
     VersionSpecifiers(String),
     #[error("policy tag {0:?} is empty")]
     EmptyTag(String),
+    #[error("required attestation predicate type is empty")]
+    EmptyPredicateType,
 }
 
 /// Compile the `PyPI` policy keys into rules to attach to a neutral [`Policy`] via
@@ -132,6 +171,21 @@ pub fn compile_rules(config: &PypiPolicyConfig) -> Result<Vec<Arc<dyn ArtifactRu
     if let Some(secs) = config.min_release_age_secs.filter(|secs| *secs > 0) {
         rules.push(Arc::new(ReleaseDelayRule {
             min_age_secs: i64::try_from(secs).unwrap_or(i64::MAX),
+        }));
+    }
+    // The attestation rule runs last so a distribution rejected on filename, size, or a tag reports
+    // that structural denial, and the requirement applies only to a file that would otherwise publish.
+    if !config.required_attestations.is_empty() {
+        let mut required = BTreeSet::new();
+        for predicate_type in &config.required_attestations {
+            if predicate_type.is_empty() {
+                return Err(PypiPolicyError::EmptyPredicateType);
+            }
+            required.insert(predicate_type.clone());
+        }
+        rules.push(Arc::new(RequiredAttestationRule {
+            required,
+            mode: config.attestation_mode,
         }));
     }
     Ok(rules)
@@ -313,6 +367,47 @@ impl ArtifactRule for ReleaseDelayRule {
     }
 }
 
+/// The facts attribute the upload path sets to the newline-joined predicate types an upload carries.
+/// Only the upload boundary supplies it, so serve, catalog, and offline-audit facts lack it and the
+/// requirement passes there. An empty value still marks an upload the rule judges.
+const ATTESTATION_PREDICATE_TYPES: &str = "attestation_predicate_types";
+
+/// Require every configured in-toto predicate type to appear among an upload's bound attestations.
+/// The rule reads the upload's declared types from [`ATTESTATION_PREDICATE_TYPES`]; a fact without
+/// that attribute is not an upload the rule can judge and passes.
+#[derive(Debug)]
+struct RequiredAttestationRule {
+    required: BTreeSet<String>,
+    mode: AttestationMode,
+}
+
+impl ArtifactRule for RequiredAttestationRule {
+    fn check(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
+        let Some(declared) = facts.attribute(ATTESTATION_PREDICATE_TYPES) else {
+            return Ok(());
+        };
+        let present: HashSet<&str> = declared.split('\n').filter(|part| !part.is_empty()).collect();
+        let missing = self
+            .required
+            .iter()
+            .filter(|predicate_type| !present.contains(predicate_type.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(facts.denial(
+            action,
+            self.mode.rule_name(),
+            "attestations",
+            format!(
+                "upload is missing a required attestation predicate type: {}",
+                missing.join(", ")
+            ),
+        ))
+    }
+}
+
 fn package_mask(types: &[PackageType]) -> u8 {
     types.iter().fold(0, |mask, kind| mask | kind.mask())
 }
@@ -335,6 +430,20 @@ pub trait PypiPolicy {
     /// # Errors
     /// Returns a denial when the file's parsed facts match a configured policy rule.
     fn check_file(&self, action: PolicyAction, project: &str, file: &File) -> Result<(), PolicyDenial>;
+
+    /// Check whether a hosted upload is allowed, judging the neutral and `PyPI` file rules together
+    /// with the required-attestation rule against `predicate_types`, the in-toto predicate types the
+    /// upload's bound attestations declare.
+    ///
+    /// # Errors
+    /// Returns a denial when the file's facts or its attestations match a configured policy rule.
+    fn check_upload(
+        &self,
+        action: PolicyAction,
+        project: &str,
+        file: &File,
+        predicate_types: &BTreeSet<String>,
+    ) -> Result<(), PolicyDenial>;
 
     /// Check whether a direct artifact or metadata download is allowed.
     ///
@@ -366,6 +475,16 @@ pub trait PypiPolicy {
 impl PypiPolicy for Policy {
     fn check_file(&self, action: PolicyAction, project: &str, file: &File) -> Result<(), PolicyDenial> {
         self.check_facts(action, &facts_from_file(project, file))
+    }
+
+    fn check_upload(
+        &self,
+        action: PolicyAction,
+        project: &str,
+        file: &File,
+        predicate_types: &BTreeSet<String>,
+    ) -> Result<(), PolicyDenial> {
+        self.check_facts(action, &facts_from_upload(project, file, predicate_types))
     }
 
     fn check_download(&self, action: PolicyAction, filename: &str, size: Option<u64>) -> Result<(), PolicyDenial> {
@@ -454,6 +573,22 @@ fn facts_from_file(project: &str, file: &File) -> ArtifactFacts {
         now: None,
         attributes: parsed.as_ref().map(pypi_attributes).unwrap_or_default(),
     }
+}
+
+/// Build upload facts that also carry the attestation predicate types the required-attestation rule
+/// judges. This path always sets the attribute, even for an empty set, so the rule tells an upload
+/// with no attestations from a serve fact it must not judge.
+fn facts_from_upload(project: &str, file: &File, predicate_types: &BTreeSet<String>) -> ArtifactFacts {
+    let mut facts = facts_from_file(project, file);
+    facts.attributes.push((
+        ATTESTATION_PREDICATE_TYPES,
+        predicate_types
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+    facts
 }
 
 fn facts_from_filename(filename: &str, size: Option<u64>) -> ArtifactFacts {

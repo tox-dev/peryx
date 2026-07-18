@@ -19,7 +19,7 @@ use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
 
 use crate::cache::{self, CacheError};
-use crate::policy::PypiPolicy;
+use crate::policy::{PypiPolicy, REQUIRED_ATTESTATION_AUDIT_RULE};
 use crate::upload::{self, UploadError};
 use crate::{ProjectStatus, normalize_name};
 
@@ -167,26 +167,31 @@ fn upload_policy_response(
     prepared: &upload::PreparedUpload,
     audit: &UploadAudit<'_>,
 ) -> Option<Response> {
-    index
-        .policy
-        .check_file(PolicyAction::Upload, &prepared.normalized, &prepared.record.file)
-        .err()
-        .map(|denial| {
-            security_upload_event(
-                audit.headers,
-                audit.actor.as_deref(),
-                audit.route,
-                Some(audit.hosted),
-                "denied",
-            )
-            .project(Some(audit.project))
-            .version(Some(audit.version))
-            .filename(Some(audit.filename))
-            .digest(Some(audit.digest))
-            .reason(Some(&denial.reason))
-            .emit();
-            policy_denial_response(&denial)
-        })
+    let Err(denial) = index.policy.check_upload(
+        PolicyAction::Upload,
+        &prepared.normalized,
+        &prepared.record.file,
+        &prepared.attestation_predicate_types,
+    ) else {
+        return None;
+    };
+    // An audit-mode attestation requirement records the unmet rule but does not reject the upload; the
+    // decision is already persisted, so the handler emits the observation and lets the file publish.
+    let audit_only = denial.rule == REQUIRED_ATTESTATION_AUDIT_RULE;
+    security_upload_event(
+        audit.headers,
+        audit.actor.as_deref(),
+        audit.route,
+        Some(audit.hosted),
+        if audit_only { "audit" } else { "denied" },
+    )
+    .project(Some(audit.project))
+    .version(Some(audit.version))
+    .filename(Some(audit.filename))
+    .digest(Some(audit.digest))
+    .reason(Some(&denial.reason))
+    .emit();
+    (!audit_only).then(|| policy_denial_response(&denial))
 }
 
 struct UploadAudit<'a> {

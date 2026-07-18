@@ -163,6 +163,26 @@ type `application/vnd.pypi.integrity.v1+json`. The `publisher` is `null` because
 Publisher identity. See [Simple API serving](@/ecosystems/pypi/reference/simple-api.md#provenance-and-attestations) for
 the served shape.
 
+### Requiring predicate types
+
+An index whose `[index.policy]` sets `required_attestations` makes an upload carry a PEP 740 attestation for every
+listed in-toto predicate type. peryx evaluates this after the structural, digest, and attestation-binding checks above
+and after the neutral project, size, and tag rules, so a file rejected on one of those reports that denial first. The
+requirement matches predicate types verbatim against the `predicateType` each bound attestation declares; it verifies no
+signature, certificate, or transparency-log entry.
+
+| Situation                                             | Status | Rule                         |
+| ----------------------------------------------------- | ------ | ---------------------------- |
+| Every required predicate type is present              | passes | —                            |
+| A required predicate type is missing (`enforce` mode) | `403`  | `required-attestation`       |
+| A required predicate type is missing (`audit` mode)   | passes | `required-attestation-audit` |
+
+In `enforce` mode the `403` body is a policy denial whose `reason` names the missing types, for example
+`upload is missing a required attestation predicate type: https://docs.pypi.org/attestations/publish/v1`, without
+echoing bundle content. In `audit` mode the upload publishes and peryx records the `required-attestation-audit` decision
+instead of rejecting. Either way the decision is persisted to the policy-decision log. An upload with no attestations
+satisfies no requirement.
+
 ## Version matching for admin operations
 
 The version-scoped admin operations address a release by version: yank, un-yank, delete, and promote. Each reads the

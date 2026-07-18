@@ -1,9 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
-use peryx_policy::{ArtifactFacts, FallbackMode, Policy, PolicyAction, PolicyConfig};
+use peryx_policy::{
+    ArtifactFacts, FallbackMode, Policy, PolicyAction, PolicyConfig, PolicyDecisionRecorder, PolicyDecisionState,
+    PolicyEvaluation,
+};
 use rstest::rstest;
 
-use crate::policy::{PackageType, PypiPolicy, PypiPolicyConfig, PypiPolicyError, compile_rules};
+use crate::policy::{
+    AttestationMode, PackageType, PypiPolicy, PypiPolicyConfig, PypiPolicyError, REQUIRED_ATTESTATION_AUDIT_RULE,
+    REQUIRED_ATTESTATION_RULE, compile_rules,
+};
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked};
 
 #[test]
@@ -590,4 +597,176 @@ fn test_apply_detail_serves_a_young_release_without_a_clock() {
         .unwrap();
 
     assert_eq!(detail.files.len(), 1);
+}
+
+const PUBLISH_PREDICATE: &str = "https://docs.pypi.org/attestations/publish/v1";
+const SLSA_PREDICATE: &str = "https://slsa.dev/provenance/v1";
+
+fn attestation_policy(mode: AttestationMode, required: &[&str]) -> Policy {
+    policy(|_neutral, pypi| {
+        pypi.attestation_mode = mode;
+        pypi.required_attestations = required.iter().map(|value| (*value).to_owned()).collect();
+    })
+}
+
+fn predicate_types(types: &[&str]) -> BTreeSet<String> {
+    types.iter().map(|value| (*value).to_owned()).collect()
+}
+
+#[test]
+fn test_required_attestation_allows_an_upload_carrying_every_predicate_type() {
+    attestation_policy(AttestationMode::Enforce, &[PUBLISH_PREDICATE, SLSA_PREDICATE])
+        .check_upload(
+            PolicyAction::Upload,
+            "demo",
+            &file("demo-1.0-py3-none-any.whl", Some(1)),
+            &predicate_types(&[
+                PUBLISH_PREDICATE,
+                SLSA_PREDICATE,
+                "https://slsa.dev/verification_summary/v1",
+            ]),
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_required_attestation_denies_an_upload_missing_a_predicate_type() {
+    let denial = attestation_policy(AttestationMode::Enforce, &[PUBLISH_PREDICATE, SLSA_PREDICATE])
+        .check_upload(
+            PolicyAction::Upload,
+            "demo",
+            &file("demo-1.0-py3-none-any.whl", Some(1)),
+            &predicate_types(&[PUBLISH_PREDICATE]),
+        )
+        .unwrap_err();
+
+    assert_eq!(denial.rule, REQUIRED_ATTESTATION_RULE);
+    assert_eq!(denial.field, "attestations");
+    assert_eq!(
+        denial.reason.as_ref(),
+        format!("upload is missing a required attestation predicate type: {SLSA_PREDICATE}")
+    );
+}
+
+#[test]
+fn test_required_attestation_denies_an_upload_with_no_attestations() {
+    let denial = attestation_policy(AttestationMode::Enforce, &[PUBLISH_PREDICATE])
+        .check_upload(
+            PolicyAction::Upload,
+            "demo",
+            &file("demo-1.0-py3-none-any.whl", Some(1)),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+
+    assert_eq!(denial.rule, REQUIRED_ATTESTATION_RULE);
+    assert_eq!(
+        denial.reason.as_ref(),
+        format!("upload is missing a required attestation predicate type: {PUBLISH_PREDICATE}")
+    );
+}
+
+#[test]
+fn test_required_attestation_audit_mode_names_the_audit_rule() {
+    let denial = attestation_policy(AttestationMode::Audit, &[PUBLISH_PREDICATE])
+        .check_upload(
+            PolicyAction::Upload,
+            "demo",
+            &file("demo-1.0-py3-none-any.whl", Some(1)),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+
+    assert_eq!(denial.rule, REQUIRED_ATTESTATION_AUDIT_RULE);
+}
+
+#[test]
+fn test_required_attestation_ignores_a_serve_fact_that_carries_no_attestations() {
+    // A serve or catalog path builds no attestation attribute, so the requirement cannot judge it and
+    // the file passes; the rule only speaks at the upload boundary.
+    attestation_policy(AttestationMode::Enforce, &[PUBLISH_PREDICATE])
+        .check_file(PolicyAction::Serve, "demo", &file("demo-1.0-py3-none-any.whl", Some(1)))
+        .unwrap();
+}
+
+#[test]
+fn test_required_attestation_reports_a_structural_denial_before_itself() {
+    // The attestation rule is compiled last, so a blocked package type is what an upload missing both
+    // the type allowance and its attestations hears.
+    let policy = policy(|_neutral, pypi| {
+        pypi.block_package_types = vec![PackageType::Wheel];
+        pypi.required_attestations = vec![PUBLISH_PREDICATE.to_owned()];
+    });
+
+    let denial = policy
+        .check_upload(
+            PolicyAction::Upload,
+            "demo",
+            &file("demo-1.0-py3-none-any.whl", Some(1)),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+
+    assert_eq!(denial.rule, "package-type-block-list");
+}
+
+#[test]
+fn test_compile_rejects_an_empty_predicate_type() {
+    let config = PypiPolicyConfig {
+        required_attestations: vec![String::new()],
+        ..PypiPolicyConfig::default()
+    };
+
+    assert!(matches!(
+        compile_rules(&config),
+        Err(PypiPolicyError::EmptyPredicateType)
+    ));
+}
+
+#[rstest]
+#[case("enforce", AttestationMode::Enforce)]
+#[case("audit", AttestationMode::Audit)]
+fn test_attestation_mode_deserializes_kebab_case(#[case] value: &str, #[case] expected: AttestationMode) {
+    let config: PypiPolicyConfig = serde_json::from_str(&format!(r#"{{"attestation_mode":"{value}"}}"#)).unwrap();
+
+    assert_eq!(config.attestation_mode, expected);
+}
+
+#[test]
+fn test_attestation_mode_defaults_to_enforce() {
+    assert_eq!(PypiPolicyConfig::default().attestation_mode, AttestationMode::Enforce);
+}
+
+#[derive(Debug, Default)]
+struct CaptureRecorder(Mutex<Vec<(PolicyDecisionState, Option<String>)>>);
+
+impl PolicyDecisionRecorder for CaptureRecorder {
+    fn record(&self, evaluation: PolicyEvaluation<'_>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((evaluation.state, evaluation.rule.map(str::to_owned)));
+    }
+}
+
+#[rstest]
+#[case(AttestationMode::Enforce, REQUIRED_ATTESTATION_RULE)]
+#[case(AttestationMode::Audit, REQUIRED_ATTESTATION_AUDIT_RULE)]
+fn test_required_attestation_persists_the_unmet_decision(#[case] mode: AttestationMode, #[case] rule: &str) {
+    let recorder = Arc::new(CaptureRecorder::default());
+    let policy = attestation_policy(mode, &[PUBLISH_PREDICATE]).with_decision_recorder(recorder.clone());
+
+    policy
+        .check_upload(
+            PolicyAction::Upload,
+            "demo",
+            &file("demo-1.0-py3-none-any.whl", Some(1)),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        *recorder.0.lock().unwrap(),
+        vec![(PolicyDecisionState::Deny, Some(rule.to_owned()))]
+    );
 }

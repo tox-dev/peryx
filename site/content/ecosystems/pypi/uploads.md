@@ -237,6 +237,23 @@ file and it drops off every served page, and its provenance link goes with it. R
 provenance blob is kept through the trash, keyed by the artifact's own digest, so a restore never has to re-derive it.
 The association a client sees always matches what the index is willing to serve.
 
+### Requiring an attestation
+
+Accepting attestations is one thing; requiring them is a policy. `required_attestations` on an index's `[index.policy]`
+table lists the [in-toto](https://slsa.dev/spec/v1.0/provenance) predicate types an upload must carry a PEP 740
+attestation for — for example `https://docs.pypi.org/attestations/publish/v1` from the
+[PyPA index-hosted attestation specification](https://packaging.python.org/en/latest/specifications/index-hosted-attestations/).
+peryx evaluates the requirement at the upload boundary, after the same structural and subject-binding validation above
+and before the file and its provenance publish. An upload missing a required predicate type publishes neither object,
+and the `403` names the missing types without echoing bundle content. Matching predicates permit the same upload. The
+requirement reads only the predicate types the bound attestations already declared: no signature, certificate, or
+transparency-log verification, and no identity claim — a later verifier still owns those.
+
+`attestation_mode` chooses what an unmet requirement does. `enforce`, the default, rejects the upload. `audit` records
+the same policy decision but publishes the upload anyway, so an operator can measure how much of a project's traffic
+already ships attestations before turning enforcement on. Both modes persist the decision, so the audit trail shows what
+enforcement would have rejected.
+
 ### The threat model, briefly
 
 Untrusted input arrives in the `attestations` field: attacker-controlled JSON, an attacker-chosen certificate, an
@@ -245,7 +262,10 @@ size, parser depth) so a hostile bundle cannot exhaust memory or stack. It never
 verification material; it stores them as opaque bytes and serves them only inside the JSON provenance body, where
 metacharacters stay inert string data. The provenance URL is peryx's own digest-addressed route, so nothing an uploader
 controls reaches the HTML page except through that fixed, escaped attribute. peryx holds no signing material at any
-point; it stores and serves what a publisher signed elsewhere.
+point; it stores and serves what a publisher signed elsewhere. `required_attestations` reads only the predicate type a
+bound attestation declares, so it raises no new trust in the bundle: a wrong-subject or malformed bundle is already
+rejected before the requirement is judged, and a matching upload still gets no signature or identity guarantee it did
+not earn.
 
 ## In practice
 

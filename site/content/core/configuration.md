@@ -353,6 +353,8 @@ block_wheel_platforms = ["win_amd64"]
 max_file_size_bytes = 104857600
 max_project_size_bytes = 1073741824
 min_release_age_secs = 604800
+required_attestations = ["https://docs.pypi.org/attestations/publish/v1"]
+attestation_mode = "enforce"
 ```
 
 | Key                      | Meaning                                                                       |
@@ -371,6 +373,8 @@ min_release_age_secs = 604800
 | `max_file_size_bytes`    | Maximum file size from the Simple API `size` field or from an uploaded file   |
 | `max_project_size_bytes` | Maximum sum of retained file sizes for one project detail page                |
 | `min_release_age_secs`   | Hide an upstream file until this many seconds past its `upload-time`          |
+| `required_attestations`  | In-toto predicate types an upload must carry a PEP 740 attestation for        |
+| `attestation_mode`       | `enforce` rejects a missing attestation; `audit` records it but publishes     |
 
 `min_release_age_secs` quarantines fresh upstream releases: a file whose Simple API
 [`upload-time`](https://packaging.python.org/en/latest/specifications/simple-repository-api/#project-detail) is younger
@@ -378,6 +382,19 @@ than the delay is hidden from the served page, giving operators a window to catc
 it reaches clients. A common baseline is a seven-day delay (`604800`). A file with no `upload-time` is hidden while the
 delay is set, since its age cannot be established. The clock is the serving clock, so the file appears once enough time
 passes. This is PyPI-specific and applies only to a PyPI index.
+
+`required_attestations` makes a hosted upload carry a
+[PEP 740](https://packaging.python.org/en/latest/specifications/index-hosted-attestations/) attestation for every listed
+[in-toto](https://slsa.dev/spec/v1.0/provenance) predicate type. peryx evaluates the rule at the upload boundary, after
+the distribution's structure and each attestation's subject binding are validated and before the file and its provenance
+publish, so an upload missing a required predicate type publishes neither object. The check reads only the predicate
+types the bound attestations already declared: it performs no signature, certificate, or transparency-log verification,
+and asserts no publisher identity. A file uploaded with no attestations satisfies no requirement. `attestation_mode`
+chooses the outcome of an unmet requirement: `enforce` (the default) returns a `403` that names the missing predicate
+types without echoing bundle content, while `audit` records the same `required-attestation-audit` policy decision but
+lets the upload publish, so an operator can measure coverage before turning enforcement on. Both modes persist the
+decision. The rule is PyPI-specific and applies only to a PyPI index; it runs after the structural, size, and tag rules,
+so a file rejected on one of those reports that denial rather than the attestation requirement.
 
 File and project size rules require declared sizes. A file without `size` is denied by `max_file_size_bytes`; a project
 page with any retained file lacking `size` is denied by `max_project_size_bytes`. Active policies use the buffered

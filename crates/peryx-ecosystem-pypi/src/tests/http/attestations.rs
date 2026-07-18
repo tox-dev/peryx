@@ -2,8 +2,11 @@
 //! yank/trash/restore, and untrusted-content handling.
 
 use super::support::*;
+use crate::policy::AttestationMode;
 
 const FILENAME: &str = "peryxpkg-1.0-py3-none-any.whl";
+const PUBLISH_PREDICATE: &str = "https://docs.pypi.org/attestations/publish/v1";
+const SLSA_PREDICATE: &str = "https://slsa.dev/provenance/v1";
 
 /// A predicate string carrying HTML metacharacters, so a test can prove untrusted attestation
 /// content never reaches the HTML page unescaped.
@@ -211,4 +214,112 @@ async fn test_untrusted_predicate_stays_out_of_the_html_page() {
         decoded.contains(HOSTILE_PREDICATE),
         "the predicate round-trips verbatim in the bundle"
     );
+}
+
+fn attestations_field_of(predicate_type: &str, name: &str, sha256: &str) -> String {
+    let statement = STANDARD.encode(
+        serde_json::json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": [{"name": name, "digest": {"sha256": sha256}}],
+            "predicateType": predicate_type,
+            "predicate": {},
+        })
+        .to_string(),
+    );
+    serde_json::json!([{
+        "version": 1,
+        "verification_material": {"certificate": "Zm9v", "transparency_entries": []},
+        "envelope": {"statement": statement, "signature": "YmFy"},
+    }])
+    .to_string()
+}
+
+fn require_publish_predicate(mode: AttestationMode) -> Policy {
+    policy(move |_neutral, pypi| {
+        pypi.attestation_mode = mode;
+        pypi.required_attestations = vec![PUBLISH_PREDICATE.to_owned()];
+    })
+}
+
+async fn harness_requiring_publish(mode: AttestationMode) -> Harness {
+    harness_with_policies(
+        true,
+        true,
+        Policy::default(),
+        require_publish_predicate(mode),
+        Policy::default(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_required_attestation_enforce_rejects_an_upload_without_attestations() {
+    let h = harness_requiring_publish(AttestationMode::Enforce).await;
+    let wheel = fixture_wheel();
+
+    let status = upload_peryxpkg(&h.state, "/root/pypi/", &wheel).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (page, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(page, StatusCode::NOT_FOUND, "the distribution never publishes");
+}
+
+#[tokio::test]
+async fn test_required_attestation_enforce_names_the_missing_predicate_type() {
+    let h = harness_requiring_publish(AttestationMode::Enforce).await;
+    let wheel = fixture_wheel();
+    let (content_type, body) = multipart_body(&upload_fields(), Some((FILENAME, &wheel)));
+
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let denial: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(denial["rule"], "required-attestation");
+    assert_eq!(
+        denial["reason"],
+        format!("upload is missing a required attestation predicate type: {PUBLISH_PREDICATE}")
+    );
+}
+
+#[tokio::test]
+async fn test_required_attestation_enforce_accepts_a_matching_upload() {
+    let h = harness_requiring_publish(AttestationMode::Enforce).await;
+    let wheel = fixture_wheel();
+    let sha = Digest::of(&wheel).as_str().to_owned();
+
+    let status = upload_with_attestations(&h.state, &wheel, &attestations_field(FILENAME, &sha)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let (page, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(page, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_required_attestation_enforce_rejects_a_wrong_predicate_type() {
+    let h = harness_requiring_publish(AttestationMode::Enforce).await;
+    let wheel = fixture_wheel();
+    let sha = Digest::of(&wheel).as_str().to_owned();
+
+    let status =
+        upload_with_attestations(&h.state, &wheel, &attestations_field_of(SLSA_PREDICATE, FILENAME, &sha)).await;
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a bound attestation of the wrong type does not satisfy the rule"
+    );
+    let (page, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(page, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_required_attestation_audit_publishes_an_upload_without_attestations() {
+    let h = harness_requiring_publish(AttestationMode::Audit).await;
+    let wheel = fixture_wheel();
+
+    let status = upload_peryxpkg(&h.state, "/root/pypi/", &wheel).await;
+
+    assert_eq!(status, StatusCode::OK, "audit mode observes but does not block");
+    let (page, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(page, StatusCode::OK);
 }

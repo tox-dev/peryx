@@ -5,7 +5,7 @@
 //! in the handler; everything it depends on is unit-testable without a server.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use md5::{Digest as _, Md5};
 use url::Url;
@@ -164,6 +164,9 @@ pub struct PreparedUpload {
     pub metadata: Vec<u8>,
     /// The serialized PEP 740 provenance object, when the upload carried valid attestations.
     pub provenance: Option<Vec<u8>>,
+    /// The in-toto predicate types the attestations declared, empty when the upload carried none. A
+    /// required-attestation policy matches its configured types against this set.
+    pub attestation_predicate_types: BTreeSet<String>,
     pub record: Uploaded,
     pub submitted_at_unix: i64,
 }
@@ -277,12 +280,11 @@ pub fn prepare(
     let upload_time = upload_time(upload_time_unix)?;
     let digest = staged.blob.digest().clone();
     let url = local_file_url(index, digest.as_str(), &filename);
-    let (provenance, provenance_marker) =
-        prepared_provenance(form.attestations.as_deref(), digest.as_str(), &filename, &url)?;
+    let provenance = prepared_provenance(form.attestations.as_deref(), digest.as_str(), &filename, &url)?;
     let file = uploaded_file(UploadedFile {
         filename: filename.clone(),
         url,
-        provenance: provenance_marker,
+        provenance: provenance.marker,
         digest: &digest,
         size: staged.blob.len(),
         upload_time,
@@ -295,7 +297,8 @@ pub fn prepare(
         digest,
         content: staged.blob,
         metadata,
-        provenance,
+        provenance: provenance.document,
+        attestation_predicate_types: provenance.predicate_types,
         record: Uploaded {
             version,
             file,
@@ -332,6 +335,14 @@ fn uploaded_file(file: UploadedFile<'_>) -> File {
     }
 }
 
+/// The provenance a prepared upload contributes: the object to store, the marker the served file
+/// advertises, and the predicate types a required-attestation policy matches against.
+struct PreparedProvenance {
+    document: Option<Vec<u8>>,
+    marker: Provenance,
+    predicate_types: BTreeSet<String>,
+}
+
 /// Validate any attached PEP 740 attestations and, when present, return the provenance object to
 /// store and the `Provenance::Url` marker the file advertises. An empty or absent field publishes
 /// no provenance.
@@ -340,15 +351,20 @@ fn prepared_provenance(
     sha256: &str,
     filename: &str,
     url: &str,
-) -> Result<(Option<Vec<u8>>, Provenance), UploadError> {
+) -> Result<PreparedProvenance, UploadError> {
     let Some(attestations) = attestations.filter(|field| !field.trim().is_empty()) else {
-        return Ok((None, Provenance::Absent));
+        return Ok(PreparedProvenance {
+            document: None,
+            marker: Provenance::Absent,
+            predicate_types: BTreeSet::new(),
+        });
     };
-    let provenance = attestation::build_provenance(attestations, sha256, filename).map_err(UploadError::Attestation)?;
-    Ok((
-        Some(provenance),
-        Provenance::Url(format!("{url}{}", attestation::PROVENANCE_SUFFIX)),
-    ))
+    let built = attestation::build_provenance(attestations, sha256, filename).map_err(UploadError::Attestation)?;
+    Ok(PreparedProvenance {
+        document: Some(built.document),
+        marker: Provenance::Url(format!("{url}{}", attestation::PROVENANCE_SUFFIX)),
+        predicate_types: built.predicate_types,
+    })
 }
 
 /// Persist a validated upload into a local store. Returns `false` when the same file and digest are
@@ -420,6 +436,7 @@ fn split_prepared(prepared: PreparedUpload) -> (BlobStaged, PreparedRecord) {
         content,
         metadata,
         provenance: _,
+        attestation_predicate_types: _,
         record,
         submitted_at_unix,
     } = prepared;
