@@ -90,7 +90,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      actions: read
+      actions: write
       contents: read
     outputs:
       compatible: ${{ steps.baseline.outputs.compatible }}
@@ -163,6 +163,9 @@ jobs:
           else
             echo "The pull request changes the benchmark runtime; results will not be uploaded."
           fi
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   codspeed-image:
     name: CodSpeed runtime image
@@ -171,6 +174,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
+      actions: write
       contents: read
       packages: write
     outputs:
@@ -231,6 +235,9 @@ jobs:
           [[ "$digest" == sha256:* ]]
           echo "available=true" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   operations:
     name: ${{ matrix.ecosystem }} operation benchmarks
@@ -246,7 +253,7 @@ jobs:
       group: codspeed-${{ matrix.ecosystem }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: true
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include: ${{ fromJSON(needs.changes.outputs.bench_matrix) }}
     runs-on: ubuntu-24.04-arm

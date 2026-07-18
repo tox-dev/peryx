@@ -75,6 +75,9 @@ jobs:
       needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -84,6 +87,9 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   # One build+test job per platform, uniform across the matrix. sccache (shared with local dev) plus
   # the workspace target cache keep the Windows compile — the reason this leg was once split into a
@@ -105,6 +111,9 @@ jobs:
           - os: windows-2025
             features: ""
     runs-on: ${{ matrix.os }}
+    permissions:
+      actions: write
+      contents: read
     # Homebrew (pulled in by taiki-e/install-action on macOS) warns about the runner's pre-installed
     # aws/tap unless tap-trust checks are disabled.
     env:
@@ -130,6 +139,9 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace ${{ matrix.features }} -E 'not(binary(e2e))'
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   coverage:
     needs: changes
@@ -137,6 +149,9 @@ jobs:
       needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -160,6 +175,9 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   # Hermetic end-to-end: real pip/uv drive a spawned peryx that proxies a local fixture index, so no
   # external network is touched. Proves downstream clients work through peryx on every PR.
@@ -169,6 +187,9 @@ jobs:
       needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' ||
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -192,6 +213,9 @@ jobs:
         run: cargo build -p peryx --features e2e --tests
       - name: Run e2e tests
         run: cargo nextest run -p peryx --features e2e
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   # The same client flows against the real pypi.org, to catch upstream drift.
   e2e-live:
@@ -200,6 +224,9 @@ jobs:
       needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' ||
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -223,6 +250,9 @@ jobs:
         run: cargo build -p peryx --features e2e-live --tests
       - name: Run live e2e tests
         run: cargo nextest run -p peryx --features e2e-live -E 'test(e2e_live)'
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   # The hydrated web UI, driven by Playwright: the wasm bundle is built with cargo-leptos and the
   # suite exercises search, the project page, the archive browser, and token-authenticated actions.
@@ -232,6 +262,9 @@ jobs:
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.frontend_tests == 'true' ||
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
     env:
       CARGO_LEPTOS_VERSION: "0.3.6"
     steps:
@@ -258,6 +291,9 @@ jobs:
         working-directory: tests/frontend
       - run: npx playwright test
         working-directory: tests/frontend
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   # Mermaid diagrams are pre-rendered from source to committed dual-theme SVG partials (site/diagrams,
   # keyed by a hash of the diagram source) because the docs host has no headless browser. This job
@@ -270,6 +306,9 @@ jobs:
       needs.changes.outputs.docs == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -280,6 +319,9 @@ jobs:
           sudo mv zola /usr/local/bin/
       - run: zola --root site build
       - run: python3 site/scripts/inline_diagrams.py site/public
+      - name: Cancel remaining jobs on failure
+        if: failure() && !cancelled()
+        uses: ./.github/actions/cancel-on-failure
 
   # Required-status-check anchor: branch protection requires this job, not the conditional ones above,
   # because a skipped required check blocks merge on GitHub. Passes when every dependency succeeded or
