@@ -610,7 +610,7 @@ fn facts_from_filename(filename: &str, size: Option<u64>) -> ArtifactFacts {
 /// Parse a Simple-API `upload-time` (RFC 3339, per PEP 700) into a Unix timestamp. A value without an
 /// offset, or otherwise unparseable, yields `None`, which the release-delay rule treats as a missing
 /// upload time.
-fn parse_upload_time(value: &str) -> Option<i64> {
+pub(crate) fn parse_upload_time(value: &str) -> Option<i64> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
         .map(time::OffsetDateTime::unix_timestamp)

@@ -40,6 +40,8 @@ mod quota;
 #[cfg(feature = "serving")]
 mod requirement;
 #[cfg(feature = "serving")]
+pub mod retention;
+#[cfg(feature = "serving")]
 pub mod search_pypi;
 mod serial;
 #[cfg(feature = "serving")]
@@ -57,6 +59,8 @@ mod version;
 
 #[cfg(feature = "serving")]
 pub use quota::quota_reservation;
+#[cfg(feature = "serving")]
+pub use retention::evaluate_retention;
 #[cfg(feature = "serving")]
 pub use search_pypi::PypiIndexer;
 #[cfg(feature = "serving")]
