@@ -81,6 +81,48 @@ fn protection_matches_after_normalization() {
 }
 
 #[test]
+fn quota_limits_read_back_and_activate_the_policy() {
+    let policy = Policy::compile(
+        &PolicyConfig {
+            max_accounted_bytes: Some(1024),
+            max_projects: Some(8),
+            max_versions_per_project: Some(16),
+            quota_audit: true,
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
+
+    assert_eq!(
+        (
+            policy.max_accounted_bytes(),
+            policy.max_projects(),
+            policy.max_versions_per_project(),
+            policy.quota_audit(),
+            policy.enforces_quota(),
+            policy.active(),
+        ),
+        (Some(1024), Some(8), Some(16), true, true, true)
+    );
+}
+
+#[test]
+fn a_per_file_size_limit_alone_does_not_enforce_a_quota() {
+    let policy = Policy::compile(
+        &PolicyConfig {
+            max_file_size_bytes: Some(64),
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
+
+    // The byte stream enforces the per-file limit directly, so it does not switch repository
+    // accounting on, yet the policy is still active for that limit.
+    assert!(!policy.enforces_quota());
+    assert!(policy.active());
+}
+
+#[test]
 fn a_fallback_mode_renders_its_configured_wire_name() {
     for (mode, name) in [
         (FallbackMode::Fallback, "fallback"),

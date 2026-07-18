@@ -603,6 +603,10 @@ fn snapshot_policy(config: &PolicyConfig, ecosystem: &Table) -> anyhow::Result<T
         protected_names,
         max_file_size_bytes,
         max_project_size_bytes,
+        max_accounted_bytes,
+        max_projects,
+        max_versions_per_project,
+        quota_audit,
     } = config;
     let mut policy = ecosystem.clone();
     policy.insert(
@@ -625,6 +629,21 @@ fn snapshot_policy(config: &PolicyConfig, ecosystem: &Table) -> anyhow::Result<T
             "max_project_size_bytes".to_owned(),
             Value::Integer((*value).try_into()?),
         );
+    }
+    if let Some(value) = max_accounted_bytes {
+        policy.insert("max_accounted_bytes".to_owned(), Value::Integer((*value).try_into()?));
+    }
+    if let Some(value) = max_projects {
+        policy.insert("max_projects".to_owned(), Value::Integer((*value).try_into()?));
+    }
+    if let Some(value) = max_versions_per_project {
+        policy.insert(
+            "max_versions_per_project".to_owned(),
+            Value::Integer((*value).try_into()?),
+        );
+    }
+    if *quota_audit {
+        policy.insert("quota_audit".to_owned(), Value::Boolean(true));
     }
     Ok(policy)
 }

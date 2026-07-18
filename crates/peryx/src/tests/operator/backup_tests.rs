@@ -162,6 +162,10 @@ allow_projects = ["flask"]
 block_projects = ["blocked"]
 max_file_size_bytes = 8001
 max_project_size_bytes = 8002
+max_accounted_bytes = 8003
+max_projects = 12
+max_versions_per_project = 34
+quota_audit = true
 allow_versions = ">=1"
 
 [[index]]

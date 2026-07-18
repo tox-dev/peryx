@@ -22,6 +22,14 @@ pub struct PolicyConfig {
     pub protected_names: Vec<String>,
     pub max_file_size_bytes: Option<u64>,
     pub max_project_size_bytes: Option<u64>,
+    /// Deduplicated bytes a repository may hold, enforced through the quota accounting substrate.
+    pub max_accounted_bytes: Option<u64>,
+    /// Distinct project identities a repository may hold.
+    pub max_projects: Option<u64>,
+    /// Versions a single project may hold.
+    pub max_versions_per_project: Option<u64>,
+    /// Record a would-reject quota decision instead of denying the write.
+    pub quota_audit: bool,
 }
 
 impl PolicyConfig {
@@ -33,6 +41,10 @@ impl PolicyConfig {
         "protected_names",
         "max_file_size_bytes",
         "max_project_size_bytes",
+        "max_accounted_bytes",
+        "max_projects",
+        "max_versions_per_project",
+        "quota_audit",
     ];
 }
 
@@ -219,6 +231,10 @@ pub struct Policy {
     protected_names: ProtectedNames,
     max_file_size_bytes: Option<u64>,
     max_project_size_bytes: Option<u64>,
+    max_accounted_bytes: Option<u64>,
+    max_projects: Option<u64>,
+    max_versions_per_project: Option<u64>,
+    quota_audit: bool,
     rules: Vec<Arc<dyn ArtifactRule>>,
     recorder: Option<Arc<dyn PolicyDecisionRecorder>>,
     active: bool,
@@ -241,6 +257,10 @@ impl Policy {
             protected_names: ProtectedNames::compile(&config.protected_names, &normalize),
             max_file_size_bytes: config.max_file_size_bytes,
             max_project_size_bytes: config.max_project_size_bytes,
+            max_accounted_bytes: config.max_accounted_bytes,
+            max_projects: config.max_projects,
+            max_versions_per_project: config.max_versions_per_project,
+            quota_audit: config.quota_audit,
             rules: Vec::new(),
             recorder: None,
             active: false,
@@ -283,6 +303,41 @@ impl Policy {
         self.max_project_size_bytes
     }
 
+    /// The deduplicated repository byte quota, if any.
+    #[must_use]
+    pub const fn max_accounted_bytes(&self) -> Option<u64> {
+        self.max_accounted_bytes
+    }
+
+    /// The distinct-project quota, if any.
+    #[must_use]
+    pub const fn max_projects(&self) -> Option<u64> {
+        self.max_projects
+    }
+
+    /// The per-project version quota, if any.
+    #[must_use]
+    pub const fn max_versions_per_project(&self) -> Option<u64> {
+        self.max_versions_per_project
+    }
+
+    /// Whether quota decisions record a violation instead of denying the write.
+    #[must_use]
+    pub const fn quota_audit(&self) -> bool {
+        self.quota_audit
+    }
+
+    /// Whether a write path must account against the repository quota: a repository, project, or
+    /// version limit is set, or audit mode observes projected enforcement. The per-file size limit is
+    /// enforced on the byte stream itself, so it alone does not turn accounting on.
+    #[must_use]
+    pub const fn enforces_quota(&self) -> bool {
+        self.max_accounted_bytes.is_some()
+            || self.max_projects.is_some()
+            || self.max_versions_per_project.is_some()
+            || self.quota_audit
+    }
+
     /// The source policy contributed by this ecosystem, or the compatibility-preserving fallback
     /// mode when it contributes none.
     #[must_use]
@@ -299,6 +354,7 @@ impl Policy {
             || !self.protected_names.is_empty()
             || self.max_file_size_bytes.is_some()
             || self.max_project_size_bytes.is_some()
+            || self.enforces_quota()
             || !self.rules.is_empty()
     }
 
