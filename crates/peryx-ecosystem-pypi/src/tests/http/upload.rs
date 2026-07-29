@@ -10,6 +10,196 @@ use peryx_identity::{
 
 use super::support::*;
 
+const BROWSER_HEADERS: &[(&str, &str)] = &[
+    ("host", "peryx.test"),
+    ("origin", "http://peryx.test"),
+    ("x-peryx-csrf", "http://peryx.test"),
+    ("sec-fetch-site", "same-origin"),
+];
+
+#[tokio::test]
+async fn test_browser_upload_derives_legacy_fields_and_publishes() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    let fields = [
+        (":action", "other"),
+        ("name", "other"),
+        ("version", "9.9"),
+        ("filetype", "sdist"),
+        ("requires_python", ">=3.8"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some((filename, &wheel)));
+
+    let (status, body) = post_upload_with_headers_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        &content_type,
+        &BROWSER_HEADERS[..3],
+        body,
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
+    let uploads = h.state.meta.list_upload_entries("hosted", "peryxpkg").unwrap();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0].0, filename);
+}
+
+#[tokio::test]
+async fn test_browser_upload_publishes_modern_sdist() {
+    let h = harness().await;
+    let sdist = fixture_sdist();
+    let filename = "peryxpkg-1.0.tar.gz";
+    let (content_type, body) = multipart_body(&[], Some((filename, &sdist)));
+
+    let (status, body) = post_upload_with_headers_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        &content_type,
+        BROWSER_HEADERS,
+        body,
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
+    let uploads = h.state.meta.list_upload_entries("hosted", "peryxpkg").unwrap();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0].0, filename);
+}
+
+#[rstest]
+#[case::missing_csrf("http://peryx.test", None, Some("same-origin"), "peryx.test")]
+#[case::missing_origin("", Some("http://peryx.test"), Some("same-origin"), "peryx.test")]
+#[case::mismatched_csrf("http://peryx.test", Some("http://other.test"), Some("same-origin"), "peryx.test")]
+#[case::cross_site("http://peryx.test", Some("http://peryx.test"), Some("cross-site"), "peryx.test")]
+#[case::wrong_host("http://other.test", Some("http://other.test"), Some("same-origin"), "peryx.test")]
+#[case::wrong_port(
+    "http://peryx.test:8443",
+    Some("http://peryx.test:8443"),
+    Some("same-origin"),
+    "peryx.test:443"
+)]
+#[case::invalid_origin("peryx.test", Some("peryx.test"), Some("same-origin"), "peryx.test")]
+#[case::missing_host("http://peryx.test", Some("http://peryx.test"), Some("same-origin"), "")]
+#[case::invalid_host("http://peryx.test", Some("http://peryx.test"), Some("same-origin"), "[")]
+#[case::non_http("ftp://peryx.test", Some("ftp://peryx.test"), Some("same-origin"), "peryx.test")]
+#[tokio::test]
+async fn test_browser_upload_rejects_invalid_csrf_context(
+    #[case] origin: &str,
+    #[case] csrf: Option<&str>,
+    #[case] site: Option<&str>,
+    #[case] host: &str,
+) {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let (content_type, body) = multipart_body(&[], Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)));
+    let mut headers = Vec::new();
+    if !host.is_empty() {
+        headers.push(("host", host));
+    }
+    if !origin.is_empty() {
+        headers.push(("origin", origin));
+    }
+    if let Some(csrf) = csrf {
+        headers.push(("x-peryx-csrf", csrf));
+    }
+    if let Some(site) = site {
+        headers.push(("sec-fetch-site", site));
+    }
+
+    let (status, body) = post_upload_with_headers_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        &content_type,
+        &headers,
+        body,
+    )
+    .await;
+
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::FORBIDDEN, "browser upload rejected")
+    );
+    assert!(
+        h.state
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(blob_count(&h.state), 0);
+}
+
+#[tokio::test]
+async fn test_browser_upload_denial_reads_no_file() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(&[], Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())));
+
+    let (status, _) =
+        post_upload_with_headers_response(&h.state, "/root/pypi/", None, &content_type, BROWSER_HEADERS, body).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        h.state
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(blob_count(&h.state), 0);
+}
+
+#[tokio::test]
+async fn test_browser_upload_validation_failure_publishes_nothing() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(&[], Some(("peryxpkg-1.0-py3-none-any.whl", b"not a wheel")));
+
+    let (status, body) = post_upload_with_headers_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        &content_type,
+        BROWSER_HEADERS,
+        body,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("uploaded content does not match the filename format"));
+    assert!(
+        h.state
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(blob_count(&h.state), 0);
+}
+
+#[tokio::test]
+async fn test_browser_upload_invalid_filename_stages_nothing() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(&[], Some(("peryxpkg.tar.gz", b"not read")));
+
+    let (status, body) = post_upload_with_headers_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        &content_type,
+        BROWSER_HEADERS,
+        body,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("sdist filenames must use name-version.tar.gz"));
+    assert_eq!(blob_count(&h.state), 0);
+}
+
 #[tokio::test]
 async fn test_upload_via_overlay_then_serve_and_download() {
     let h = harness().await;
@@ -47,18 +237,19 @@ async fn test_policy_rejects_chunked_upload_over_limit(#[case] hosted_limit: u64
     });
     let h = harness_with_policies(true, true, Policy::default(), hosted_policy, virtual_policy).await;
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    let (content_type, body) = multipart_body(&upload_fields(), Some((filename, b"ab")));
+    let (content_type, body) = multipart_body(&[], Some((filename, b"ab")));
     let chunks = body
         .chunks(7)
         .map(Bytes::copy_from_slice)
         .map(Ok::<_, Infallible>)
         .collect::<Vec<_>>();
 
-    let (status, body) = post_upload_body_response(
+    let (status, body) = post_upload_body_with_headers_response(
         &h.state,
         "/root/pypi/",
         Some(&upload_auth()),
         &content_type,
+        BROWSER_HEADERS,
         Body::from_stream(futures_util::stream::iter(chunks)),
     )
     .await;
@@ -85,7 +276,7 @@ async fn test_policy_rejects_chunked_upload_over_limit(#[case] hosted_limit: u64
 async fn test_upload_body_failure_removes_the_stage() {
     let h = harness().await;
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    let (content_type, body) = multipart_body(&upload_fields(), Some((filename, b"content")));
+    let (content_type, body) = multipart_body(&[], Some((filename, b"content")));
     let split = body
         .windows(b"content".len())
         .rposition(|window| window == b"content")
@@ -95,11 +286,12 @@ async fn test_upload_body_failure_removes_the_stage() {
     sender.send(Ok(Bytes::copy_from_slice(&body[..split]))).await.unwrap();
     let state = h.state.clone();
     let request = tokio::spawn(async move {
-        post_upload_body_response(
+        post_upload_body_with_headers_response(
             &state,
             "/hosted/",
             Some(&upload_auth()),
             &content_type,
+            BROWSER_HEADERS,
             Body::from_stream(futures_util::stream::unfold(receiver, |mut receiver| async {
                 receiver.recv().await.map(|item| (item, receiver))
             })),
@@ -1192,10 +1384,20 @@ async fn test_upload_storage_failure_is_server_error() {
         kind: IndexKind::Hosted { volatile: true },
     }];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
-    assert_eq!(
-        upload_peryxpkg(&state, "/hosted/", b"data").await,
-        StatusCode::INTERNAL_SERVER_ERROR
-    );
+    let (content_type, body) = multipart_body(&[], Some(("peryxpkg-1.0-py3-none-any.whl", b"data")));
+    let (status, body) = post_upload_with_headers_response(
+        &state,
+        "/hosted/",
+        Some(&upload_auth()),
+        &content_type,
+        BROWSER_HEADERS,
+        body,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, "upload storage failed");
+    assert!(state.meta.list_upload_entries("hosted", "peryxpkg").unwrap().is_empty());
 }
 #[tokio::test]
 async fn test_upload_corrupt_existing_record_is_server_error() {

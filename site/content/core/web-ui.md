@@ -84,6 +84,10 @@ context the server can provide.
 
 ## Managing uploads
 
+The `Upload` page sends one wheel or `.tar.gz` source distribution to an upload-enabled PyPI index. It reports transfer
+progress, offers cancellation while bytes remain in flight, and shows a server rejection beside the selected filename.
+See [upload from a browser](@/ecosystems/pypi/guides/browser-upload.md) for the permission and CSRF rules.
+
 "Manage uploads" on a project page takes the index's upload token and offers yank, un-yank, and delete per version, plus
 whole-project delete. The buttons drive the same HTTP endpoints as [curl would](@/ecosystems/pypi/guides/remove.md), so
 the rules match: deleting uploads needs a `volatile` index, and files served from a cached index are hidden reversibly

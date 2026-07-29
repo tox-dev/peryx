@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::Multipart;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
@@ -35,6 +35,10 @@ pub async fn pypi_dispatch_post(
     multipart: Multipart,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
+    let browser = match browser_upload(&headers) {
+        Ok(browser) => browser,
+        Err(response) => return response,
+    };
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
     };
@@ -55,23 +59,92 @@ pub async fn pypi_dispatch_post(
     if let Err(response) = authorize(&index.route, hosted, &identity, None, Action::Write, &headers) {
         return response;
     }
-    accept_upload(&state, index, hosted, &identity, &headers, actor.as_deref(), multipart).await
+    let response = accept_upload(
+        UploadContext {
+            state: &state,
+            index,
+            hosted,
+            identity: &identity,
+            headers: &headers,
+            actor: actor.as_deref(),
+            browser,
+        },
+        multipart,
+    )
+    .await;
+    if browser && response.status().is_server_error() {
+        (response.status(), "upload storage failed").into_response()
+    } else {
+        response
+    }
 }
 
-async fn accept_upload(
-    state: &Arc<ServingState>,
-    index: &Index,
-    hosted: &Index,
-    identity: &super::UploadIdentity,
-    headers: &HeaderMap,
-    actor: Option<&str>,
-    multipart: Multipart,
-) -> Response {
+const BROWSER_CSRF_HEADER: &str = "x-peryx-csrf";
+
+fn browser_upload(headers: &HeaderMap) -> Result<bool, Response> {
+    let origin = headers.get(header::ORIGIN);
+    let csrf = headers.get(BROWSER_CSRF_HEADER);
+    if origin.is_none() && csrf.is_none() {
+        return Ok(false);
+    }
+    let valid = origin.zip(csrf).is_some_and(|(origin, csrf)| {
+        origin == csrf
+            && headers.get("sec-fetch-site").is_none_or(|site| site == "same-origin")
+            && browser_origin_matches_host(origin, headers.get(header::HOST))
+    });
+    if valid {
+        Ok(true)
+    } else {
+        Err((StatusCode::FORBIDDEN, "browser upload rejected").into_response())
+    }
+}
+
+fn browser_origin_matches_host(origin: &axum::http::HeaderValue, host: Option<&axum::http::HeaderValue>) -> bool {
+    let Some((origin, host)) = origin.to_str().ok().zip(host.and_then(|host| host.to_str().ok())) else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    let Ok(host) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    let host_name = host.host().trim_start_matches('[').trim_end_matches(']');
+    matches!(origin.scheme(), "http" | "https")
+        && origin
+            .host_str()
+            .is_some_and(|origin| origin.eq_ignore_ascii_case(host_name))
+        && host.port_u16().map_or_else(
+            || origin.port().is_none(),
+            |port| origin.port_or_known_default() == Some(port),
+        )
+}
+
+struct UploadContext<'a> {
+    state: &'a Arc<ServingState>,
+    index: &'a Index,
+    hosted: &'a Index,
+    identity: &'a super::UploadIdentity,
+    headers: &'a HeaderMap,
+    actor: Option<&'a str>,
+    browser: bool,
+}
+
+async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Response {
+    let UploadContext {
+        state,
+        index,
+        hosted,
+        identity,
+        headers,
+        actor,
+        browser,
+    } = context;
     let max_file_size = [index.policy.max_file_size(), hosted.policy.max_file_size()]
         .into_iter()
         .flatten()
         .min();
-    let (form, staged) = match collect_form(multipart, &state.blobs, max_file_size).await {
+    let (form, staged) = match collect_form(multipart, &state.blobs, max_file_size, browser).await {
         Ok(form) => form,
         Err(response) => {
             security_upload_event(headers, actor, &index.route, Some(&hosted.name), "failure")
@@ -135,21 +208,9 @@ async fn accept_upload(
     {
         return block;
     }
-    if let Some(limit) = [index.policy.max_project_size(), hosted.policy.max_project_size()]
-        .into_iter()
-        .flatten()
-        .min()
-    {
-        let incoming = prepared
-            .record
-            .file
-            .size
-            .expect("a prepared upload carries its byte size");
-        let existing = cache::project_upload_bytes(state, &hosted.name, &project, &filename);
-        if let Some(block) = upload_quota_response(existing, limit, &project, &filename, incoming, &index.route) {
-            emit_upload_status_event(&audit, &block);
-            return block.response;
-        }
+    if let Some(block) = project_quota_block(state, index, hosted, &prepared, &project, &filename) {
+        emit_upload_status_event(&audit, &block);
+        return block.response;
     }
     if let Some(block) = upload_status_response(
         cache::project_status(state, index, &project).await,
@@ -160,6 +221,33 @@ async fn accept_upload(
         return block.response;
     }
     upload_store_response(state, &audit, cache::store_upload(state, &hosted.name, prepared).await)
+}
+
+fn project_quota_block(
+    state: &Arc<ServingState>,
+    index: &Index,
+    hosted: &Index,
+    prepared: &upload::PreparedUpload,
+    project: &str,
+    filename: &str,
+) -> Option<UploadStatusBlock> {
+    let limit = [index.policy.max_project_size(), hosted.policy.max_project_size()]
+        .into_iter()
+        .flatten()
+        .min()?;
+    let incoming = prepared
+        .record
+        .file
+        .size
+        .expect("a prepared upload carries its byte size");
+    upload_quota_response(
+        cache::project_upload_bytes(state, &hosted.name, project, filename),
+        limit,
+        project,
+        filename,
+        incoming,
+        &index.route,
+    )
 }
 
 fn upload_policy_response(

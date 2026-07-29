@@ -1,15 +1,25 @@
 // Functional tests of the hydrated web UI: every reactive feature is driven the way a person would
 // drive it, against a real peryx with a real uploaded package.
 import { expect, test } from "@playwright/test";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PROJECT_URL = "/browse?index=root%2Fpypi&project=veloxdemo";
 const TOKEN = "playwright-secret";
 const HOST = `127.0.0.1:${process.env.PERYX_FRONTEND_PORT ?? "4455"}`;
+const FIXTURE_WHEEL = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "veloxdemo-1.0.0-py3-none-any.whl");
 
 /// Navigate and wait for the wasm bundle to hydrate, so clicks hit live handlers.
 async function goto(page, url) {
   await page.goto(url);
   await page.waitForSelector("body[data-hydrated]");
+}
+
+async function openUpload(page, route, token, file) {
+  await goto(page, "/upload");
+  await page.locator("#upload-route").selectOption(route);
+  await page.locator("#upload-token").fill(token);
+  await page.locator("#upload-file").setInputFiles(file);
 }
 
 test("dashboard shows identity, counters, and the topology", async ({ page }) => {
@@ -51,11 +61,98 @@ test("header nav links reach each in-app route", async ({ page }) => {
   await expect(page).toHaveURL(/\/search/);
   await page.locator(".nav-links a", { hasText: "Status" }).click();
   await expect(page).toHaveURL(/\/admin\/status$/);
+  await page.locator(".nav-links a", { hasText: "Upload" }).click();
+  await expect(page).toHaveURL(/\/upload$/);
   await page.locator(".nav-links a", { hasText: "Dashboard" }).click();
   await expect(page.locator(".card", { hasText: "root/pypi" })).toBeVisible();
   // External links carry the right targets without being followed.
   await expect(page.locator(".nav-links a", { hasText: "Docs" })).toHaveAttribute("href", /readthedocs/);
   await expect(page.locator(".nav-links a", { hasText: "GitHub" })).toHaveAttribute("href", /github\.com/);
+});
+
+test("browser upload publishes through a writable PyPI route", async ({ page }) => {
+  await openUpload(page, "zz-browser-upload", TOKEN, FIXTURE_WHEEL);
+  await page.locator(".upload-actions button[type='submit']").click();
+
+  await expect(page.locator(".upload-outcome")).toHaveText("veloxdemo-1.0.0-py3-none-any.whl: uploaded");
+  const detail = await page.request.get("/zz-browser-upload/simple/veloxdemo/", {
+    headers: { accept: "application/vnd.pypi.simple.v1+json" },
+  });
+  expect(detail.status()).toBe(200);
+  expect(await detail.text()).toContain("veloxdemo-1.0.0-py3-none-any.whl");
+});
+
+test("browser upload surfaces authorization denial", async ({ page }) => {
+  await openUpload(page, "internal", "wrong-token", {
+    name: "denied-1.0-py3-none-any.whl",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("denied"),
+  });
+  await page.locator(".upload-actions button[type='submit']").click();
+
+  await expect(page.locator(".upload-outcome")).toContainText("denied-1.0-py3-none-any.whl: unauthorized");
+  expect((await page.request.get("/internal/simple/denied/")).status()).toBe(404);
+});
+
+test("browser upload surfaces archive validation", async ({ page }) => {
+  await openUpload(page, "internal", TOKEN, {
+    name: "broken-1.0-py3-none-any.whl",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("not a wheel"),
+  });
+  await page.locator(".upload-actions button[type='submit']").click();
+
+  await expect(page.locator(".upload-outcome")).toContainText("broken-1.0-py3-none-any.whl: uploaded content does not match");
+  expect((await page.request.get("/internal/simple/broken/")).status()).toBe(404);
+});
+
+test("browser upload applies the configured size limit", async ({ page }) => {
+  await openUpload(page, "limited", TOKEN, FIXTURE_WHEEL);
+  await page.locator(".upload-actions button[type='submit']").click();
+
+  await expect(page.locator(".upload-outcome")).toContainText("max-file-size");
+  expect((await page.request.get("/limited/simple/veloxdemo/")).status()).toBe(404);
+});
+
+test("browser upload cancellation publishes no release", async ({ page, context }) => {
+  const network = await context.newCDPSession(page);
+  await network.send("Network.enable");
+  await network.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 20,
+    downloadThroughput: -1,
+    uploadThroughput: 1024,
+  });
+  await openUpload(page, "internal", TOKEN, {
+    name: "cancelled-1.0-py3-none-any.whl",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.alloc(1024 * 1024),
+  });
+  await page.locator(".upload-actions button[type='submit']").click();
+  await expect(page.locator(".upload-outcome")).toContainText("uploading");
+  await page.locator(".upload-actions button[type='button']").click();
+
+  await expect(page.locator(".upload-outcome")).toContainText("upload cancelled");
+  expect((await page.request.get("/internal/simple/cancelled/")).status()).toBe(404);
+});
+
+test("browser upload hides storage internals", async ({ page }) => {
+  await page.route("**/internal/", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({ status: 500, body: "temporary path /private/staging" });
+    } else {
+      await route.continue();
+    }
+  });
+  await openUpload(page, "internal", TOKEN, {
+    name: "storage-1.0-py3-none-any.whl",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("storage failure"),
+  });
+  await page.locator(".upload-actions button[type='submit']").click();
+
+  await expect(page.locator(".upload-outcome")).toHaveText("storage-1.0-py3-none-any.whl: server could not store the upload");
+  await expect(page.locator(".upload-outcome")).not.toContainText("/private/staging");
 });
 
 test("header search suggests packages live and opens one", async ({ page }) => {

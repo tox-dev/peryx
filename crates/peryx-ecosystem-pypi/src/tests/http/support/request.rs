@@ -233,13 +233,24 @@ pub async fn post_upload_response(
     content_type: &str,
     body: Vec<u8>,
 ) -> (StatusCode, String) {
-    post_upload_body_response(state, uri, auth, content_type, Body::from(body)).await
+    post_upload_body_with_headers_response(state, uri, auth, content_type, &[], Body::from(body)).await
 }
-pub async fn post_upload_body_response(
+pub async fn post_upload_with_headers_response(
     state: &Arc<AppState>,
     uri: &str,
     auth: Option<&str>,
     content_type: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> (StatusCode, String) {
+    post_upload_body_with_headers_response(state, uri, auth, content_type, headers, Body::from(body)).await
+}
+pub async fn post_upload_body_with_headers_response(
+    state: &Arc<AppState>,
+    uri: &str,
+    auth: Option<&str>,
+    content_type: &str,
+    headers: &[(&str, &str)],
     body: Body,
 ) -> (StatusCode, String) {
     let mut builder = Request::builder()
@@ -248,6 +259,9 @@ pub async fn post_upload_body_response(
         .header(header::CONTENT_TYPE, content_type);
     if let Some(auth) = auth {
         builder = builder.header(header::AUTHORIZATION, auth);
+    }
+    for &(name, value) in headers {
+        builder = builder.header(name, value);
     }
     let response = router(state.clone())
         .oneshot(builder.body(body).unwrap())

@@ -47,7 +47,18 @@ wasm-bindgen = { workspace = true, optional = true }
 gloo-net = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 send_wrapper = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "Blob",
+    "File",
+    "FileList",
+    "FormData",
+    "HtmlInputElement",
+    "Location",
+    "ProgressEvent",
+    "XmlHttpRequest",
+    "XmlHttpRequestEventTarget",
+    "XmlHttpRequestUpload",
+] }
 base64 = { workspace = true, optional = true }
 regex.workspace = true
 peryx-core.workspace = true

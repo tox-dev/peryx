@@ -5,13 +5,13 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
-const target = join(repo, process.env.CARGO_TARGET_DIR ?? "target");
-const binary = ["release", "debug"].map((profile) => join(target, profile, "peryx")).find(existsSync);
+const target = resolve(repo, process.env.CARGO_TARGET_DIR ?? "target");
+const binary = ["debug", "release"].map((profile) => join(target, profile, "peryx")).find(existsSync);
 if (!binary) {
   console.error("build the server and web bundle first: cargo leptos build");
   process.exit(1);
@@ -106,6 +106,17 @@ upload_token = "playwright-secret"
 
 [[index]]
 name = "internal"
+upload_token = "playwright-secret"
+
+[[index]]
+name = "limited"
+upload_token = "playwright-secret"
+
+[index.policy]
+max_file_size_bytes = 512
+
+[[index]]
+name = "zz-browser-upload"
 upload_token = "playwright-secret"
 
 [[index]]

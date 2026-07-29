@@ -30,6 +30,7 @@ pub(super) async fn collect_form(
     mut multipart: Multipart,
     blobs: &peryx_storage::blob::BlobStorage,
     max_file_size: Option<u64>,
+    browser: bool,
 ) -> Result<(UploadForm, Option<StagedUpload>), Response> {
     let mut form = UploadForm::default();
     let mut staged = None;
@@ -40,15 +41,34 @@ pub(super) async fn collect_form(
                 return Err(reject("duplicate content field"));
             }
             form.filename = field.file_name().map(str::to_owned);
+            if browser {
+                complete_browser_form(&mut form).map_err(|err| upload_error_response(&err))?;
+            }
             staged = Some(stage_content(field, blobs, max_file_size, &form).await?);
         } else if let Some(upload_field) = upload_text_field(&field_name) {
             let value = read_text_field(field, &field_name, text_field_limit(upload_field)).await?;
-            set_upload_text_field(&mut form, upload_field, value);
+            if !browser || !browser_derived(upload_field) {
+                set_upload_text_field(&mut form, upload_field, value);
+            }
         } else {
             drain_field(field).await?;
         }
     }
     Ok((form, staged))
+}
+
+fn complete_browser_form(form: &mut UploadForm) -> Result<(), UploadError> {
+    let filename = form.filename.as_deref().ok_or(UploadError::Missing("filename"))?;
+    let parsed =
+        crate::parse_distribution_filename(filename).map_err(|error| UploadError::InvalidDistributionFilename {
+            filename: filename.to_owned(),
+            error,
+        })?;
+    form.action = Some("file_upload".to_owned());
+    form.name = Some(parsed.name);
+    form.version = Some(parsed.version.to_string());
+    form.filetype = Some(parsed.kind.upload_filetype().to_owned());
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +89,13 @@ enum UploadTextField {
     Blake2Digest,
     Md5Digest,
     Attestations,
+}
+
+const fn browser_derived(field: UploadTextField) -> bool {
+    matches!(
+        field,
+        UploadTextField::Action | UploadTextField::Name | UploadTextField::Version | UploadTextField::Filetype
+    )
 }
 
 /// The byte cap for a text field. The `attestations` bundle gets its own aggregate ceiling; every

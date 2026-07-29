@@ -20,12 +20,14 @@ mod manifest;
 mod project;
 mod search;
 mod stats;
+mod upload;
 
 pub use admin::AdminStatus;
 pub use browse::Browse;
 pub use dashboard::Dashboard;
 pub use search::Search;
 pub use stats::Stats;
+pub use upload::Upload;
 
 /// Refresh the dashboard counters every few seconds once hydrated. Effects never run during server
 /// rendering, so this is inert in SSR output.
