@@ -589,7 +589,7 @@ async fn toxiproxy(minio: &Minio) -> Toxiproxy {
                 .with_expected_status_code(200_u16),
         ))
         .with_network(&minio.network)
-        .with_cmd(["-proxy-metrics"])
+        .with_cmd(["-host=0.0.0.0", "-proxy-metrics"])
         .start()
         .await
         .unwrap();
