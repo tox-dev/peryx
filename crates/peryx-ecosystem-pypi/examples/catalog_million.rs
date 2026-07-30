@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use peryx_ecosystem_pypi::catalog::{CatalogSyncOutcome, sync_catalog};
 use peryx_ecosystem_pypi::store::catalog_state;
+use peryx_index::serving::Inflight;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
 use wiremock::matchers::{method, path};
@@ -42,8 +43,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let sync_client = client.clone();
     let sync_meta = meta.clone();
-    let sync =
-        tokio::spawn(async move { sync_catalog(&sync_client, &sync_meta, "benchmark", sync_client.base_url()).await });
+    let sync = tokio::spawn(async move {
+        sync_catalog(
+            &sync_client,
+            &Inflight::default(),
+            &sync_meta,
+            "benchmark",
+            sync_client.base_url(),
+        )
+        .await
+    });
     let mut foreground = Vec::new();
     while !sync.is_finished() {
         let read_started = Instant::now();

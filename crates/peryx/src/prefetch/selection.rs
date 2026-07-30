@@ -89,12 +89,19 @@ async fn all_projects(state: &Arc<AppState>, target: &Target, source: SelectionS
     }
     let sync = match state.upstream_routes.get(&target.cached) {
         Some(router) => {
-            peryx_ecosystem_pypi::catalog::sync_catalog(router, &state.meta, &target.cached, target.client.base_url())
-                .await
+            peryx_ecosystem_pypi::catalog::sync_catalog(
+                router,
+                &state.cache.inflight,
+                &state.meta,
+                &target.cached,
+                target.client.base_url(),
+            )
+            .await
         }
         None => {
             peryx_ecosystem_pypi::catalog::sync_catalog(
                 &target.client,
+                &state.cache.inflight,
                 &state.meta,
                 &target.cached,
                 target.client.base_url(),

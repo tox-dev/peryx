@@ -116,10 +116,12 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
     parameters: &CatalogSyncParameters,
     fallback_source: &str,
 ) -> Result<JobReport, String> {
-    let meta = &ctx.state().meta;
+    let state = ctx.state();
+    let meta = &state.meta;
+    let inflight = &state.cache.inflight;
     let root = tokio::select! {
         () = ctx.cancelled() => return Ok(JobReport::default()),
-        root = sync_catalog(client, meta, repository, fallback_source) => root,
+        root = sync_catalog(client, inflight, meta, repository, fallback_source) => root,
     };
     let (metric_outcome, root_changed, projects) = match root {
         Ok(CatalogSyncOutcome::Published { projects }) => (MetricOutcome::Published, 1, projects),
@@ -144,7 +146,8 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
     let progress_interval = total.div_ceil(MAX_PROGRESS_UPDATES).max(1);
     let mut outcomes = stream::iter(projects)
         .map(|project| async move {
-            let outcome = sync_project_files(client, meta, repository, policy, &project, fallback_source).await;
+            let outcome =
+                sync_project_files(client, inflight, meta, repository, policy, &project, fallback_source).await;
             (project, outcome)
         })
         .buffer_unordered(parameters.concurrency.get());

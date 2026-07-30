@@ -1,16 +1,15 @@
 //! Durable, generation-based synchronization of a remote Simple root project catalog.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{Read, Seek as _, Write};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
 
 use futures_util::TryStreamExt as _;
 use html5ever::TokenizerResult;
 use html5ever::tendril::StrTendril;
 use html5ever::tendril::stream::{TendrilSink, Utf8LossyDecoder};
 use html5ever::tokenizer::{BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer};
+use peryx_index::serving::Inflight;
 use peryx_storage::meta::{MetaError, MetaStore};
 use peryx_upstream::UpstreamError;
 use serde::Deserialize;
@@ -32,11 +31,6 @@ pub const MAX_CATALOG_BYTES: u64 = 256 * 1024 * 1024;
 /// Warehouse currently lists roughly 700,000 names. This bound leaves room for almost threefold growth.
 pub const MAX_CATALOG_PROJECTS: u64 = 2_000_000;
 const CATALOG_BATCH: usize = 10_000;
-
-// This lock coalesces calls inside one server. Cross-process exclusion is the metadata store's
-// persistent writer-identity claim, exercised by `peryx-storage/src/tests/meta/writer_tests.rs` and
-// acquired by the server before driver writes.
-static SYNC_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
 
 /// The result of a root-catalog synchronization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,25 +74,12 @@ pub enum CatalogSyncError {
 /// Returns an error without changing the active generation when transfer, parsing, or publication fails.
 pub async fn sync_catalog<C: SimpleClientExt + Sync>(
     client: &C,
+    inflight: &Inflight,
     meta: &MetaStore,
     index: &str,
     fallback_source: &str,
 ) -> Result<CatalogSyncOutcome, CatalogSyncError> {
-    let lock = {
-        let mut locks = SYNC_LOCKS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(
-            locks
-                .entry(index.to_owned())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
-    };
-    let (_guard, waited) = match lock.try_lock() {
-        Ok(guard) => (guard, false),
-        Err(_) => (lock.lock().await, true),
-    };
+    let (_guard, waited) = crate::sync_lock::acquire(inflight, &format!("pypi\0catalog\0{index}")).await;
     if waited && let Some(active) = catalog_state(meta, index)?.active {
         return Ok(CatalogSyncOutcome::NotModified {
             projects: active.projects,
@@ -527,6 +508,7 @@ mod tests {
 
     use flate2::Compression;
     use flate2::write::GzEncoder;
+    use peryx_index::serving::Inflight;
     use peryx_upstream::UpstreamClient;
     use url::Url;
     use wiremock::matchers::{header, method, path};
@@ -582,7 +564,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, meta) = store();
 
-        let error = sync_catalog(&client, &meta, "no-active-304", client.base_url())
+        let error = sync_catalog(&client, &Inflight::default(), &meta, "no-active-304", client.base_url())
             .await
             .unwrap_err();
 
@@ -611,10 +593,11 @@ mod tests {
             .await;
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, meta) = store();
+        let inflight = Inflight::default();
 
         let (first, second) = tokio::join!(
-            sync_catalog(&client, &meta, "concurrent", client.base_url()),
-            sync_catalog(&client, &meta, "concurrent", client.base_url())
+            sync_catalog(&client, &inflight, &meta, "concurrent", client.base_url()),
+            sync_catalog(&client, &inflight, &meta, "concurrent", client.base_url())
         );
 
         assert!(matches!(first.unwrap(), CatalogSyncOutcome::Published { projects: 1 }));
@@ -637,10 +620,11 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, meta) = store();
         seed_active(&meta, "concurrent-revalidation");
+        let inflight = Inflight::default();
 
         let (first, second) = tokio::join!(
-            sync_catalog(&client, &meta, "concurrent-revalidation", client.base_url()),
-            sync_catalog(&client, &meta, "concurrent-revalidation", client.base_url())
+            sync_catalog(&client, &inflight, &meta, "concurrent-revalidation", client.base_url()),
+            sync_catalog(&client, &inflight, &meta, "concurrent-revalidation", client.base_url())
         );
 
         assert!(matches!(
@@ -668,7 +652,7 @@ mod tests {
         let generation = seed_active(&meta, "validated");
 
         assert!(matches!(
-            sync_catalog(&client, &meta, "validated", client.base_url())
+            sync_catalog(&client, &Inflight::default(), &meta, "validated", client.base_url())
                 .await
                 .unwrap(),
             CatalogSyncOutcome::NotModified { projects: 1 }
@@ -716,7 +700,7 @@ mod tests {
         let (_dir, meta) = store();
         let active = seed_active(&meta, "invalid");
 
-        let error = sync_catalog(&client, &meta, "invalid", client.base_url())
+        let error = sync_catalog(&client, &Inflight::default(), &meta, "invalid", client.base_url())
             .await
             .unwrap_err();
 

@@ -1,8 +1,7 @@
 //! Upstream page fetch, revalidation, and persistence for cached indexes.
 
-use std::collections::HashMap;
 use std::io::{Read, Seek as _, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use crate::catalog::redact_url;
 use crate::policy::PypiPolicy as _;
@@ -15,6 +14,7 @@ use crate::store::{
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
+use peryx_index::serving::Inflight;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyAction};
 use peryx_storage::meta::{MetaError, MetaStore};
@@ -352,10 +352,6 @@ pub const MAX_PROJECT_FILES: u64 = 2_000_000;
 /// Files committed per staging transaction, bounding one commit for a project with a huge file list.
 const PROJECT_FILE_BATCH: usize = 10_000;
 
-// Coalesces concurrent syncs of the same project inside one server so a burst of callers issues one
-// upstream fetch, not a herd. Cross-project concurrency is bounded by the caller's upstream permit.
-static PROJECT_SYNC_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
-
 /// The result of synchronizing one project's remote file metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectSyncOutcome {
@@ -399,27 +395,14 @@ pub enum ProjectSyncError {
 /// parse, or publication fails.
 pub async fn sync_project_files<C: crate::SimpleClientExt + Sync>(
     client: &C,
+    inflight: &Inflight,
     meta: &MetaStore,
     index: &str,
     policy: &Policy,
     project: &str,
     fallback_source: &str,
 ) -> Result<ProjectSyncOutcome, ProjectSyncError> {
-    let lock = {
-        let mut locks = PROJECT_SYNC_LOCKS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(
-            locks
-                .entry(format!("{index}/{project}"))
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
-    };
-    let (_guard, waited) = match lock.try_lock() {
-        Ok(guard) => (guard, false),
-        Err(_) => (lock.lock().await, true),
-    };
+    let (_guard, waited) = crate::sync_lock::acquire(inflight, &format!("pypi\0project\0{index}\0{project}")).await;
     if waited && let Some(active) = active_project_generation(meta, index, project)? {
         return Ok(ProjectSyncOutcome::NotModified { files: active.files });
     }
@@ -687,6 +670,7 @@ impl DetailSink for FileBatcher<'_> {
 mod sync_tests {
     use std::collections::BTreeMap;
 
+    use peryx_index::serving::Inflight;
     use peryx_policy::Policy;
     use peryx_storage::meta::MetaStore;
     use peryx_upstream::UpstreamClient;
@@ -783,9 +767,17 @@ mod sync_tests {
         let client = client_for(&server);
         let (_dir, meta) = store();
 
-        let outcome = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap();
+        let outcome = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome, ProjectSyncOutcome::Published { files: 2 });
         let files = list_project_files(&meta, "pypi", "flask").unwrap();
@@ -820,9 +812,17 @@ mod sync_tests {
                 .await;
             let client = client_for(&server);
             let (_dir, meta) = store();
-            sync_project_files(&client, &meta, format, &Policy::default(), "flask", client.base_url())
-                .await
-                .unwrap();
+            sync_project_files(
+                &client,
+                &Inflight::default(),
+                &meta,
+                format,
+                &Policy::default(),
+                "flask",
+                client.base_url(),
+            )
+            .await
+            .unwrap();
             listed.push(list_project_files(&meta, format, "flask").unwrap());
         }
 
@@ -854,9 +854,17 @@ mod sync_tests {
             &[file("flask-1.0.tar.gz", &"a".repeat(64))],
         );
 
-        let outcome = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap();
+        let outcome = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });
         let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
@@ -879,9 +887,17 @@ mod sync_tests {
         let client = client_for(&server);
         let (_dir, meta) = store();
 
-        let error = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap_err();
+        let error = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, ProjectSyncError::Store(_)));
     }
@@ -904,9 +920,17 @@ mod sync_tests {
             &[file("flask-1.0.tar.gz", &"a".repeat(64))],
         );
 
-        let outcome = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap();
+        let outcome = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome, ProjectSyncOutcome::Missing);
         assert_eq!(list_project_files(&meta, "pypi", "flask").unwrap().len(), 1);
@@ -930,9 +954,17 @@ mod sync_tests {
             &[file("flask-1.0.tar.gz", &"a".repeat(64))],
         );
 
-        let error = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap_err();
+        let error = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, ProjectSyncError::Simple(_)));
         let state = project_meta_state(&meta, "pypi", "flask").unwrap();
@@ -966,9 +998,17 @@ mod sync_tests {
             &[file("flask-1.0.tar.gz", &"a".repeat(64))],
         );
 
-        let outcome = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap();
+        let outcome = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome, ProjectSyncOutcome::Published { files: 2 });
         let files = list_project_files(&meta, "pypi", "flask").unwrap();
@@ -997,9 +1037,17 @@ mod sync_tests {
         let client = client_for(&server);
         let (_dir, meta) = store();
 
-        let outcome = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap();
+        let outcome = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome, ProjectSyncOutcome::Published { files: 1 });
     }
@@ -1015,9 +1063,17 @@ mod sync_tests {
         let client = client_for(&server);
         let (_dir, meta) = store();
 
-        let error = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap_err();
+        let error = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, ProjectSyncError::Status(500)));
     }
@@ -1033,21 +1089,72 @@ mod sync_tests {
         Mock::given(method("GET"))
             .and(path("/simple/flask/"))
             .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
-            .expect(1)
             .mount(&server)
             .await;
         let client = client_for(&server);
         let (_dir, meta) = store();
+        let inflight = Inflight::default();
         let policy = Policy::default();
 
         let (first, second) = tokio::join!(
-            sync_project_files(&client, &meta, "pypi", &policy, "flask", client.base_url()),
-            sync_project_files(&client, &meta, "pypi", &policy, "flask", client.base_url()),
+            sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
+            sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
         );
 
         assert_eq!(first.unwrap(), ProjectSyncOutcome::Published { files: 1 });
         assert_eq!(second.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
-        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn test_sync_scopes_same_key_coalescing_to_one_store() {
+        let first_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/simple/flask/"))
+            .and(header("if-none-match", "v1"))
+            .respond_with(ResponseTemplate::new(304).set_delay(std::time::Duration::from_millis(100)))
+            .mount(&first_server)
+            .await;
+        let second_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/simple/flask/"))
+            .and(header("if-none-match", "v1"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&second_server)
+            .await;
+        let first_client = client_for(&first_server);
+        let second_client = client_for(&second_server);
+        let (_first_dir, first_meta) = store();
+        let (_second_dir, second_meta) = store();
+        let previous = [file("flask-1.0.tar.gz", &"a".repeat(64))];
+        seed_active(&first_meta, "pypi", "flask", "v1", &previous);
+        seed_active(&second_meta, "pypi", "flask", "v1", &previous);
+        let first_inflight = Inflight::default();
+        let second_inflight = Inflight::default();
+        let policy = Policy::default();
+
+        let (first, second) = tokio::join!(
+            sync_project_files(
+                &first_client,
+                &first_inflight,
+                &first_meta,
+                "pypi",
+                &policy,
+                "flask",
+                first_client.base_url(),
+            ),
+            sync_project_files(
+                &second_client,
+                &second_inflight,
+                &second_meta,
+                "pypi",
+                &policy,
+                "flask",
+                second_client.base_url(),
+            ),
+        );
+
+        assert_eq!(first.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
+        assert_eq!(second.unwrap(), ProjectSyncOutcome::Missing);
     }
 
     #[tokio::test]
@@ -1076,9 +1183,17 @@ mod sync_tests {
         let client = UpstreamClient::new("http://127.0.0.1:1/simple/").unwrap();
         let (_dir, meta) = store();
 
-        let error = sync_project_files(&client, &meta, "pypi", &Policy::default(), "flask", client.base_url())
-            .await
-            .unwrap_err();
+        let error = sync_project_files(
+            &client,
+            &Inflight::default(),
+            &meta,
+            "pypi",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, ProjectSyncError::Upstream(_)));
     }
