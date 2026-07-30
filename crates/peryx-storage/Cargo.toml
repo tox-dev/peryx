@@ -8,9 +8,13 @@ repository.workspace = true
 description = "Content-addressed blob store and metadata storage for peryx."
 
 [dependencies]
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 fs4.workspace = true
+hex.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true
 sha2.workspace = true
@@ -24,15 +28,14 @@ serde_json.workspace = true
 flate2.workspace = true
 tar.workspace = true
 zip.workspace = true
-reqwest.workspace = true
-rustls.workspace = true
-base64.workspace = true
-percent-encoding.workspace = true
-time.workspace = true
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
+reqwest.workspace = true
 rstest.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
 wiremock.workspace = true
 
 [lints]

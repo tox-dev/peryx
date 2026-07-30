@@ -77,6 +77,8 @@ syslog-tracing = "0.3"
 tracing-journald = "0.3"
 
 [dev-dependencies]
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
 rstest.workspace = true
 tempfile = "3"
 tower = { workspace = true, features = ["util"] }
@@ -89,6 +91,8 @@ tar.workspace = true
 flate2.workspace = true
 redb.workspace = true
 wiremock.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
 rcgen = "0.13.2"
 
 [lints]

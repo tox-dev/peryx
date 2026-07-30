@@ -9,24 +9,19 @@ or `PERYX_*` environment variables, which override the file. Precedence is `defa
 
 ## Top level
 
-| Setting                   | Flag                | Environment                  | TOML key               | Default      |
-| ------------------------- | ------------------- | ---------------------------- | ---------------------- | ------------ |
-| Bind host                 | `--host`            | `PERYX_HOST`                 | `host`                 | `127.0.0.1`  |
-| Bind port                 | `--port`            | `PERYX_PORT`                 | `port`                 | `4433`       |
-| Data directory            | `--data-dir`        | `PERYX_DATA_DIR`             | `data_dir`             | `peryx-data` |
-| Writer identity           | `--writer-identity` | `PERYX_WRITER_IDENTITY`      | `writer_identity`      | (none)       |
-| Offline mode              | `--offline`         | `PERYX_OFFLINE`              | `offline`              | `false`      |
-| Read replica mode         | `--read-only`       | `PERYX_READ_ONLY`            | `read_only`            | `false`      |
-| Config file               | `--config` / `-c`   | (n/a)                        | (n/a)                  | (none)       |
-| Cache freshness (seconds) | (file/env only)     | `PERYX_CACHE_TTL_SECS`       | `cache_ttl_secs`       | `300`        |
-| Page cache budget (bytes) | (file/env only)     | `PERYX_HOT_CACHE_BYTES`      | `hot_cache_bytes`      | `268435456`  |
-| Upstream netrc file       | (file/env only)     | `PERYX_NETRC`                | `netrc`                | (none)       |
-| Stale-on-error bound (s)  | (file/env only)     | `PERYX_MAX_STALE_SECS`       | `max_stale_secs`       | `300`        |
-| Usage retention (days)    | (file/env only)     | `PERYX_USAGE_RETENTION_DAYS` | `usage_retention_days` | (unset)      |
-| Indexes                   | (file only)         | (n/a)                        | `[[index]]`            | (see below)  |
-| Rate limits               | (file only)         | (n/a)                        | `[rate_limit]`         | (see below)  |
-| Background jobs           | (file only)         | (n/a)                        | `[jobs]`               | (see below)  |
-| Availability mode         | (file only)         | (n/a)                        | `[availability]`       | `none`       |
+| Setting | Flag | Environment | TOML key | Default | | ------------------------- | ------------------- |
+---------------------------- | ---------------------- | ------------ | | Bind host | `--host` | `PERYX_HOST` | `host` |
+`127.0.0.1` | | Bind port | `--port` | `PERYX_PORT` | `port` | `4433` | | Data directory | `--data-dir` |
+`PERYX_DATA_DIR` | `data_dir` | `peryx-data` | | Writer identity | `--writer-identity` | `PERYX_WRITER_IDENTITY` |
+`writer_identity` | (none) | | Offline mode | `--offline` | `PERYX_OFFLINE` | `offline` | `false` | | Read replica mode
+| `--read-only` | `PERYX_READ_ONLY` | `read_only` | `false` | | Config file | `--config` / `-c` | (n/a) | (n/a) | (none)
+| | Cache freshness (seconds) | (file/env only) | `PERYX_CACHE_TTL_SECS` | `cache_ttl_secs` | `300` | | Page cache
+budget (bytes) | (file/env only) | `PERYX_HOT_CACHE_BYTES` | `hot_cache_bytes` | `268435456` | | Upstream netrc file |
+(file/env only) | `PERYX_NETRC` | `netrc` | (none) | | Stale-on-error bound (s) | (file/env only) |
+`PERYX_MAX_STALE_SECS` | `max_stale_secs` | `300` | | Usage retention (days) | (file/env only) |
+`PERYX_USAGE_RETENTION_DAYS` | `usage_retention_days` | (unset) | | Indexes | (file only) | (n/a) | `[[index]]` | (see
+below) | | Rate limits | (file only) | (n/a) | `[rate_limit]` | (see below) | | Background jobs | (file only) | (n/a) |
+`[jobs]` | (see below) | | Availability mode | (file only) | (n/a) | `[availability]` | `none` |
 
 Environment variables sit between the file and flags: a `PERYX_*` value overrides the TOML file, and a flag overrides
 the variable. Only scalar settings are environment-configurable. The `[[index]]` topology, `[rate_limit]` block, and
@@ -351,14 +346,12 @@ cache-dir = "/var/lib/peryx/acme"  # where issued certificates are cached; defau
 staging = false                    # true uses Let's Encrypt staging while testing
 ```
 
-| Table    | Key         | Meaning                                                     | Default      |
-| -------- | ----------- | ----------------------------------------------------------- | ------------ |
-| `[tls]`  | `cert`      | PEM certificate chain                                       | (required)   |
-| `[tls]`  | `key`       | PEM private key                                             | (required)   |
-| `[acme]` | `domains`   | Domains to request a certificate for; reachable on port 443 | (required)   |
-| `[acme]` | `contact`   | Contact email the ACME account registers                    | (required)   |
-| `[acme]` | `cache-dir` | Where certificates and the account key are cached           | `acme-cache` |
-| `[acme]` | `staging`   | Use the provider's staging environment                      | `false`      |
+| Table | Key | Meaning | Default | | -------- | ----------- |
+----------------------------------------------------------- | ------------ | | `[tls]` | `cert` | PEM certificate chain
+| (required) | | `[tls]` | `key` | PEM private key | (required) | | `[acme]` | `domains` | Domains to request a
+certificate for; reachable on port 443 | (required) | | `[acme]` | `contact` | Contact email the ACME account registers
+| (required) | | `[acme]` | `cache-dir` | Where certificates and the account key are cached | `acme-cache` | | `[acme]`
+| `staging` | Use the provider's staging environment | `false` |
 
 For an `[acme]` deployment the domain's DNS must point at the server and port 443 must be reachable, since the ACME
 handshake happens there. Behind a load balancer or reverse proxy that already terminates TLS, leave both tables unset
@@ -369,40 +362,33 @@ and let the proxy hold the certificate.
 Each `[[index]]` table declares one index. `name` is required; exactly one of `cached`, `hosted`, or `layers` selects
 the role. peryx rejects unknown keys.
 
-| Key                                  | Role    | Meaning                                                               | Default            |
-| ------------------------------------ | ------- | --------------------------------------------------------------------- | ------------------ |
-| `name`                               | all     | Identifier other indexes reference in `layers`                        | (required)         |
-| `route`                              | all     | URL prefix the index is served under                                  | same as `name`     |
-| `ecosystem`                          | all     | Packaging format: `pypi` or `oci`                                     | `pypi`             |
-| `cached`                             | cached  | Upstream URL to cache (a Simple index, or a `/v2/` registry for OCI)  |                    |
-| `username`                           | cached  | Basic-auth username for the upstream                                  | (none)             |
-| `password`                           | cached  | Basic-auth password for the upstream                                  | (none)             |
-| `password_file`                      | cached  | Path to read `password` from instead of inlining it                   | (none)             |
-| `password_env`                       | cached  | Environment variable to read `password` from instead of inlining it   | (none)             |
-| `token`                              | cached  | Bearer token; takes precedence over username/password                 | (none)             |
-| `token_file`                         | cached  | Path to read `token` from instead of inlining it                      | (none)             |
-| `token_env`                          | cached  | Environment variable to read `token` from instead of inlining it      | (none)             |
-| `credential_refresh_secs`            | cached  | Minimum seconds between credential source reads                       | (none)             |
-| `credential_refresh_on_unauthorized` | cached  | Reload and replay once after credential rejection                     | `true`             |
-| `credential_failure`                 | cached  | Reload failure behavior: `fail` or `anonymous`                        | `fail`             |
-| `credential_exec`                    | cached  | Nested short-lived credential helper configuration                    | (none)             |
-| `ca_file`                            | cached  | PEM CA bundle added to platform trust for this upstream               | (none)             |
-| `client_cert_file`                   | cached  | PEM client certificate chain; requires `client_key_file`              | (none)             |
-| `client_key_file`                    | cached  | Matching unencrypted PEM client key; requires `client_cert_file`      | (none)             |
-| `upstream_concurrency`               | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default  | `0`                |
-| `offline`                            | cached  | Serve this cached index from disk only                                | `false`            |
-| `prefetch`                           | cached  | Package and artifact selection for `peryx mirror`                     | (see below)        |
-| `hosted`                             | hosted  | `true` marks this index as a hosted store (implied by `upload_token`) | `false`            |
-| `upload_token`                       | hosted  | Sugar for one token granted write and delete over every project       | (none)             |
-| `upload_token_file`                  | hosted  | Path to read `upload_token` from instead of inlining it               | (none)             |
-| `volatile`                           | hosted  | Allow delete and overwrite                                            | `true`             |
-| `anonymous_read`                     | all     | Whether a credential-less request may read this index                 | `[auth]` default   |
-| `access_token`                       | all     | Named credentials the index accepts, with scoped grants               | none               |
-| `layers`                             | virtual | Ordered index names to compose; first match per filename wins         |                    |
-| `upload`                             | virtual | Hosted layer that receives uploads                                    | first hosted layer |
-| `policy`                             | all     | Nested index policy table                                             | empty              |
-| `settings`                           | all     | Nested table of the index ecosystem's own settings                    | empty              |
-| `webhook`                            | all     | Signed delivery targets for upload and index-change events            | none               |
+| Key | Role | Meaning | Default | | ------------------------------------ | ------- |
+--------------------------------------------------------------------- | ------------------ | | `name` | all | Identifier
+other indexes reference in `layers` | (required) | | `route` | all | URL prefix the index is served under | same as
+`name` | | `ecosystem` | all | Packaging format: `pypi` or `oci` | `pypi` | | `cached` | cached | Upstream URL to cache
+(a Simple index, or a `/v2/` registry for OCI) | | | `username` | cached | Basic-auth username for the upstream | (none)
+| | `password` | cached | Basic-auth password for the upstream | (none) | | `password_file` | cached | Path to read
+`password` from instead of inlining it | (none) | | `password_env` | cached | Environment variable to read `password`
+from instead of inlining it | (none) | | `token` | cached | Bearer token; takes precedence over username/password |
+(none) | | `token_file` | cached | Path to read `token` from instead of inlining it | (none) | | `token_env` | cached |
+Environment variable to read `token` from instead of inlining it | (none) | | `credential_refresh_secs` | cached |
+Minimum seconds between credential source reads | (none) | | `credential_refresh_on_unauthorized` | cached | Reload and
+replay once after credential rejection | `true` | | `credential_failure` | cached | Reload failure behavior: `fail` or
+`anonymous` | `fail` | | `credential_exec` | cached | Nested short-lived credential helper configuration | (none) | |
+`ca_file` | cached | PEM CA bundle added to platform trust for this upstream | (none) | | `client_cert_file` | cached |
+PEM client certificate chain; requires `client_key_file` | (none) | | `client_key_file` | cached | Matching unencrypted
+PEM client key; requires `client_cert_file` | (none) | | `upstream_concurrency` | cached | Cap on concurrent upstream
+fetches; `0` is unlimited and the default | `0` | | `offline` | cached | Serve this cached index from disk only |
+`false` | | `prefetch` | cached | Package and artifact selection for `peryx mirror` | (see below) | | `hosted` | hosted
+| `true` marks this index as a hosted store (implied by `upload_token`) | `false` | | `upload_token` | hosted | Sugar
+for one token granted write and delete over every project | (none) | | `upload_token_file` | hosted | Path to read
+`upload_token` from instead of inlining it | (none) | | `volatile` | hosted | Allow delete and overwrite | `true` | |
+`anonymous_read` | all | Whether a credential-less request may read this index | `[auth]` default | | `access_token` |
+all | Named credentials the index accepts, with scoped grants | none | | `layers` | virtual | Ordered index names to
+compose; first match per filename wins | | | `upload` | virtual | Hosted layer that receives uploads | first hosted
+layer | | `policy` | all | Nested index policy table | empty | | `settings` | all | Nested table of the index
+ecosystem's own settings | empty | | `webhook` | all | Signed delivery targets for upload and index-change events | none
+|
 
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
@@ -484,28 +470,23 @@ required_attestations = ["https://docs.pypi.org/attestations/publish/v1"]
 attestation_mode = "enforce"
 ```
 
-| Key                        | Meaning                                                                       |
-| -------------------------- | ----------------------------------------------------------------------------- |
-| `fallback_mode`            | PyPI virtual source policy: `fallback`, `private-first`, or `no-fallback`     |
-| `allow_projects`           | Only these normalized projects may be served, mirrored, or uploaded           |
-| `block_projects`           | These normalized projects are denied                                          |
-| `protected_names`          | Reserved names that never fall back upstream; exact or `prefix-*` namespace   |
-| `allow_versions`           | PEP 440 specifier set accepted for parsed distribution filenames              |
-| `allow_package_types`      | Accepted parsed file types: `wheel`, `sdist`                                  |
-| `block_package_types`      | Denied parsed file types: `wheel`, `sdist`                                    |
-| `allow_wheel_pythons`      | Accepted wheel Python tags, matched against each dot-compressed tag segment   |
-| `block_wheel_pythons`      | Denied wheel Python tags                                                      |
-| `allow_wheel_platforms`    | Accepted wheel platform tags, matched against each dot-compressed tag segment |
-| `block_wheel_platforms`    | Denied wheel platform tags                                                    |
-| `max_file_size_bytes`      | Maximum file size from the Simple API `size` field or from an uploaded file   |
-| `max_project_size_bytes`   | Maximum sum of retained file sizes for one project detail page                |
-| `max_accounted_bytes`      | Repository quota: deduplicated bytes one repository may hold                  |
-| `max_projects`             | Repository quota: distinct project identities one repository may hold         |
-| `max_versions_per_project` | Repository quota: versions one project may hold                               |
-| `quota_audit`              | Record a would-reject quota decision instead of denying the write             |
-| `min_release_age_secs`     | Hide an upstream file until this many seconds past its `upload-time`          |
-| `required_attestations`    | In-toto predicate types an upload must carry a PEP 740 attestation for        |
-| `attestation_mode`         | `enforce` rejects a missing attestation; `audit` records it but publishes     |
+| Key | Meaning | | -------------------------- |
+----------------------------------------------------------------------------- | | `fallback_mode` | PyPI virtual source
+policy: `fallback`, `private-first`, or `no-fallback` | | `allow_projects` | Only these normalized projects may be
+served, mirrored, or uploaded | | `block_projects` | These normalized projects are denied | | `protected_names` |
+Reserved names that never fall back upstream; exact or `prefix-*` namespace | | `allow_versions` | PEP 440 specifier set
+accepted for parsed distribution filenames | | `allow_package_types` | Accepted parsed file types: `wheel`, `sdist` | |
+`block_package_types` | Denied parsed file types: `wheel`, `sdist` | | `allow_wheel_pythons` | Accepted wheel Python
+tags, matched against each dot-compressed tag segment | | `block_wheel_pythons` | Denied wheel Python tags | |
+`allow_wheel_platforms` | Accepted wheel platform tags, matched against each dot-compressed tag segment | |
+`block_wheel_platforms` | Denied wheel platform tags | | `max_file_size_bytes` | Maximum file size from the Simple API
+`size` field or from an uploaded file | | `max_project_size_bytes` | Maximum sum of retained file sizes for one project
+detail page | | `max_accounted_bytes` | Repository quota: deduplicated bytes one repository may hold | | `max_projects`
+| Repository quota: distinct project identities one repository may hold | | `max_versions_per_project` | Repository
+quota: versions one project may hold | | `quota_audit` | Record a would-reject quota decision instead of denying the
+write | | `min_release_age_secs` | Hide an upstream file until this many seconds past its `upload-time` | |
+`required_attestations` | In-toto predicate types an upload must carry a PEP 740 attestation for | | `attestation_mode`
+| `enforce` rejects a missing attestation; `audit` records it but publishes |
 
 `min_release_age_secs` quarantines fresh upstream releases: a file whose Simple API
 [`upload-time`](https://packaging.python.org/en/latest/specifications/simple-repository-api/#project-detail) is younger
@@ -605,14 +586,13 @@ actions = ["write", "delete"]
 expires_at = "2027-01-01T00:00:00Z"
 ```
 
-| Key           | Meaning                                                                      | Default    |
-| ------------- | ---------------------------------------------------------------------------- | ---------- |
-| `name`        | Subject the token authenticates as; unique per index, not `upload_token`     | (required) |
-| `secret`      | Password a client presents as its Basic password                             | (required) |
-| `secret_file` | Path to read `secret` from instead of inlining it                            | (none)     |
-| `projects`    | Project globs the token may act on; `*` matches any run of characters        | `["*"]`    |
-| `actions`     | Any of `read`, `write`, `delete`; at least one                               | (required) |
-| `expires_at`  | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) time after which it stops | never      |
+| Key | Meaning | Default | | ------------- |
+---------------------------------------------------------------------------- | ---------- | | `name` | Subject the token
+authenticates as; unique per index, not `upload_token` | (required) | | `secret` | Password a client presents as its
+Basic password | (required) | | `secret_file` | Path to read `secret` from instead of inlining it | (none) | |
+`projects` | Project globs the token may act on; `*` matches any run of characters | `["*"]` | | `actions` | Any of
+`read`, `write`, `delete`; at least one | (required) | | `expires_at` |
+[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) time after which it stops | never |
 
 A token needs exactly one of `secret` and `secret_file`. Write and delete are enforced now; a `read` grant records a
 read policy that the forthcoming read challenge will enforce.
@@ -640,18 +620,12 @@ max_file_size_bytes = 524288000
 metadata_only = false
 ```
 
-| Key                   | Values                               | Default    |
-| --------------------- | ------------------------------------ | ---------- |
-| `mode`                | `selected`, `all`, `metadata-only`   | `selected` |
-| `packages`            | package selectors such as `flask>=3` | `[]`       |
-| `requirements`        | requirements or constraints files    | `[]`       |
-| `include_wheels`      | boolean                              | `true`     |
-| `include_sdists`      | boolean                              | `true`     |
-| `python_tags`         | wheel Python tags                    | `[]`       |
-| `abi_tags`            | wheel ABI tags                       | `[]`       |
-| `platform_tags`       | wheel platform tags                  | `[]`       |
-| `max_file_size_bytes` | positive integer                     | (none)     |
-| `metadata_only`       | boolean                              | `false`    |
+| Key | Values | Default | | --------------------- | ------------------------------------ | ---------- | | `mode` |
+`selected`, `all`, `metadata-only` | `selected` | | `packages` | package selectors such as `flask>=3` | `[]` | |
+`requirements` | requirements or constraints files | `[]` | | `include_wheels` | boolean | `true` | | `include_sdists` |
+boolean | `true` | | `python_tags` | wheel Python tags | `[]` | | `abi_tags` | wheel ABI tags | `[]` | | `platform_tags`
+| wheel platform tags | `[]` | | `max_file_size_bytes` | positive integer | (none) | | `metadata_only` | boolean |
+`false` |
 
 `mode = "all"` reads the upstream root Simple project list and then visits matching projects. Artifact filters apply
 after a project page is fetched. `mode = "metadata-only"` implies `metadata_only = true`.
@@ -682,21 +656,17 @@ networks and intermediaries that accept caller-supplied forwarding headers.
 Clients can change a Basic username or bearer value without changing buckets when both values resolve to the same
 principal. peryx groups rotated invalid `Authorization` values under the peer IP.
 
-| Setting           | Meaning                                                  | Default |
-| ----------------- | -------------------------------------------------------- | ------- |
-| `enabled`         | Install the HTTP request limiter                         | `false` |
-| `max_clients`     | Maximum client/class buckets kept in memory              | `8192`  |
-| `trusted_proxies` | IPv4 and IPv6 networks allowed to set forwarding headers | `[]`    |
+| Setting | Meaning | Default | | ----------------- | -------------------------------------------------------- | -------
+| | `enabled` | Install the HTTP request limiter | `false` | | `max_clients` | Maximum client/class buckets kept in
+memory | `8192` | | `trusted_proxies` | IPv4 and IPv6 networks allowed to set forwarding headers | `[]` |
 
 Each route class is a sub-table with `requests` and `window_secs`:
 
-| Table                   | Route class                                     | Default        |
-| ----------------------- | ----------------------------------------------- | -------------- |
-| `[rate_limit.listing]`  | Project listing and detail pages                | `600` / `60s`  |
-| `[rate_limit.metadata]` | PEP 658/714 `.metadata` siblings                | `1200` / `60s` |
-| `[rate_limit.artifact]` | Artifact downloads and archive inspection       | `300` / `60s`  |
-| `[rate_limit.upload]`   | Upload, yank, restore, and delete requests      | `60` / `60s`   |
-| `[rate_limit.admin]`    | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
+| Table | Route class | Default | | ----------------------- | ----------------------------------------------- |
+-------------- | | `[rate_limit.listing]` | Project listing and detail pages | `600` / `60s` | | `[rate_limit.metadata]`
+| PEP 658/714 `.metadata` siblings | `1200` / `60s` | | `[rate_limit.artifact]` | Artifact downloads and archive
+inspection | `300` / `60s` | | `[rate_limit.upload]` | Upload, yank, restore, and delete requests | `60` / `60s` | |
+`[rate_limit.admin]` | Status, stats, metrics, and discovery endpoints | `120` / `60s` |
 
 A request's class follows its method and its path. `POST`, `PUT`, `PATCH`, and `DELETE` count against `upload`. `GET`,
 `HEAD`, and `OPTIONS` are reads, classed by the path they hit: a manifest or artifact `HEAD` shares the `artifact`
@@ -734,9 +704,8 @@ one repository never sweeps itself twice at once.
 mode = "none"
 ```
 
-| Key    | Meaning                                                    | Default |
-| ------ | ---------------------------------------------------------- | ------- |
-| `mode` | `local` runs maintenance on this node; `none` runs nothing | `local` |
+| Key | Meaning | Default | | ------ | ---------------------------------------------------------- | ------- | | `mode` |
+`local` runs maintenance on this node; `none` runs nothing | `local` |
 
 `mode = "none"` starts no scheduler, timer, or worker, which suits a node fronted by an external maintenance runner or
 one that should only serve. A [read replica](@/core/high-availability.md) runs no maintenance regardless of this
@@ -762,15 +731,12 @@ concurrency = 4
 timeout_secs = 900
 ```
 
-| Key             | Meaning                                                | Default    |
-| --------------- | ------------------------------------------------------ | ---------- |
-| `job`           | `cache_maintenance` or `catalog_sync`                  | (required) |
-| `interval_secs` | Seconds between runs, must be positive                 | (required) |
-| `repository`    | Cached online PyPI index for `catalog_sync`            | (required) |
-| `source`        | Named upstream to use instead of repository routing    | routing    |
-| `max_projects`  | Maximum projects refreshed per run; range `1..=100000` | `10000`    |
-| `concurrency`   | Project metadata requests in flight; range `1..=32`    | `4`        |
-| `timeout_secs`  | Whole-run wall-time limit; range `1..=86400`           | `900`      |
+| Key | Meaning | Default | | --------------- | ------------------------------------------------------ | ---------- | |
+`job` | `cache_maintenance` or `catalog_sync` | (required) | | `interval_secs` | Seconds between runs, must be positive
+| (required) | | `repository` | Cached online PyPI index for `catalog_sync` | (required) | | `source` | Named upstream
+to use instead of repository routing | routing | | `max_projects` | Maximum projects refreshed per run; range
+`1..=100000` | `10000` | | `concurrency` | Project metadata requests in flight; range `1..=32` | `4` | | `timeout_secs`
+| Whole-run wall-time limit; range `1..=86400` | `900` |
 
 `cache_maintenance` reclaims expired process resources and revalidates stale cached pages, fanning out one run per
 installed ecosystem so independent repositories sweep together while one repository never sweeps itself twice at once.
@@ -815,37 +781,35 @@ part_size_bytes = 16777216
 upload_concurrency = 4
 ```
 
-| Key                         | Meaning                                                           | Default      |
-| --------------------------- | ----------------------------------------------------------------- | ------------ |
-| `backend`                   | `filesystem` or `s3`                                              | `filesystem` |
-| `endpoint`                  | Base URL of the S3-compatible service (http or https)             | (required)   |
-| `bucket`                    | Bucket that holds the blobs                                       | (required)   |
-| `region`                    | Signing region                                                    | (required)   |
-| `prefix`                    | Key prefix inside the bucket; blobs land at `<prefix>/sha256/...` | (none)       |
-| `path_style`                | `true` for path-style addressing (MinIO); `false` virtual-hosted  | `false`      |
-| `timeout_secs`              | Per-request timeout, in seconds                                   | `30`         |
-| `max_retries`               | Retries for a transient transport or 5xx/429 response             | `3`          |
-| `multipart_threshold_bytes` | Objects at or below this size upload in one `PUT`                 | `16777216`   |
-| `part_size_bytes`           | Multipart part size above the threshold                           | `16777216`   |
-| `upload_concurrency`        | Parts uploaded at once during a multipart upload                  | `4`          |
+| Key | Meaning | Default | | --------------------------- |
+----------------------------------------------------------------- | ------------ | | `backend` | `filesystem` or `s3` |
+`filesystem` | | `endpoint` | Base URL of the S3-compatible service (http or https) | (required) | | `bucket` | Bucket
+that holds the blobs | (required) | | `region` | Signing region | (required) | | `prefix` | Key prefix inside the
+bucket; blobs land at `<prefix>/sha256/...` | (none) | | `path_style` | `true` for path-style addressing (MinIO);
+`false` virtual-hosted | `false` | | `timeout_secs` | Per-request timeout, in seconds | `30` | | `max_retries` | Retries
+for a transient transport or 5xx/429 response | `3` | | `multipart_threshold_bytes` | Objects at or below this size
+upload in one `PUT` | `16777216` | | `part_size_bytes` | Multipart part size, from 5 MiB through 5 GiB | `16777216` | |
+`upload_concurrency` | Parts uploaded at once during a multipart upload | `4` |
 
-Blobs are immutable and keyed by their sha256, so a write stages to `data_dir/blob-staging`, hashes as it streams, then
-uploads under `<prefix>/sha256/<digest>` — one `PUT` below `multipart_threshold_bytes`, bounded concurrent parts above
-it. Reads stream ranged `GET`s, and every fetch is verified against its digest.
+Blobs are immutable and keyed by their sha256. A write stages to `data_dir/blob-staging`, hashes as it streams, then
+uses a conditional create for `<prefix>/sha256/<digest>`: one `PUT` below `multipart_threshold_bytes`, bounded
+concurrent parts above it. Peryx journals multipart upload IDs under the staging directory so a commit interrupted after
+creation can resume. Reads stream ranged `GET`s; each fetch is verified against its digest.
 
 ### Credentials
 
-The `[blob]` table never holds a secret. S3 credentials resolve at startup from the standard environment variables
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and the optional `AWS_SESSION_TOKEN`. Startup fails fast if the S3 backend
-is selected and no access key or secret is present. The bucket policy must allow `s3:GetObject`, `s3:PutObject`, and
-`s3:DeleteObject` on `<prefix>/*`, plus `s3:ListBucket` for the startup health check.
+The `[blob]` table does not hold secrets. The first S3 request resolves credentials through the AWS SDK default provider
+chain: environment variables, shared config and credentials files, web identity, ECS task credentials, or EC2 instance
+metadata. These providers cache and refresh temporary credentials. The bucket policy must allow `s3:GetObject`,
+`s3:PutObject`, `s3:DeleteObject`, and `s3:AbortMultipartUpload` on `<prefix>/*`, plus `s3:ListBucket` for health
+checks.
 
 ### Backup and failure recovery
 
-Because the object write commits the blob before its metadata row is written, a crash between the two leaves an orphan
-object — harmless and overwritten byte-for-byte by any later write of the same content. `peryx backup` snapshots the
-`[blob]` selection (never the credentials) so a restore points at the same bucket; the objects themselves are not copied
-into the archive. Bucket-level versioning or replication, if you need it, is configured on the object store, not here.
+Because the object write commits the blob before its metadata row, a crash between the two leaves an orphan object. A
+later write of the same content observes the existing digest key. `peryx backup` snapshots the `[blob]` selection
+without credentials so a restore points at the same bucket; the archive omits object contents. Configure bucket-level
+versioning or replication on the object store.
 
 ## `[availability]`
 
@@ -875,23 +839,19 @@ source = "writer-a"
 token_file = "/run/secrets/replication-token"
 ```
 
-| Key    | Meaning               | Default |
-| ------ | --------------------- | ------- |
-| `mode` | `none`, `dc`, or `ha` | `none`  |
+| Key | Meaning | Default | | ------ | --------------------- | ------- | | `mode` | `none`, `dc`, or `ha` | `none` |
 
 The nested `[availability.replication]` table declares this node's replication role. `role = "primary"` serves the
 replication journal other nodes copy; `role = "replica"` follows a primary and, like `read_only`, refuses client
 mutations. peryx rejects an unknown key in either table, naming the offending field.
 
-| Key                  | Role    | Meaning                                                         | Default    |
-| -------------------- | ------- | --------------------------------------------------------------- | ---------- |
-| `role`               | both    | `primary` or `replica`                                          | (required) |
-| `source`             | primary | This writer's stable name in the replication journal            | (required) |
-| `upstream`           | replica | URL of the primary this replica follows                         | (required) |
-| `token`              | both    | Shared replication credential, inline                           | (none)     |
-| `token_file`         | both    | Path to read `token` from instead of inlining it                | (none)     |
-| `poll_interval_secs` | replica | Seconds between change-journal polls, must be positive          | `1`        |
-| `page_size`          | replica | Changes fetched per poll, positive and within the primary limit | `100`      |
+| Key | Role | Meaning | Default | | -------------------- | ------- |
+--------------------------------------------------------------- | ---------- | | `role` | both | `primary` or `replica`
+| (required) | | `source` | primary | This writer's stable name in the replication journal | (required) | | `upstream` |
+replica | URL of the primary this replica follows | (required) | | `token` | both | Shared replication credential,
+inline | (none) | | `token_file` | both | Path to read `token` from instead of inlining it | (none) | |
+`poll_interval_secs` | replica | Seconds between change-journal polls, must be positive | `1` | | `page_size` | replica
+| Changes fetched per poll, positive and within the primary limit | `100` |
 
 A role needs exactly one of `token` or `token_file`; setting both, or neither, is rejected. Keep the credential out of
 the config file with `token_file`, the path to a mounted Docker or Kubernetes secret or a systemd credential, which
@@ -911,13 +871,12 @@ default_anonymous_read = false
 oidc_audience = "https://packages.example/_/oidc"
 ```
 
-| Key                      | Meaning                                                              | Default |
-| ------------------------ | -------------------------------------------------------------------- | ------- |
-| `signing_key`            | Secret peryx signs its own tokens with                               | (none)  |
-| `signing_key_file`       | Path to read `signing_key` from instead of inlining it               | (none)  |
-| `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive             | `300`   |
-| `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it | `true`  |
-| `oidc_audience`          | Audience external CI identity tokens must carry                      | `peryx` |
+| Key | Meaning | Default | | ------------------------ |
+-------------------------------------------------------------------- | ------- | | `signing_key` | Secret peryx signs
+its own tokens with | (none) | | `signing_key_file` | Path to read `signing_key` from instead of inlining it | (none) |
+| `token_ttl_secs` | Lifetime of a minted token, in seconds; must be positive | `300` | | `default_anonymous_read` |
+What an index's `anonymous_read` defaults to when the index omits it | `true` | | `oidc_audience` | Audience external CI
+identity tokens must carry | `peryx` |
 
 Set at most one of `signing_key` and `signing_key_file`. peryx reads the key at startup and uses it to mint OCI and
 trusted-publishing tokens whose maximum lifetime is `token_ttl_secs`. `default_anonymous_read = false` sets the
@@ -950,13 +909,12 @@ secret_env = "PERYX_WEBHOOK_SECRET"
 events = ["upload", "delete", "restore"]
 ```
 
-| Key          | Meaning                                                                                           | Default |
-| ------------ | ------------------------------------------------------------------------------------------------- | ------- |
-| `name`       | Stable target name used in delivery logs                                                          |         |
-| `url`        | HTTP or HTTPS endpoint that receives JSON payloads; credentials, query, and fragment are rejected |         |
-| `secret`     | Literal HMAC signing secret                                                                       |         |
-| `secret_env` | Environment variable that contains the HMAC signing secret                                        |         |
-| `events`     | Event names to send; omit or leave empty for all supported event names                            | all     |
+| Key | Meaning | Default | | ------------ |
+------------------------------------------------------------------------------------------------- | ------- | | `name` |
+Stable target name used in delivery logs | | | `url` | HTTP or HTTPS endpoint that receives JSON payloads; credentials,
+query, and fragment are rejected | | | `secret` | Literal HMAC signing secret | | | `secret_env` | Environment variable
+that contains the HMAC signing secret | | | `events` | Event names to send; omit or leave empty for all supported event
+names | all |
 
 Use one of `secret` or `secret_env`. Supported event names are `upload`, `yank`, `unyank`, `delete`, `restore`,
 `promote`, `project-status`, and `management`. Peryx emits `upload`, `yank`, `unyank`, `delete`, and `restore` from the
@@ -968,12 +926,12 @@ target name, attempt count, next retry time, response status, and last error. It
 
 ## `[log]`
 
-| Key      | Values                                                                                                                                                      | Default  |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `level`  | a [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `error` ... `trace`, per-module filters | `info`   |
-| `format` | `pretty`, `json`                                                                                                                                            | `pretty` |
-| `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                                                                      | `stdout` |
-| `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
+| Key | Values | Default | | -------- |
+\-----------------------------------------------------------------------------------------------------------------------------------------------------------
+| -------- | | `level` | a
+[`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html):
+`error` ... `trace`, per-module filters | `info` | | `format` | `pretty`, `json` | `pretty` | | `sink` | `stdout`,
+`file`, `journald`, `syslog` | `stdout` | | `file` | path, required when `sink = "file"` | (none) |
 
 The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these, as do the
 `PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, and `PERYX_LOG_FILE` variables (below the flags in precedence).

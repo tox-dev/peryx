@@ -44,7 +44,8 @@ md-5 = "0.10"
 csv = "1"
 dashmap = "6.2"
 tempfile = "3"
-testcontainers = "0.27"
+testcontainers = { version = "0.27", features = ["http_wait_plain"] }
+testcontainers-modules = { version = "0.15", default-features = false, features = ["minio", "ring"] }
 mimalloc = "0.1"
 redb = "4.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
@@ -52,6 +53,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls-acme = { version = "0.15", default-features = false, features = ["ring", "axum", "tls12", "webpki-roots"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "http-1x", "rt-tokio", "rustls"] }
 bytes = "1"
 httpdate = "1"
 futures-core = "0.3"
@@ -62,6 +65,7 @@ moka = { version = "0.12", features = ["sync"] }
 parking_lot = "0.12"
 tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
+hex = "0.4"
 argon2 = { version = "0.5", features = ["std"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 url = "2"

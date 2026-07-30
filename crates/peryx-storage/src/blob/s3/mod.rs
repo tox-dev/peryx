@@ -1,28 +1,31 @@
 //! An S3-compatible [`BlobBackend`](super::BlobBackend).
 //!
-//! Streamed writes stage to a local temp file exactly like the filesystem backend, so the digest is
+//! Streamed writes stage to a local temp file like the filesystem backend, so the digest is
 //! known before anything reaches S3 and readers can tail an in-progress stage. Commit uploads the
-//! finished stage under its digest key — one `PUT` below the multipart threshold, bounded concurrent
-//! parts above it — then drops the local stage. A failed multipart aborts its upload so the parts do
-//! not linger. Objects are immutable and digest-keyed, so every request is safe to retry.
+//! finished stage under its digest key, with bounded concurrency and a durable multipart journal.
 
 mod client;
 mod config;
-mod sign;
+#[cfg(test)]
+mod public_tests;
 
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::collections::HashMap;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
+use tokio::sync::{Mutex, watch};
 
 pub use self::client::{S3Client, S3Error};
 use self::client::{S3Get, S3Part};
-pub use self::config::{S3Addressing, S3Config, S3ConfigError, S3Credentials, S3Settings};
+pub use self::config::{S3Addressing, S3Config, S3ConfigError, S3Settings};
 use super::store::BlobStore;
 use super::{
     BlobBackend, BlobCapabilities, BlobDurability, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
@@ -34,15 +37,22 @@ use super::{
 pub struct S3Backend {
     client: S3Client,
     staging: BlobStore,
+    acquisitions: Arc<Mutex<HashMap<PathBuf, Arc<UploadAcquisition>>>>,
+}
+
+#[derive(Debug)]
+struct UploadAcquisition {
+    result: watch::Receiver<Option<Result<String, String>>>,
 }
 
 impl S3Backend {
     /// Build a backend for `config`, staging local writes and downloads under `staging_dir`.
     #[must_use]
-    pub fn new(config: S3Config, credentials: S3Credentials, staging_dir: PathBuf) -> Self {
+    pub fn new(config: S3Config, staging_dir: PathBuf) -> Self {
         Self {
-            client: S3Client::new(config, credentials),
+            client: S3Client::new(config),
             staging: BlobStore::new(staging_dir),
+            acquisitions: Arc::default(),
         }
     }
 
@@ -66,6 +76,20 @@ impl S3Backend {
             && (range.start > range.end || range.end > total)
         {
             return Err(BlobError::invalid_range(range.start, range.end, total));
+        }
+        if let Some(range) = &range
+            && range.is_empty()
+        {
+            return Ok(BlobRead::new(
+                "s3",
+                digest.clone(),
+                BlobMetadata {
+                    bytes: total,
+                    modified: None,
+                },
+                range.clone(),
+                BlobReadBody::Stream(futures_util::stream::empty().boxed()),
+            ));
         }
         let response = self
             .client
@@ -109,7 +133,7 @@ impl S3Backend {
         while let Some(chunk) = body.try_next().await? {
             hasher.update(&chunk);
         }
-        Ok(hex(&hasher.finalize()) == digest.as_str())
+        Ok(hex::encode(hasher.finalize()) == digest.as_str())
     }
 
     async fn delete_inner(&self, digest: &Digest) -> Result<bool, BlobError> {
@@ -155,47 +179,151 @@ impl S3Backend {
         let path = staged.with_materialized(Path::to_path_buf);
         let key = self.key_for(&digest);
         let result = if len <= self.client.config().multipart_threshold {
-            self.put_whole(&key, &digest, len, &path).await
+            self.put_whole(&key, &digest, &path).await
         } else {
-            self.put_multipart(&key, len, &path).await
+            self.put_multipart(&key, &digest, len, &path).await
         };
-        result
-            .map_err(|error| blob_error(error, Some(&digest)).with_context("s3", BlobOperation::Commit, Some(&digest)))
+        match result {
+            Ok(()) | Err(S3Error::AlreadyExists) => Ok(()),
+            Err(error) => Err(error),
+        }
+        .map_err(|error| blob_error(error, Some(&digest)).with_context("s3", BlobOperation::Commit, Some(&digest)))
     }
 
-    async fn put_whole(&self, key: &str, digest: &Digest, len: u64, path: &Path) -> Result<(), S3Error> {
-        let body = read_chunk(path.to_owned(), 0, len).await?;
-        self.client
-            .put(key, body, digest.as_str(), &sign_checksum(digest))
-            .await
+    async fn put_whole(&self, key: &str, digest: &Digest, path: &Path) -> Result<(), S3Error> {
+        self.client.put_file(key, path, &digest_checksum(digest)).await
     }
 
-    async fn put_multipart(&self, key: &str, len: u64, path: &Path) -> Result<(), S3Error> {
-        let upload_id = self.client.create_multipart(key).await?;
-        match self.upload_parts(key, &upload_id, len, path).await {
-            Ok(parts) => self.client.complete_multipart(key, &upload_id, &parts).await,
-            Err(error) => {
-                let _ = self.client.abort_multipart(key, &upload_id).await;
-                Err(error)
+    async fn put_multipart(&self, key: &str, digest: &Digest, len: u64, path: &Path) -> Result<(), S3Error> {
+        let part_size = self.client.config().part_size.max(len.div_ceil(10_000));
+        let journal = self.multipart_journal(digest);
+        let mut conflicts = 0;
+        let mut recovered_stale_upload = false;
+        loop {
+            let upload_id = self.acquire_upload(key, &journal).await?;
+            let parts = match self.upload_parts(key, &upload_id, len, part_size, path).await {
+                Ok(parts) => parts,
+                Err(S3Error::NoSuchUpload) if !recovered_stale_upload => {
+                    recovered_stale_upload = true;
+                    remove_journal(&journal).await?;
+                    continue;
+                }
+                Err(error) => return self.abort_after_error(key, &upload_id, &journal, error).await,
+            };
+            match self.client.complete_multipart(key, &upload_id, parts, len).await {
+                Ok(()) => {
+                    remove_journal(&journal).await?;
+                    return Ok(());
+                }
+                Err(S3Error::AlreadyExists) => {
+                    self.abort_and_clear(key, &upload_id, &journal).await?;
+                    return Ok(());
+                }
+                Err(S3Error::Conflict) if conflicts < self.client.config().max_retries => {
+                    conflicts += 1;
+                    self.abort_and_clear(key, &upload_id, &journal).await?;
+                }
+                Err(error) => return self.abort_after_error(key, &upload_id, &journal, error).await,
             }
         }
     }
 
-    async fn upload_parts(&self, key: &str, upload_id: &str, len: u64, path: &Path) -> Result<Vec<S3Part>, S3Error> {
-        let config = self.client.config();
-        let mut parts = Vec::new();
-        let mut number = 1u32;
-        let mut offset = 0u64;
-        while offset < len {
-            let mut batch = Vec::new();
-            while offset < len && batch.len() < config.upload_concurrency {
-                let this = config.part_size.min(len - offset);
-                batch.push(self.upload_one(key, upload_id, number, path.to_owned(), offset, this));
-                number += 1;
-                offset += this;
-            }
-            parts.extend(futures_util::future::try_join_all(batch).await?);
+    fn multipart_journal(&self, digest: &Digest) -> PathBuf {
+        self.staging.staging_dir().join("s3-multipart").join(digest.as_str())
+    }
+
+    async fn acquire_upload(&self, key: &str, journal: &Path) -> Result<String, S3Error> {
+        if let Some(upload_id) = read_journal(journal).await? {
+            return Ok(upload_id);
         }
+        let journal = journal.to_owned();
+        let (acquisition, publisher) = {
+            let mut acquisitions = self.acquisitions.lock().await;
+            let existing = acquisitions.get(&journal).cloned();
+            let result = existing.map_or_else(
+                || {
+                    let (publisher, result) = watch::channel(None);
+                    let acquisition = Arc::new(UploadAcquisition { result });
+                    acquisitions.insert(journal.clone(), Arc::clone(&acquisition));
+                    (acquisition, Some(publisher))
+                },
+                |acquisition| (acquisition, None),
+            );
+            drop(acquisitions);
+            result
+        };
+        if let Some(publisher) = publisher {
+            let client = self.client.clone();
+            let key = key.to_owned();
+            let acquisitions = Arc::clone(&self.acquisitions);
+            tokio::spawn(async move {
+                let result = create_upload(&client, &key, &journal)
+                    .await
+                    .map_err(|error| error.to_string());
+                publisher.send_replace(Some(result));
+                acquisitions.lock().await.remove(&journal);
+            });
+        }
+        let mut result = acquisition.result.clone();
+        loop {
+            let available = result.borrow().clone();
+            if let Some(outcome) = available {
+                return outcome.map_err(S3Error::Request);
+            }
+            result
+                .changed()
+                .await
+                .expect("multipart upload acquisition publishes a result before closing");
+        }
+    }
+
+    async fn abort_after_error(
+        &self,
+        key: &str,
+        upload_id: &str,
+        journal: &Path,
+        error: S3Error,
+    ) -> Result<(), S3Error> {
+        match self.abort_and_clear(key, upload_id, journal).await {
+            Ok(()) => Err(error),
+            Err(abort) => Err(S3Error::Request(format!(
+                "{error}; abort of multipart upload {upload_id} failed: {abort}"
+            ))),
+        }
+    }
+
+    async fn abort_and_clear(&self, key: &str, upload_id: &str, journal: &Path) -> Result<(), S3Error> {
+        self.client.abort_multipart(key, upload_id).await?;
+        remove_journal(journal).await
+    }
+
+    async fn upload_parts(
+        &self,
+        key: &str,
+        upload_id: &str,
+        len: u64,
+        part_size: u64,
+        path: &Path,
+    ) -> Result<Vec<S3Part>, S3Error> {
+        let part_size = usize::try_from(part_size).expect("validated S3 part size fits usize");
+        let mut parts: Vec<_> = futures_util::stream::iter((0..len).step_by(part_size))
+            .enumerate()
+            .map(|(index, offset)| {
+                self.upload_one(
+                    key,
+                    upload_id,
+                    i32::try_from(index + 1).expect("multipart part count is bounded to 10,000"),
+                    path.to_owned(),
+                    offset,
+                    u64::try_from(part_size)
+                        .expect("part size originated as u64")
+                        .min(len - offset),
+                )
+            })
+            .buffer_unordered(self.client.config().upload_concurrency)
+            .try_collect()
+            .await?;
+        parts.sort_unstable_by_key(|part| part.number);
         Ok(parts)
     }
 
@@ -203,63 +331,97 @@ impl S3Backend {
         &self,
         key: &str,
         upload_id: &str,
-        number: u32,
+        number: i32,
         path: PathBuf,
         offset: u64,
         len: u64,
     ) -> Result<S3Part, S3Error> {
-        let body = read_chunk(path, offset, len).await?;
-        let hash = sign::sha256_hex(&body);
-        self.client.upload_part(key, upload_id, number, body, &hash).await
+        let (body, checksum) = read_chunk(path, offset, len).await?;
+        self.client.upload_part(key, upload_id, number, body, checksum).await
     }
 }
 
-async fn read_chunk(path: PathBuf, offset: u64, len: u64) -> Result<Bytes, S3Error> {
+async fn create_upload(client: &S3Client, key: &str, journal: &Path) -> Result<String, S3Error> {
+    let upload_id = client.create_multipart(key).await?;
+    match create_journal(journal, &upload_id).await {
+        Ok(()) => Ok(upload_id),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            client.abort_multipart(key, &upload_id).await?;
+            read_journal(journal)
+                .await?
+                .ok_or(S3Error::InvalidResponse("multipart journal"))
+        }
+        Err(error) => {
+            client.abort_multipart(key, &upload_id).await?;
+            Err(S3Error::Request(error.to_string()))
+        }
+    }
+}
+
+async fn read_journal(path: &Path) -> Result<Option<String>, S3Error> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) if bytes.is_empty() || bytes.len() > 4_096 => {
+            remove_journal(path).await?;
+            Ok(None)
+        }
+        Ok(bytes) => {
+            if let Ok(upload_id) = String::from_utf8(bytes) {
+                Ok(Some(upload_id))
+            } else {
+                remove_journal(path).await?;
+                Ok(None)
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(S3Error::Request(error.to_string())),
+    }
+}
+
+async fn create_journal(path: &Path, upload_id: &str) -> Result<(), std::io::Error> {
+    let parent = path.parent().expect("multipart journal path has a parent");
+    tokio::fs::create_dir_all(parent).await?;
+    let path = path.to_owned();
+    let upload_id = upload_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let parent = path.parent().expect("multipart journal parent was checked");
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(upload_id.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist_noclobber(&path).map_err(|error| error.error)?;
+        std::fs::File::open(parent)?.sync_all()
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+async fn remove_journal(path: &Path) -> Result<(), S3Error> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(S3Error::Request(error.to_string())),
+    }
+}
+
+async fn read_chunk(path: PathBuf, offset: u64, len: u64) -> Result<(Bytes, String), S3Error> {
     tokio::task::spawn_blocking(move || {
         let mut file = std::fs::File::open(&path)?;
         file.seek(SeekFrom::Start(offset))?;
-        let mut buffer = vec![0u8; usize::try_from(len).unwrap_or(usize::MAX)];
+        let mut buffer = vec![0u8; usize::try_from(len).map_err(std::io::Error::other)?];
         file.read_exact(&mut buffer)?;
-        Ok(Bytes::from(buffer))
+        let checksum = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&buffer));
+        Ok((Bytes::from(buffer), checksum))
     })
     .await
-    .expect("blob part read task never panics")
-    .map_err(|error: std::io::Error| S3Error::Transport(error.to_string()))
+    .expect("S3 part read task panicked")
+    .map_err(|error: std::io::Error| S3Error::Request(error.to_string()))
 }
 
-fn sign_checksum(digest: &Digest) -> String {
-    sign::sha256_base64(&hex_to_bytes(digest.as_str()))
+fn digest_checksum(digest: &Digest) -> String {
+    base64::engine::general_purpose::STANDARD
+        .encode(hex::decode(digest.as_str()).expect("digest contains validated lowercase hex"))
 }
 
-fn hex_to_bytes(hex: &str) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-        out[index] = nibble(chunk[0]) << 4 | nibble(chunk[1]);
-    }
-    out
-}
-
-const fn nibble(byte: u8) -> u8 {
-    match byte {
-        b'0'..=b'9' => byte - b'0',
-        _ => byte - b'a' + 10,
-    }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        out.push(DIGITS[(byte >> 4) as usize] as char);
-        out.push(DIGITS[(byte & 0x0f) as usize] as char);
-    }
-    out
-}
-
-/// Adapt a streamed S3 body into a blob-error stream. A mid-transfer error is always transport, so
-/// the conversion needs no digest and reuses the shared `From` impl; the operation's digest context
-/// is attached by the caller. Sharing one non-capturing mapper keeps open, verify, and materialize
-/// from each emitting a distinct stream-error function.
+/// A shared non-capturing mapper prevents one dead stream-error monomorphization per caller.
 fn stream_body(response: S3Get) -> BoxStream<'static, Result<Bytes, BlobError>> {
     response.body.map_err(BlobError::from).boxed()
 }
@@ -270,7 +432,6 @@ impl From<S3Error> for BlobError {
     }
 }
 
-/// Map an S3 client error to a blob error, attaching the digest for a not-found.
 fn blob_error(error: S3Error, digest: Option<&Digest>) -> BlobError {
     match error {
         S3Error::NotFound => digest.map_or_else(
@@ -282,7 +443,7 @@ fn blob_error(error: S3Error, digest: Option<&Digest>) -> BlobError {
 }
 
 #[cfg(test)]
-mod tests {
+mod error_tests {
     use super::{BlobError, S3Error};
     use crate::blob::BlobErrorKind;
 
@@ -290,7 +451,7 @@ mod tests {
     fn test_blob_error_from_s3_error() {
         assert_eq!(BlobError::from(S3Error::NotFound).kind(), BlobErrorKind::Io);
         assert_eq!(
-            BlobError::from(S3Error::Transport("reset".to_owned())).kind(),
+            BlobError::from(S3Error::Request("reset".to_owned())).kind(),
             BlobErrorKind::Io
         );
     }
@@ -300,7 +461,7 @@ impl BlobBackend for S3Backend {
     fn capabilities(&self) -> BlobCapabilities {
         BlobCapabilities {
             durability: BlobDurability::ObjectStore,
-            create_if_absent: BlobSupport::Emulated,
+            create_if_absent: BlobSupport::Native,
             range: BlobSupport::Native,
             checksum: BlobSupport::Native,
             delete: BlobSupport::Native,
@@ -365,8 +526,7 @@ pub struct S3Write {
 
 impl S3Write {
     pub(crate) async fn write_chunk(&mut self, chunk: Bytes) -> Result<(), BlobError> {
-        // The inner write is always a filesystem stage, but the shared `BlobWrite` type is recursive
-        // through this wrapper, so its future is boxed to keep the size finite.
+        // `BlobWrite` recurses through this wrapper, so boxing keeps the future finite.
         Box::pin(self.inner.write_chunk(chunk)).await
     }
 
@@ -414,9 +574,8 @@ impl S3Staged {
         self.inner.is_empty()
     }
 
-    /// The finished local stage. Non-generic on purpose: routing `with_materialized` through a
-    /// generic S3 method would drag a dead monomorphization into every crate that inspects a
-    /// filesystem stage, which the `x86_64` coverage gate counts as uncovered.
+    /// Keeping this non-generic avoids dead monomorphizations in crates that inspect filesystem
+    /// stages.
     pub(crate) const fn inner(&self) -> &BlobStaged {
         &self.inner
     }

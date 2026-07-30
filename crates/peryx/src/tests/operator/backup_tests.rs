@@ -481,7 +481,7 @@ fn test_backup_snapshots_the_s3_blob_backend_and_restores_it() {
         request_timeout: std::time::Duration::from_secs(20),
         max_retries: 4,
         multipart_threshold: 1024,
-        part_size: 2048,
+        part_size: 8 << 20,
         upload_concurrency: 6,
     };
     let config = Config {

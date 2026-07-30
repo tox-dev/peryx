@@ -4,7 +4,7 @@ use std::ops::Range;
 use super::s3::S3Backend;
 use super::{
     BlobBackend, BlobCapabilities, BlobEntry, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
-    BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, S3Config, S3Credentials,
+    BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, S3Config,
 };
 
 /// The blob backend selected for this process.
@@ -43,9 +43,9 @@ impl BlobStorage {
 
     /// Select the S3-compatible backend for `config`, staging local writes under `staging_dir`.
     #[must_use]
-    pub fn s3(config: S3Config, credentials: S3Credentials, staging_dir: std::path::PathBuf) -> Self {
+    pub fn s3(config: S3Config, staging_dir: std::path::PathBuf) -> Self {
         Self {
-            backend: Backend::S3(Box::new(S3Backend::new(config, credentials, staging_dir))),
+            backend: Backend::S3(Box::new(S3Backend::new(config, staging_dir))),
         }
     }
 
@@ -80,7 +80,7 @@ impl BlobStorage {
     pub async fn health(&self) -> Result<(), BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => store.health().await,
-            Backend::S3(backend) => backend.health().await,
+            Backend::S3(backend) => Box::pin(backend.health()).await,
         }
     }
 
@@ -91,7 +91,7 @@ impl BlobStorage {
     pub async fn open(&self, digest: &Digest, range: Option<Range<u64>>) -> Result<BlobRead, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => store.open(digest.clone(), range).await,
-            Backend::S3(backend) => backend.open(digest.clone(), range).await,
+            Backend::S3(backend) => Box::pin(backend.open(digest.clone(), range)).await,
         }
     }
 
@@ -114,7 +114,7 @@ impl BlobStorage {
     pub async fn head(&self, digest: &Digest) -> Result<Option<BlobMetadata>, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => BlobBackend::head(store, digest.clone()).await,
-            Backend::S3(backend) => backend.head(digest.clone()).await,
+            Backend::S3(backend) => Box::pin(backend.head(digest.clone())).await,
         }
     }
 
@@ -142,13 +142,16 @@ impl BlobStorage {
                 .expect("blob presence task never panics")
             }
             Backend::S3(backend) => {
-                let mut present = HashSet::with_capacity(digests.len());
-                for digest in digests {
-                    if backend.head(digest.clone()).await?.is_some() {
-                        present.insert(digest);
+                Box::pin(async {
+                    let mut present = HashSet::with_capacity(digests.len());
+                    for digest in digests {
+                        if backend.head(digest.clone()).await?.is_some() {
+                            present.insert(digest);
+                        }
                     }
-                }
-                Ok(present)
+                    Ok(present)
+                })
+                .await
             }
         }
     }
@@ -160,7 +163,7 @@ impl BlobStorage {
     pub async fn begin(&self) -> Result<BlobWrite, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => BlobBackend::begin(store).await,
-            Backend::S3(backend) => backend.begin().await,
+            Backend::S3(backend) => Box::pin(backend.begin()).await,
         }
     }
 
@@ -200,7 +203,7 @@ impl BlobStorage {
     pub async fn verify(&self, digest: &Digest) -> Result<bool, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => BlobBackend::verify(store, digest.clone()).await,
-            Backend::S3(backend) => backend.verify(digest.clone()).await,
+            Backend::S3(backend) => Box::pin(backend.verify(digest.clone())).await,
         }
     }
 
@@ -211,7 +214,7 @@ impl BlobStorage {
     pub async fn delete(&self, digest: &Digest) -> Result<bool, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => store.delete(digest.clone()).await,
-            Backend::S3(backend) => backend.delete(digest.clone()).await,
+            Backend::S3(backend) => Box::pin(backend.delete(digest.clone())).await,
         }
     }
 
@@ -222,7 +225,7 @@ impl BlobStorage {
     pub async fn materialize(&self, digest: &Digest) -> Result<BlobLease, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => store.materialize(digest.clone()).await,
-            Backend::S3(backend) => backend.materialize(digest.clone()).await,
+            Backend::S3(backend) => Box::pin(backend.materialize(digest.clone())).await,
         }
     }
 }

@@ -83,8 +83,8 @@ pub struct PartialConfig {
     pub blob: Option<RawBlobStorage>,
 }
 
-/// The raw `[blob]` table selecting the blob storage backend before validation. Secret-free by
-/// design: S3 credentials resolve from the environment, never from configuration.
+/// The raw `[blob]` table selecting the blob storage backend before validation. The AWS default
+/// provider chain supplies S3 credentials outside configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "backend", rename_all = "lowercase", deny_unknown_fields)]
 pub enum RawBlobStorage {

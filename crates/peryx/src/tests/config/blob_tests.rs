@@ -49,7 +49,7 @@ fn test_blob_s3_backend_from_toml_overrides_every_field() {
         "timeout_secs = 15\n",
         "max_retries = 5\n",
         "multipart_threshold_bytes = 32\n",
-        "part_size_bytes = 64\n",
+        "part_size_bytes = 8388608\n",
         "upload_concurrency = 8\n",
     ));
     assert_eq!(
@@ -63,7 +63,7 @@ fn test_blob_s3_backend_from_toml_overrides_every_field() {
             request_timeout: Duration::from_secs(15),
             max_retries: 5,
             multipart_threshold: 32,
-            part_size: 64,
+            part_size: 8 << 20,
             upload_concurrency: 8,
         })
     );
