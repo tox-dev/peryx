@@ -376,7 +376,8 @@ async fn mount_wire_failures(server: &MockServer, behavior: WireBehavior) {
     match behavior {
         WireBehavior::Multipart => mount_multipart(server, None).await,
         WireBehavior::HealthError => {
-            Mock::given(method("HEAD"))
+            Mock::given(method("GET"))
+                .and(query_param("location", ""))
                 .respond_with(
                     ResponseTemplate::new(403)
                         .set_body_raw("<Error><Code>AccessDenied</Code></Error>", "application/xml"),
@@ -738,7 +739,8 @@ fn test_s3_reports_native_create_if_absent_through_the_public_backend() {
 #[tokio::test]
 async fn test_s3_sdk_retries_a_transient_bucket_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("HEAD"))
+    Mock::given(method("GET"))
+        .and(query_param("location", ""))
         .respond_with(
             ResponseTemplate::new(503)
                 .set_body_raw("<Error><Code>ServiceUnavailable</Code></Error>", "application/xml"),
@@ -747,8 +749,12 @@ async fn test_s3_sdk_retries_a_transient_bucket_failure() {
         .with_priority(1)
         .mount(&server)
         .await;
-    Mock::given(method("HEAD"))
-        .respond_with(ResponseTemplate::new(200))
+    Mock::given(method("GET"))
+        .and(query_param("location", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"></LocationConstraint>",
+            "application/xml",
+        ))
         .mount(&server)
         .await;
     let staging = tempfile::tempdir().unwrap();
@@ -955,9 +961,9 @@ async fn interrupted_upload() -> InterruptedUpload {
             "toxic",
             "add",
             "-t",
-            "latency",
+            "timeout",
             "-a",
-            "latency=1000",
+            "timeout=0",
             "s3",
         ],
     )
@@ -975,8 +981,7 @@ async fn interrupted_upload() -> InterruptedUpload {
     .stderr(Stdio::piped())
     .spawn()
     .unwrap();
-    wait_for_metric_above(&toxiproxy, "downstream", 0).await;
-    let request_bytes = metric(&toxiproxy, "upstream").await;
+    let (key, upload_id) = wait_for_multipart_upload(&minio).await;
     exec(
         &toxiproxy.container,
         [
@@ -994,10 +999,10 @@ async fn interrupted_upload() -> InterruptedUpload {
     .await;
     exec(
         &toxiproxy.container,
-        ["/toxiproxy-cli", "toxic", "remove", "-n", "latency_downstream", "s3"],
+        ["/toxiproxy-cli", "toxic", "remove", "-n", "timeout_downstream", "s3"],
     )
     .await;
-    wait_for_metric_above(&toxiproxy, "upstream", request_bytes).await;
+    wait_for_file(&multipart_journal(staging.path())).await;
     process.stdin.take().unwrap().write_all(b"cancel").await.unwrap();
     assert_child_succeeded(
         &tokio::time::timeout(Duration::from_secs(10), process.wait_with_output())
@@ -1005,18 +1010,6 @@ async fn interrupted_upload() -> InterruptedUpload {
             .unwrap()
             .unwrap(),
     );
-    let uploads = admin_client(&minio.endpoint)
-        .list_multipart_uploads()
-        .bucket(BUCKET)
-        .send()
-        .await
-        .unwrap()
-        .uploads
-        .unwrap();
-    assert_eq!(uploads.len(), 1);
-    let upload = &uploads[0];
-    let key = upload.key.clone().unwrap();
-    let upload_id = upload.upload_id.clone().unwrap();
     assert!(
         admin_client(&minio.endpoint)
             .list_parts()
@@ -1037,6 +1030,30 @@ async fn interrupted_upload() -> InterruptedUpload {
         key,
         upload_id,
     }
+}
+
+async fn wait_for_multipart_upload(minio: &Minio) -> (String, String) {
+    let client = admin_client(&minio.endpoint);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(upload) = client
+                .list_multipart_uploads()
+                .bucket(BUCKET)
+                .send()
+                .await
+                .unwrap()
+                .uploads
+                .unwrap_or_default()
+                .into_iter()
+                .next()
+            {
+                return (upload.key.unwrap(), upload.upload_id.unwrap());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
 }
 
 async fn remove_timeout(upload: &InterruptedUpload) {

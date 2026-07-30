@@ -111,7 +111,7 @@ impl S3Client {
     pub async fn health(&self) -> Result<(), S3Error> {
         self.client()
             .await
-            .head_bucket()
+            .get_bucket_location()
             .bucket(&self.config.bucket)
             .send()
             .await
