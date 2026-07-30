@@ -137,10 +137,10 @@ fn settings(endpoint: String) -> S3Settings {
     }
 }
 
-fn create_response() -> ResponseTemplate {
+fn create_response(upload_id: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(
         format!(
-            "<InitiateMultipartUploadResult><Bucket>{BUCKET}</Bucket><Key>key</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>"
+            "<InitiateMultipartUploadResult><Bucket>{BUCKET}</Bucket><Key>key</Key><UploadId>{upload_id}</UploadId></InitiateMultipartUploadResult>"
         ),
         "application/xml",
     )
@@ -160,7 +160,7 @@ async fn mount_multipart(server: &MockServer, delayed: Option<MultipartStage>) {
     if matches!(delayed, Some(MultipartStage::Create)) {
         Mock::given(method("POST"))
             .and(query_param("uploads", ""))
-            .respond_with(create_response().set_delay(delay))
+            .respond_with(create_response("upload-1").set_delay(delay))
             .up_to_n_times(1)
             .with_priority(1)
             .mount(server)
@@ -168,7 +168,7 @@ async fn mount_multipart(server: &MockServer, delayed: Option<MultipartStage>) {
     }
     Mock::given(method("POST"))
         .and(query_param("uploads", ""))
-        .respond_with(create_response())
+        .respond_with(create_response("upload-1"))
         .mount(server)
         .await;
     if matches!(delayed, Some(MultipartStage::Part)) {
@@ -804,35 +804,57 @@ async fn test_s3_multipart_resumes_after_cancellation(#[case] stage: MultipartSt
 #[tokio::test]
 async fn test_s3_multipart_adopts_a_journal_created_by_another_process() {
     let server = MockServer::start().await;
-    mount_multipart(&server, Some(MultipartStage::Create)).await;
     let staging = tempfile::tempdir().unwrap();
-    let endpoint = server.uri();
-    let staging_path = staging.path().to_owned();
-    let process = tokio::spawn(async move {
-        child(
-            &endpoint,
-            &staging_path,
+    let journal = multipart_journal(staging.path());
+    Mock::given(method("POST"))
+        .and(query_param("uploads", ""))
+        .respond_with(move |_: &Request| {
+            std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+            std::fs::write(&journal, "upload-1").unwrap();
+            create_response("upload-2")
+        })
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(query_param("uploadId", "upload-2"))
+        .respond_with(ResponseTemplate::new(204))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    mount_multipart(&server, None).await;
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
             "wire_multipart",
             ROOT_ACCESS_KEY,
             ROOT_SECRET_KEY,
         )
-        .await
-    });
-    wait_for_stage(&server, MultipartStage::Create).await;
-    let journal = multipart_journal(staging.path());
-    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
-    std::fs::write(journal, "upload-1").unwrap();
-
-    assert_child_succeeded(&process.await.unwrap());
-    assert_eq!(
-        server
-            .received_requests()
-            .await
-            .unwrap()
+        .await,
+    );
+    let requests = server.received_requests().await.unwrap();
+    let count_upload_requests = |methods: &[&str], upload_id: &str| {
+        requests
             .iter()
-            .filter(|request| request.method.as_str() == "DELETE")
-            .count(),
-        1
+            .filter(|request| {
+                methods.contains(&request.method.as_str())
+                    && request
+                        .url
+                        .query_pairs()
+                        .any(|(key, value)| key == "uploadId" && value == upload_id)
+            })
+            .count()
+    };
+    assert_eq!(
+        (
+            count_upload_requests(&["DELETE"], "upload-2"),
+            count_upload_requests(&["PUT", "POST"], "upload-1"),
+        ),
+        (1, 3)
     );
 }
 
