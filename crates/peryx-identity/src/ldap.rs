@@ -1,7 +1,6 @@
 use std::fmt;
 use std::io::Cursor;
 use std::num::NonZeroU32;
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -21,6 +20,7 @@ use crate::{
 const LDAP_INVALID_CREDENTIALS: u32 = 49;
 const LDAP_SIZE_LIMIT_EXCEEDED: u32 = 4;
 const MAX_ATTRIBUTE_BYTES: usize = 128;
+const MAX_DISPLAY_NAME_BYTES: usize = 1_024;
 const MAX_DN_BYTES: usize = 4_096;
 
 /// How one LDAP provider locates the directory entry that a user binds as.
@@ -212,26 +212,27 @@ impl LdapProvider {
             RuntimeBindMode::Direct { dn_attribute } => {
                 let dn = format!("{dn_attribute}={},{}", dn_escape(username), self.base_dn);
                 ldap.discard = true;
-                if !bind_user(&mut ldap, &dn, password).await? {
+                if !bind_user(&mut ldap.ldap, &dn, password).await? {
                     return Ok(None);
                 }
-                self.search_one(&mut ldap, &dn, Scope::Base, "(objectClass=*)").await?
+                self.search_one(&mut ldap.ldap, &dn, Scope::Base, "(objectClass=*)")
+                    .await?
             }
             RuntimeBindMode::Search {
                 username_attribute,
                 bind_dn,
                 bind_password,
             } => {
-                bind_identity(&mut ldap, bind_dn, bind_password).await?;
+                bind_identity(&mut ldap.ldap, bind_dn, bind_password).await?;
                 let filter = format!("({username_attribute}={})", ldap_escape(username));
                 let Some(entry) = self
-                    .search_one(&mut ldap, &self.base_dn, Scope::Subtree, &filter)
+                    .search_one(&mut ldap.ldap, &self.base_dn, Scope::Subtree, &filter)
                     .await?
                 else {
                     return Ok(None);
                 };
                 ldap.discard = true;
-                if !bind_user(&mut ldap, &entry.dn, password).await? {
+                if !bind_user(&mut ldap.ldap, &entry.dn, password).await? {
                     return Ok(None);
                 }
                 Some(entry)
@@ -278,6 +279,9 @@ impl LdapProvider {
     fn external_login(&self, entry: &SearchEntry) -> Result<ExternalLogin, LdapProviderError> {
         let subject = single_attribute(entry, &self.subject_attribute)?;
         let display_name = single_attribute(entry, &self.display_name_attribute)?;
+        if display_name.len() > MAX_DISPLAY_NAME_BYTES {
+            return Err(LdapProviderError::InvalidEntry);
+        }
         let group_values = self
             .group_attribute
             .as_deref()
@@ -433,20 +437,6 @@ impl fmt::Debug for RuntimeBindMode {
 struct SafeLdap {
     ldap: Ldap,
     discard: bool,
-}
-
-impl Deref for SafeLdap {
-    type Target = Ldap;
-
-    fn deref(&self) -> &Self::Target {
-        &self.ldap
-    }
-}
-
-impl DerefMut for SafeLdap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.ldap
-    }
 }
 
 #[derive(Clone)]

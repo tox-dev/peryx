@@ -303,13 +303,17 @@ async fn test_ldap_login_crosses_starttls_bind_and_store_boundaries() {
     assert_eq!(search_provider.authenticate("fry)(uid=*)", "fry").await.unwrap(), None);
     assert_eq!(
         search_provider
-            .authenticate("leela", "leela")
+            .authenticate("bender", "bender")
             .await
             .unwrap()
             .unwrap()
             .display_name
             .display(),
-        "Turanga Leela"
+        "Bender"
+    );
+    assert_eq!(
+        direct_provider.authenticate("Philip J. Fry", "wrong").await.unwrap(),
+        None
     );
     let direct = direct_provider
         .authenticate("Philip J. Fry", "fry")
@@ -445,6 +449,7 @@ async fn install_invalid_attributes(container: &ContainerAsync<GenericImage>) {
 #[cfg(target_os = "linux")]
 async fn assert_invalid_entries(port: u16, certificate: &[u8]) {
     for (subject, display, group) in [
+        ("employeeNumber", "displayName", Some("memberOf")),
         ("title", "displayName", Some("memberOf")),
         ("entryUUID", "title", Some("memberOf")),
         ("entryUUID", "displayName", Some("title")),
