@@ -127,6 +127,15 @@ fn service_error(status: u16, code: &str) -> ResponseTemplate {
 }
 
 async fn mount(server: &MockServer, scenario: Scenario) {
+    Mock::given(method("GET"))
+        .and(query_param("location", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"></LocationConstraint>",
+            "application/xml",
+        ))
+        .with_priority(2)
+        .mount(server)
+        .await;
     Mock::given(method("HEAD"))
         .respond_with(ResponseTemplate::new(200))
         .mount(server)
