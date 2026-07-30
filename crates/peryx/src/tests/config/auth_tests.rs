@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use peryx_identity::{Action, Glob, Grant, UPLOAD_TOKEN_NAME};
+use peryx_identity::{Action, Glob, Grant, GrantScope, Role, UPLOAD_TOKEN_NAME};
 use rstest::rstest;
 
 use super::toml_config;
-use crate::config::{self, AuthConfig, Config, ConfigError, IndexConfig, SecretSource};
+use crate::config::{self, AuthConfig, Config, ConfigError, IndexConfig, LdapBindConfig, SecretSource};
 
 fn toml_error(text: &str) -> String {
     let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
@@ -32,6 +32,195 @@ fn test_auth_defaults_to_open_reads_and_a_five_minute_token() {
     assert!(auth.default_anonymous_read);
     assert_eq!(auth.oidc_audience, "peryx");
     assert!(auth.trusted_publishers.is_empty());
+    assert!(auth.ldap_providers.is_empty());
+}
+
+#[test]
+fn test_ldap_provider_config_resolves_service_search_and_group_mappings() {
+    let config = toml_config(
+        "[[auth.ldap_provider]]\nid = \"corporate\"\nurl = \"ldap://directory.example:389\"\n\
+         base_dn = \"ou=people,dc=example,dc=com\"\nmode = \"service-search\"\nusername_attribute = \"uid\"\n\
+         bind_dn = \"cn=service,dc=example,dc=com\"\nbind_password_env = \"LDAP_BIND_PASSWORD\"\n\
+         subject_attribute = \"entryUUID\"\ndisplay_name_attribute = \"displayName\"\n\
+         group_attribute = \"memberOf\"\nca_file = \"/run/secrets/ldap-ca.pem\"\nconnect_timeout_secs = 4\n\
+         request_timeout_secs = 7\nmax_connections = 6\n\
+         [[auth.ldap_provider.group_mapping]]\ngroup = \"cn=readers,ou=groups,dc=example,dc=com\"\n\
+         role = \"repository_reader\"\nrepository = \"packages\"\n\
+         [[index]]\nname = \"packages\"\nhosted = true\n",
+    );
+    config.validate().unwrap();
+    let provider = &config.auth.ldap_providers[0];
+
+    assert_eq!(provider.id.as_str(), "corporate");
+    assert_eq!(provider.url.as_str(), "ldap://directory.example:389");
+    assert_eq!(provider.connect_timeout, std::time::Duration::from_secs(4));
+    assert_eq!(provider.request_timeout, std::time::Duration::from_secs(7));
+    assert_eq!(provider.max_connections.get(), 6);
+    assert_eq!(provider.ca_file, Some(PathBuf::from("/run/secrets/ldap-ca.pem")));
+    assert!(matches!(
+        &provider.bind,
+        LdapBindConfig::Search {
+            bind_password: SecretSource::Env(variable),
+            ..
+        } if variable == "LDAP_BIND_PASSWORD"
+    ));
+    assert_eq!(provider.group_mappings[0].role, Role::RepositoryReader);
+    assert_eq!(
+        provider.group_mappings[0].scope,
+        GrantScope::Repository {
+            name: "packages".to_owned()
+        }
+    );
+}
+
+#[test]
+fn test_ldap_provider_config_resolves_direct_bind_defaults() {
+    let config = toml_config(
+        "[[auth.ldap_provider]]\nid = \"staff\"\nurl = \"ldap://directory.example\"\n\
+         base_dn = \"ou=people,dc=example,dc=com\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\n\
+         subject_attribute = \"entryUUID\"\ndisplay_name_attribute = \"displayName\"\n",
+    );
+    let provider = &config.auth.ldap_providers[0];
+
+    assert!(matches!(&provider.bind, LdapBindConfig::Direct { dn_attribute } if dn_attribute == "uid"));
+    assert_eq!(format!("{:?}", provider.bind), "Direct { dn_attribute: \"uid\" }");
+    assert_eq!(provider.connect_timeout, std::time::Duration::from_secs(3));
+    assert_eq!(provider.request_timeout, std::time::Duration::from_secs(5));
+    assert_eq!(provider.max_connections.get(), 8);
+    assert!(provider.group_mappings.is_empty());
+}
+
+#[rstest]
+#[case::missing_password(
+    "bind_dn = \"cn=service,dc=example\"\n",
+    "service search requires a bind password source"
+)]
+#[case::multiple_passwords(
+    "bind_dn = \"cn=service,dc=example\"\nbind_password = \"secret\"\nbind_password_file = \"/secret\"\n",
+    "set at most one of a secret, its `_file` sibling, and its `_env` sibling"
+)]
+#[case::empty_password(
+    "bind_dn = \"cn=service,dc=example\"\nbind_password = \"\"\n",
+    "service bind password must not be empty"
+)]
+fn test_ldap_service_search_rejects_invalid_password_sources(#[case] bind: &str, #[case] expected: &str) {
+    let text = format!(
+        "[[auth.ldap_provider]]\nid = \"staff\"\nurl = \"ldap://directory.example\"\n\
+         base_dn = \"dc=example\"\nmode = \"service-search\"\nusername_attribute = \"uid\"\n{bind}\
+         subject_attribute = \"entryUUID\"\ndisplay_name_attribute = \"displayName\"\n"
+    );
+
+    assert_eq!(toml_error(&text), format!("LDAP provider staff: {expected}"));
+}
+
+#[rstest]
+#[case::provider_id("bad id", "invalid provider ID")]
+#[case::connect_timeout("staff", "`connect_timeout_secs` must be positive")]
+#[case::request_timeout("staff", "`request_timeout_secs` must be positive")]
+#[case::connections("staff", "`max_connections` must be positive")]
+fn test_ldap_provider_rejects_invalid_identity_or_bounds(#[case] id: &str, #[case] expected: &str) {
+    let bound = match expected {
+        "`connect_timeout_secs` must be positive" => "connect_timeout_secs = 0\n",
+        "`request_timeout_secs` must be positive" => "request_timeout_secs = 0\n",
+        "`max_connections` must be positive" => "max_connections = 0\n",
+        _ => "",
+    };
+    let text = format!(
+        "[[auth.ldap_provider]]\nid = \"{id}\"\nurl = \"ldap://directory.example\"\nbase_dn = \"dc=example\"\n\
+         mode = \"direct-bind\"\ndn_attribute = \"uid\"\nsubject_attribute = \"entryUUID\"\n\
+         display_name_attribute = \"displayName\"\n{bound}"
+    );
+
+    assert_eq!(toml_error(&text), format!("LDAP provider {id}: {expected}"));
+}
+
+#[test]
+fn test_ldap_provider_ids_are_unique() {
+    let provider = "[[auth.ldap_provider]]\nid = \"staff\"\nurl = \"ldap://directory.example\"\nbase_dn = \"dc=example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nsubject_attribute = \"entryUUID\"\ndisplay_name_attribute = \"displayName\"\n";
+    let config = toml_config(&format!("{provider}{provider}"));
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "LDAP provider staff: provider IDs must be unique"
+    );
+}
+
+#[test]
+fn test_ldap_group_mapping_repository_must_exist() {
+    let config = toml_config(
+        "[[auth.ldap_provider]]\nid = \"staff\"\nurl = \"ldap://directory.example\"\nbase_dn = \"dc=example\"\n\
+         mode = \"direct-bind\"\ndn_attribute = \"uid\"\nsubject_attribute = \"entryUUID\"\n\
+         display_name_attribute = \"displayName\"\n[[auth.ldap_provider.group_mapping]]\ngroup = \"readers\"\n\
+         role = \"repository_reader\"\nrepository = \"missing\"\n",
+    );
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "LDAP provider staff: group mapping repository must name a configured index"
+    );
+}
+
+#[rstest]
+#[case::invalid_url(
+    "url = \"not a URL\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\n",
+    "`url` must be a valid LDAP URL"
+)]
+#[case::direct_missing_attribute(
+    "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\n",
+    "direct bind requires `dn_attribute`"
+)]
+#[case::direct_search_field(
+    "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nbind_dn = \"cn=service\"\n",
+    "direct bind accepts only `dn_attribute` bind fields"
+)]
+#[case::search_direct_field(
+    "url = \"ldap://directory.example\"\nmode = \"service-search\"\ndn_attribute = \"uid\"\nbind_password = \"secret\"\n",
+    "service search does not accept `dn_attribute`"
+)]
+#[case::search_missing_username(
+    "url = \"ldap://directory.example\"\nmode = \"service-search\"\nbind_dn = \"cn=service\"\nbind_password = \"secret\"\n",
+    "service search requires `username_attribute`"
+)]
+#[case::search_missing_dn(
+    "url = \"ldap://directory.example\"\nmode = \"service-search\"\nusername_attribute = \"uid\"\nbind_password = \"secret\"\n",
+    "service search requires `bind_dn`"
+)]
+fn test_ldap_provider_rejects_incomplete_modes(#[case] fields: &str, #[case] expected: &str) {
+    let text = format!(
+        "[[auth.ldap_provider]]\nid = \"staff\"\nbase_dn = \"dc=example\"\n{fields}\
+         subject_attribute = \"entryUUID\"\ndisplay_name_attribute = \"displayName\"\n"
+    );
+
+    assert_eq!(toml_error(&text), format!("LDAP provider staff: {expected}"));
+}
+
+#[test]
+fn test_ldap_provider_rejects_an_invalid_group_mapping() {
+    let text = "[[auth.ldap_provider]]\nid = \"staff\"\nurl = \"ldap://directory.example\"\nbase_dn = \"dc=example\"\n\
+                mode = \"direct-bind\"\ndn_attribute = \"uid\"\nsubject_attribute = \"entryUUID\"\n\
+                display_name_attribute = \"displayName\"\n[[auth.ldap_provider.group_mapping]]\ngroup = \"\"\n\
+                role = \"operator\"\n";
+
+    assert_eq!(
+        toml_error(text),
+        "LDAP provider staff: group mapping has an invalid group"
+    );
+}
+
+#[test]
+fn test_ldap_provider_debug_redacts_literal_bind_passwords() {
+    let text = "[[auth.ldap_provider]]\nid = \"staff\"\nurl = \"ldap://directory.example\"\nbase_dn = \"dc=example\"\n\
+                mode = \"service-search\"\nusername_attribute = \"uid\"\nbind_dn = \"cn=service\"\n\
+                bind_password = \"directory-secret\"\nsubject_attribute = \"entryUUID\"\n\
+                display_name_attribute = \"displayName\"\n";
+    let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    let raw_debug = format!("{:?}", partial.auth);
+    let resolved_debug = format!("{:?}", Config::default().apply(partial).unwrap().auth);
+
+    assert!(raw_debug.contains("[redacted]"));
+    assert!(resolved_debug.contains("[redacted]"));
+    assert!(!raw_debug.contains("directory-secret"));
+    assert!(!resolved_debug.contains("directory-secret"));
 }
 
 #[test]

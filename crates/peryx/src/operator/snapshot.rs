@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use ipnet::IpNet;
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
-use peryx_identity::Action;
+use peryx_identity::{Action, GrantScope, Role};
 use peryx_policy::PolicyConfig;
 use peryx_upstream::{CredentialFailure, ExecCredentialConfig};
 use serde::Serialize;
@@ -16,9 +16,9 @@ use toml::{Table, Value};
 
 use crate::config::{
     AcmeConfig, AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, CredentialFailureMode,
-    CredentialRefreshConfig, IndexConfig, IndexKind, JobsConfig, JobsMode, LogConfig, LogFormat, LogSink,
-    PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig,
-    WebhookSecret,
+    CredentialRefreshConfig, IndexConfig, IndexKind, JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig,
+    LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig,
+    TokenConfig, WebhookConfig, WebhookSecret,
 };
 
 #[derive(Serialize)]
@@ -315,6 +315,54 @@ struct SnapshotAuth<'a> {
     oidc_audience: &'a str,
     #[serde(rename = "trusted_publisher", skip_serializing_if = "Vec::is_empty")]
     trusted_publishers: Vec<SnapshotTrustedPublisher<'a>>,
+    #[serde(rename = "ldap_provider", skip_serializing_if = "Vec::is_empty")]
+    ldap_providers: Vec<SnapshotLdapProvider<'a>>,
+}
+
+#[derive(Serialize)]
+struct SnapshotLdapProvider<'a> {
+    id: &'a str,
+    url: &'a str,
+    base_dn: &'a str,
+    #[serde(flatten)]
+    bind: SnapshotLdapBind<'a>,
+    subject_attribute: &'a str,
+    display_name_attribute: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_attribute: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ca_file: Option<&'a Path>,
+    connect_timeout_secs: u64,
+    request_timeout_secs: u64,
+    max_connections: u32,
+    #[serde(rename = "group_mapping", skip_serializing_if = "Vec::is_empty")]
+    group_mappings: Vec<SnapshotExternalGroupGrant<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+enum SnapshotLdapBind<'a> {
+    DirectBind {
+        dn_attribute: &'a str,
+    },
+    ServiceSearch {
+        username_attribute: &'a str,
+        bind_dn: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bind_password: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bind_password_file: Option<&'a Path>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bind_password_env: Option<&'a str>,
+    },
+}
+
+#[derive(Serialize)]
+struct SnapshotExternalGroupGrant<'a> {
+    group: &'a str,
+    role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -389,6 +437,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         default_anonymous_read,
         oidc_audience,
         trusted_publishers,
+        ldap_providers,
     } = auth;
     let (tls, acme) = snapshot_tls(tls.as_ref());
     let (signing_key, signing_key_file, _) = secret_parts(signing_key.as_ref());
@@ -431,12 +480,57 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
                     claims: &publisher.claims,
                 })
                 .collect(),
+            ldap_providers: ldap_providers.iter().map(snapshot_ldap_provider).collect(),
         },
         availability: snapshot_availability(availability),
         jobs: snapshot_jobs(jobs),
         blob: snapshot_blob(blob),
     };
     Ok(toml::to_string_pretty(&snapshot)?)
+}
+
+fn snapshot_ldap_provider(provider: &LdapProviderConfig) -> SnapshotLdapProvider<'_> {
+    SnapshotLdapProvider {
+        id: provider.id.as_str(),
+        url: provider.url.as_str(),
+        base_dn: &provider.base_dn,
+        bind: match &provider.bind {
+            LdapBindConfig::Direct { dn_attribute } => SnapshotLdapBind::DirectBind { dn_attribute },
+            LdapBindConfig::Search {
+                username_attribute,
+                bind_dn,
+                bind_password,
+            } => {
+                let (bind_password, bind_password_file, bind_password_env) = secret_parts(Some(bind_password));
+                SnapshotLdapBind::ServiceSearch {
+                    username_attribute,
+                    bind_dn,
+                    bind_password,
+                    bind_password_file,
+                    bind_password_env,
+                }
+            }
+        },
+        subject_attribute: &provider.subject_attribute,
+        display_name_attribute: &provider.display_name_attribute,
+        group_attribute: provider.group_attribute.as_deref(),
+        ca_file: provider.ca_file.as_deref(),
+        connect_timeout_secs: provider.connect_timeout.as_secs(),
+        request_timeout_secs: provider.request_timeout.as_secs(),
+        max_connections: provider.max_connections.get(),
+        group_mappings: provider
+            .group_mappings
+            .iter()
+            .map(|mapping| SnapshotExternalGroupGrant {
+                group: mapping.group.as_str(),
+                role: mapping.role,
+                repository: match &mapping.scope {
+                    GrantScope::Server => None,
+                    GrantScope::Repository { name } => Some(name.as_str()),
+                },
+            })
+            .collect(),
+    }
 }
 
 /// A snapshot carries the `[jobs]` table only when it departs from the default, so an unset backup

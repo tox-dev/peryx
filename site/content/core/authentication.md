@@ -42,9 +42,9 @@ requests, and search apply the same read ACLs, so they do not disclose inaccessi
 
 PyPI's Simple API, JSON, metadata, and artifact routes do not consult read ACLs yet. The neutral discovery, status,
 usage, and metrics endpoints also remain public. Setting `anonymous_read = false` does not protect those surfaces until
-their handlers gain access checks. LDAP, token revocation, and per-mirror upstream credential refresh are also out of
-this release. PyPI publishing can use a configured CI provider's OIDC identity without making OIDC a general login
-source.
+their handlers gain access checks. LDAP resolves server users for login consumers but does not add an HTTP login or
+browser session in this release. PyPI publishing can use a configured CI provider's OIDC identity without making OIDC a
+general login source.
 
 ## Server roles and protected responses
 
@@ -131,6 +131,55 @@ Each `[[auth.trusted_publisher]]` binds one CI issuer, subject, required claim s
 project glob list. Peryx adds the exchange routes after an operator configures a binding. See
 [publish from CI identities](@/ecosystems/pypi/guides/trusted-publishing.md) for the full table and provider examples.
 
+### LDAP providers
+
+Each `[[auth.ldap_provider]]` names one StartTLS directory. Peryx constructs these providers at startup without opening
+a connection; the first login performs the connection, TLS upgrade, search, and bind. Only `ldap://` URLs are accepted
+because every connection upgrades with StartTLS. A custom CA file extends the platform trust roots.
+
+```toml
+[[auth.ldap_provider]]
+id = "corporate"
+url = "ldap://directory.example:389"
+base_dn = "ou=people,dc=example,dc=com"
+mode = "service-search"
+username_attribute = "uid"
+bind_dn = "cn=peryx,ou=services,dc=example,dc=com"
+bind_password_file = "/run/secrets/peryx-ldap-password"
+subject_attribute = "entryUUID"
+display_name_attribute = "displayName"
+group_attribute = "memberOf"
+ca_file = "/etc/peryx/directory-ca.pem"
+connect_timeout_secs = 3
+request_timeout_secs = 5
+max_connections = 8
+
+[[auth.ldap_provider.group_mapping]]
+group = "cn=package-readers,ou=groups,dc=example,dc=com"
+role = "repository_reader"
+repository = "private"
+```
+
+`service-search` binds the configured service account, searches below `base_dn` for one exact `username_attribute`, then
+binds that entry with the presented password. Set exactly one of `bind_password`, `bind_password_file`, or
+`bind_password_env`. `direct-bind` needs `dn_attribute` instead of the service-account fields; it constructs
+`{dn_attribute}=<escaped username>,{base_dn}` and binds that DN.
+
+`subject_attribute` must be stable across renames. OpenLDAP's `entryUUID` and Active Directory's `objectGUID` fit;
+email, username, and display name do not. `display_name_attribute` supplies the initial local name. `group_attribute` is
+optional. When present, its exact values select `group_mapping` entries. A mapping without `repository` grants its role
+at server scope; a mapping with `repository` must name a configured index.
+
+LDAP filters and DN components are escaped before use. Searches return at most one entry and request only the configured
+attributes. `max_connections` is the total socket bound for the provider. A socket that has carried a user bind is
+discarded instead of returning to the pool, including when cancellation or a timeout interrupts the login. Failed
+credentials return no identity and cannot update the local user or managed grants. Directory and timeout failures remain
+distinct errors without exposing the username, password, subject, groups, or CA contents.
+
+The provider service returns a stable local user ID after the provider-subject link commits. It does not mint a token,
+create a session, accept HTTP Basic credentials, or change a package route; those are separate consumers of the login
+service.
+
 `default_anonymous_read = false` makes every index's ACL deny anonymous reads by default. It closes the enforced OCI and
 project-presentation paths; the public paths listed above stay open. An index that should stay open sets
 `anonymous_read = true`.
@@ -182,10 +231,10 @@ as if the password were wrong.
 
 ## Secret files
 
-Every secret key (`signing_key`, `upload_token`, and a token's `secret`) has a `_file` sibling naming a path to read the
-value from, so no plaintext lives in the config file. peryx reads each file once at startup and trims surrounding
-whitespace; an empty file is a startup error. The rationale and the tools it composes with are in
-[client auth versus upstream credentials](@/core/access-explained.md).
+Every secret key (`signing_key`, `upload_token`, an access token's `secret`, and an LDAP `bind_password`) has a `_file`
+sibling naming a path to read the value from, so no plaintext lives in the config file. peryx reads each file once at
+startup and trims surrounding whitespace; an empty file is a startup error. The rationale and the tools it composes with
+are in [client auth versus upstream credentials](@/core/access-explained.md).
 
 ## Server-user records
 

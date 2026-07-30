@@ -85,6 +85,8 @@ pub struct ServingState {
     /// CI identity exchange runtime. Absent means the OIDC endpoints stay disabled and no issuer
     /// client or replay state exists.
     pub trusted_publishing: Option<Arc<dyn peryx_identity::IdentityExchange>>,
+    /// Named LDAP login services. Authentication routes can select one without knowing its bind mode.
+    pub(super) ldap_logins: HashMap<String, Arc<peryx_identity::LdapLoginService<MetaStore>>>,
 }
 
 /// The whole process state: the serving data every handler needs, plus the driver registry only the
@@ -197,6 +199,12 @@ impl ServingState {
             }
         }
         descriptions
+    }
+
+    /// Find a configured LDAP login service by its operator-defined provider ID.
+    #[must_use]
+    pub fn ldap_login(&self, provider: &str) -> Option<&peryx_identity::LdapLoginService<MetaStore>> {
+        self.ldap_logins.get(provider).map(AsRef::as_ref)
     }
 }
 

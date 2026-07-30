@@ -161,4 +161,15 @@ impl AppState {
     pub fn set_trusted_publishing(&mut self, runtime: impl peryx_identity::IdentityExchange + 'static) {
         self.serving_mut().trusted_publishing = Some(Arc::new(runtime));
     }
+
+    /// Install named LDAP login services after their secrets and trust files resolve at startup.
+    pub fn set_ldap_logins(
+        &mut self,
+        services: impl IntoIterator<Item = peryx_identity::LdapLoginService<peryx_storage::meta::MetaStore>>,
+    ) {
+        self.serving_mut().ldap_logins = services
+            .into_iter()
+            .map(|service| (service.id().to_string(), Arc::new(service)))
+            .collect();
+    }
 }

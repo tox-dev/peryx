@@ -68,6 +68,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
+url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 syslog-tracing = "0.3"

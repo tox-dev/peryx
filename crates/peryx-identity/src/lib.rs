@@ -26,6 +26,7 @@
 
 mod acl;
 mod external;
+mod ldap;
 mod oidc;
 mod password;
 mod revocation;
@@ -45,6 +46,10 @@ pub use external::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityError, ExternalIdentityLinker,
     ExternalIdentityResolution, ExternalIdentityStore, ExternalLinkRequest, ExternalLogin, ExternalSubject,
     MAX_EXTERNAL_GROUPS, ManagedRoleGrant, ProviderId,
+};
+pub use ldap::{
+    LdapBindMode, LdapLoginError, LdapLoginService, LdapProvider, LdapProviderBuildError, LdapProviderError,
+    LdapProviderSettings,
 };
 pub use oidc::{ExchangeError, ExchangedToken, IdentityExchange, OidcRuntime, PublisherBinding};
 pub use password::{PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier};

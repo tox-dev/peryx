@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use axum::http::{Request, StatusCode, header};
 use futures_util::TryStreamExt as _;
 use http_body_util::BodyExt as _;
 use peryx_driver::IndexKind as RuntimeKind;
+use peryx_identity::ProviderId;
 use peryx_storage::meta::{MetaStore, PolicyDecisionQuery};
 use peryx_upstream::Auth;
 #[cfg(unix)]
@@ -24,8 +25,8 @@ use peryx_storage::blob::S3Credentials;
 
 use crate::config::{
     AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig,
-    IndexConfig, IndexKind, ReplicationConfig, S3StorageConfig, SecretSource, TrustedPublisherConfig, UpstreamConfig,
-    UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
+    IndexConfig, IndexKind, LdapBindConfig, LdapProviderConfig, ReplicationConfig, S3StorageConfig, SecretSource,
+    TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 use crate::server::{
     build_blob_storage, build_index_settings, build_indexes, build_router, build_state, upstream_auth,
@@ -1200,6 +1201,149 @@ fn test_build_state_wires_the_token_realm_signing_key() {
 
     assert!(state.signer.is_some());
     assert_eq!(state.token_ttl_secs, 900);
+}
+
+fn ldap_provider(bind: LdapBindConfig) -> LdapProviderConfig {
+    LdapProviderConfig {
+        id: ProviderId::new("staff").unwrap(),
+        url: url::Url::parse("ldap://127.0.0.1:9").unwrap(),
+        base_dn: "ou=people,dc=example,dc=com".to_owned(),
+        bind,
+        subject_attribute: "entryUUID".to_owned(),
+        display_name_attribute: "displayName".to_owned(),
+        group_attribute: None,
+        ca_file: None,
+        connect_timeout: Duration::from_secs(1),
+        request_timeout: Duration::from_secs(1),
+        max_connections: NonZeroU32::new(2).unwrap(),
+        group_mappings: Vec::new(),
+    }
+}
+
+#[test]
+fn test_build_state_installs_lazy_named_ldap_logins() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut search = ldap_provider(LdapBindConfig::Search {
+        username_attribute: "uid".to_owned(),
+        bind_dn: "cn=service,dc=example,dc=com".to_owned(),
+        bind_password: SecretSource::Literal("directory-secret".to_owned()),
+    });
+    search.id = ProviderId::new("contractors").unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            ldap_providers: vec![
+                ldap_provider(LdapBindConfig::Direct {
+                    dn_attribute: "uid".to_owned(),
+                }),
+                search,
+            ],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(state.ldap_login("staff").unwrap().id().as_str(), "staff");
+    assert_eq!(state.ldap_login("contractors").unwrap().id().as_str(), "contractors");
+    assert!(state.ldap_login("missing").is_none());
+}
+
+#[test]
+fn test_build_state_reports_an_unreadable_ldap_bind_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            ldap_providers: vec![ldap_provider(LdapBindConfig::Search {
+                username_attribute: "uid".to_owned(),
+                bind_dn: "cn=service,dc=example,dc=com".to_owned(),
+                bind_password: SecretSource::File(PathBuf::from("/nonexistent/peryx/ldap-password")),
+            })],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected LDAP bind password error");
+    };
+
+    assert!(error.to_string().contains("read LDAP provider staff bind password"));
+}
+
+#[test]
+fn test_build_state_rejects_an_invalid_ldap_ca() {
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ldap-ca.pem");
+    std::fs::write(&ca, "not a certificate").unwrap();
+    let mut provider = ldap_provider(LdapBindConfig::Direct {
+        dn_attribute: "uid".to_owned(),
+    });
+    provider.ca_file = Some(ca);
+    let config = Config {
+        data_dir: dir.path().join("data"),
+        auth: AuthConfig {
+            ldap_providers: vec![provider],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected invalid LDAP CA error");
+    };
+
+    assert_eq!(error.to_string(), "configure LDAP provider staff");
+}
+
+#[test]
+fn test_build_state_bounds_ldap_ca_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ldap-ca.pem");
+    std::fs::write(&ca, vec![b'x'; (1 << 20) + 1]).unwrap();
+    let mut provider = ldap_provider(LdapBindConfig::Direct {
+        dn_attribute: "uid".to_owned(),
+    });
+    provider.ca_file = Some(ca);
+    let config = Config {
+        data_dir: dir.path().join("data"),
+        auth: AuthConfig {
+            ldap_providers: vec![provider],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected oversized LDAP CA error");
+    };
+
+    assert_eq!(error.to_string(), "read LDAP provider staff CA");
+}
+
+#[test]
+fn test_build_state_reports_an_unreadable_ldap_ca() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut provider = ldap_provider(LdapBindConfig::Direct {
+        dn_attribute: "uid".to_owned(),
+    });
+    provider.ca_file = Some(PathBuf::from("/nonexistent/peryx/ldap-ca.pem"));
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            ldap_providers: vec![provider],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected LDAP CA read error");
+    };
+
+    assert_eq!(error.to_string(), "read LDAP provider staff CA");
 }
 
 #[test]

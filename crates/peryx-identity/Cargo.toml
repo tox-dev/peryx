@@ -11,14 +11,17 @@ description = "Identity and access for peryx: principals, per-index grants, and 
 argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+bb8-ldap.workspace = true
 getrandom.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 unicode-normalization.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -26,6 +29,10 @@ uuid.workspace = true
 [dev-dependencies]
 rstest.workspace = true
 wiremock.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rcgen = "0.13.2"
+testcontainers.workspace = true
 
 [lints]
 workspace = true

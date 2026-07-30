@@ -926,6 +926,12 @@ anonymous-read default once instead of adding a flag to each index. Each `[[auth
 configured writable PyPI index name. See [publish from CI identities](@/ecosystems/pypi/guides/trusted-publishing.md)
 for the provider contract and examples.
 
+Each `[[auth.ldap_provider]]` configures one named StartTLS directory and optional exact group-to-role mappings. It
+supports direct user DNs and service-account search followed by a user bind. Provider URLs, attributes, trust files,
+password sources, timeouts, and the total connection bound are listed under
+[LDAP providers](@/core/authentication.md#ldap-providers). Configuring a provider constructs the login service but does
+not add an HTTP login route or browser session.
+
 ## `[[index.webhook]]`
 
 Put webhook tables under the index that should emit them. A target on a virtual index receives events for requests made

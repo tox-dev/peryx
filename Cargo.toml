@@ -44,6 +44,7 @@ md-5 = "0.10"
 csv = "1"
 dashmap = "6.2"
 tempfile = "3"
+testcontainers = "0.27"
 mimalloc = "0.1"
 redb = "4.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
@@ -82,6 +83,7 @@ toml = "1.1"
 insta = "1"
 thiserror = "2.0"
 async-trait = "0.1"
+bb8-ldap = { version = "0.4.1", default-features = false, features = ["tls-rustls-ring"] }
 arc-swap = "1.7"
 command-group = { version = "5.0.1", features = ["with-tokio"] }
 mockall = "0.15"
@@ -97,6 +99,8 @@ wasm-bindgen = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rst_parser = "0.4"
 rst_renderer = "0.4"
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
 rustix = { version = "1", features = ["process"] }
 ammonia = "4.1"
 regex = "1"

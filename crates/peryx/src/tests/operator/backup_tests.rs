@@ -144,6 +144,40 @@ projects = ["peryx"]
 [auth.trusted_publisher.claims]
 repository_id = "123456789"
 
+[[auth.ldap_provider]]
+id = "corporate"
+url = "ldap://directory.example:389"
+base_dn = "ou=people,dc=example,dc=com"
+mode = "service-search"
+username_attribute = "uid"
+bind_dn = "cn=peryx,ou=services,dc=example,dc=com"
+bind_password_env = "LDAP_BIND_PASSWORD"
+subject_attribute = "entryUUID"
+display_name_attribute = "displayName"
+group_attribute = "memberOf"
+ca_file = "/etc/peryx/ldap-ca.pem"
+connect_timeout_secs = 4
+request_timeout_secs = 7
+max_connections = 6
+
+[[auth.ldap_provider.group_mapping]]
+group = "cn=publishers,ou=groups,dc=example,dc=com"
+role = "repository_publisher"
+repository = "root/pypi"
+
+[[auth.ldap_provider]]
+id = "partners"
+url = "ldap://partners.example:389"
+base_dn = "ou=people,dc=partners,dc=example"
+mode = "direct-bind"
+dn_attribute = "uid"
+subject_attribute = "entryUUID"
+display_name_attribute = "displayName"
+
+[[auth.ldap_provider.group_mapping]]
+group = "cn=operators,ou=groups,dc=partners,dc=example"
+role = "operator"
+
 [[index]]
 name = "python"
 route = "root/python"

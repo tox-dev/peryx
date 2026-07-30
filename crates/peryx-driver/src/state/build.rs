@@ -321,6 +321,7 @@ impl AppState {
                 signer: None,
                 token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,
                 trusted_publishing: None,
+                ldap_logins: HashMap::new(),
             }),
             drivers: std::array::from_fn(|_| None),
             absolute_prefixes: Vec::new(),

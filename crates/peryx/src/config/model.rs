@@ -1,7 +1,7 @@
 //! The fully resolved configuration types and their defaults.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,11 +9,12 @@ use peryx_core::Ecosystem;
 use peryx_driver::jobs::{MAINTENANCE_INTERVAL, Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
-use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
+use peryx_identity::{Action, ExternalGroupGrant, Glob, Grant, IndexAcl, NamedToken, ProviderId};
 use peryx_policy::PolicyConfig;
 use peryx_upstream::ExecCredentialConfig;
 use serde::Deserialize;
 use toml::Table;
+use url::Url;
 
 use super::ConfigError;
 
@@ -230,6 +231,27 @@ impl Config {
                 });
             }
         }
+        let mut provider_ids = HashSet::new();
+        for provider in &self.auth.ldap_providers {
+            if !provider_ids.insert(&provider.id) {
+                return Err(ConfigError::LdapProvider {
+                    id: provider.id.to_string(),
+                    reason: "provider IDs must be unique",
+                });
+            }
+            if provider.group_mappings.iter().any(|mapping| {
+                matches!(
+                    &mapping.scope,
+                    peryx_identity::GrantScope::Repository { name }
+                        if !self.indexes.iter().any(|index| index.name == *name)
+                )
+            }) {
+                return Err(ConfigError::LdapProvider {
+                    id: provider.id.to_string(),
+                    reason: "group mapping repository must name a configured index",
+                });
+            }
+        }
         match self.writer_identity.as_deref() {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
@@ -259,6 +281,7 @@ pub struct AuthConfig {
     /// Audience CI providers must mint identities for.
     pub oidc_audience: String,
     pub trusted_publishers: Vec<TrustedPublisherConfig>,
+    pub ldap_providers: Vec<LdapProviderConfig>,
 }
 
 impl Default for AuthConfig {
@@ -269,6 +292,56 @@ impl Default for AuthConfig {
             default_anonymous_read: true,
             oidc_audience: "peryx".to_owned(),
             trusted_publishers: Vec::new(),
+            ldap_providers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LdapProviderConfig {
+    pub id: ProviderId,
+    pub url: Url,
+    pub base_dn: String,
+    pub bind: LdapBindConfig,
+    pub subject_attribute: String,
+    pub display_name_attribute: String,
+    pub group_attribute: Option<String>,
+    pub ca_file: Option<PathBuf>,
+    pub connect_timeout: Duration,
+    pub request_timeout: Duration,
+    pub max_connections: NonZeroU32,
+    pub group_mappings: Vec<ExternalGroupGrant>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum LdapBindConfig {
+    Direct {
+        dn_attribute: String,
+    },
+    Search {
+        username_attribute: String,
+        bind_dn: String,
+        bind_password: SecretSource,
+    },
+}
+
+impl std::fmt::Debug for LdapBindConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct { dn_attribute } => formatter
+                .debug_struct("Direct")
+                .field("dn_attribute", dn_attribute)
+                .finish(),
+            Self::Search {
+                username_attribute,
+                bind_dn,
+                ..
+            } => formatter
+                .debug_struct("Search")
+                .field("username_attribute", username_attribute)
+                .field("bind_dn", bind_dn)
+                .field("bind_password", &"[redacted]")
+                .finish(),
         }
     }
 }

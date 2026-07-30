@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ipnet::IpNet;
-use peryx_identity::Action;
+use peryx_identity::{Action, Role};
 use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
@@ -177,6 +177,65 @@ pub struct PartialAuthConfig {
     pub oidc_audience: Option<String>,
     #[serde(rename = "trusted_publisher")]
     pub trusted_publishers: Option<Vec<RawTrustedPublisher>>,
+    #[serde(rename = "ldap_provider")]
+    pub ldap_providers: Option<Vec<RawLdapProvider>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawLdapProvider {
+    pub id: String,
+    pub url: String,
+    pub base_dn: String,
+    pub mode: RawLdapMode,
+    pub dn_attribute: Option<String>,
+    pub username_attribute: Option<String>,
+    pub bind_dn: Option<String>,
+    pub bind_password: Option<String>,
+    pub bind_password_file: Option<PathBuf>,
+    pub bind_password_env: Option<String>,
+    pub subject_attribute: String,
+    pub display_name_attribute: String,
+    pub group_attribute: Option<String>,
+    pub ca_file: Option<PathBuf>,
+    pub connect_timeout_secs: Option<u64>,
+    pub request_timeout_secs: Option<u64>,
+    pub max_connections: Option<u32>,
+    #[serde(default, rename = "group_mapping")]
+    pub group_mappings: Vec<RawExternalGroupGrant>,
+}
+
+impl std::fmt::Debug for RawLdapProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawLdapProvider")
+            .field("id", &self.id)
+            .field("url", &self.url)
+            .field("base_dn", &self.base_dn)
+            .field("mode", &self.mode)
+            .field("dn_attribute", &self.dn_attribute)
+            .field("username_attribute", &self.username_attribute)
+            .field("bind_dn", &self.bind_dn)
+            .field("bind_password", &"[redacted]")
+            .field("bind_password_file", &self.bind_password_file)
+            .field("bind_password_env", &self.bind_password_env)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawLdapMode {
+    DirectBind,
+    ServiceSearch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawExternalGroupGrant {
+    pub group: String,
+    pub role: Role,
+    pub repository: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

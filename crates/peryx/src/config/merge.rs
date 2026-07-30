@@ -9,7 +9,7 @@ use peryx_driver::jobs::{
     ScheduledJob,
 };
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
-use peryx_identity::UPLOAD_TOKEN_NAME;
+use peryx_identity::{ExternalGroup, ExternalGroupGrant, GrantScope, ProviderId, UPLOAD_TOKEN_NAME};
 use peryx_upstream::{CredentialFailure, ExecCredentialConfig, ExecCredentialConfigError};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -20,13 +20,14 @@ use super::ConfigError;
 use super::model::{
     AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityMode, BlobStorageConfig, Config, CredentialFailureMode,
     CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig, IndexKind,
-    JobsConfig, LogConfig, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig,
-    TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
+    JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, ReplicationConfig, S3StorageConfig, SecretSource,
+    TlsConfig, TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig,
+    WebhookConfig, WebhookSecret,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
-    RawAcme, RawAvailability, RawBlobStorage, RawCredentialExec, RawIndex, RawJobSchedule, RawReplication,
-    RawScheduledJob, RawTls, RawToken, RawUpstream, RawWebhook,
+    RawAcme, RawAvailability, RawBlobStorage, RawCredentialExec, RawExternalGroupGrant, RawIndex, RawJobSchedule,
+    RawLdapMode, RawLdapProvider, RawReplication, RawScheduledJob, RawTls, RawToken, RawUpstream, RawWebhook,
 };
 
 impl Config {
@@ -739,14 +740,112 @@ impl AuthConfig {
                 reason: "trusted publisher fields and project lists must not be empty",
             });
         }
+        let ldap_providers = partial.ldap_providers.map_or(Ok(self.ldap_providers), |providers| {
+            providers.into_iter().map(classify_ldap_provider).collect()
+        })?;
         Ok(Self {
             signing_key: signing_key.or(self.signing_key),
             token_ttl_secs,
             default_anonymous_read: partial.default_anonymous_read.unwrap_or(self.default_anonymous_read),
             oidc_audience,
             trusted_publishers,
+            ldap_providers,
         })
     }
+}
+
+fn classify_ldap_provider(mut raw: RawLdapProvider) -> Result<LdapProviderConfig, ConfigError> {
+    let provider_id = raw.id.clone();
+    let id = ProviderId::new(&provider_id).map_err(|_| ConfigError::LdapProvider {
+        id: provider_id.clone(),
+        reason: "invalid provider ID",
+    })?;
+    let error = |reason| ConfigError::LdapProvider {
+        id: provider_id.clone(),
+        reason,
+    };
+    let url = url::Url::parse(&raw.url).map_err(|_| error("`url` must be a valid LDAP URL"))?;
+    let bind = match raw.mode {
+        RawLdapMode::DirectBind => {
+            if raw.username_attribute.is_some()
+                || raw.bind_dn.is_some()
+                || raw.bind_password.is_some()
+                || raw.bind_password_file.is_some()
+                || raw.bind_password_env.is_some()
+            {
+                return Err(error("direct bind accepts only `dn_attribute` bind fields"));
+            }
+            LdapBindConfig::Direct {
+                dn_attribute: raw
+                    .dn_attribute
+                    .take()
+                    .ok_or_else(|| error("direct bind requires `dn_attribute`"))?,
+            }
+        }
+        RawLdapMode::ServiceSearch => {
+            if raw.dn_attribute.is_some() {
+                return Err(error("service search does not accept `dn_attribute`"));
+            }
+            let bind_password = upstream_secret_source(
+                raw.bind_password.take(),
+                raw.bind_password_file.take(),
+                raw.bind_password_env.take(),
+            )
+            .map_err(error)?
+            .ok_or_else(|| error("service search requires a bind password source"))?;
+            if matches!(&bind_password, SecretSource::Literal(password) if password.is_empty()) {
+                return Err(error("service bind password must not be empty"));
+            }
+            LdapBindConfig::Search {
+                username_attribute: raw
+                    .username_attribute
+                    .take()
+                    .ok_or_else(|| error("service search requires `username_attribute`"))?,
+                bind_dn: raw
+                    .bind_dn
+                    .take()
+                    .ok_or_else(|| error("service search requires `bind_dn`"))?,
+                bind_password,
+            }
+        }
+    };
+    let connect_timeout = std::num::NonZeroU64::new(raw.connect_timeout_secs.unwrap_or(3))
+        .ok_or_else(|| error("`connect_timeout_secs` must be positive"))?;
+    let request_timeout = std::num::NonZeroU64::new(raw.request_timeout_secs.unwrap_or(5))
+        .ok_or_else(|| error("`request_timeout_secs` must be positive"))?;
+    let max_connections = std::num::NonZeroU32::new(raw.max_connections.unwrap_or(8))
+        .ok_or_else(|| error("`max_connections` must be positive"))?;
+    Ok(LdapProviderConfig {
+        id,
+        url,
+        base_dn: raw.base_dn,
+        bind,
+        subject_attribute: raw.subject_attribute,
+        display_name_attribute: raw.display_name_attribute,
+        group_attribute: raw.group_attribute,
+        ca_file: raw.ca_file,
+        connect_timeout: Duration::from_secs(connect_timeout.get()),
+        request_timeout: Duration::from_secs(request_timeout.get()),
+        max_connections,
+        group_mappings: raw
+            .group_mappings
+            .into_iter()
+            .map(|mapping| classify_group_mapping(&raw.id, mapping))
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn classify_group_mapping(id: &str, raw: RawExternalGroupGrant) -> Result<ExternalGroupGrant, ConfigError> {
+    Ok(ExternalGroupGrant {
+        group: ExternalGroup::new(&raw.group).map_err(|_| ConfigError::LdapProvider {
+            id: id.to_owned(),
+            reason: "group mapping has an invalid group",
+        })?,
+        role: raw.role,
+        scope: raw
+            .repository
+            .map_or(GrantScope::Server, |name| GrantScope::Repository { name }),
+    })
 }
 
 /// A secret from either its literal key or its `*_file` sibling, never both.

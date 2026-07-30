@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, bail, ensure};
@@ -12,7 +13,7 @@ use peryx_driver::{AppState, DriverSet, Index, IndexKind};
 use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
-use peryx_identity::{Action, Signer};
+use peryx_identity::{Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, Signer};
 use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
 use peryx_storage::blob::{BlobStorage, S3Config, S3Credentials};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
@@ -23,7 +24,8 @@ use peryx_upstream::{
 
 use crate::config::{
     AuthConfig, BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, IndexConfig,
-    IndexKind as ConfigKind, ReplicationConfig, SecretSource, UpstreamTlsConfig, WebhookSecret,
+    IndexKind as ConfigKind, LdapBindConfig, LdapProviderConfig, ReplicationConfig, SecretSource, UpstreamTlsConfig,
+    WebhookSecret,
 };
 
 /// Open the configured blob backend. S3 `credentials` are resolved once at the composition root and
@@ -144,6 +146,8 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     .context(format!("open search index {}", search_path.display()))?;
     peryx_ecosystem_pypi::install(&mut state);
     peryx_ecosystem_oci::install(&mut state, oci_settings);
+    let ldap_logins = ldap_logins(&config.auth.ldap_providers, &state.meta)?;
+    state.set_ldap_logins(ldap_logins);
     state.read_only = read_only;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
@@ -162,6 +166,65 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         peryx_events::webhook::kick(state.serving.clone());
     }
     Ok(state)
+}
+
+fn ldap_logins(configs: &[LdapProviderConfig], meta: &MetaStore) -> anyhow::Result<Vec<LdapLoginService<MetaStore>>> {
+    configs
+        .iter()
+        .map(|config| {
+            let bind = match &config.bind {
+                LdapBindConfig::Direct { dn_attribute } => LdapBindMode::Direct {
+                    dn_attribute: dn_attribute.clone(),
+                },
+                LdapBindConfig::Search {
+                    username_attribute,
+                    bind_dn,
+                    bind_password,
+                } => LdapBindMode::Search {
+                    username_attribute: username_attribute.clone(),
+                    bind_dn: bind_dn.clone(),
+                    bind_password: bind_password
+                        .read()
+                        .with_context(|| format!("read LDAP provider {} bind password", config.id))?,
+                },
+            };
+            let custom_ca_pem = config
+                .ca_file
+                .as_deref()
+                .map(|path| read_ldap_ca(path).with_context(|| format!("read LDAP provider {} CA", config.id)))
+                .transpose()?;
+            let provider = LdapProvider::new(LdapProviderSettings {
+                id: config.id.clone(),
+                url: config.url.clone(),
+                base_dn: config.base_dn.clone(),
+                bind,
+                subject_attribute: config.subject_attribute.clone(),
+                display_name_attribute: config.display_name_attribute.clone(),
+                group_attribute: config.group_attribute.clone(),
+                custom_ca_pem,
+                connect_timeout: config.connect_timeout,
+                request_timeout: config.request_timeout,
+                max_connections: config.max_connections,
+            })
+            .with_context(|| format!("configure LDAP provider {}", config.id))?;
+            Ok(LdapLoginService::new(
+                provider,
+                meta.clone(),
+                config.group_mappings.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn read_ldap_ca(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    const MAX_CA_BYTES: u64 = 1 << 20;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(MAX_CA_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= MAX_CA_BYTES, "CA file exceeds 1048576 bytes");
+    Ok(bytes)
 }
 
 fn trusted_publishing(config: &Config, signer: Signer) -> anyhow::Result<Option<peryx_identity::OidcRuntime>> {
