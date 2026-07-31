@@ -501,6 +501,34 @@ fn test_backup_snapshots_the_s3_blob_backend_and_restores_it() {
 }
 
 #[test]
+fn test_backup_rejects_a_secret_bearing_s3_endpoint_without_leaking_it() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    drop(MetaStore::open(data_dir.join("peryx.redb")).unwrap());
+    let secret = "endpoint-password";
+    let config = Config {
+        data_dir,
+        blob: BlobStorageConfig::S3(S3StorageConfig {
+            endpoint: format!("https://user:{secret}@s3.example.com"),
+            bucket: "cache".to_owned(),
+            prefix: String::new(),
+            region: "us-east-1".to_owned(),
+            path_style: false,
+            request_timeout: std::time::Duration::from_secs(30),
+            max_retries: 3,
+            multipart_threshold: 16 << 20,
+            part_size: 16 << 20,
+            upload_concurrency: 4,
+        }),
+        ..Config::default()
+    };
+    assert!(!format!("{config:?}").contains(secret));
+    let error = operator::backup_create(&config, &root.path().join("backup"), &mut Vec::new()).unwrap_err();
+    assert!(!format!("{error:?}").contains(secret));
+}
+
+#[test]
 fn test_backup_snapshots_disabled_jobs_but_omits_the_default() {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");

@@ -18,7 +18,9 @@ use utoipa::openapi::{
 /// Never in practice: the document is a static structure that always serializes.
 #[must_use]
 pub fn openapi_json() -> String {
-    let mut json = serde_json::to_string_pretty(&openapi()).expect("OpenAPI document always serializes");
+    let mut document = serde_json::to_value(openapi()).expect("OpenAPI document always serializes");
+    document.sort_all_objects();
+    let mut json = serde_json::to_string_pretty(&document).expect("OpenAPI document always serializes");
     json.push('\n');
     json
 }

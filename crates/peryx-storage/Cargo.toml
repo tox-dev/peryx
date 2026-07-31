@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Content-addressed blob store and metadata storage for peryx."
 
 [dependencies]
+atomicwrites.workspace = true
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
 base64.workspace = true
@@ -32,6 +33,7 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+aws-smithy-http-client.workspace = true
 reqwest.workspace = true
 rstest.workspace = true
 testcontainers.workspace = true

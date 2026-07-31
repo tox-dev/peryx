@@ -1,23 +1,24 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use std::{io::Read as _, io::stdin};
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::primitives::ByteStream;
-use peryx_storage::blob::{BlobErrorKind, BlobStorage, BlobSupport, Digest, S3Config, S3Settings};
+use peryx_storage::blob::{BlobDurability, BlobErrorKind, BlobStorage, BlobSupport, Digest, S3Config, S3Settings};
 use rstest::rstest;
 use testcontainers::core::wait::{ExitWaitStrategy, HttpWaitStrategy};
 use testcontainers::core::{CmdWaitFor, ExecCommand, ImageExt as _, IntoContainerPort as _, WaitFor};
 use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::minio::MinIO;
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const BUCKET: &str = "peryx-tests";
@@ -67,11 +68,14 @@ enum WireBehavior {
     Multipart,
     HealthError,
     HeadError,
+    HugeTimeout,
     GetError,
     PutError,
     DeleteNotFound,
+    CreateFailure,
     CreateMissingId,
     PartMissingEtag,
+    PartMissingChecksum,
     CompleteExists,
     CompleteFailure,
     StaleUpload,
@@ -96,11 +100,14 @@ impl WireBehavior {
             Self::Multipart => "wire_multipart",
             Self::HealthError => "wire_health_error",
             Self::HeadError => "wire_head_error",
+            Self::HugeTimeout => "wire_huge_timeout",
             Self::GetError => "wire_get_error",
             Self::PutError => "wire_put_error",
             Self::DeleteNotFound => "wire_delete_not_found",
+            Self::CreateFailure => "wire_create_failure",
             Self::CreateMissingId => "wire_create_missing_id",
             Self::PartMissingEtag => "wire_part_missing_etag",
+            Self::PartMissingChecksum => "wire_part_missing_checksum",
             Self::CompleteExists => "wire_complete_exists",
             Self::CompleteFailure => "wire_complete_failure",
             Self::StaleUpload => "wire_stale_upload",
@@ -155,6 +162,16 @@ fn complete_response() -> ResponseTemplate {
     )
 }
 
+fn service_error(status: u16, code: &str) -> ResponseTemplate {
+    ResponseTemplate::new(status).set_body_raw(format!("<Error><Code>{code}</Code></Error>"), "application/xml")
+}
+
+fn part_response() -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("ETag", "part")
+        .insert_header("x-amz-checksum-sha256", "checksum")
+}
+
 async fn mount_multipart(server: &MockServer, delayed: Option<MultipartStage>) {
     let delay = Duration::from_millis(250);
     if matches!(delayed, Some(MultipartStage::Create)) {
@@ -174,11 +191,9 @@ async fn mount_multipart(server: &MockServer, delayed: Option<MultipartStage>) {
     if matches!(delayed, Some(MultipartStage::Part)) {
         Mock::given(method("PUT"))
             .and(query_param("uploadId", "upload-1"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("ETag", "part")
-                    .set_delay(delay),
-            )
+            .and(header("content-encoding", "aws-chunked"))
+            .and(header("x-amz-trailer", "x-amz-checksum-sha256"))
+            .respond_with(part_response().set_delay(delay))
             .up_to_n_times(1)
             .with_priority(1)
             .mount(server)
@@ -186,7 +201,9 @@ async fn mount_multipart(server: &MockServer, delayed: Option<MultipartStage>) {
     }
     Mock::given(method("PUT"))
         .and(query_param("uploadId", "upload-1"))
-        .respond_with(ResponseTemplate::new(200).insert_header("ETag", "part"))
+        .and(header("content-encoding", "aws-chunked"))
+        .and(header("x-amz-trailer", "x-amz-checksum-sha256"))
+        .respond_with(part_response())
         .mount(server)
         .await;
     if matches!(delayed, Some(MultipartStage::Complete)) {
@@ -257,11 +274,14 @@ async fn mount_wire_behavior(server: &MockServer, behavior: WireBehavior) {
         WireBehavior::Multipart
         | WireBehavior::HealthError
         | WireBehavior::HeadError
+        | WireBehavior::HugeTimeout
         | WireBehavior::GetError
         | WireBehavior::PutError
         | WireBehavior::DeleteNotFound => mount_wire_failures(server, behavior).await,
-        WireBehavior::CreateMissingId
+        WireBehavior::CreateFailure
+        | WireBehavior::CreateMissingId
         | WireBehavior::PartMissingEtag
+        | WireBehavior::PartMissingChecksum
         | WireBehavior::CompleteExists
         | WireBehavior::CompleteFailure
         | WireBehavior::StaleUpload
@@ -394,6 +414,7 @@ async fn mount_wire_failures(server: &MockServer, behavior: WireBehavior) {
                 .mount(server)
                 .await;
         }
+        WireBehavior::HugeTimeout => {}
         WireBehavior::GetError => {
             Mock::given(method("GET"))
                 .respond_with(
@@ -427,6 +448,13 @@ async fn mount_wire_failures(server: &MockServer, behavior: WireBehavior) {
 
 async fn mount_wire_multipart_failures(server: &MockServer, behavior: WireBehavior) {
     match behavior {
+        WireBehavior::CreateFailure => {
+            Mock::given(method("POST"))
+                .and(query_param("uploads", ""))
+                .respond_with(service_error(500, "InternalError"))
+                .mount(server)
+                .await;
+        }
         WireBehavior::CreateMissingId => {
             Mock::given(method("POST"))
                 .and(query_param("uploads", ""))
@@ -442,6 +470,16 @@ async fn mount_wire_multipart_failures(server: &MockServer, behavior: WireBehavi
             Mock::given(method("PUT"))
                 .and(query_param("uploadId", "upload-1"))
                 .respond_with(ResponseTemplate::new(200))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(server)
+                .await;
+        }
+        WireBehavior::PartMissingChecksum => {
+            mount_multipart(server, None).await;
+            Mock::given(method("PUT"))
+                .and(query_param("uploadId", "upload-1"))
+                .respond_with(ResponseTemplate::new(200).insert_header("ETag", "part"))
                 .up_to_n_times(1)
                 .with_priority(1)
                 .mount(server)
@@ -700,11 +738,14 @@ fn assert_child_succeeded(output: &Output) {
 #[case::multipart(WireBehavior::Multipart)]
 #[case::health_error(WireBehavior::HealthError)]
 #[case::head_error(WireBehavior::HeadError)]
+#[case::huge_timeout(WireBehavior::HugeTimeout)]
 #[case::get_error(WireBehavior::GetError)]
 #[case::put_error(WireBehavior::PutError)]
 #[case::delete_not_found(WireBehavior::DeleteNotFound)]
+#[case::create_failure(WireBehavior::CreateFailure)]
 #[case::create_missing_id(WireBehavior::CreateMissingId)]
 #[case::part_missing_etag(WireBehavior::PartMissingEtag)]
+#[case::part_missing_checksum(WireBehavior::PartMissingChecksum)]
 #[case::complete_exists(WireBehavior::CompleteExists)]
 #[case::complete_failure(WireBehavior::CompleteFailure)]
 #[case::stale_upload(WireBehavior::StaleUpload)]
@@ -724,16 +765,26 @@ async fn test_s3_wire_behavior_uses_the_public_backend(#[case] behavior: WireBeh
         )
         .await,
     );
+    if matches!(behavior, WireBehavior::CreateFailure) {
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(count_stage(&requests, MultipartStage::Create), 1);
+        assert!(!requests.iter().any(|request| request.method.as_str() == "DELETE"));
+        assert!(!multipart_journal(staging.path()).exists());
+    }
 }
 
 #[test]
-fn test_s3_reports_native_create_if_absent_through_the_public_backend() {
+fn test_s3_reports_capabilities_through_the_public_backend() {
     let staging = tempfile::tempdir().unwrap();
     let storage = BlobStorage::s3(
         S3Config::new(settings("http://127.0.0.1:1".to_owned())).unwrap(),
         staging.path().to_owned(),
     );
-    assert_eq!(storage.capabilities().create_if_absent, BlobSupport::Native);
+    let capabilities = storage.capabilities();
+    assert_eq!(capabilities.durability, BlobDurability::ObjectStore);
+    assert_eq!(capabilities.durability.as_str(), "object-store");
+    assert_eq!(capabilities.create_if_absent, BlobSupport::Native);
+    assert_eq!(capabilities.checksum, BlobSupport::Emulated);
 }
 
 #[tokio::test]
@@ -770,6 +821,352 @@ async fn test_s3_sdk_retries_a_transient_bucket_failure() {
         .await,
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_s3_retries_a_conditional_whole_put_conflict() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(409).set_body_raw(
+            "<Error><Code>ConditionalRequestConflict</Code></Error>",
+            "application/xml",
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).insert_header("ETag", "object"))
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_small_put",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_s3_preserves_the_endpoint_base_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).insert_header("ETag", "object"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &format!("{}/api", server.uri()),
+            staging.path(),
+            "wire_small_put",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap()[0].url.path(),
+        format!("/api{}", object_path(b"package"))
+    );
+}
+
+#[tokio::test]
+async fn test_s3_surfaces_a_truncated_response_body() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut connection, _) = listener.accept().await.unwrap();
+        assert_ne!(connection.read(&mut [0; 4096]).await.unwrap(), 0);
+        connection
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort")
+            .await
+            .unwrap();
+    });
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &endpoint,
+            staging.path(),
+            "wire_truncated_body",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_s3_times_out_before_response_headers() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (received, request) = tokio::sync::oneshot::channel();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut connection, _) = listener.accept().await.unwrap();
+        assert_ne!(connection.read(&mut [0; 4096]).await.unwrap(), 0);
+        received.send(()).unwrap();
+        wait.await.unwrap();
+        let _ = connection
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nlate")
+            .await;
+    });
+    let staging = tempfile::tempdir().unwrap();
+    let staging_path = staging.path().to_owned();
+    let client = tokio::spawn(async move {
+        child(
+            &endpoint,
+            &staging_path,
+            "wire_send_timeout",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), request)
+        .await
+        .unwrap()
+        .unwrap();
+    let output = client.await.unwrap();
+    release.send(()).unwrap();
+    server.await.unwrap();
+    assert_child_succeeded(&output);
+}
+
+#[derive(Clone, Copy)]
+enum MissingLengthOperation {
+    Head,
+    Get,
+}
+
+impl MissingLengthOperation {
+    const fn scenario(self) -> &'static str {
+        match self {
+            Self::Head => "wire_head_missing_length",
+            Self::Get => "wire_get_missing_length",
+        }
+    }
+
+    const fn response(self) -> &'static [u8] {
+        match self {
+            Self::Head => b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n",
+            Self::Get => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n",
+        }
+    }
+}
+
+#[rstest]
+#[case::head(MissingLengthOperation::Head)]
+#[case::get(MissingLengthOperation::Get)]
+#[tokio::test]
+async fn test_s3_rejects_a_response_without_an_object_length(#[case] operation: MissingLengthOperation) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut connection, _) = listener.accept().await.unwrap();
+        assert_ne!(connection.read(&mut [0; 4096]).await.unwrap(), 0);
+        connection.write_all(operation.response()).await.unwrap();
+    });
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &endpoint,
+            staging.path(),
+            operation.scenario(),
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_s3_accepts_a_peer_completed_multipart_upload() {
+    let server = MockServer::start().await;
+    mount_multipart(&server, None).await;
+    Mock::given(method("POST"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(service_error(404, "NoSuchUpload"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .respond_with(ResponseTemplate::new(200).insert_header("Content-Length", "5242881"))
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_multipart",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(count_stage(&requests, MultipartStage::Create), 1);
+    assert!(!requests.iter().any(|request| request.method.as_str() == "DELETE"));
+    assert!(!multipart_journal(staging.path()).exists());
+}
+
+#[tokio::test]
+async fn test_s3_bounds_recovery_from_missing_multipart_uploads() {
+    let server = MockServer::start().await;
+    mount_multipart(&server, None).await;
+    Mock::given(method("POST"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(service_error(404, "NoSuchUpload"))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .respond_with(service_error(404, "NoSuchKey"))
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_complete_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(count_stage(&requests, MultipartStage::Create), 2);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method.as_str() == "DELETE")
+            .count(),
+        1
+    );
+    assert!(!multipart_journal(staging.path()).exists());
+}
+
+#[tokio::test]
+async fn test_s3_cleans_up_when_peer_completion_status_cannot_be_checked() {
+    let server = MockServer::start().await;
+    mount_multipart(&server, None).await;
+    Mock::given(method("POST"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(service_error(404, "NoSuchUpload"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .respond_with(service_error(500, "InternalError"))
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_complete_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method.as_str() == "DELETE")
+            .count(),
+        1
+    );
+    assert!(!multipart_journal(staging.path()).exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_s3_drains_started_parts_before_aborting() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(query_param("uploads", ""))
+        .respond_with(create_response("upload-1"))
+        .mount(&server)
+        .await;
+    let second_finished = Arc::new(AtomicBool::new(false));
+    let finished = Arc::clone(&second_finished);
+    Mock::given(method("PUT"))
+        .and(query_param("uploadId", "upload-1"))
+        .and(header("content-encoding", "aws-chunked"))
+        .and(header("x-amz-trailer", "x-amz-checksum-sha256"))
+        .respond_with(move |request: &Request| {
+            if request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "partNumber" && value == "1")
+            {
+                service_error(400, "InvalidRequest")
+            } else {
+                std::thread::sleep(Duration::from_millis(250));
+                finished.store(true, Ordering::Release);
+                part_response()
+            }
+        })
+        .mount(&server)
+        .await;
+    let abort_before_finish = Arc::new(AtomicBool::new(false));
+    let early_abort = Arc::clone(&abort_before_finish);
+    Mock::given(method("DELETE"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(move |_: &Request| {
+            early_abort.store(!second_finished.load(Ordering::Acquire), Ordering::Release);
+            ResponseTemplate::new(204)
+        })
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_complete_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    assert!(!abort_before_finish.load(Ordering::Acquire));
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method.as_str() == "DELETE")
+            .count(),
+        1
+    );
 }
 
 #[rstest]
@@ -861,6 +1258,75 @@ async fn test_s3_multipart_adopts_a_journal_created_by_another_process() {
             count_upload_requests(&["PUT", "POST"], "upload-1"),
         ),
         (1, 3)
+    );
+}
+
+#[tokio::test]
+async fn test_s3_reports_an_abort_failure_after_losing_a_journal_race() {
+    let server = MockServer::start().await;
+    let staging = tempfile::tempdir().unwrap();
+    let journal = multipart_journal(staging.path());
+    Mock::given(method("POST"))
+        .and(query_param("uploads", ""))
+        .respond_with(move |_: &Request| {
+            std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+            std::fs::write(&journal, "upload-1").unwrap();
+            create_response("upload-2")
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(query_param("uploadId", "upload-2"))
+        .respond_with(service_error(500, "InternalError"))
+        .mount(&server)
+        .await;
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_journal_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn test_s3_reports_a_read_failure_after_losing_a_journal_race() {
+    let server = MockServer::start().await;
+    let staging = tempfile::tempdir().unwrap();
+    let journal = multipart_journal(staging.path());
+    let created_journal = journal.clone();
+    Mock::given(method("POST"))
+        .and(query_param("uploads", ""))
+        .respond_with(move |_: &Request| {
+            std::fs::create_dir_all(created_journal.parent().unwrap()).unwrap();
+            std::fs::write(&created_journal, "upload-1").unwrap();
+            create_response("upload-2")
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(query_param("uploadId", "upload-2"))
+        .respond_with(move |_: &Request| {
+            std::fs::remove_file(&journal).unwrap();
+            std::fs::create_dir(&journal).unwrap();
+            ResponseTemplate::new(204)
+        })
+        .mount(&server)
+        .await;
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_journal_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
     );
 }
 
@@ -961,9 +1427,9 @@ async fn interrupted_upload() -> InterruptedUpload {
             "toxic",
             "add",
             "-t",
-            "timeout",
+            "latency",
             "-a",
-            "timeout=0",
+            "latency=60000",
             "s3",
         ],
     )
@@ -999,7 +1465,7 @@ async fn interrupted_upload() -> InterruptedUpload {
     .await;
     exec(
         &toxiproxy.container,
-        ["/toxiproxy-cli", "toxic", "remove", "-n", "timeout_downstream", "s3"],
+        ["/toxiproxy-cli", "toxic", "remove", "-n", "latency_downstream", "s3"],
     )
     .await;
     wait_for_file(&multipart_journal(staging.path())).await;
@@ -1099,7 +1565,22 @@ async fn wait_for_file(path: &Path) {
     .unwrap();
 }
 
-async fn stream_failure(toxic: &str, scenario: &str) {
+async fn add_toxic(container: &ContainerAsync<GenericImage>, toxic: &str, attributes: &[&str]) {
+    let mut args = vec![
+        "/toxiproxy-cli".to_owned(),
+        "toxic".to_owned(),
+        "add".to_owned(),
+        "-t".to_owned(),
+        toxic.to_owned(),
+    ];
+    for attribute in attributes {
+        args.extend(["-a".to_owned(), (*attribute).to_owned()]);
+    }
+    args.push("s3".to_owned());
+    exec(container, args).await;
+}
+
+async fn stream_failure(toxic: &str, attributes: &[&str], scenario: &str, after_open: bool) {
     let minio = minio().await;
     let bytes = vec![0x5a; STREAM_BYTES];
     let digest = Digest::of(&bytes);
@@ -1113,20 +1594,11 @@ async fn stream_failure(toxic: &str, scenario: &str) {
         .await
         .unwrap();
     let toxiproxy = toxiproxy(&minio).await;
-    exec(
-        &toxiproxy.container,
-        [
-            "/toxiproxy-cli",
-            "toxic",
-            "add",
-            "-t",
-            "bandwidth",
-            "-a",
-            "rate=64",
-            "s3",
-        ],
-    )
-    .await;
+    if after_open {
+        add_toxic(&toxiproxy.container, "bandwidth", &["rate=64"]).await;
+    } else {
+        add_toxic(&toxiproxy.container, toxic, attributes).await;
+    }
     let staging = tempfile::tempdir().unwrap();
     let mut process = child_command(
         &toxiproxy.endpoint,
@@ -1141,11 +1613,9 @@ async fn stream_failure(toxic: &str, scenario: &str) {
     .spawn()
     .unwrap();
     wait_for_file(&staging.path().join("opened")).await;
-    exec(
-        &toxiproxy.container,
-        ["/toxiproxy-cli", "toxic", "add", "-t", toxic, "-a", "timeout=0", "s3"],
-    )
-    .await;
+    if after_open {
+        add_toxic(&toxiproxy.container, toxic, attributes).await;
+    }
     process.stdin.take().unwrap().write_all(b"collect").await.unwrap();
     assert_child_succeeded(
         &tokio::time::timeout(Duration::from_secs(10), process.wait_with_output())
@@ -1337,6 +1807,29 @@ async fn test_s3_reports_an_unreadable_multipart_journal() {
     );
 }
 
+#[tokio::test]
+async fn test_s3_reports_a_multipart_journal_parent_race() {
+    let server = MockServer::start().await;
+    mount_multipart(&server, Some(MultipartStage::Create)).await;
+    let staging = tempfile::tempdir().unwrap();
+    let endpoint = server.uri();
+    let staging_path = staging.path().to_owned();
+    let upload = tokio::spawn(async move {
+        child(
+            &endpoint,
+            &staging_path,
+            "wire_journal_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await
+    });
+    wait_for_stage(&server, MultipartStage::Create).await;
+    std::fs::write(staging.path().join("s3-multipart"), []).unwrap();
+
+    assert_child_succeeded(&upload.await.unwrap());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn test_s3_reports_an_unwritable_multipart_journal_directory() {
@@ -1387,6 +1880,85 @@ async fn test_s3_reports_a_multipart_journal_removal_failure() {
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+#[derive(Clone, Copy)]
+enum JournalCleanupPoint {
+    StalePart,
+    Conflict,
+    MissingCompletion,
+}
+
+#[rstest]
+#[case::stale_part(JournalCleanupPoint::StalePart)]
+#[case::conflict(JournalCleanupPoint::Conflict)]
+#[case::missing_completion(JournalCleanupPoint::MissingCompletion)]
+#[tokio::test]
+async fn test_s3_reports_a_structural_journal_cleanup_failure(#[case] point: JournalCleanupPoint) {
+    let server = MockServer::start().await;
+    mount_multipart(&server, None).await;
+    let staging = tempfile::tempdir().unwrap();
+    let journal = multipart_journal(staging.path());
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(&journal, "upload-1").unwrap();
+    let failed_journal = journal.clone();
+    let fail_cleanup = move || {
+        std::fs::remove_file(&failed_journal).unwrap();
+        std::fs::create_dir(&failed_journal).unwrap();
+    };
+    match point {
+        JournalCleanupPoint::StalePart => {
+            Mock::given(method("PUT"))
+                .and(query_param("uploadId", "upload-1"))
+                .respond_with(move |_: &Request| {
+                    fail_cleanup();
+                    service_error(404, "NoSuchUpload")
+                })
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+        }
+        JournalCleanupPoint::Conflict => {
+            Mock::given(method("POST"))
+                .and(query_param("uploadId", "upload-1"))
+                .respond_with(move |_: &Request| {
+                    fail_cleanup();
+                    service_error(409, "ConditionalRequestConflict")
+                })
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+        }
+        JournalCleanupPoint::MissingCompletion => {
+            Mock::given(method("POST"))
+                .and(query_param("uploadId", "upload-1"))
+                .respond_with(move |_: &Request| {
+                    fail_cleanup();
+                    service_error(404, "NoSuchUpload")
+                })
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("HEAD"))
+                .respond_with(service_error(404, "NoSuchKey"))
+                .mount(&server)
+                .await;
+        }
+    }
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_journal_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+}
+
 #[tokio::test]
 async fn test_s3_coordinates_simultaneous_multipart_acquisition() {
     if !containers_enabled() {
@@ -1411,7 +1983,7 @@ async fn test_s3_reports_a_reset_stream_body() {
     if !containers_enabled() {
         return;
     }
-    stream_failure("reset_peer", "stream_reset").await;
+    stream_failure("reset_peer", &["timeout=0"], "stream_reset", true).await;
 }
 
 #[tokio::test]
@@ -1419,7 +1991,21 @@ async fn test_s3_times_out_a_stalled_stream_body() {
     if !containers_enabled() {
         return;
     }
-    stream_failure("timeout", "stream_timeout").await;
+    stream_failure("timeout", &["timeout=0"], "stream_timeout", true).await;
+}
+
+#[tokio::test]
+async fn test_s3_times_out_a_trickling_stream_body() {
+    if !containers_enabled() {
+        return;
+    }
+    stream_failure(
+        "slicer",
+        &["average_size=1048576", "size_variation=0", "delay=100000"],
+        "stream_trickle",
+        false,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1430,7 +2016,22 @@ async fn test_s3_default_credential_chain_child() {
     let mut settings = settings(std::env::var(ENDPOINT).unwrap());
     if matches!(scenario.as_str(), "cancel" | "wire_cancel") {
         settings.upload_concurrency = 1;
-    } else if matches!(scenario.as_str(), "wire_abort_failure" | "wire_conflict_exhausted") {
+    } else if scenario == "wire_multipart" {
+        settings.upload_concurrency = 3;
+    } else if matches!(
+        scenario.as_str(),
+        "wire_abort_failure" | "wire_conflict_exhausted" | "wire_create_failure"
+    ) {
+        settings.max_retries = 0;
+    } else if scenario == "wire_huge_timeout" {
+        settings.request_timeout = Duration::MAX;
+    } else if matches!(
+        scenario.as_str(),
+        "wire_truncated_body" | "wire_head_missing_length" | "wire_get_missing_length"
+    ) {
+        settings.max_retries = 0;
+    } else if scenario == "wire_send_timeout" {
+        settings.request_timeout = Duration::from_millis(500);
         settings.max_retries = 0;
     } else if scenario.starts_with("stream_") {
         settings.request_timeout = Duration::from_millis(250);
@@ -1444,7 +2045,7 @@ async fn test_s3_default_credential_chain_child() {
 async fn run_child_scenario(storage: &BlobStorage, staging_dir: &Path, scenario: &str) {
     match scenario {
         "health" | "invalid" | "readonly" | "cancel" | "multipart" | "concurrent" | "stream_reset"
-        | "stream_timeout" => run_container_child(storage, staging_dir, scenario).await,
+        | "stream_timeout" | "stream_trickle" => run_container_child(storage, staging_dir, scenario).await,
         "wire_missing"
         | "wire_head"
         | "wire_whole_read"
@@ -1452,17 +2053,28 @@ async fn run_child_scenario(storage: &BlobStorage, staging_dir: &Path, scenario:
         | "wire_empty_range"
         | "wire_verify"
         | "wire_verify_mismatch"
+        | "wire_truncated_body"
         | "wire_materialize" => run_wire_read_child(storage, scenario).await,
         "wire_delete" | "wire_present" | "wire_small_put" | "wire_immutable" => {
             run_wire_write_child(storage, scenario).await;
         }
-        "wire_health_error" | "wire_head_error" | "wire_get_error" | "wire_put_error" | "wire_delete_not_found" => {
+        "wire_health_error"
+        | "wire_head_error"
+        | "wire_head_missing_length"
+        | "wire_huge_timeout"
+        | "wire_send_timeout"
+        | "wire_get_missing_length"
+        | "wire_get_error"
+        | "wire_put_error"
+        | "wire_delete_not_found" => {
             run_wire_failure_child(storage, scenario).await;
         }
         "wire_multipart"
         | "wire_conflict"
+        | "wire_create_failure"
         | "wire_create_missing_id"
         | "wire_part_missing_etag"
+        | "wire_part_missing_checksum"
         | "wire_complete_failure"
         | "wire_conflict_exhausted"
         | "wire_journal_failure"
@@ -1504,7 +2116,7 @@ async fn run_container_child(storage: &BlobStorage, staging_dir: &Path, scenario
             let (first, second) = tokio::join!(storage.put_bytes(&bytes), other.put_bytes(&bytes));
             assert_eq!(first.unwrap(), second.unwrap());
         }
-        "stream_reset" | "stream_timeout" => {
+        "stream_reset" | "stream_timeout" | "stream_trickle" => {
             let bytes = vec![0x5a; STREAM_BYTES];
             let read = storage.open(&Digest::of(&bytes), None).await.unwrap();
             tokio::fs::write(staging_dir.join("opened"), []).await.unwrap();
@@ -1563,7 +2175,24 @@ async fn run_wire_read_child(storage: &BlobStorage, scenario: &str) {
             );
         }
         "wire_verify" => assert!(storage.verify(&Digest::of(b"package")).await.unwrap()),
-        "wire_verify_mismatch" => assert!(!storage.verify(&Digest::of(b"expected")).await.unwrap()),
+        "wire_verify_mismatch" => {
+            let digest = Digest::of(b"expected");
+            assert_eq!(storage.read_bytes(&digest, 7).await.unwrap(), b"corrupt");
+            assert!(!storage.verify(&digest).await.unwrap());
+        }
+        "wire_truncated_body" => {
+            assert_eq!(
+                storage
+                    .open(&Digest::of(b"short"), None)
+                    .await
+                    .unwrap()
+                    .collect(10)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                BlobErrorKind::Io
+            );
+        }
         "wire_materialize" => {
             assert_eq!(
                 std::fs::read(storage.materialize(&Digest::of(b"package")).await.unwrap().path()).unwrap(),
@@ -1605,14 +2234,19 @@ async fn run_wire_write_child(storage: &BlobStorage, scenario: &str) {
 async fn run_wire_failure_child(storage: &BlobStorage, scenario: &str) {
     match scenario {
         "wire_health_error" => assert_eq!(storage.health().await.unwrap_err().kind(), BlobErrorKind::Io),
-        "wire_head_error" => assert_eq!(
+        "wire_head_error" | "wire_head_missing_length" => assert_eq!(
             storage.head(&Digest::of(b"package")).await.unwrap_err().kind(),
             BlobErrorKind::Io
         ),
-        "wire_get_error" => assert_eq!(
+        "wire_huge_timeout" | "wire_get_error" | "wire_get_missing_length" => assert_eq!(
             storage.open(&Digest::of(b"package"), None).await.err().unwrap().kind(),
             BlobErrorKind::Io
         ),
+        "wire_send_timeout" => {
+            let error = storage.open(&Digest::of(b"package"), None).await.err().unwrap();
+            assert_eq!(error.kind(), BlobErrorKind::Io);
+            assert!(format!("{error:?}").contains("deadline has elapsed"), "{error:?}");
+        }
         "wire_put_error" => assert_eq!(
             storage.put_bytes(b"package").await.unwrap_err().kind(),
             BlobErrorKind::Io
@@ -1627,8 +2261,14 @@ async fn run_wire_multipart_child(storage: &BlobStorage, scenario: &str) {
         "wire_multipart" | "wire_conflict" | "wire_complete_exists" | "wire_stale_upload" => {
             storage.put_bytes(&vec![7; (5 << 20) + 1]).await.unwrap();
         }
+        "wire_create_failure" => {
+            let error = storage.put_bytes(&vec![7; (5 << 20) + 1]).await.unwrap_err();
+            assert_eq!(error.kind(), BlobErrorKind::Io);
+            assert!(format!("{error:?}").contains("s3 request failed"), "{error:?}");
+        }
         "wire_create_missing_id"
         | "wire_part_missing_etag"
+        | "wire_part_missing_checksum"
         | "wire_complete_failure"
         | "wire_conflict_exhausted"
         | "wire_journal_failure" => {

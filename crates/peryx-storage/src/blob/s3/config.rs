@@ -1,5 +1,6 @@
 //! Secret-free S3 endpoint and transfer bounds.
 
+use std::fmt;
 use std::time::Duration;
 
 use url::Url;
@@ -14,10 +15,12 @@ pub enum S3ConfigError {
     EmptyBucket,
     #[error("s3 region must not be empty")]
     EmptyRegion,
-    #[error("s3 endpoint {endpoint:?} is not a valid URL: {reason}")]
-    Endpoint { endpoint: String, reason: String },
-    #[error("s3 endpoint {endpoint:?} must use http or https")]
-    EndpointScheme { endpoint: String },
+    #[error("s3 endpoint is not a valid URL: {reason}")]
+    Endpoint { reason: String },
+    #[error("s3 endpoint must use http or https")]
+    EndpointScheme,
+    #[error("s3 endpoint must not contain credentials, a query, or a fragment")]
+    EndpointComponents,
     #[error("s3 {field} must be greater than zero")]
     Zero { field: &'static str },
     #[error("s3 part_size must be between 5 MiB and 5 GiB")]
@@ -32,7 +35,7 @@ pub enum S3Addressing {
 }
 
 /// Connection and transfer settings for one bucket.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct S3Config {
     pub endpoint: Url,
     pub bucket: String,
@@ -46,8 +49,26 @@ pub struct S3Config {
     pub upload_concurrency: usize,
 }
 
+impl fmt::Debug for S3Config {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("S3Config")
+            .field("endpoint", &"<redacted>")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("region", &self.region)
+            .field("addressing", &self.addressing)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_retries", &self.max_retries)
+            .field("multipart_threshold", &self.multipart_threshold)
+            .field("part_size", &self.part_size)
+            .field("upload_concurrency", &self.upload_concurrency)
+            .finish()
+    }
+}
+
 /// Raw settings supplied by configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct S3Settings {
     pub endpoint: String,
     pub bucket: String,
@@ -59,6 +80,24 @@ pub struct S3Settings {
     pub multipart_threshold: u64,
     pub part_size: u64,
     pub upload_concurrency: usize,
+}
+
+impl fmt::Debug for S3Settings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("S3Settings")
+            .field("endpoint", &"<redacted>")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("region", &self.region)
+            .field("path_style", &self.path_style)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_retries", &self.max_retries)
+            .field("multipart_threshold", &self.multipart_threshold)
+            .field("part_size", &self.part_size)
+            .field("upload_concurrency", &self.upload_concurrency)
+            .finish()
+    }
 }
 
 impl S3Config {
@@ -73,14 +112,21 @@ impl S3Config {
         if settings.region.is_empty() {
             return Err(S3ConfigError::EmptyRegion);
         }
-        let endpoint = Url::parse(&settings.endpoint).map_err(|error| S3ConfigError::Endpoint {
-            endpoint: settings.endpoint.clone(),
+        let mut endpoint = Url::parse(&settings.endpoint).map_err(|error| S3ConfigError::Endpoint {
             reason: error.to_string(),
         })?;
         if !matches!(endpoint.scheme(), "http" | "https") {
-            return Err(S3ConfigError::EndpointScheme {
-                endpoint: settings.endpoint,
-            });
+            return Err(S3ConfigError::EndpointScheme);
+        }
+        if !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(S3ConfigError::EndpointComponents);
+        }
+        if !endpoint.path().ends_with('/') {
+            endpoint.set_path(&format!("{}/", endpoint.path()));
         }
         for (field, value) in [
             ("request_timeout", settings.request_timeout.as_millis()),
@@ -138,7 +184,7 @@ mod tests {
 
     fn settings() -> S3Settings {
         S3Settings {
-            endpoint: "https://s3.example.com".to_owned(),
+            endpoint: "https://s3.example.com/base".to_owned(),
             bucket: "bucket".to_owned(),
             prefix: "/cache/".to_owned(),
             region: "us-east-1".to_owned(),
@@ -154,7 +200,8 @@ mod tests {
     #[test]
     fn test_config_maps_endpoint_prefix_and_addressing() {
         let config = S3Config::new(settings()).unwrap();
-        assert_eq!(config.endpoint.as_str(), "https://s3.example.com/");
+        assert_eq!(config.endpoint.as_str(), "https://s3.example.com/base/");
+        assert!(!format!("{config:?}").contains("/base"));
         assert_eq!(config.prefix, "cache");
         assert_eq!(config.addressing, S3Addressing::Path);
         assert!(config.force_path_style());
@@ -185,7 +232,7 @@ mod tests {
     )]
     #[case::scheme(
         S3Settings { endpoint: "ftp://s3.example.com".to_owned(), ..settings() },
-        S3ConfigError::EndpointScheme { endpoint: "ftp://s3.example.com".to_owned() }
+        S3ConfigError::EndpointScheme
     )]
     #[case::timeout(
         S3Settings { request_timeout: Duration::ZERO, ..settings() },
@@ -207,13 +254,34 @@ mod tests {
 
     #[test]
     fn test_config_rejects_an_unparsable_endpoint() {
-        assert!(matches!(
-            S3Config::new(S3Settings {
-                endpoint: "not a url".to_owned(),
-                ..settings()
-            })
-            .unwrap_err(),
-            S3ConfigError::Endpoint { .. }
-        ));
+        let secret = "not a url secret";
+        let settings = S3Settings {
+            endpoint: secret.to_owned(),
+            ..settings()
+        };
+        assert!(!format!("{settings:?}").contains(secret));
+        let error = S3Config::new(settings).unwrap_err();
+        assert_eq!(
+            error,
+            S3ConfigError::Endpoint {
+                reason: "relative URL without a base".to_owned()
+            }
+        );
+        assert!(!error.to_string().contains(secret));
+    }
+
+    #[rstest]
+    #[case::username("https://access@s3.example.com/base")]
+    #[case::password("https://access:secret@s3.example.com/base")]
+    #[case::query("https://s3.example.com/base?token=secret")]
+    #[case::fragment("https://s3.example.com/base#secret")]
+    fn test_config_rejects_secret_bearing_endpoint_components(#[case] endpoint: &str) {
+        let error = S3Config::new(S3Settings {
+            endpoint: endpoint.to_owned(),
+            ..settings()
+        })
+        .unwrap_err();
+        assert_eq!(error, S3ConfigError::EndpointComponents);
+        assert!(!error.to_string().contains("secret"));
     }
 }

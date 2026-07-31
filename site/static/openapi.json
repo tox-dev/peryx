@@ -1,43 +1,46 @@
 {
-  "openapi": "3.1.0",
+  "components": {
+    "securitySchemes": {
+      "administratorPassword": {
+        "description": "A local server user's display name and password. Digest revocation operations require the administrator role.",
+        "scheme": "basic",
+        "type": "http"
+      },
+      "uploadToken": {
+        "description": "Any username; the password is the hosted index's `upload_token` (the pypi.org `__token__` convention)",
+        "scheme": "basic",
+        "type": "http"
+      }
+    }
+  },
   "info": {
-    "title": "peryx",
-    "description": "Read-through cache and private index for multiple ecosystems. A PyPI index serves the Simple API under `/{route}/`, where `{route}` is the index's route (for example `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write operations authenticate with HTTP Basic where the password is the target hosted index's upload token and the username is ignored. Server administration uses a local user's display name and password with role authorization.",
     "contact": {
       "name": "tox-dev",
       "url": "https://github.com/tox-dev/peryx"
     },
+    "description": "Read-through cache and private index for multiple ecosystems. A PyPI index serves the Simple API under `/{route}/`, where `{route}` is the index's route (for example `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write operations authenticate with HTTP Basic where the password is the target hosted index's upload token and the username is ignored. Server administration uses a local user's display name and password with role authorization.",
     "license": {
       "name": "MIT"
     },
+    "title": "peryx",
     "version": "0.0.1"
   },
-  "servers": [
-    {
-      "url": "http://127.0.0.1:4433",
-      "description": "A local peryx with the default configuration"
-    }
-  ],
+  "openapi": "3.1.0",
   "paths": {
     "/+acl": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "An index's access control",
         "description": "The tokens, grants, expiry, and anonymous-read policy one index is configured with. peryx has no server-wide administrator, so the gate is the index's own: authenticate with HTTP Basic as a token holding write over every project here (the `upload_token` standing). Token secrets are never returned, only a marker that one is set.",
         "parameters": [
           {
-            "name": "index",
-            "in": "query",
             "description": "The route of the index to describe",
-            "required": true,
-            "example": "hosted"
+            "example": "hosted",
+            "in": "query",
+            "name": "index",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The index's tokens and read policy, secrets redacted",
             "content": {
               "application/json": {
                 "example": {
@@ -85,7 +88,8 @@
                   ]
                 }
               }
-            }
+            },
+            "description": "The index's tokens and read policy, secrets redacted"
           },
           "401": {
             "description": "No credential the index accepts was presented"
@@ -101,28 +105,27 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "An index's access control",
+        "tags": [
+          "operations"
         ]
       }
     },
     "/+analytics/top-packages": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Most-downloaded packages",
         "description": "Durable download counts and bytes grouped by repository and project. Results are ordered by downloads, bytes, repository, then project.",
         "parameters": [
           {
-            "name": "limit",
-            "in": "query",
             "description": "Number of projects to return, from 1 through 100; defaults to 25",
-            "required": false,
-            "example": 10
+            "example": 10,
+            "in": "query",
+            "name": "limit",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The highest-usage projects",
             "content": {
               "application/json": {
                 "example": [
@@ -134,31 +137,31 @@
                   }
                 ]
               }
-            }
+            },
+            "description": "The highest-usage projects"
           },
           "400": {
-            "description": "The limit is outside the accepted range",
             "content": {
               "application/json": {
                 "example": {
                   "error": "limit must be between 1 and 100"
                 }
               }
-            }
+            },
+            "description": "The limit is outside the accepted range"
           }
-        }
+        },
+        "summary": "Most-downloaded packages",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/+api": {
       "get": {
-        "tags": [
-          "discovery"
-        ],
-        "summary": "Discover this server",
         "description": "A compact server document with global URLs and one discovery entry per configured index. It is built from configuration and request context, without reading package indexes.",
         "responses": {
           "200": {
-            "description": "The server discovery document",
             "content": {
               "application/json": {
                 "example": {
@@ -175,100 +178,100 @@
                   "version": "0.0.1"
                 }
               }
-            }
+            },
+            "description": "The server discovery document"
           }
-        }
+        },
+        "summary": "Discover this server",
+        "tags": [
+          "discovery"
+        ]
       }
     },
     "/+health": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Process liveness",
         "description": "Returns a fixed public document while the HTTP process can answer requests. Local-store and upstream failures do not fail liveness.",
         "responses": {
           "200": {
-            "description": "The process is live",
             "content": {
               "application/json": {
                 "example": {
                   "status": "live"
                 }
               }
-            }
+            },
+            "description": "The process is live"
           }
-        }
+        },
+        "summary": "Process liveness",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/+policy/decisions": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Repository policy decisions",
         "description": "Bounded policy decision history for one repository. The repository's administering token is required; records contain package subjects and matched rule IDs without credentials or request headers. `fresh` is false after repository data, catalog, or policy inputs change.",
         "parameters": [
           {
-            "name": "repository",
-            "in": "query",
             "description": "Repository route to inspect",
-            "required": true,
-            "example": "private"
+            "example": "private",
+            "in": "query",
+            "name": "repository",
+            "required": true
           },
           {
-            "name": "state",
-            "in": "query",
             "description": "Filter by `allow`, `deny`, or `wait`",
-            "required": false,
-            "example": "deny"
+            "example": "deny",
+            "in": "query",
+            "name": "state",
+            "required": false
           },
           {
-            "name": "rule",
-            "in": "query",
             "description": "Filter by matched rule ID",
-            "required": false,
-            "example": "blocked-project"
+            "example": "blocked-project",
+            "in": "query",
+            "name": "rule",
+            "required": false
           },
           {
-            "name": "source",
-            "in": "query",
             "description": "Filter by routed source",
-            "required": false,
-            "example": "pypi"
+            "example": "pypi",
+            "in": "query",
+            "name": "source",
+            "required": false
           },
           {
-            "name": "from",
-            "in": "query",
             "description": "Minimum evaluation Unix timestamp",
-            "required": false,
-            "example": 1700000000
+            "example": 1700000000,
+            "in": "query",
+            "name": "from",
+            "required": false
           },
           {
-            "name": "to",
-            "in": "query",
             "description": "Maximum evaluation Unix timestamp",
-            "required": false,
-            "example": 1800000000
+            "example": 1800000000,
+            "in": "query",
+            "name": "to",
+            "required": false
           },
           {
-            "name": "cursor",
-            "in": "query",
             "description": "Exclusive cursor from the prior page",
-            "required": false,
-            "example": "pd_000000000000002a"
+            "example": "pd_000000000000002a",
+            "in": "query",
+            "name": "cursor",
+            "required": false
           },
           {
-            "name": "limit",
-            "in": "query",
             "description": "Rows to return, from 1 through 100; defaults to 25",
-            "required": false,
-            "example": 25
+            "example": 25,
+            "in": "query",
+            "name": "limit",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The matching decisions, newest first",
             "content": {
               "application/json": {
                 "example": {
@@ -297,17 +300,18 @@
                   "next_cursor": "pd_000000000000002a"
                 }
               }
-            }
+            },
+            "description": "The matching decisions, newest first"
           },
           "400": {
-            "description": "The limit or cursor is invalid",
             "content": {
               "application/json": {
                 "example": {
                   "error": "limit must be between 1 and 100"
                 }
               }
-            }
+            },
+            "description": "The limit or cursor is invalid"
           },
           "401": {
             "description": "No credential the repository accepts was presented"
@@ -319,96 +323,95 @@
             "description": "No repository has this route"
           },
           "500": {
-            "description": "The decision store could not complete the query",
             "content": {
               "application/json": {
                 "example": {
                   "error": "policy decision query failed"
                 }
               }
-            }
+            },
+            "description": "The decision store could not complete the query"
           }
         },
         "security": [
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Repository policy decisions",
+        "tags": [
+          "operations"
         ]
       }
     },
     "/+ready": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Read or write readiness",
         "description": "Checks the bounded local metadata and blob-store dependencies used to serve package requests. Set `writes=true` to require a writer. The probe does not enumerate repositories or contact upstreams.",
         "parameters": [
           {
-            "name": "writes",
-            "in": "query",
             "description": "Require the node to accept writes",
-            "required": false,
-            "example": true
+            "example": true,
+            "in": "query",
+            "name": "writes",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The requested traffic class is ready",
             "content": {
               "application/json": {
                 "example": {
                   "status": "ready"
                 }
               }
-            }
+            },
+            "description": "The requested traffic class is ready"
           },
           "503": {
-            "description": "A required local dependency is unavailable or write traffic reached a replica",
             "content": {
               "application/json": {
                 "example": {
                   "status": "not_ready"
                 }
               }
-            }
+            },
+            "description": "A required local dependency is unavailable or write traffic reached a replica"
           }
-        }
+        },
+        "summary": "Read or write readiness",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/+revocations": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "List digest revocations",
         "description": "Returns a bounded page of current records in canonical digest order. Lifted records remain visible to administrators.",
         "parameters": [
           {
-            "name": "status",
-            "in": "query",
             "description": "Filter by `active` or `lifted`",
-            "required": false,
-            "example": "active"
+            "example": "active",
+            "in": "query",
+            "name": "status",
+            "required": false
           },
           {
-            "name": "cursor",
-            "in": "query",
             "description": "Exclusive canonical digest from the prior page",
-            "required": false,
-            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "in": "query",
+            "name": "cursor",
+            "required": false
           },
           {
-            "name": "limit",
-            "in": "query",
             "description": "Rows to return, from 1 through 100; defaults to 25",
-            "required": false,
-            "example": 25
+            "example": 25,
+            "in": "query",
+            "name": "limit",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The matching current records",
             "content": {
               "application/json": {
                 "example": {
@@ -429,17 +432,18 @@
                   ]
                 }
               }
-            }
+            },
+            "description": "The matching current records"
           },
           "400": {
-            "description": "The cursor or limit is invalid",
             "content": {
               "application/json": {
                 "example": {
                   "error": "invalid revocation cursor"
                 }
               }
-            }
+            },
+            "description": "The cursor or limit is invalid"
           },
           "401": {
             "description": "No valid local user credential was presented"
@@ -448,42 +452,41 @@
             "description": "The caller cannot discover this record, or it does not exist"
           },
           "503": {
-            "description": "Authentication, authorization, or revocation storage is unavailable",
             "content": {
               "application/json": {
                 "example": {
                   "error": "revocation service unavailable"
                 }
               }
-            }
+            },
+            "description": "Authentication, authorization, or revocation storage is unavailable"
           }
         },
         "security": [
           {
             "administratorPassword": []
           }
+        ],
+        "summary": "List digest revocations",
+        "tags": [
+          "operations"
         ]
       }
     },
     "/+revocations/{digest}": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Inspect a digest revocation",
         "description": "Returns the current lifecycle record without changing package yank, trash, retention, or policy state.",
         "parameters": [
           {
-            "name": "digest",
-            "in": "path",
             "description": "Canonical `sha256:<64 lowercase hex>` artifact digest",
-            "required": true,
-            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "digest",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The current revocation record",
             "content": {
               "application/json": {
                 "example": {
@@ -499,17 +502,18 @@
                   }
                 }
               }
-            }
+            },
+            "description": "The current revocation record"
           },
           "400": {
-            "description": "The digest is not canonical SHA-256",
             "content": {
               "application/json": {
                 "example": {
                   "error": "invalid digest"
                 }
               }
-            }
+            },
+            "description": "The digest is not canonical SHA-256"
           },
           "401": {
             "description": "No valid local user credential was presented"
@@ -518,35 +522,35 @@
             "description": "The caller cannot discover this record, or it does not exist"
           },
           "503": {
-            "description": "Authentication, authorization, or revocation storage is unavailable",
             "content": {
               "application/json": {
                 "example": {
                   "error": "revocation service unavailable"
                 }
               }
-            }
+            },
+            "description": "Authentication, authorization, or revocation storage is unavailable"
           }
         },
         "security": [
           {
             "administratorPassword": []
           }
+        ],
+        "summary": "Inspect a digest revocation",
+        "tags": [
+          "operations"
         ]
       },
       "put": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Put an active digest revocation",
         "description": "Creates or reopens the digest-addressed record. Retrying the same active reason is idempotent; replacing another active reason conflicts.",
         "parameters": [
           {
-            "name": "digest",
-            "in": "path",
             "description": "Canonical `sha256:<64 lowercase hex>` artifact digest",
-            "required": true,
-            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "digest",
+            "required": true
           }
         ],
         "requestBody": {
@@ -561,7 +565,6 @@
         },
         "responses": {
           "200": {
-            "description": "The unchanged active record",
             "content": {
               "application/json": {
                 "example": {
@@ -577,10 +580,10 @@
                   }
                 }
               }
-            }
+            },
+            "description": "The unchanged active record"
           },
           "201": {
-            "description": "The created or reopened record",
             "content": {
               "application/json": {
                 "example": {
@@ -596,17 +599,18 @@
                   }
                 }
               }
-            }
+            },
+            "description": "The created or reopened record"
           },
           "400": {
-            "description": "The digest or reason is invalid",
             "content": {
               "application/json": {
                 "example": {
                   "error": "invalid digest"
                 }
               }
-            }
+            },
+            "description": "The digest or reason is invalid"
           },
           "401": {
             "description": "No valid local user credential was presented"
@@ -615,14 +619,14 @@
             "description": "The caller cannot discover this record, or it does not exist"
           },
           "409": {
-            "description": "The active record has another reason",
             "content": {
               "application/json": {
                 "example": {
                   "error": "digest is already revoked"
                 }
               }
-            }
+            },
+            "description": "The active record has another reason"
           },
           "413": {
             "description": "The request exceeds the fixed body limit"
@@ -634,42 +638,41 @@
             "description": "The JSON request body is invalid"
           },
           "503": {
-            "description": "Authentication, authorization, or revocation storage is unavailable",
             "content": {
               "application/json": {
                 "example": {
                   "error": "revocation service unavailable"
                 }
               }
-            }
+            },
+            "description": "Authentication, authorization, or revocation storage is unavailable"
           }
         },
         "security": [
           {
             "administratorPassword": []
           }
+        ],
+        "summary": "Put an active digest revocation",
+        "tags": [
+          "operations"
         ]
       }
     },
     "/+revocations/{digest}/lift": {
       "post": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Lift a digest revocation",
         "description": "Transitions an active record to lifted and retains its original reason, actor, and creation time. Retrying a lift is idempotent.",
         "parameters": [
           {
-            "name": "digest",
-            "in": "path",
             "description": "Canonical `sha256:<64 lowercase hex>` artifact digest",
-            "required": true,
-            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            "example": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "digest",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The lifted record",
             "content": {
               "application/json": {
                 "example": {
@@ -687,17 +690,18 @@
                   }
                 }
               }
-            }
+            },
+            "description": "The lifted record"
           },
           "400": {
-            "description": "The digest is not canonical SHA-256",
             "content": {
               "application/json": {
                 "example": {
                   "error": "invalid digest"
                 }
               }
-            }
+            },
+            "description": "The digest is not canonical SHA-256"
           },
           "401": {
             "description": "No valid local user credential was presented"
@@ -706,63 +710,62 @@
             "description": "The caller cannot discover this record, or it does not exist"
           },
           "503": {
-            "description": "Authentication, authorization, or revocation storage is unavailable",
             "content": {
               "application/json": {
                 "example": {
                   "error": "revocation service unavailable"
                 }
               }
-            }
+            },
+            "description": "Authentication, authorization, or revocation storage is unavailable"
           }
         },
         "security": [
           {
             "administratorPassword": []
           }
+        ],
+        "summary": "Lift a digest revocation",
+        "tags": [
+          "operations"
         ]
       }
     },
     "/+search": {
       "get": {
-        "tags": [
-          "search"
-        ],
-        "summary": "Search cached packages",
         "description": "Searches the derived package index built from cached simple pages, local uploads, and cached core metadata. `q` uses substring matching; prefix it with `re:` for a regex. Index policy removes denied packages before indexing. Results are sorted by display name and paged without collecting every match.",
         "parameters": [
           {
-            "name": "q",
-            "in": "query",
             "description": "Search text. Prefix with `re:` to use a regex.",
-            "required": false,
-            "example": "flask"
+            "example": "flask",
+            "in": "query",
+            "name": "q",
+            "required": false
           },
           {
-            "name": "type",
-            "in": "query",
             "description": "`uploaded`, `cached`, or `override`; omit for all sources.",
-            "required": false,
-            "example": "override"
+            "example": "override",
+            "in": "query",
+            "name": "type",
+            "required": false
           },
           {
-            "name": "page",
-            "in": "query",
             "description": "One-based page number.",
-            "required": false,
-            "example": 1
+            "example": 1,
+            "in": "query",
+            "name": "page",
+            "required": false
           },
           {
-            "name": "page_size",
-            "in": "query",
             "description": "Page size: 25, 50, or 100.",
-            "required": false,
-            "example": 25
+            "example": 25,
+            "in": "query",
+            "name": "page_size",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "Search results",
             "content": {
               "application/json": {
                 "example": {
@@ -783,47 +786,47 @@
                   "type": "all"
                 }
               }
-            }
+            },
+            "description": "Search results"
           },
           "400": {
-            "description": "Invalid search parameters",
             "content": {
               "application/json": {
                 "example": {
                   "error": "invalid package source type"
                 }
               }
-            }
+            },
+            "description": "Invalid search parameters"
           }
-        }
+        },
+        "summary": "Search cached packages",
+        "tags": [
+          "search"
+        ]
       }
     },
     "/+stats": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Usage statistics",
         "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. Counters are grouped by the role that owns them: a neutral `base` group every index reports, a `cached` group only a caching index fills, a `hosted` group only an upload store fills, and an `ecosystem` map of the driver's own counters (PyPI's PEP 658 sibling under `metadata`).",
         "parameters": [
           {
-            "name": "index",
-            "in": "query",
             "description": "Drill into one index's projects",
-            "required": false,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "query",
+            "name": "index",
+            "required": false
           },
           {
-            "name": "project",
-            "in": "query",
             "description": "With `index`, drill into one project's files",
-            "required": false,
-            "example": "pandas"
+            "example": "pandas",
+            "in": "query",
+            "name": "project",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The counters at the requested depth",
             "content": {
               "application/json": {
                 "example": {
@@ -849,30 +852,30 @@
                   }
                 }
               }
-            }
+            },
+            "description": "The counters at the requested depth"
           }
-        }
+        },
+        "summary": "Usage statistics",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/+status": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Health and identity",
         "description": "Version, counters, and the configured indexes. Add `?details=admin` for bounded metadata summaries used by the read-only admin status page.",
         "parameters": [
           {
-            "name": "details",
-            "in": "query",
             "description": "Use `admin` to include observed project counts, uploaded file counts, and recent uploads.",
-            "required": false,
-            "example": "admin"
+            "example": "admin",
+            "in": "query",
+            "name": "details",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The status document",
             "content": {
               "application/json": {
                 "example": {
@@ -987,41 +990,42 @@
                   "version": "0.0.1"
                 }
               }
-            }
+            },
+            "description": "The status document"
           }
-        }
+        },
+        "summary": "Health and identity",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/_/oidc/audience": {
       "get": {
-        "tags": [
-          "trusted publishing"
-        ],
-        "summary": "Discover the CI identity audience",
         "description": "Peryx returns the audience a CI provider must put in its OIDC identity. Peryx adds this route after an operator configures a trusted publisher.",
         "responses": {
           "200": {
-            "description": "The configured OIDC audience",
             "content": {
               "application/json": {
                 "example": {
                   "audience": "packages.example"
                 }
               }
-            }
+            },
+            "description": "The configured OIDC audience"
           },
           "404": {
             "description": "No trusted publisher exists"
           }
-        }
+        },
+        "summary": "Discover the CI identity audience",
+        "tags": [
+          "trusted publishing"
+        ]
       }
     },
     "/_/oidc/mint-token": {
       "post": {
-        "tags": [
-          "trusted publishing"
-        ],
-        "summary": "Exchange a CI identity for an upload token",
         "description": "Peryx verifies one external OIDC identity against a configured publisher and returns a short-lived token restricted to that publisher's repository and projects.",
         "requestBody": {
           "content": {
@@ -1035,7 +1039,6 @@
         },
         "responses": {
           "200": {
-            "description": "A repository- and project-scoped upload token",
             "content": {
               "application/json": {
                 "example": {
@@ -1043,7 +1046,8 @@
                   "token": "eyJhbGciOiJIUzI1NiIs..."
                 }
               }
-            }
+            },
+            "description": "A repository- and project-scoped upload token"
           },
           "404": {
             "description": "No trusted publisher exists"
@@ -1052,103 +1056,103 @@
             "description": "The exchange request exceeds the fixed body limit"
           },
           "422": {
-            "description": "The external identity is invalid or unauthorized",
             "content": {
               "application/json": {
                 "example": {
                   "message": "identity token rejected"
                 }
               }
-            }
+            },
+            "description": "The external identity is invalid or unauthorized"
           },
           "503": {
-            "description": "The identity provider or replay guard is unavailable",
             "content": {
               "application/json": {
                 "example": {
                   "message": "identity provider unavailable"
                 }
               }
-            }
+            },
+            "description": "The identity provider or replay guard is unavailable"
           }
-        }
+        },
+        "summary": "Exchange a CI identity for an upload token",
+        "tags": [
+          "trusted publishing"
+        ]
       }
     },
     "/api-docs/openapi.json": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "This document",
         "responses": {
           "200": {
-            "description": "The OpenAPI 3.1 description of this server",
             "content": {
               "application/json": {}
-            }
+            },
+            "description": "The OpenAPI 3.1 description of this server"
           }
-        }
+        },
+        "summary": "This document",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/metrics": {
       "get": {
-        "tags": [
-          "operations"
-        ],
-        "summary": "Prometheus metrics",
         "responses": {
           "200": {
-            "description": "Prometheus text exposition",
             "content": {
               "text/plain; version=0.0.4": {
                 "example": "# HELP peryx_requests_total Total HTTP requests served.\n# TYPE peryx_requests_total counter\nperyx_requests_total 128\n# HELP peryx_metadata_served_total PEP 658 metadata siblings served.\n# TYPE peryx_metadata_served_total counter\nperyx_metadata_served_total{ecosystem=\"pypi\",role=\"virtual\"} 37\n"
               }
-            }
+            },
+            "description": "Prometheus text exposition"
           }
-        }
+        },
+        "summary": "Prometheus metrics",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/v2/": {
       "get": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Registry version check",
         "description": "Confirms this is an OCI distribution-spec registry. Answers `200` with `Docker-Distribution-API-Version: registry/2.0` and an empty body.",
         "responses": {
           "200": {
             "description": "A `/v2/` registry"
           }
-        }
+        },
+        "summary": "Registry version check",
+        "tags": [
+          "oci"
+        ]
       }
     },
     "/v2/{name}/blobs/uploads/": {
       "post": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Begin, mount, or monolithically push a blob",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
           },
           {
-            "name": "digest",
-            "in": "query",
             "description": "Monolithic push: the blob digest",
-            "required": false,
-            "example": "sha256:2c3e..."
+            "example": "sha256:2c3e...",
+            "in": "query",
+            "name": "digest",
+            "required": false
           },
           {
-            "name": "mount",
-            "in": "query",
             "description": "Cross-repo mount: an already-stored digest",
-            "required": false,
-            "example": "sha256:2c3e..."
+            "example": "sha256:2c3e...",
+            "in": "query",
+            "name": "mount",
+            "required": false
           }
         ],
         "responses": {
@@ -1163,29 +1167,29 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Begin, mount, or monolithically push a blob",
+        "tags": [
+          "oci"
         ]
       }
     },
     "/v2/{name}/blobs/uploads/{session}": {
       "get": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Report upload progress",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
           },
           {
-            "name": "session",
-            "in": "path",
             "description": "An in-progress upload session id",
-            "required": true,
-            "example": "0000000000000000000000000000abcd"
+            "example": "0000000000000000000000000000abcd",
+            "in": "path",
+            "name": "session",
+            "required": true
           }
         ],
         "responses": {
@@ -1197,69 +1201,27 @@
           {
             "uploadToken": []
           }
-        ]
-      },
-      "put": {
+        ],
+        "summary": "Report upload progress",
         "tags": [
           "oci"
-        ],
-        "summary": "Finish an upload",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "session",
-            "in": "path",
-            "description": "An in-progress upload session id",
-            "required": true,
-            "example": "0000000000000000000000000000abcd"
-          },
-          {
-            "name": "digest",
-            "in": "query",
-            "description": "The full blob digest",
-            "required": false,
-            "example": "sha256:2c3e..."
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Committed"
-          },
-          "403": {
-            "description": "`DENIED`: over the index's size limit"
-          }
-        },
-        "security": [
-          {
-            "uploadToken": []
-          }
         ]
       },
       "patch": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Append a chunk",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
           },
           {
-            "name": "session",
-            "in": "path",
             "description": "An in-progress upload session id",
-            "required": true,
-            "example": "0000000000000000000000000000abcd"
+            "example": "0000000000000000000000000000abcd",
+            "in": "path",
+            "name": "session",
+            "required": true
           }
         ],
         "responses": {
@@ -1274,37 +1236,111 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Append a chunk",
+        "tags": [
+          "oci"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
+          },
+          {
+            "description": "An in-progress upload session id",
+            "example": "0000000000000000000000000000abcd",
+            "in": "path",
+            "name": "session",
+            "required": true
+          },
+          {
+            "description": "The full blob digest",
+            "example": "sha256:2c3e...",
+            "in": "query",
+            "name": "digest",
+            "required": false
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Committed"
+          },
+          "403": {
+            "description": "`DENIED`: over the index's size limit"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ],
+        "summary": "Finish an upload",
+        "tags": [
+          "oci"
         ]
       }
     },
     "/v2/{name}/blobs/{digest}": {
-      "get": {
+      "delete": {
+        "parameters": [
+          {
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
+          },
+          {
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "example": "sha256:2c3e...",
+            "in": "path",
+            "name": "digest",
+            "required": true
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Removed"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ],
+        "summary": "Delete a blob",
         "tags": [
           "oci"
-        ],
-        "summary": "Pull a blob",
+        ]
+      },
+      "get": {
         "description": "Serves the blob from the content-addressed store, pulling it through an online proxy member on a miss; concurrent misses share one upstream fetch. Range-capable, with the quoted digest as the `ETag`: a `Range` carrying an `If-Range` is served only while that tag still names the blob, and the whole blob otherwise.",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "digest",
+            "example": "dockerhub/library/alpine",
             "in": "path",
-            "description": "A content digest; blob digests must be `sha256:...`",
-            "required": true,
-            "example": "sha256:2c3e..."
+            "name": "name",
+            "required": true
           },
           {
-            "name": "If-Range",
-            "in": "header",
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "example": "sha256:2c3e...",
+            "in": "path",
+            "name": "digest",
+            "required": true
+          },
+          {
             "description": "The entity tag the client's partial copy was cut from",
-            "required": false,
-            "example": "\"sha256:2c3e...\""
+            "example": "\"sha256:2c3e...\"",
+            "in": "header",
+            "name": "If-Range",
+            "required": false
           }
         ],
         "responses": {
@@ -1317,69 +1353,37 @@
           "404": {
             "description": "`BLOB_UNKNOWN`"
           }
-        }
-      },
-      "delete": {
+        },
+        "summary": "Pull a blob",
         "tags": [
           "oci"
-        ],
-        "summary": "Delete a blob",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "digest",
-            "in": "path",
-            "description": "A content digest; blob digests must be `sha256:...`",
-            "required": true,
-            "example": "sha256:2c3e..."
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Removed"
-          }
-        },
-        "security": [
-          {
-            "uploadToken": []
-          }
         ]
       }
     },
     "/v2/{name}/blobs/{digest}/contents": {
       "get": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Browse a layer's files",
         "description": "peryx's own layer browser (not a distribution-spec route): lists a stored layer's tar members, or with `?member=` previews one text member in bounded chunks.",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "digest",
+            "example": "dockerhub/library/alpine",
             "in": "path",
-            "description": "A content digest; blob digests must be `sha256:...`",
-            "required": true,
-            "example": "sha256:2c3e..."
+            "name": "name",
+            "required": true
           },
           {
-            "name": "member",
-            "in": "query",
+            "description": "A content digest; blob digests must be `sha256:...`",
+            "example": "sha256:2c3e...",
+            "in": "path",
+            "name": "digest",
+            "required": true
+          },
+          {
             "description": "A member path to preview",
-            "required": false,
-            "example": "etc/os-release"
+            "example": "etc/os-release",
+            "in": "query",
+            "name": "member",
+            "required": false
           }
         ],
         "responses": {
@@ -1389,103 +1393,36 @@
           "404": {
             "description": "The blob or member is unknown"
           }
-        }
+        },
+        "summary": "Browse a layer's files",
+        "tags": [
+          "oci"
+        ]
       }
     },
     "/v2/{name}/manifests/{reference}": {
-      "get": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Pull a manifest",
-        "description": "Resolves the reference hosted-first through the index's members and serves the manifest, pulling it through an online proxy member on a miss.",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "reference",
-            "in": "path",
-            "description": "A tag or an `algorithm:hex` digest",
-            "required": true,
-            "example": "latest"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The manifest bytes"
-          },
-          "404": {
-            "description": "`MANIFEST_UNKNOWN`"
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Push a manifest",
-        "description": "Stores the manifest under its canonical `sha256:` digest and, for a tag reference, points the tag at it. Requires a writable hosted index and its upload token.",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "reference",
-            "in": "path",
-            "description": "A tag or an `algorithm:hex` digest",
-            "required": true,
-            "example": "latest"
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Stored"
-          },
-          "403": {
-            "description": "`DENIED`: read-only index or blocked by policy"
-          }
-        },
-        "security": [
-          {
-            "uploadToken": []
-          }
-        ]
-      },
       "delete": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Trash a manifest or tag",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
-          },
-          {
-            "name": "reference",
+            "example": "dockerhub/library/alpine",
             "in": "path",
-            "description": "A tag or an `algorithm:hex` digest",
-            "required": true,
-            "example": "latest"
+            "name": "name",
+            "required": true
           },
           {
-            "name": "reason",
-            "in": "query",
+            "description": "A tag or an `algorithm:hex` digest",
+            "example": "latest",
+            "in": "path",
+            "name": "reference",
+            "required": true
+          },
+          {
             "description": "Optional deletion reason retained for audit",
-            "required": false,
-            "example": "build metadata is incorrect"
+            "example": "build metadata is incorrect",
+            "in": "query",
+            "name": "reason",
+            "required": false
           }
         ],
         "responses": {
@@ -1500,30 +1437,97 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Trash a manifest or tag",
+        "tags": [
+          "oci"
+        ]
+      },
+      "get": {
+        "description": "Resolves the reference hosted-first through the index's members and serves the manifest, pulling it through an online proxy member on a miss.",
+        "parameters": [
+          {
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
+          },
+          {
+            "description": "A tag or an `algorithm:hex` digest",
+            "example": "latest",
+            "in": "path",
+            "name": "reference",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The manifest bytes"
+          },
+          "404": {
+            "description": "`MANIFEST_UNKNOWN`"
+          }
+        },
+        "summary": "Pull a manifest",
+        "tags": [
+          "oci"
+        ]
+      },
+      "put": {
+        "description": "Stores the manifest under its canonical `sha256:` digest and, for a tag reference, points the tag at it. Requires a writable hosted index and its upload token.",
+        "parameters": [
+          {
+            "description": "The repository name, carrying the OCI index route as a prefix",
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
+          },
+          {
+            "description": "A tag or an `algorithm:hex` digest",
+            "example": "latest",
+            "in": "path",
+            "name": "reference",
+            "required": true
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Stored"
+          },
+          "403": {
+            "description": "`DENIED`: read-only index or blocked by policy"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ],
+        "summary": "Push a manifest",
+        "tags": [
+          "oci"
         ]
       }
     },
     "/v2/{name}/manifests/{reference}/restore": {
       "put": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "Restore a trashed manifest or tag",
         "description": "Makes retained manifest bytes visible again. Digest restore reclaims tags whose live slot is empty and reports reused tags without overwriting them.",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
           },
           {
-            "name": "reference",
-            "in": "path",
             "description": "A tag or an `algorithm:hex` digest",
-            "required": true,
-            "example": "latest"
+            "example": "latest",
+            "in": "path",
+            "name": "reference",
+            "required": true
           }
         ],
         "responses": {
@@ -1538,72 +1542,71 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Restore a trashed manifest or tag",
+        "tags": [
+          "oci"
         ]
       }
     },
     "/v2/{name}/referrers/{digest}": {
       "get": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "List referrers",
         "description": "The manifests that declare `{digest}` as their subject (attestations, signatures).",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
           },
           {
-            "name": "digest",
-            "in": "path",
             "description": "A content digest; blob digests must be `sha256:...`",
-            "required": true,
-            "example": "sha256:2c3e..."
+            "example": "sha256:2c3e...",
+            "in": "path",
+            "name": "digest",
+            "required": true
           }
         ],
         "responses": {
           "200": {
             "description": "An image-index of referrers"
           }
-        }
+        },
+        "summary": "List referrers",
+        "tags": [
+          "oci"
+        ]
       }
     },
     "/v2/{name}/tags/list": {
       "get": {
-        "tags": [
-          "oci"
-        ],
-        "summary": "List tags",
         "description": "Answers `{\"name\", \"tags\"}`, with `n`/`last` pagination and a `Link` next-page header.",
         "parameters": [
           {
-            "name": "name",
-            "in": "path",
             "description": "The repository name, carrying the OCI index route as a prefix",
-            "required": true,
-            "example": "dockerhub/library/alpine"
+            "example": "dockerhub/library/alpine",
+            "in": "path",
+            "name": "name",
+            "required": true
           },
           {
-            "name": "n",
-            "in": "query",
             "description": "Page size",
-            "required": false,
-            "example": 50
+            "example": 50,
+            "in": "query",
+            "name": "n",
+            "required": false
           },
           {
-            "name": "last",
-            "in": "query",
             "description": "The tag to resume after",
-            "required": false,
-            "example": "1.0"
+            "example": "1.0",
+            "in": "query",
+            "name": "last",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The tag list",
             "content": {
               "application/json": {
                 "example": {
@@ -1614,29 +1617,29 @@
                   ]
                 }
               }
-            }
+            },
+            "description": "The tag list"
           }
-        }
+        },
+        "summary": "List tags",
+        "tags": [
+          "oci"
+        ]
       }
     },
     "/{route}/": {
       "post": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Upload a distribution",
         "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries a wheel or a `.tar.gz` or `.zip` sdist. peryx streams the bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and sdist top-level structure before the file lands in the index's local layer. Uploaded wheels and sdists get PEP 658/714 `.metadata` siblings from verified core metadata. The upload shadows any upstream file of the same name.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           }
         ],
         "requestBody": {
-          "description": "`multipart/form-data` with `:action=file_upload`",
           "content": {
             "multipart/form-data": {
               "example": {
@@ -1650,30 +1653,30 @@
                 "version": "1.0"
               }
             }
-          }
+          },
+          "description": "`multipart/form-data` with `:action=file_upload`"
         },
         "responses": {
           "200": {
-            "description": "Stored",
             "content": {
               "text/plain": {
                 "example": "upload accepted"
               }
-            }
+            },
+            "description": "Stored"
           },
           "400": {
-            "description": "Rejected",
             "content": {
               "text/plain": {
                 "example": "metadata Name \"other\" does not match upload name \"peryxpkg\""
               }
-            }
+            },
+            "description": "Rejected"
           },
           "401": {
             "description": "Missing or wrong token"
           },
           "403": {
-            "description": "Uploads disabled, project status rejects uploads, or index policy denied the upload",
             "content": {
               "application/json": {
                 "example": {
@@ -1686,7 +1689,8 @@
                   "version": "1.0"
                 }
               }
-            }
+            },
+            "description": "Uploads disabled, project status rejects uploads, or index policy denied the upload"
           },
           "405": {
             "description": "The route's index has no writable local layer"
@@ -1696,28 +1700,27 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Upload a distribution",
+        "tags": [
+          "publish"
         ]
       }
     },
     "/{route}/+api": {
       "get": {
-        "tags": [
-          "discovery"
-        ],
-        "summary": "Discover one index",
         "description": "A compact index document with URLs and client configuration snippets. Snippets appear only when the request has enough host context to render absolute URLs.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The index discovery document",
             "content": {
               "application/json": {
                 "example": {
@@ -1761,61 +1764,61 @@
                   "version": "0.0.1"
                 }
               }
-            }
+            },
+            "description": "The index discovery document"
           },
           "404": {
             "description": "No index at this route"
           }
-        }
+        },
+        "summary": "Discover one index",
+        "tags": [
+          "discovery"
+        ]
       }
     },
     "/{route}/+search": {
       "get": {
-        "tags": [
-          "search"
-        ],
-        "summary": "Search one index route",
         "description": "Searches the derived package index built from cached simple pages, local uploads, and cached core metadata. `q` uses substring matching; prefix it with `re:` for a regex. Index policy removes denied packages before indexing. Results are sorted by display name and paged without collecting every match.",
         "parameters": [
           {
-            "name": "q",
-            "in": "query",
             "description": "Search text. Prefix with `re:` to use a regex.",
-            "required": false,
-            "example": "flask"
+            "example": "flask",
+            "in": "query",
+            "name": "q",
+            "required": false
           },
           {
-            "name": "type",
-            "in": "query",
             "description": "`uploaded`, `cached`, or `override`; omit for all sources.",
-            "required": false,
-            "example": "override"
+            "example": "override",
+            "in": "query",
+            "name": "type",
+            "required": false
           },
           {
-            "name": "page",
-            "in": "query",
             "description": "One-based page number.",
-            "required": false,
-            "example": 1
-          },
-          {
-            "name": "page_size",
+            "example": 1,
             "in": "query",
-            "description": "Page size: 25, 50, or 100.",
-            "required": false,
-            "example": 25
+            "name": "page",
+            "required": false
           },
           {
-            "name": "route",
-            "in": "path",
+            "description": "Page size: 25, 50, or 100.",
+            "example": 25,
+            "in": "query",
+            "name": "page_size",
+            "required": false
+          },
+          {
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "Search results",
             "content": {
               "application/json": {
                 "example": {
@@ -1836,91 +1839,92 @@
                   "type": "all"
                 }
               }
-            }
+            },
+            "description": "Search results"
           },
           "400": {
-            "description": "Invalid search parameters",
             "content": {
               "application/json": {
                 "example": {
                   "error": "invalid package source type"
                 }
               }
-            }
+            },
+            "description": "Invalid search parameters"
           }
-        }
+        },
+        "summary": "Search one index route",
+        "tags": [
+          "search"
+        ]
       }
     },
     "/{route}/files/{sha256}/{filename}": {
       "get": {
-        "tags": [
-          "files"
-        ],
-        "summary": "Download an artifact",
         "description": "Serves the blob if cached; otherwise fetches it from its upstream cache, verifies the sha256, caches it, and serves it. The `{filename}` segment is display context and must be percent-encoded as one path segment. Responses are immutable (`Cache-Control: max-age=31536000`) and carry the quoted sha256 as their `ETag`. A cached blob honors a single byte range, so an interrupted download can resume; a range this server cannot read is ignored and the whole artifact served, as is a range whose `If-Range` no longer names the artifact. A cached blob also carries the date the store wrote it as its `Last-Modified`, which an older client revalidates on when it kept no entity tag.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "sha256",
-            "in": "path",
             "description": "The artifact's sha256, lowercase hex",
-            "required": true,
-            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-          },
-          {
-            "name": "filename",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
             "in": "path",
+            "name": "sha256",
+            "required": true
+          },
+          {
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
-            "required": true,
-            "example": "peryxpkg-1.0-py3-none-any.whl"
+            "example": "peryxpkg-1.0-py3-none-any.whl",
+            "in": "path",
+            "name": "filename",
+            "required": true
           },
           {
-            "name": "Range",
-            "in": "header",
             "description": "One byte range over a cached artifact; multiple ranges are ignored",
-            "required": false,
-            "example": "bytes=0-1023"
+            "example": "bytes=0-1023",
+            "in": "header",
+            "name": "Range",
+            "required": false
           },
           {
-            "name": "If-None-Match",
-            "in": "header",
             "description": "Entity tags the client already holds; a match answers `304` before any range is read",
-            "required": false,
-            "example": "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\""
+            "example": "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false
           },
           {
-            "name": "If-Range",
-            "in": "header",
             "description": "The entity tag the client's partial copy was cut from; the `Range` is served only while it still names the artifact, and the whole artifact otherwise",
-            "required": false,
-            "example": "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\""
+            "example": "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"",
+            "in": "header",
+            "name": "If-Range",
+            "required": false
           },
           {
-            "name": "If-Modified-Since",
-            "in": "header",
             "description": "The `Last-Modified` date of a cached artifact the client already holds; answered `304` unless the store wrote the blob later. Ignored when the request also sends `If-None-Match`",
-            "required": false,
-            "example": "Wed, 21 Oct 2026 07:28:00 GMT"
+            "example": "Wed, 21 Oct 2026 07:28:00 GMT",
+            "in": "header",
+            "name": "If-Modified-Since",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The artifact bytes",
             "content": {
               "application/octet-stream": {}
-            }
+            },
+            "description": "The artifact bytes"
           },
           "206": {
-            "description": "The requested byte range of a cached artifact",
             "content": {
               "application/octet-stream": {}
-            }
+            },
+            "description": "The requested byte range of a cached artifact"
           },
           "304": {
             "description": "`If-None-Match` names the artifact's digest, or `If-Modified-Since` covers the cached blob, so no body is sent"
@@ -1929,7 +1933,6 @@
             "description": "The digest is not 64 lowercase hex, or the filename is not a safe path segment"
           },
           "403": {
-            "description": "Project status or index policy does not allow downloads",
             "content": {
               "application/json": {
                 "example": {
@@ -1942,7 +1945,8 @@
                   "version": "1.0"
                 }
               }
-            }
+            },
+            "description": "Project status or index policy does not allow downloads"
           },
           "404": {
             "description": "No file with this digest is known"
@@ -1953,50 +1957,49 @@
           "502": {
             "description": "The upstream cache failed or the bytes did not match the digest"
           }
-        }
+        },
+        "summary": "Download an artifact",
+        "tags": [
+          "files"
+        ]
       }
     },
     "/{route}/files/{sha256}/{filename}.metadata": {
       "get": {
-        "tags": [
-          "files"
-        ],
-        "summary": "Download PEP 658 core metadata",
         "description": "The `.metadata` sibling of an artifact: advertised upstream metadata verified against the index-page digest, or metadata generated from a wheel `METADATA`/sdist `PKG-INFO` when upstream omits the sibling. pip and uv resolve through this instead of downloading whole artifacts.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "sha256",
-            "in": "path",
             "description": "The artifact's sha256, lowercase hex",
-            "required": true,
-            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "in": "path",
+            "name": "sha256",
+            "required": true
           },
           {
-            "name": "filename",
-            "in": "path",
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
-            "required": true,
-            "example": "peryxpkg-1.0-py3-none-any.whl.metadata"
+            "example": "peryxpkg-1.0-py3-none-any.whl.metadata",
+            "in": "path",
+            "name": "filename",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The core-metadata document",
             "content": {
               "application/octet-stream": {
                 "example": "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\n"
               }
-            }
+            },
+            "description": "The core-metadata document"
           },
           "403": {
-            "description": "Project status or index policy does not allow downloads",
             "content": {
               "application/json": {
                 "example": {
@@ -2009,75 +2012,75 @@
                   "version": "1.0"
                 }
               }
-            }
+            },
+            "description": "Project status or index policy does not allow downloads"
           },
           "404": {
             "description": "The artifact has no known metadata sibling"
           }
-        }
+        },
+        "summary": "Download PEP 658 core metadata",
+        "tags": [
+          "files"
+        ]
       }
     },
     "/{route}/inspect/{sha256}/{filename}": {
       "get": {
-        "tags": [
-          "files"
-        ],
-        "summary": "List archive members",
         "description": "The file members of a cached wheel, zip, zipped egg, plain tarball, or gzip tarball (`.tar.gz` and `.tgz`). Nested archives are not expanded unless the request names them with repeated `container` query parameters. Pass `member` to read one bounded text chunk.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "sha256",
-            "in": "path",
             "description": "The artifact's sha256, lowercase hex",
-            "required": true,
-            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-          },
-          {
-            "name": "filename",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
             "in": "path",
+            "name": "sha256",
+            "required": true
+          },
+          {
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
-            "required": true,
-            "example": "peryxpkg-1.0-py3-none-any.whl"
+            "example": "peryxpkg-1.0-py3-none-any.whl",
+            "in": "path",
+            "name": "filename",
+            "required": true
           },
           {
-            "name": "container",
-            "in": "query",
             "description": "Optional archive-member path to treat as the next archive level. Repeat in stack order.",
-            "required": false,
-            "example": "vendor/inner.zip"
+            "example": "vendor/inner.zip",
+            "in": "query",
+            "name": "container",
+            "required": false
           },
           {
-            "name": "member",
-            "in": "query",
             "description": "Optional text member path to read as a bounded chunk",
-            "required": false,
-            "example": "peryxpkg-1.0.dist-info/METADATA"
+            "example": "peryxpkg-1.0.dist-info/METADATA",
+            "in": "query",
+            "name": "member",
+            "required": false
           },
           {
-            "name": "offset",
-            "in": "query",
             "description": "Byte offset inside the selected member; defaults to 0",
-            "required": false,
-            "example": 262144
+            "example": 262144,
+            "in": "query",
+            "name": "offset",
+            "required": false
           },
           {
-            "name": "limit",
-            "in": "query",
             "description": "Maximum bytes to return, from 1 through 1048576; defaults to 262144",
-            "required": false,
-            "example": 262144
+            "example": 262144,
+            "in": "query",
+            "name": "limit",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The archive listing, or a text member chunk when `member` is set",
             "content": {
               "application/json": {
                 "example": {
@@ -2107,7 +2110,8 @@
               "text/plain; charset=utf-8": {
                 "example": "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n"
               }
-            }
+            },
+            "description": "The archive listing, or a text member chunk when `member` is set"
           },
           "400": {
             "description": "Bad digest, unsafe filename, or archive nesting depth above the limit"
@@ -2127,53 +2131,53 @@
           "422": {
             "description": "The archive cannot be read"
           }
-        }
+        },
+        "summary": "List archive members",
+        "tags": [
+          "files"
+        ]
       }
     },
     "/{route}/inspect/{sha256}/{filename}/{member}": {
       "get": {
-        "tags": [
-          "files"
-        ],
-        "summary": "Read an archive member",
         "description": "Legacy path form for reading one root archive member as bounded text chunks. Prefer the query form when member names contain slashes or when inspecting nested archives.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "sha256",
-            "in": "path",
             "description": "The artifact's sha256, lowercase hex",
-            "required": true,
-            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "in": "path",
+            "name": "sha256",
+            "required": true
           },
           {
-            "name": "filename",
-            "in": "path",
             "description": "The display filename, percent-encoded as one path segment. Separators, traversal, and control characters are rejected.",
-            "required": true,
-            "example": "peryxpkg-1.0-py3-none-any.whl"
+            "example": "peryxpkg-1.0-py3-none-any.whl",
+            "in": "path",
+            "name": "filename",
+            "required": true
           },
           {
-            "name": "member",
+            "example": "peryxpkg-1.0.dist-info/METADATA",
             "in": "path",
-            "required": true,
-            "example": "peryxpkg-1.0.dist-info/METADATA"
+            "name": "member",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The member content",
             "content": {
               "text/plain; charset=utf-8": {
                 "example": "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n"
               }
-            }
+            },
+            "description": "The member content"
           },
           "404": {
             "description": "Unknown digest or member"
@@ -2184,35 +2188,34 @@
           "416": {
             "description": "The requested offset is beyond the member size"
           }
-        }
+        },
+        "summary": "Read an archive member",
+        "tags": [
+          "files"
+        ]
       }
     },
     "/{route}/simple/": {
       "get": {
-        "tags": [
-          "simple"
-        ],
-        "summary": "List projects",
         "description": "The projects peryx has observed on this index: everything uploaded, plus every mirrored project a client has asked for. A virtual index unions its layers. Index policy filters denied projects before serialization. JSON or HTML by `Accept`.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "Accept",
-            "in": "header",
             "description": "Clients may rank PEP 691 JSON and PEP 503 HTML media ranges with `q` weights",
-            "required": false,
-            "example": "application/vnd.pypi.simple.v1+json"
+            "example": "application/vnd.pypi.simple.v1+json",
+            "in": "header",
+            "name": "Accept",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The project list (PEP 691 shown; PEP 503 HTML without the JSON `Accept`)",
             "content": {
               "application/vnd.pypi.simple.v1+json": {
                 "example": {
@@ -2229,47 +2232,47 @@
                   ]
                 }
               }
-            }
+            },
+            "description": "The project list (PEP 691 shown; PEP 503 HTML without the JSON `Accept`)"
           },
           "404": {
             "description": "No index at this route"
           }
-        }
+        },
+        "summary": "List projects",
+        "tags": [
+          "simple"
+        ]
       }
     },
     "/{route}/simple/{project}/": {
       "get": {
-        "tags": [
-          "simple"
-        ],
-        "summary": "Project detail",
         "description": "All files of one project, merged across virtual-index layers (first match per filename wins, versions union). File URLs point back at peryx's own `files/` route; `core-metadata` advertises the PEP 658 sibling. Index policy filters denied files and their versions before serialization.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
-          },
-          {
-            "name": "project",
+            "example": "root/pypi",
             "in": "path",
-            "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "name": "route",
+            "required": true
           },
           {
-            "name": "Accept",
-            "in": "header",
+            "description": "The normalized (PEP 503) project name",
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
+          },
+          {
             "description": "Clients may rank PEP 691 JSON and PEP 503 HTML media ranges with `q` weights",
-            "required": false,
-            "example": "application/vnd.pypi.simple.v1+json"
+            "example": "application/vnd.pypi.simple.v1+json",
+            "in": "header",
+            "name": "Accept",
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "The project detail page",
             "content": {
               "application/vnd.pypi.simple.v1+json": {
                 "example": {
@@ -2304,10 +2307,10 @@
                   ]
                 }
               }
-            }
+            },
+            "description": "The project detail page"
           },
           "403": {
-            "description": "Index policy denied the project detail",
             "content": {
               "application/json": {
                 "example": {
@@ -2320,7 +2323,8 @@
                   "version": "1.0"
                 }
               }
-            }
+            },
+            "description": "Index policy denied the project detail"
           },
           "404": {
             "description": "No layer of this index has the project"
@@ -2328,47 +2332,47 @@
           "502": {
             "description": "The upstream failed and nothing is cached"
           }
-        }
+        },
+        "summary": "Project detail",
+        "tags": [
+          "simple"
+        ]
       }
     },
     "/{route}/{project}/": {
       "delete": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Delete a project",
         "description": "Removes every uploaded file of the project. Requires the local layer to be `volatile`.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
           },
           {
-            "name": "version",
-            "in": "path",
             "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "Done; the body counts affected files",
             "content": {
               "text/plain": {
                 "example": "removed 3 file(s)"
               }
-            }
+            },
+            "description": "Done; the body counts affected files"
           },
           "401": {
             "description": "Missing or wrong token"
@@ -2387,35 +2391,34 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Delete a project",
+        "tags": [
+          "publish"
         ]
       }
     },
     "/{route}/{project}/json": {
       "get": {
-        "tags": [
-          "legacy"
-        ],
-        "summary": "Legacy project JSON",
         "description": "PyPI's legacy project JSON shape, built from the resolved Simple API detail page. The `releases` and `urls` file entries preserve hashes, yanked markers, upload time, size, and `requires_python`; metadata that Simple pages do not expose is null, empty, or `-1`.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The legacy project JSON document",
             "content": {
               "application/json": {
                 "example": {
@@ -2484,7 +2487,8 @@
                   "vulnerabilities": []
                 }
               }
-            }
+            },
+            "description": "The legacy project JSON document"
           },
           "404": {
             "description": "No layer has the project"
@@ -2492,47 +2496,47 @@
           "502": {
             "description": "The upstream failed and nothing is cached"
           }
-        }
+        },
+        "summary": "Legacy project JSON",
+        "tags": [
+          "legacy"
+        ]
       }
     },
     "/{route}/{project}/{version}/": {
       "delete": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Delete a version",
         "description": "Removes the version's uploaded files outright. Requires the local layer to be `volatile`; for a virtual index, the upstream files become visible again.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
           },
           {
-            "name": "version",
-            "in": "path",
             "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "Done; the body counts affected files",
             "content": {
               "text/plain": {
                 "example": "removed 1 file(s)"
               }
-            }
+            },
+            "description": "Done; the body counts affected files"
           },
           "401": {
             "description": "Missing or wrong token"
@@ -2551,42 +2555,41 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Delete a version",
+        "tags": [
+          "publish"
         ]
       }
     },
     "/{route}/{project}/{version}/json": {
       "get": {
-        "tags": [
-          "legacy"
-        ],
-        "summary": "Legacy release JSON",
         "description": "Version-specific legacy JSON. This has the same `info`, `urls`, `vulnerabilities`, and `ownership` shape as the project endpoint, without the deprecated `releases` map.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
           },
           {
-            "name": "version",
-            "in": "path",
             "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "The legacy release JSON document",
             "content": {
               "application/json": {
                 "example": {
@@ -2632,7 +2635,8 @@
                   "vulnerabilities": []
                 }
               }
-            }
+            },
+            "description": "The legacy release JSON document"
           },
           "404": {
             "description": "No layer has the project or version"
@@ -2640,54 +2644,54 @@
           "502": {
             "description": "The upstream failed and nothing is cached"
           }
-        }
+        },
+        "summary": "Legacy release JSON",
+        "tags": [
+          "legacy"
+        ]
       }
     },
     "/{route}/{project}/{version}/promote": {
       "put": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Promote a release",
         "description": "Copies uploaded file records for one release from the source route's local upload layer into this route's local upload layer. Promotion reuses content-addressed blob digests and preserves sha256, size, upload time, yank state, and metadata sibling hashes. The target route's upload token authenticates the request. Archived and quarantined target projects reject promotion through the same project-status policy used for uploads.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
-          },
-          {
-            "name": "version",
+            "example": "requests",
             "in": "path",
-            "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
+            "name": "project",
+            "required": true
           },
           {
-            "name": "from",
-            "in": "query",
+            "description": "One release version",
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
+          },
+          {
             "description": "Source route whose local upload layer contains the release",
-            "required": true,
-            "example": "staging"
+            "example": "staging",
+            "in": "query",
+            "name": "from",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "Done; the body counts promoted files",
             "content": {
               "text/plain": {
                 "example": "promoted 2 file(s)"
               }
-            }
+            },
+            "description": "Done; the body counts promoted files"
           },
           "400": {
             "description": "Missing `from`, unsafe path segment, or missing version"
@@ -2712,47 +2716,47 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Promote a release",
+        "tags": [
+          "publish"
         ]
       }
     },
     "/{route}/{project}/{version}/restore": {
       "put": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Restore hidden files",
         "description": "Clears the hidden marker a DELETE leaves on files served from a read-only cache, making them visible on the virtual index again. Omit `{version}/` to restore the whole project.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
           },
           {
-            "name": "version",
-            "in": "path",
             "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "Done; the body counts affected files",
             "content": {
               "text/plain": {
                 "example": "affected 1 file(s)"
               }
-            }
+            },
+            "description": "Done; the body counts affected files"
           },
           "401": {
             "description": "Missing or wrong token"
@@ -2768,108 +2772,47 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Restore hidden files",
+        "tags": [
+          "publish"
         ]
       }
     },
     "/{route}/{project}/{version}/yank": {
-      "put": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Yank files",
-        "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only cache get a reversible override on the virtual index's hosted layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project. Add `?reason=...` to preserve a resolver-visible reason.",
-        "parameters": [
-          {
-            "name": "route",
-            "in": "path",
-            "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
-          },
-          {
-            "name": "project",
-            "in": "path",
-            "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
-          },
-          {
-            "name": "version",
-            "in": "path",
-            "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
-          },
-          {
-            "name": "reason",
-            "in": "query",
-            "description": "Optional PEP 592 yank reason preserved in Simple API output",
-            "required": false,
-            "example": "build metadata is incorrect"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Done; the body counts affected files",
-            "content": {
-              "text/plain": {
-                "example": "affected 1 file(s)"
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or wrong token"
-          },
-          "404": {
-            "description": "Nothing matched"
-          },
-          "405": {
-            "description": "The route's index has no writable local layer"
-          }
-        },
-        "security": [
-          {
-            "uploadToken": []
-          }
-        ]
-      },
       "delete": {
-        "tags": [
-          "publish"
-        ],
-        "summary": "Un-yank files",
         "description": "Clears the PEP 592 yank marker set by the PUT form of this path.",
         "parameters": [
           {
-            "name": "route",
-            "in": "path",
             "description": "The index route, for example `root/pypi`",
-            "required": true,
-            "example": "root/pypi"
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
           },
           {
-            "name": "project",
-            "in": "path",
             "description": "The normalized (PEP 503) project name",
-            "required": true,
-            "example": "requests"
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
           },
           {
-            "name": "version",
-            "in": "path",
             "description": "One release version",
-            "required": true,
-            "example": "1.2.0"
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
           }
         ],
         "responses": {
           "200": {
-            "description": "Done; the body counts affected files",
             "content": {
               "text/plain": {
                 "example": "removed 1 file(s)"
               }
-            }
+            },
+            "description": "Done; the body counts affected files"
           },
           "401": {
             "description": "Missing or wrong token"
@@ -2885,22 +2828,79 @@
           {
             "uploadToken": []
           }
+        ],
+        "summary": "Un-yank files",
+        "tags": [
+          "publish"
+        ]
+      },
+      "put": {
+        "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only cache get a reversible override on the virtual index's hosted layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project. Add `?reason=...` to preserve a resolver-visible reason.",
+        "parameters": [
+          {
+            "description": "The index route, for example `root/pypi`",
+            "example": "root/pypi",
+            "in": "path",
+            "name": "route",
+            "required": true
+          },
+          {
+            "description": "The normalized (PEP 503) project name",
+            "example": "requests",
+            "in": "path",
+            "name": "project",
+            "required": true
+          },
+          {
+            "description": "One release version",
+            "example": "1.2.0",
+            "in": "path",
+            "name": "version",
+            "required": true
+          },
+          {
+            "description": "Optional PEP 592 yank reason preserved in Simple API output",
+            "example": "build metadata is incorrect",
+            "in": "query",
+            "name": "reason",
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "affected 1 file(s)"
+              }
+            },
+            "description": "Done; the body counts affected files"
+          },
+          "401": {
+            "description": "Missing or wrong token"
+          },
+          "404": {
+            "description": "Nothing matched"
+          },
+          "405": {
+            "description": "The route's index has no writable local layer"
+          }
+        },
+        "security": [
+          {
+            "uploadToken": []
+          }
+        ],
+        "summary": "Yank files",
+        "tags": [
+          "publish"
         ]
       }
     }
   },
-  "components": {
-    "securitySchemes": {
-      "administratorPassword": {
-        "type": "http",
-        "scheme": "basic",
-        "description": "A local server user's display name and password. Digest revocation operations require the administrator role."
-      },
-      "uploadToken": {
-        "type": "http",
-        "scheme": "basic",
-        "description": "Any username; the password is the hosted index's `upload_token` (the pypi.org `__token__` convention)"
-      }
+  "servers": [
+    {
+      "description": "A local peryx with the default configuration",
+      "url": "http://127.0.0.1:4433"
     }
-  }
+  ]
 }

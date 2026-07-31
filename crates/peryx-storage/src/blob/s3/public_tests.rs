@@ -174,7 +174,11 @@ async fn mount(server: &MockServer, scenario: Scenario) {
         .await;
     Mock::given(method("PUT"))
         .and(query_param("uploadId", "upload-1"))
-        .respond_with(ResponseTemplate::new(200).insert_header("ETag", "part"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("ETag", "part")
+                .insert_header("x-amz-checksum-sha256", "checksum"),
+        )
         .with_priority(2)
         .mount(server)
         .await;

@@ -484,7 +484,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         },
         availability: snapshot_availability(availability),
         jobs: snapshot_jobs(jobs),
-        blob: snapshot_blob(blob),
+        blob: snapshot_blob(blob)?,
     };
     Ok(toml::to_string_pretty(&snapshot)?)
 }
@@ -576,11 +576,12 @@ fn snapshot_jobs(jobs: &JobsConfig) -> Option<SnapshotJobs> {
     Some(SnapshotJobs { mode, schedules })
 }
 
-fn snapshot_blob(blob: &BlobStorageConfig) -> Option<SnapshotBlob<'_>> {
+fn snapshot_blob(blob: &BlobStorageConfig) -> anyhow::Result<Option<SnapshotBlob<'_>>> {
     let BlobStorageConfig::S3(s3) = blob else {
-        return None;
+        return Ok(None);
     };
-    Some(SnapshotBlob::S3 {
+    peryx_storage::blob::S3Config::new(s3.into()).map_err(anyhow::Error::msg)?;
+    Ok(Some(SnapshotBlob::S3 {
         endpoint: &s3.endpoint,
         bucket: &s3.bucket,
         region: &s3.region,
@@ -591,7 +592,7 @@ fn snapshot_blob(blob: &BlobStorageConfig) -> Option<SnapshotBlob<'_>> {
         multipart_threshold_bytes: s3.multipart_threshold,
         part_size_bytes: s3.part_size,
         upload_concurrency: s3.upload_concurrency,
-    })
+    }))
 }
 
 /// A snapshot carries the `[availability]` table only for a `dc` or `ha` node, so a single-node `none`

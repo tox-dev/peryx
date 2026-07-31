@@ -889,7 +889,7 @@ mod s3_staged_tests {
     use bytes::Bytes;
 
     use super::super::s3::{S3Backend, S3Config, S3Settings};
-    use super::super::{BlobBackend, BlobErrorKind, BlobStaged};
+    use super::super::{BlobBackend, BlobErrorKind, BlobStaged, Digest};
 
     fn backend(staging: &std::path::Path) -> S3Backend {
         let settings = S3Settings {
@@ -927,5 +927,18 @@ mod s3_staged_tests {
         let dir = tempfile::tempdir().unwrap();
         let backend = backend(dir.path());
         staged(&backend).await.abort_blocking().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_s3_staged_rejects_a_digest_mismatch_without_uploading() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = backend(dir.path());
+        let staged = staged(&backend).await;
+        let path = staged.with_materialized(std::path::Path::to_owned);
+        let error = staged.commit_as(&Digest::of(b"other")).await.unwrap_err();
+
+        assert_eq!(error.kind(), BlobErrorKind::DigestMismatch);
+        assert_eq!(error.context().unwrap().backend, "s3");
+        assert!(!path.exists());
     }
 }

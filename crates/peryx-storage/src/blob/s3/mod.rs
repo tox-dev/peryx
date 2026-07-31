@@ -10,14 +10,15 @@ mod config;
 mod public_tests;
 
 use std::collections::HashMap;
-use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::io::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use atomicwrites::{AtomicFile, DisallowOverwrite};
 use base64::Engine as _;
 use bytes::Bytes;
-use futures_util::stream::BoxStream;
+use futures_util::stream::{BoxStream, FuturesUnordered};
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
@@ -43,6 +44,13 @@ pub struct S3Backend {
 #[derive(Debug)]
 struct UploadAcquisition {
     result: watch::Receiver<Option<Result<String, String>>>,
+}
+
+#[derive(Clone, Copy)]
+struct PartSlice {
+    number: i32,
+    offset: u64,
+    bytes: u64,
 }
 
 impl S3Backend {
@@ -191,7 +199,14 @@ impl S3Backend {
     }
 
     async fn put_whole(&self, key: &str, digest: &Digest, path: &Path) -> Result<(), S3Error> {
-        self.client.put_file(key, path, &digest_checksum(digest)).await
+        let checksum = digest_checksum(digest);
+        let mut conflicts = 0;
+        loop {
+            match self.client.put_file(key, path, &checksum).await {
+                Err(S3Error::Conflict) if conflicts < self.client.config().max_retries => conflicts += 1,
+                result => return result,
+            }
+        }
     }
 
     async fn put_multipart(&self, key: &str, digest: &Digest, len: u64, path: &Path) -> Result<(), S3Error> {
@@ -210,19 +225,26 @@ impl S3Backend {
                 }
                 Err(error) => return self.abort_after_error(key, &upload_id, &journal, error).await,
             };
-            match self.client.complete_multipart(key, &upload_id, parts, len).await {
-                Ok(()) => {
-                    remove_journal(&journal).await?;
-                    return Ok(());
-                }
-                Err(S3Error::AlreadyExists) => {
-                    self.abort_and_clear(key, &upload_id, &journal).await?;
-                    return Ok(());
-                }
+            match self.client.complete_multipart(key, &upload_id, parts).await {
+                Ok(()) => return remove_journal(&journal).await,
+                Err(S3Error::AlreadyExists) => return self.abort_and_clear(key, &upload_id, &journal).await,
                 Err(S3Error::Conflict) if conflicts < self.client.config().max_retries => {
                     conflicts += 1;
                     self.abort_and_clear(key, &upload_id, &journal).await?;
                 }
+                Err(S3Error::NoSuchUpload) => match self.client.head(key).await {
+                    Ok(Some(_)) => return remove_journal(&journal).await,
+                    Ok(None) if !recovered_stale_upload => {
+                        recovered_stale_upload = true;
+                        remove_journal(&journal).await?;
+                    }
+                    Ok(None) => {
+                        return self
+                            .abort_after_error(key, &upload_id, &journal, S3Error::NoSuchUpload)
+                            .await;
+                    }
+                    Err(error) => return self.abort_after_error(key, &upload_id, &journal, error).await,
+                },
                 Err(error) => return self.abort_after_error(key, &upload_id, &journal, error).await,
             }
         }
@@ -306,38 +328,47 @@ impl S3Backend {
         path: &Path,
     ) -> Result<Vec<S3Part>, S3Error> {
         let part_size = usize::try_from(part_size).expect("validated S3 part size fits usize");
-        let mut parts: Vec<_> = futures_util::stream::iter((0..len).step_by(part_size))
+        let part_bytes = u64::try_from(part_size).expect("part size originated as u64");
+        let mut pending = (0..len)
+            .step_by(part_size)
             .enumerate()
-            .map(|(index, offset)| {
-                self.upload_one(
-                    key,
-                    upload_id,
-                    i32::try_from(index + 1).expect("multipart part count is bounded to 10,000"),
-                    path.to_owned(),
-                    offset,
-                    u64::try_from(part_size)
-                        .expect("part size originated as u64")
-                        .min(len - offset),
-                )
-            })
-            .buffer_unordered(self.client.config().upload_concurrency)
-            .try_collect()
-            .await?;
+            .map(|(index, offset)| PartSlice {
+                number: i32::try_from(index + 1).expect("multipart part count is bounded to 10,000"),
+                offset,
+                bytes: part_bytes.min(len - offset),
+            });
+        let mut uploads = FuturesUnordered::new();
+        for _ in 0..self.client.config().upload_concurrency {
+            let Some(part) = pending.next() else {
+                break;
+            };
+            uploads.push(self.upload_one(key, upload_id, path, part));
+        }
+        let mut parts = Vec::new();
+        let mut first_error = None;
+        while let Some(result) = uploads.next().await {
+            match result {
+                Ok(part) => parts.push(part),
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+            if first_error.is_none()
+                && let Some(part) = pending.next()
+            {
+                uploads.push(self.upload_one(key, upload_id, path, part));
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
         parts.sort_unstable_by_key(|part| part.number);
         Ok(parts)
     }
 
-    async fn upload_one(
-        &self,
-        key: &str,
-        upload_id: &str,
-        number: i32,
-        path: PathBuf,
-        offset: u64,
-        len: u64,
-    ) -> Result<S3Part, S3Error> {
-        let (body, checksum) = read_chunk(path, offset, len).await?;
-        self.client.upload_part(key, upload_id, number, body, checksum).await
+    async fn upload_one(&self, key: &str, upload_id: &str, path: &Path, part: PartSlice) -> Result<S3Part, S3Error> {
+        self.client
+            .upload_part(key, upload_id, part.number, path, part.offset, part.bytes)
+            .await
     }
 }
 
@@ -345,31 +376,23 @@ async fn create_upload(client: &S3Client, key: &str, journal: &Path) -> Result<S
     let upload_id = client.create_multipart(key).await?;
     match create_journal(journal, &upload_id).await {
         Ok(()) => Ok(upload_id),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+        Err(error) => {
             client.abort_multipart(key, &upload_id).await?;
             read_journal(journal)
                 .await?
-                .ok_or(S3Error::InvalidResponse("multipart journal"))
-        }
-        Err(error) => {
-            client.abort_multipart(key, &upload_id).await?;
-            Err(S3Error::Request(error.to_string()))
+                .ok_or_else(|| S3Error::Request(error.to_string()))
         }
     }
 }
 
 async fn read_journal(path: &Path) -> Result<Option<String>, S3Error> {
     match tokio::fs::read(path).await {
-        Ok(bytes) if bytes.is_empty() || bytes.len() > 4_096 => {
-            remove_journal(path).await?;
-            Ok(None)
-        }
+        Ok(bytes) if bytes.is_empty() || bytes.len() > 4_096 => remove_journal(path).await.map(|()| None),
         Ok(bytes) => {
             if let Ok(upload_id) = String::from_utf8(bytes) {
                 Ok(Some(upload_id))
             } else {
-                remove_journal(path).await?;
-                Ok(None)
+                remove_journal(path).await.map(|()| None)
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -383,15 +406,12 @@ async fn create_journal(path: &Path, upload_id: &str) -> Result<(), std::io::Err
     let path = path.to_owned();
     let upload_id = upload_id.to_owned();
     tokio::task::spawn_blocking(move || {
-        let parent = path.parent().expect("multipart journal parent was checked");
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        file.write_all(upload_id.as_bytes())?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(&path).map_err(|error| error.error)?;
-        std::fs::File::open(parent)?.sync_all()
+        AtomicFile::new(path, DisallowOverwrite)
+            .write(|file| file.write_all(upload_id.as_bytes()))
+            .map_err(std::io::Error::from)
     })
     .await
-    .map_err(std::io::Error::other)?
+    .expect("journal persistence task must not panic")
 }
 
 async fn remove_journal(path: &Path) -> Result<(), S3Error> {
@@ -400,20 +420,6 @@ async fn remove_journal(path: &Path) -> Result<(), S3Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(S3Error::Request(error.to_string())),
     }
-}
-
-async fn read_chunk(path: PathBuf, offset: u64, len: u64) -> Result<(Bytes, String), S3Error> {
-    tokio::task::spawn_blocking(move || {
-        let mut file = std::fs::File::open(&path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut buffer = vec![0u8; usize::try_from(len).map_err(std::io::Error::other)?];
-        file.read_exact(&mut buffer)?;
-        let checksum = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&buffer));
-        Ok((Bytes::from(buffer), checksum))
-    })
-    .await
-    .expect("S3 part read task panicked")
-    .map_err(|error: std::io::Error| S3Error::Request(error.to_string()))
 }
 
 fn digest_checksum(digest: &Digest) -> String {
@@ -463,7 +469,7 @@ impl BlobBackend for S3Backend {
             durability: BlobDurability::ObjectStore,
             create_if_absent: BlobSupport::Native,
             range: BlobSupport::Native,
-            checksum: BlobSupport::Native,
+            checksum: BlobSupport::Emulated,
             delete: BlobSupport::Native,
             list: BlobSupport::Unsupported,
             local_tail: BlobSupport::Native,

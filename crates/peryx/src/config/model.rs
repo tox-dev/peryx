@@ -1,6 +1,7 @@
 //! The fully resolved configuration types and their defaults.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -68,7 +69,7 @@ pub enum BlobStorageConfig {
 }
 
 /// The non-secret settings that address an S3-compatible bucket.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct S3StorageConfig {
     pub endpoint: String,
     pub bucket: String,
@@ -80,6 +81,24 @@ pub struct S3StorageConfig {
     pub multipart_threshold: u64,
     pub part_size: u64,
     pub upload_concurrency: usize,
+}
+
+impl fmt::Debug for S3StorageConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("S3StorageConfig")
+            .field("endpoint", &"<redacted>")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("region", &self.region)
+            .field("path_style", &self.path_style)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_retries", &self.max_retries)
+            .field("multipart_threshold", &self.multipart_threshold)
+            .field("part_size", &self.part_size)
+            .field("upload_concurrency", &self.upload_concurrency)
+            .finish()
+    }
 }
 
 impl From<&S3StorageConfig> for peryx_storage::blob::S3Settings {

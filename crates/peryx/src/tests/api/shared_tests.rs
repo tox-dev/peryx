@@ -53,6 +53,22 @@ fn test_openapi_document_covers_every_endpoint() {
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
 }
 
+#[test]
+fn test_openapi_json_has_stable_object_order() {
+    assert_json_objects_are_sorted(&serde_json::from_str(&openapi_json()).unwrap());
+}
+
+fn assert_json_objects_are_sorted(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => values.iter().for_each(assert_json_objects_are_sorted),
+        serde_json::Value::Object(object) => {
+            assert!(object.keys().is_sorted(), "object keys are not sorted: {object:?}");
+            object.values().for_each(assert_json_objects_are_sorted);
+        }
+        _ => {}
+    }
+}
+
 // The documentation site serves a checked-in copy rendered by ReDoc; regenerate it with
 // `cargo run -p peryx -- openapi > site/static/openapi.json` whenever this test fails.
 #[test]
