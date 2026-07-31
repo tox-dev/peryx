@@ -271,6 +271,27 @@ impl Config {
                 });
             }
         }
+        let mut oidc_ids = HashSet::new();
+        for provider in &self.auth.oidc_providers {
+            if !oidc_ids.insert(&provider.id) {
+                return Err(ConfigError::OidcProvider {
+                    id: provider.id.to_string(),
+                    reason: "provider IDs must be unique",
+                });
+            }
+            if provider.group_mappings.iter().any(|mapping| {
+                matches!(
+                    &mapping.scope,
+                    peryx_identity::GrantScope::Repository { name }
+                        if !self.indexes.iter().any(|index| index.name == *name)
+                )
+            }) {
+                return Err(ConfigError::OidcProvider {
+                    id: provider.id.to_string(),
+                    reason: "group mapping repository must name a configured index",
+                });
+            }
+        }
         match self.writer_identity.as_deref() {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
@@ -301,6 +322,7 @@ pub struct AuthConfig {
     pub oidc_audience: String,
     pub trusted_publishers: Vec<TrustedPublisherConfig>,
     pub ldap_providers: Vec<LdapProviderConfig>,
+    pub oidc_providers: Vec<OidcProviderConfig>,
 }
 
 impl Default for AuthConfig {
@@ -312,7 +334,46 @@ impl Default for AuthConfig {
             oidc_audience: "peryx".to_owned(),
             trusted_publishers: Vec::new(),
             ldap_providers: Vec::new(),
+            oidc_providers: Vec::new(),
         }
+    }
+}
+
+/// One configured browser OIDC login provider, resolved from `[[auth.oidc_provider]]`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OidcProviderConfig {
+    pub id: ProviderId,
+    pub issuer: Url,
+    pub client_id: String,
+    /// The confidential client secret, or `None` for a public client that relies on PKCE alone.
+    pub client_secret: Option<SecretSource>,
+    pub redirect_uri: Url,
+    pub scopes: Vec<String>,
+    pub subject_claim: String,
+    pub display_name_claim: String,
+    pub groups_claim: Option<String>,
+    pub clock_skew: Duration,
+    pub request_timeout: Duration,
+    pub group_mappings: Vec<ExternalGroupGrant>,
+}
+
+impl fmt::Debug for OidcProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OidcProviderConfig")
+            .field("id", &self.id)
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "[redacted]"))
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("subject_claim", &self.subject_claim)
+            .field("display_name_claim", &self.display_name_claim)
+            .field("groups_claim", &self.groups_claim)
+            .field("clock_skew", &self.clock_skew)
+            .field("request_timeout", &self.request_timeout)
+            .field("group_mappings", &self.group_mappings)
+            .finish()
     }
 }
 

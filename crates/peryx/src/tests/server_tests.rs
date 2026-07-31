@@ -24,8 +24,8 @@ use peryx_ecosystem_oci::LibraryPrefix;
 
 use crate::config::{
     AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig,
-    IndexConfig, IndexKind, LdapBindConfig, LdapProviderConfig, ReplicationConfig, S3StorageConfig, SecretSource,
-    TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
+    IndexConfig, IndexKind, LdapBindConfig, LdapProviderConfig, OidcProviderConfig, ReplicationConfig, S3StorageConfig,
+    SecretSource, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, WebhookConfig, WebhookSecret,
 };
 use crate::server::{
     build_blob_storage, build_index_settings, build_indexes, build_router, build_state, recover_job_attempts,
@@ -1232,6 +1232,89 @@ fn ldap_provider(bind: LdapBindConfig) -> LdapProviderConfig {
         max_connections: NonZeroU32::new(2).unwrap(),
         group_mappings: Vec::new(),
     }
+}
+
+fn oidc_provider(id: &str, client_secret: Option<SecretSource>) -> OidcProviderConfig {
+    OidcProviderConfig {
+        id: ProviderId::new(id).unwrap(),
+        issuer: url::Url::parse("https://idp.example/realms/main").unwrap(),
+        client_id: "peryx".to_owned(),
+        client_secret,
+        redirect_uri: url::Url::parse("https://registry.example/oidc/callback").unwrap(),
+        scopes: vec!["openid".to_owned()],
+        subject_claim: "sub".to_owned(),
+        display_name_claim: "name".to_owned(),
+        groups_claim: None,
+        clock_skew: Duration::from_mins(1),
+        request_timeout: Duration::from_secs(5),
+        group_mappings: Vec::new(),
+    }
+}
+
+#[test]
+fn test_build_state_installs_lazy_named_oidc_logins() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            oidc_providers: vec![
+                oidc_provider("corporate", Some(SecretSource::Literal("client-secret".to_owned()))),
+                oidc_provider("partners", None),
+            ],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(state.oidc_login("corporate").unwrap().id().as_str(), "corporate");
+    assert_eq!(state.oidc_login("partners").unwrap().id().as_str(), "partners");
+    assert!(state.oidc_login("missing").is_none());
+    assert_eq!(state.oidc_providers(), vec!["corporate", "partners"]);
+}
+
+#[test]
+fn test_build_state_reports_an_unreadable_oidc_client_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            oidc_providers: vec![oidc_provider(
+                "corporate",
+                Some(SecretSource::File(PathBuf::from("/nonexistent/peryx/oidc-secret"))),
+            )],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected OIDC client secret error");
+    };
+
+    assert!(error.to_string().contains("read OIDC provider corporate client secret"));
+}
+
+#[test]
+fn test_build_state_rejects_an_invalid_oidc_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut provider = oidc_provider("corporate", None);
+    provider.issuer = url::Url::parse("https://idp.example/?tenant=main").unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            oidc_providers: vec![provider],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected invalid OIDC provider error");
+    };
+
+    assert_eq!(error.to_string(), "configure OIDC provider corporate");
 }
 
 #[test]

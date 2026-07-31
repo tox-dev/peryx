@@ -19,15 +19,15 @@ pub(crate) use merge::classify_tls;
 pub use model::{
     AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityMode, BlobStorageConfig, Config, CredentialFailureMode,
     CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig, IndexKind,
-    JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig, LogConfig, LogFormat, LogSink, PrefetchConfig,
-    PrefetchMode, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig,
-    UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
+    JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig, LogConfig, LogFormat, LogSink, OidcProviderConfig,
+    PrefetchConfig, PrefetchMode, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig,
+    TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
     RawAcme, RawAvailability, RawBlobStorage, RawCredentialExec, RawExternalGroupGrant, RawIndex, RawJobSchedule,
-    RawLdapMode, RawLdapProvider, RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken, RawTrustedPublisher,
-    RawUpstream, RawWebhook,
+    RawLdapMode, RawLdapProvider, RawOidcProvider, RawPolicy, RawPrefetchConfig, RawReplication, RawTls, RawToken,
+    RawTrustedPublisher, RawUpstream, RawWebhook,
 };
 
 /// An error while assembling configuration.
@@ -51,6 +51,8 @@ pub enum ConfigError {
     TrustedPublisher { id: String, reason: &'static str },
     #[error("LDAP provider {id}: {reason}")]
     LdapProvider { id: String, reason: &'static str },
+    #[error("OIDC provider {id}: {reason}")]
+    OidcProvider { id: String, reason: &'static str },
     #[error("availability: {reason}")]
     Availability { reason: &'static str },
     #[error("replication: {reason}")]

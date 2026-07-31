@@ -20,14 +20,15 @@ use super::ConfigError;
 use super::model::{
     AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityMode, BlobStorageConfig, Config, CredentialFailureMode,
     CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE, DEFAULT_REPLICA_POLL_INTERVAL_SECS, IndexConfig, IndexKind,
-    JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, ReplicationConfig, S3StorageConfig, SecretSource,
-    TlsConfig, TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig,
-    WebhookConfig, WebhookSecret,
+    JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, OidcProviderConfig, ReplicationConfig, S3StorageConfig,
+    SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig,
+    UpstreamTlsConfig, WebhookConfig, WebhookSecret,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
     RawAcme, RawAvailability, RawBlobStorage, RawCredentialExec, RawExternalGroupGrant, RawIndex, RawJobSchedule,
-    RawLdapMode, RawLdapProvider, RawReplication, RawScheduledJob, RawTls, RawToken, RawUpstream, RawWebhook,
+    RawLdapMode, RawLdapProvider, RawOidcProvider, RawReplication, RawScheduledJob, RawTls, RawToken, RawUpstream,
+    RawWebhook,
 };
 
 impl Config {
@@ -743,6 +744,9 @@ impl AuthConfig {
         let ldap_providers = partial.ldap_providers.map_or(Ok(self.ldap_providers), |providers| {
             providers.into_iter().map(classify_ldap_provider).collect()
         })?;
+        let oidc_providers = partial.oidc_providers.map_or(Ok(self.oidc_providers), |providers| {
+            providers.into_iter().map(classify_oidc_provider).collect()
+        })?;
         Ok(Self {
             signing_key: signing_key.or(self.signing_key),
             token_ttl_secs,
@@ -750,7 +754,74 @@ impl AuthConfig {
             oidc_audience,
             trusted_publishers,
             ldap_providers,
+            oidc_providers,
         })
+    }
+}
+
+fn classify_oidc_provider(mut raw: RawOidcProvider) -> Result<OidcProviderConfig, ConfigError> {
+    let provider_id = raw.id.clone();
+    let id = ProviderId::new(&provider_id).map_err(|_| ConfigError::OidcProvider {
+        id: provider_id.clone(),
+        reason: "invalid provider ID",
+    })?;
+    let error = |reason| ConfigError::OidcProvider {
+        id: provider_id.clone(),
+        reason,
+    };
+    let issuer = secure_https(&raw.issuer).ok_or_else(|| error("`issuer` must be an https URL"))?;
+    let redirect_uri = secure_https(&raw.redirect_uri).ok_or_else(|| error("`redirect_uri` must be an https URL"))?;
+    if raw.client_id.trim().is_empty() {
+        return Err(error("`client_id` must not be empty"));
+    }
+    let client_secret = upstream_secret_source(
+        raw.client_secret.take(),
+        raw.client_secret_file.take(),
+        raw.client_secret_env.take(),
+    )
+    .map_err(error)?;
+    if matches!(&client_secret, Some(SecretSource::Literal(secret)) if secret.is_empty()) {
+        return Err(error("`client_secret` must not be empty"));
+    }
+    let subject_claim = claim(raw.subject_claim, "sub").ok_or_else(|| error("`subject_claim` must not be empty"))?;
+    let display_name_claim =
+        claim(raw.display_name_claim, "name").ok_or_else(|| error("`display_name_claim` must not be empty"))?;
+    if raw.groups_claim.as_ref().is_some_and(String::is_empty) {
+        return Err(error("`groups_claim` must not be empty"));
+    }
+    let request_timeout = std::num::NonZeroU64::new(raw.request_timeout_secs.unwrap_or(10))
+        .ok_or_else(|| error("`request_timeout_secs` must be positive"))?;
+    let group_mappings = raw
+        .group_mappings
+        .into_iter()
+        .map(|mapping| classify_group_mapping(mapping, || error("group mapping has an invalid group")))
+        .collect::<Result<_, _>>()?;
+    Ok(OidcProviderConfig {
+        id,
+        issuer,
+        client_id: raw.client_id,
+        client_secret,
+        redirect_uri,
+        scopes: raw.scopes,
+        subject_claim,
+        display_name_claim,
+        groups_claim: raw.groups_claim,
+        clock_skew: Duration::from_secs(raw.clock_skew_secs.unwrap_or(60)),
+        request_timeout: Duration::from_secs(request_timeout.get()),
+        group_mappings,
+    })
+}
+
+fn secure_https(value: &str) -> Option<url::Url> {
+    let url = url::Url::parse(value).ok()?;
+    (url.scheme() == "https" && url.host_str().is_some()).then_some(url)
+}
+
+fn claim(value: Option<String>, default: &str) -> Option<String> {
+    match value {
+        Some(claim) if claim.is_empty() => None,
+        Some(claim) => Some(claim),
+        None => Some(default.to_owned()),
     }
 }
 
@@ -830,17 +901,22 @@ fn classify_ldap_provider(mut raw: RawLdapProvider) -> Result<LdapProviderConfig
         group_mappings: raw
             .group_mappings
             .into_iter()
-            .map(|mapping| classify_group_mapping(&raw.id, mapping))
+            .map(|mapping| {
+                classify_group_mapping(mapping, || ConfigError::LdapProvider {
+                    id: provider_id.clone(),
+                    reason: "group mapping has an invalid group",
+                })
+            })
             .collect::<Result<_, _>>()?,
     })
 }
 
-fn classify_group_mapping(id: &str, raw: RawExternalGroupGrant) -> Result<ExternalGroupGrant, ConfigError> {
+fn classify_group_mapping(
+    raw: RawExternalGroupGrant,
+    invalid: impl Fn() -> ConfigError,
+) -> Result<ExternalGroupGrant, ConfigError> {
     Ok(ExternalGroupGrant {
-        group: ExternalGroup::new(&raw.group).map_err(|_| ConfigError::LdapProvider {
-            id: id.to_owned(),
-            reason: "group mapping has an invalid group",
-        })?,
+        group: ExternalGroup::new(&raw.group).map_err(|_| invalid())?,
         role: raw.role,
         scope: raw
             .repository

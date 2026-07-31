@@ -28,6 +28,7 @@ mod acl;
 mod external;
 mod ldap;
 mod oidc;
+mod oidc_login;
 mod password;
 mod revocation;
 mod roles;
@@ -52,6 +53,10 @@ pub use ldap::{
     LdapProviderSettings,
 };
 pub use oidc::{ExchangeError, ExchangedToken, IdentityExchange, OidcRuntime, PublisherBinding};
+pub use oidc_login::{
+    Authorization, CallbackResponse, OidcLoginError, OidcLoginProvider, OidcLoginService, OidcProviderBuildError,
+    OidcProviderError, OidcProviderSettings, PendingLogin,
+};
 pub use password::{PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier};
 pub use revocation::{ArtifactDigest, ArtifactDigestError, DigestDecision, RevocationReason, RevocationReasonError};
 pub use roles::{GrantScope, Resource, Role, RoleGrant, Scope, grants_permit};

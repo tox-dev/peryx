@@ -95,6 +95,8 @@ pub struct ServingState {
     /// Per-repository concurrency bound on retention-plan previews, so one repository's full-scan
     /// previews cannot starve the rest.
     pub retention_gates: crate::retention::RetentionGates,
+    /// Named browser OIDC login services. The login and callback routes select one by provider ID.
+    pub(super) oidc_logins: HashMap<String, Arc<peryx_identity::OidcLoginService<MetaStore>>>,
 }
 
 /// The whole process state: the serving data every handler needs, plus the driver registry only the
@@ -213,6 +215,20 @@ impl ServingState {
     #[must_use]
     pub fn ldap_login(&self, provider: &str) -> Option<&peryx_identity::LdapLoginService<MetaStore>> {
         self.ldap_logins.get(provider).map(AsRef::as_ref)
+    }
+
+    /// Find a configured browser OIDC login service by its operator-defined provider ID.
+    #[must_use]
+    pub fn oidc_login(&self, provider: &str) -> Option<&peryx_identity::OidcLoginService<MetaStore>> {
+        self.oidc_logins.get(provider).map(AsRef::as_ref)
+    }
+
+    /// The configured browser OIDC provider IDs, sorted, for the login surface to list.
+    #[must_use]
+    pub fn oidc_providers(&self) -> Vec<&str> {
+        let mut providers = self.oidc_logins.keys().map(String::as_str).collect::<Vec<_>>();
+        providers.sort_unstable();
+        providers
     }
 }
 

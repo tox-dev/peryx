@@ -178,6 +178,23 @@ display_name_attribute = "displayName"
 group = "cn=operators,ou=groups,dc=partners,dc=example"
 role = "operator"
 
+[[auth.oidc_provider]]
+id = "workforce"
+issuer = "https://idp.example/realms/main"
+client_id = "peryx"
+client_secret_env = "OIDC_CLIENT_SECRET"
+redirect_uri = "https://packages.example/oidc/workforce/callback"
+scopes = ["openid", "email", "groups"]
+subject_claim = "sub"
+display_name_claim = "name"
+groups_claim = "groups"
+clock_skew_secs = 45
+request_timeout_secs = 8
+
+[[auth.oidc_provider.group_mapping]]
+group = "registry-admins"
+role = "administrator"
+
 [[index]]
 name = "python"
 route = "root/python"

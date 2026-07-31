@@ -179,6 +179,46 @@ pub struct PartialAuthConfig {
     pub trusted_publishers: Option<Vec<RawTrustedPublisher>>,
     #[serde(rename = "ldap_provider")]
     pub ldap_providers: Option<Vec<RawLdapProvider>>,
+    #[serde(rename = "oidc_provider")]
+    pub oidc_providers: Option<Vec<RawOidcProvider>>,
+}
+
+/// The raw `[[auth.oidc_provider]]` table: one browser OIDC login provider before validation.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawOidcProvider {
+    pub id: String,
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub client_secret_file: Option<PathBuf>,
+    pub client_secret_env: Option<String>,
+    pub redirect_uri: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub subject_claim: Option<String>,
+    pub display_name_claim: Option<String>,
+    pub groups_claim: Option<String>,
+    pub clock_skew_secs: Option<u64>,
+    pub request_timeout_secs: Option<u64>,
+    #[serde(default, rename = "group_mapping")]
+    pub group_mappings: Vec<RawExternalGroupGrant>,
+}
+
+impl std::fmt::Debug for RawOidcProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawOidcProvider")
+            .field("id", &self.id)
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("client_secret_file", &self.client_secret_file)
+            .field("client_secret_env", &self.client_secret_env)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Deserialize)]

@@ -13,7 +13,10 @@ use peryx_driver::{AppState, DriverSet, Index, IndexKind};
 use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
-use peryx_identity::{Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, Signer};
+use peryx_identity::{
+    Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
+    OidcProviderSettings, Signer,
+};
 use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
 use peryx_storage::blob::{BlobStorage, S3Config};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
@@ -24,8 +27,8 @@ use peryx_upstream::{
 
 use crate::config::{
     AuthConfig, BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, IndexConfig,
-    IndexKind as ConfigKind, LdapBindConfig, LdapProviderConfig, ReplicationConfig, SecretSource, UpstreamTlsConfig,
-    WebhookSecret,
+    IndexKind as ConfigKind, LdapBindConfig, LdapProviderConfig, OidcProviderConfig, ReplicationConfig, SecretSource,
+    UpstreamTlsConfig, WebhookSecret,
 };
 
 /// Leave S3 credential resolution with the SDK provider chain.
@@ -139,6 +142,8 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     peryx_ecosystem_oci::install(&mut state, oci_settings);
     let ldap_logins = ldap_logins(&config.auth.ldap_providers, &state.meta)?;
     state.set_ldap_logins(ldap_logins);
+    let oidc_logins = oidc_logins(&config.auth.oidc_providers, &state.meta)?;
+    state.set_oidc_logins(oidc_logins);
     state.read_only = read_only;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
@@ -211,6 +216,42 @@ fn ldap_logins(configs: &[LdapProviderConfig], meta: &MetaStore) -> anyhow::Resu
             })
             .with_context(|| format!("configure LDAP provider {}", config.id))?;
             Ok(LdapLoginService::new(
+                provider,
+                meta.clone(),
+                config.group_mappings.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn oidc_logins(configs: &[OidcProviderConfig], meta: &MetaStore) -> anyhow::Result<Vec<OidcLoginService<MetaStore>>> {
+    configs
+        .iter()
+        .map(|config| {
+            let client_secret = config
+                .client_secret
+                .as_ref()
+                .map(|source| {
+                    source
+                        .read()
+                        .with_context(|| format!("read OIDC provider {} client secret", config.id))
+                })
+                .transpose()?;
+            let provider = OidcLoginProvider::new(OidcProviderSettings {
+                id: config.id.clone(),
+                issuer: config.issuer.clone(),
+                client_id: config.client_id.clone(),
+                client_secret,
+                redirect_uri: config.redirect_uri.clone(),
+                scopes: config.scopes.clone(),
+                subject_claim: config.subject_claim.clone(),
+                display_name_claim: config.display_name_claim.clone(),
+                groups_claim: config.groups_claim.clone(),
+                clock_skew: config.clock_skew,
+                request_timeout: config.request_timeout,
+            })
+            .with_context(|| format!("configure OIDC provider {}", config.id))?;
+            Ok(OidcLoginService::new(
                 provider,
                 meta.clone(),
                 config.group_mappings.clone(),

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use ipnet::IpNet;
 use peryx_core::Ecosystem;
 use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
-use peryx_identity::{Action, GrantScope, Role};
+use peryx_identity::{Action, ExternalGroupGrant, GrantScope, Role};
 use peryx_policy::PolicyConfig;
 use peryx_upstream::{CredentialFailure, ExecCredentialConfig};
 use serde::Serialize;
@@ -17,8 +17,8 @@ use toml::{Table, Value};
 use crate::config::{
     AcmeConfig, AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, CredentialFailureMode,
     CredentialRefreshConfig, IndexConfig, IndexKind, JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig,
-    LogConfig, LogFormat, LogSink, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig,
-    TokenConfig, WebhookConfig, WebhookSecret,
+    LogConfig, LogFormat, LogSink, OidcProviderConfig, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource,
+    TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
 };
 
 #[derive(Serialize)]
@@ -317,6 +317,32 @@ struct SnapshotAuth<'a> {
     trusted_publishers: Vec<SnapshotTrustedPublisher<'a>>,
     #[serde(rename = "ldap_provider", skip_serializing_if = "Vec::is_empty")]
     ldap_providers: Vec<SnapshotLdapProvider<'a>>,
+    #[serde(rename = "oidc_provider", skip_serializing_if = "Vec::is_empty")]
+    oidc_providers: Vec<SnapshotOidcProvider<'a>>,
+}
+
+#[derive(Serialize)]
+struct SnapshotOidcProvider<'a> {
+    id: &'a str,
+    issuer: &'a str,
+    client_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret_file: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret_env: Option<&'a str>,
+    redirect_uri: &'a str,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    scopes: &'a [String],
+    subject_claim: &'a str,
+    display_name_claim: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    groups_claim: Option<&'a str>,
+    clock_skew_secs: u64,
+    request_timeout_secs: u64,
+    #[serde(rename = "group_mapping", skip_serializing_if = "Vec::is_empty")]
+    group_mappings: Vec<SnapshotExternalGroupGrant<'a>>,
 }
 
 #[derive(Serialize)]
@@ -438,6 +464,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         oidc_audience,
         trusted_publishers,
         ldap_providers,
+        oidc_providers,
     } = auth;
     let (tls, acme) = snapshot_tls(tls.as_ref());
     let (signing_key, signing_key_file, _) = secret_parts(signing_key.as_ref());
@@ -481,6 +508,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
                 })
                 .collect(),
             ldap_providers: ldap_providers.iter().map(snapshot_ldap_provider).collect(),
+            oidc_providers: oidc_providers.iter().map(snapshot_oidc_provider).collect(),
         },
         availability: snapshot_availability(availability),
         jobs: snapshot_jobs(jobs),
@@ -518,18 +546,38 @@ fn snapshot_ldap_provider(provider: &LdapProviderConfig) -> SnapshotLdapProvider
         connect_timeout_secs: provider.connect_timeout.as_secs(),
         request_timeout_secs: provider.request_timeout.as_secs(),
         max_connections: provider.max_connections.get(),
-        group_mappings: provider
-            .group_mappings
-            .iter()
-            .map(|mapping| SnapshotExternalGroupGrant {
-                group: mapping.group.as_str(),
-                role: mapping.role,
-                repository: match &mapping.scope {
-                    GrantScope::Server => None,
-                    GrantScope::Repository { name } => Some(name.as_str()),
-                },
-            })
-            .collect(),
+        group_mappings: provider.group_mappings.iter().map(snapshot_group_mapping).collect(),
+    }
+}
+
+fn snapshot_oidc_provider(provider: &OidcProviderConfig) -> SnapshotOidcProvider<'_> {
+    let (client_secret, client_secret_file, client_secret_env) = secret_parts(provider.client_secret.as_ref());
+    SnapshotOidcProvider {
+        id: provider.id.as_str(),
+        issuer: provider.issuer.as_str(),
+        client_id: &provider.client_id,
+        client_secret,
+        client_secret_file,
+        client_secret_env,
+        redirect_uri: provider.redirect_uri.as_str(),
+        scopes: &provider.scopes,
+        subject_claim: &provider.subject_claim,
+        display_name_claim: &provider.display_name_claim,
+        groups_claim: provider.groups_claim.as_deref(),
+        clock_skew_secs: provider.clock_skew.as_secs(),
+        request_timeout_secs: provider.request_timeout.as_secs(),
+        group_mappings: provider.group_mappings.iter().map(snapshot_group_mapping).collect(),
+    }
+}
+
+fn snapshot_group_mapping(mapping: &ExternalGroupGrant) -> SnapshotExternalGroupGrant<'_> {
+    SnapshotExternalGroupGrant {
+        group: mapping.group.as_str(),
+        role: mapping.role,
+        repository: match &mapping.scope {
+            GrantScope::Server => None,
+            GrantScope::Repository { name } => Some(name.as_str()),
+        },
     }
 }
 

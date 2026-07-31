@@ -33,6 +33,7 @@ fn test_auth_defaults_to_open_reads_and_a_five_minute_token() {
     assert_eq!(auth.oidc_audience, "peryx");
     assert!(auth.trusted_publishers.is_empty());
     assert!(auth.ldap_providers.is_empty());
+    assert!(auth.oidc_providers.is_empty());
 }
 
 #[test]
@@ -483,4 +484,175 @@ fn test_default_anonymous_read_closes_every_index_that_does_not_open_itself() {
 
     assert!(!hosted("").acl(&auth).unwrap().anonymous_read);
     assert!(hosted("anonymous_read = true\n").acl(&auth).unwrap().anonymous_read);
+}
+
+const OIDC_FULL: &str = "[[auth.oidc_provider]]\nid = \"corporate\"\nissuer = \"https://idp.example/realms/main\"\n\
+     client_id = \"peryx\"\nclient_secret_env = \"OIDC_SECRET\"\n\
+     redirect_uri = \"https://registry.example/oidc/corporate/callback\"\nscopes = [\"openid\", \"email\", \"groups\"]\n\
+     subject_claim = \"sub\"\ndisplay_name_claim = \"name\"\ngroups_claim = \"groups\"\n\
+     clock_skew_secs = 30\nrequest_timeout_secs = 8\n\
+     [[auth.oidc_provider.group_mapping]]\ngroup = \"registry-admins\"\nrole = \"administrator\"\n\
+     [[auth.oidc_provider.group_mapping]]\ngroup = \"packagers\"\nrole = \"repository_reader\"\nrepository = \"packages\"\n\
+     [[index]]\nname = \"packages\"\nhosted = true\n";
+
+#[test]
+fn test_oidc_provider_config_resolves_every_field() {
+    let config = toml_config(OIDC_FULL);
+    config.validate().unwrap();
+    let provider = &config.auth.oidc_providers[0];
+
+    assert_eq!(provider.id.as_str(), "corporate");
+    assert_eq!(provider.issuer.as_str(), "https://idp.example/realms/main");
+    assert_eq!(provider.client_id, "peryx");
+    assert!(matches!(&provider.client_secret, Some(SecretSource::Env(variable)) if variable == "OIDC_SECRET"));
+    assert_eq!(
+        provider.redirect_uri.as_str(),
+        "https://registry.example/oidc/corporate/callback"
+    );
+    assert_eq!(provider.scopes, ["openid", "email", "groups"]);
+    assert_eq!(provider.subject_claim, "sub");
+    assert_eq!(provider.display_name_claim, "name");
+    assert_eq!(provider.groups_claim.as_deref(), Some("groups"));
+    assert_eq!(provider.clock_skew, std::time::Duration::from_secs(30));
+    assert_eq!(provider.request_timeout, std::time::Duration::from_secs(8));
+    assert_eq!(provider.group_mappings[0].role, Role::Administrator);
+    assert_eq!(provider.group_mappings[0].scope, GrantScope::Server);
+    assert_eq!(
+        provider.group_mappings[1].scope,
+        GrantScope::Repository {
+            name: "packages".to_owned()
+        }
+    );
+}
+
+#[test]
+fn test_oidc_provider_config_applies_claim_and_bound_defaults() {
+    let config = toml_config(
+        "[[auth.oidc_provider]]\nid = \"public\"\nissuer = \"https://idp.example\"\nclient_id = \"peryx\"\n\
+         redirect_uri = \"https://registry.example/callback\"\n",
+    );
+    let provider = &config.auth.oidc_providers[0];
+
+    assert!(provider.client_secret.is_none());
+    assert_eq!(provider.subject_claim, "sub");
+    assert_eq!(provider.display_name_claim, "name");
+    assert!(provider.groups_claim.is_none());
+    assert!(provider.scopes.is_empty());
+    assert_eq!(provider.clock_skew, std::time::Duration::from_mins(1));
+    assert_eq!(provider.request_timeout, std::time::Duration::from_secs(10));
+    assert!(provider.group_mappings.is_empty());
+}
+
+#[rstest]
+#[case::provider_id(
+    "bad id",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "invalid provider ID"
+)]
+#[case::issuer_scheme(
+    "web",
+    "issuer = \"http://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must be an https URL"
+)]
+#[case::issuer_invalid(
+    "web",
+    "issuer = \"not a url\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must be an https URL"
+)]
+#[case::redirect_scheme(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"http://registry.example/cb\"\n",
+    "`redirect_uri` must be an https URL"
+)]
+#[case::empty_client(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`client_id` must not be empty"
+)]
+#[case::empty_secret(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\nclient_secret = \"\"\n",
+    "`client_secret` must not be empty"
+)]
+#[case::multiple_secrets(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\nclient_secret = \"a\"\nclient_secret_env = \"B\"\n",
+    "set at most one of a secret, its `_file` sibling, and its `_env` sibling"
+)]
+#[case::empty_subject(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\nsubject_claim = \"\"\n",
+    "`subject_claim` must not be empty"
+)]
+#[case::empty_display(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\ndisplay_name_claim = \"\"\n",
+    "`display_name_claim` must not be empty"
+)]
+#[case::empty_groups(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\ngroups_claim = \"\"\n",
+    "`groups_claim` must not be empty"
+)]
+#[case::request_timeout(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\nrequest_timeout_secs = 0\n",
+    "`request_timeout_secs` must be positive"
+)]
+fn test_oidc_provider_rejects_invalid_settings(#[case] id: &str, #[case] body: &str, #[case] expected: &str) {
+    let text = format!("[[auth.oidc_provider]]\nid = \"{id}\"\n{body}");
+
+    assert_eq!(toml_error(&text), format!("OIDC provider {id}: {expected}"));
+}
+
+#[test]
+fn test_oidc_provider_ids_are_unique() {
+    let provider = "[[auth.oidc_provider]]\nid = \"corporate\"\nissuer = \"https://idp.example\"\n\
+         client_id = \"peryx\"\nredirect_uri = \"https://registry.example/callback\"\n";
+    let config = toml_config(&format!("{provider}{provider}"));
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "OIDC provider corporate: provider IDs must be unique"
+    );
+}
+
+#[test]
+fn test_oidc_group_mapping_repository_must_name_a_configured_index() {
+    let config = toml_config(
+        "[[auth.oidc_provider]]\nid = \"corporate\"\nissuer = \"https://idp.example\"\nclient_id = \"peryx\"\n\
+         redirect_uri = \"https://registry.example/callback\"\n\
+         [[auth.oidc_provider.group_mapping]]\ngroup = \"team\"\nrole = \"repository_reader\"\nrepository = \"absent\"\n",
+    );
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "OIDC provider corporate: group mapping repository must name a configured index"
+    );
+}
+
+#[test]
+fn test_oidc_group_mapping_rejects_an_invalid_group() {
+    let text = "[[auth.oidc_provider]]\nid = \"corporate\"\nissuer = \"https://idp.example\"\nclient_id = \"peryx\"\n\
+         redirect_uri = \"https://registry.example/callback\"\n\
+         [[auth.oidc_provider.group_mapping]]\ngroup = \"\"\nrole = \"repository_reader\"\n";
+
+    assert_eq!(
+        toml_error(text),
+        "OIDC provider corporate: group mapping has an invalid group"
+    );
+}
+
+#[test]
+fn test_oidc_provider_debug_redacts_the_client_secret() {
+    let text = "[[auth.oidc_provider]]\nid = \"corporate\"\nissuer = \"https://idp.example\"\nclient_id = \"peryx\"\n\
+                client_secret = \"top-secret\"\nredirect_uri = \"https://registry.example/callback\"\n";
+    let partial = config::from_toml(PathBuf::from("x.toml"), text).unwrap();
+    let raw_debug = format!("{:?}", partial.auth);
+    let resolved_debug = format!("{:?}", Config::default().apply(partial).unwrap().auth.oidc_providers[0]);
+
+    assert!(raw_debug.contains("[redacted]"));
+    assert!(resolved_debug.contains("[redacted]"));
+    assert!(!raw_debug.contains("top-secret"));
+    assert!(!resolved_debug.contains("top-secret"));
 }

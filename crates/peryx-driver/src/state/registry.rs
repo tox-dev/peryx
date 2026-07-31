@@ -172,4 +172,15 @@ impl AppState {
             .map(|service| (service.id().to_string(), Arc::new(service)))
             .collect();
     }
+
+    /// Install the named browser OIDC login services, replacing any set before serving started.
+    pub fn set_oidc_logins(
+        &mut self,
+        services: impl IntoIterator<Item = peryx_identity::OidcLoginService<peryx_storage::meta::MetaStore>>,
+    ) {
+        self.serving_mut().oidc_logins = services
+            .into_iter()
+            .map(|service| (service.id().to_string(), Arc::new(service)))
+            .collect();
+    }
 }
