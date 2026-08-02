@@ -299,6 +299,7 @@ fn migrate_legacy_replication(
                 replication: Some(role),
                 group: None,
                 members: None,
+                listener: None,
             }))
         }
         (None, availability) => Ok(availability),
