@@ -13,6 +13,7 @@ mod dispatch;
 mod grants;
 mod oidc;
 mod policy_decisions;
+mod pql;
 mod query;
 mod quota;
 mod retention;
@@ -36,6 +37,7 @@ pub use dispatch::{dispatch_delete, dispatch_get, dispatch_post, dispatch_put, n
 pub use grants::{GrantsQuery, create_grant, inspect_grant, list_grants, revoke_grant};
 pub use oidc::{oidc_audience, oidc_mint_token};
 pub use policy_decisions::{PolicyDecisionsQuery, policy_decision_error_response, policy_decisions};
+pub use pql::pql_query;
 pub use query::{search, search_error_response, search_response, search_response_offloaded};
 pub use quota::{quota_repository, quota_summary};
 pub use retention::{retention_export, retention_plan};

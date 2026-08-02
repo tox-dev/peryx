@@ -21,6 +21,7 @@ fn test_openapi_document_covers_every_endpoint() {
         "/+grants/{id}",
         "/+health",
         "/+policy/decisions",
+        "/+query",
         "/+quota",
         "/+quota/repository",
         "/+ready",

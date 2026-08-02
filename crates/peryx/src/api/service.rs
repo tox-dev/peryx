@@ -124,6 +124,10 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
                 .build(),
         )
         .path(
+            "/+query",
+            PathItemBuilder::new().operation(HttpMethod::Post, pql_query()).build(),
+        )
+        .path(
             "/+retention/plan",
             PathItemBuilder::new()
                 .operation(HttpMethod::Post, retention_plan())
@@ -703,6 +707,90 @@ fn policy_decisions_example() -> serde_json::Value {
         }],
         "next_cursor": "pd_000000000000002a"
     })
+}
+
+fn pql_query() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Run a PQL query"))
+        .description(Some(
+            "Runs one read-only Peryx Query Language (PQL) query over a typed domain and returns a bounded page of \
+             rows. The `query` is a small textual DSL — `from <domain> [where ...] [select ...] [aggregate ... by \
+             ...] [order by ...] [limit n]` — and `params` binds `:name` placeholders out of band, so a value never \
+             changes the query's structure. The caller's authorized scope is injected by the evaluator and cannot \
+             be named or widened; columns above the caller's classification are dropped, and operator-classified \
+             results are never cached. `next_cursor`, presented back, resumes the next page and is refused if the \
+             caller's scope has changed. Authenticate with a repository token to read one repository, or a local \
+             administrator to read operator-wide.",
+        ))
+        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
+        .request_body(Some(
+            RequestBodyBuilder::new()
+                .required(Some(Required::True))
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .example(Some(json!({
+                            "query": "from policy.decisions where repository == :repo and state == \"deny\" \
+                                      order by evaluated_at desc limit 25",
+                            "params": {"repo": "pypi-proxy"},
+                            "cursor": null
+                        })))
+                        .build(),
+                )
+                .build(),
+        ))
+        .response(
+            "200",
+            api_json_response(
+                "One bounded page of typed rows",
+                json!({
+                    "rows": [{
+                        "repository": "pypi-proxy",
+                        "project": "requests",
+                        "state": "deny",
+                        "action": "serve",
+                        "evaluated_at": 1_800_000_000,
+                        "fresh": true
+                    }],
+                    "next_cursor": null
+                }),
+            ),
+        )
+        .response(
+            "400",
+            api_json_response(
+                "The query did not parse, is invalid, is over budget, or the cursor no longer matches the scope",
+                json!({"error": "the query is not valid"}),
+            ),
+        )
+        .response(
+            "401",
+            ResponseBuilder::new().description("No valid credential was presented"),
+        )
+        .response(
+            "404",
+            ResponseBuilder::new().description("The caller cannot read the domain; its existence is not disclosed"),
+        )
+        .response("415", ResponseBuilder::new().description("The request is not JSON"))
+        .response(
+            "422",
+            ResponseBuilder::new().description("The JSON request body is invalid"),
+        )
+        .response(
+            "501",
+            api_json_response(
+                "The query uses a feature not yet wired, such as a join",
+                json!({"error": "joins are not available yet"}),
+            ),
+        )
+        .response(
+            "503",
+            api_json_response(
+                "The query backend is unavailable",
+                json!({"error": "the query backend is unavailable"}),
+            ),
+        )
 }
 
 fn policy_decisions() -> OperationBuilder {

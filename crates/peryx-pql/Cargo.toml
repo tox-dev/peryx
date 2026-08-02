@@ -1,0 +1,24 @@
+[package]
+name = "peryx-pql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Peryx Query Language: a small, read-only, non-Turing-complete structured query language over typed peryx domains."
+
+[dependencies]
+peryx-core.workspace = true
+peryx-identity.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+sha2.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

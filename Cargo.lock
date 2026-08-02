@@ -4977,6 +4977,7 @@ dependencies = [
  "peryx-identity",
  "peryx-index",
  "peryx-policy",
+ "peryx-pql",
  "peryx-search",
  "peryx-storage",
  "peryx-upstream",
@@ -5045,6 +5046,20 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "peryx-pql"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "peryx-core",
+ "peryx-identity",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "time",
 ]
 
 [[package]]

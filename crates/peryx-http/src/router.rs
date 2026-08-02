@@ -19,60 +19,7 @@ use peryx_driver::state::AppState;
 /// longest route prefix, so routes are data, not hardcoded. Every request is traced (method, path,
 /// status) at info level, so the default log level already shows the `.metadata` fast path.
 pub fn router(state: Arc<AppState>) -> Router {
-    let mut router = Router::new()
-        .route("/api-docs/openapi.json", get(handlers::openapi_spec))
-        .route("/+api", get(handlers::api))
-        .route("/+api/", get(handlers::api))
-        .route("/+search", get(handlers::search))
-        .route("/+search/", get(handlers::search))
-        .route("/+status", get(handlers::status))
-        .route("/+health", get(handlers::health))
-        .route("/+ready", get(handlers::readiness))
-        .route("/+acl", get(handlers::acl))
-        .route("/+availability/topology", get(handlers::availability_topology))
-        .route("/+stats", get(handlers::stats))
-        .route("/+analytics/top-packages", get(handlers::analytics_top))
-        .route("/+analytics/unused", get(handlers::analytics_unused))
-        .route("/+analytics/versions", get(handlers::analytics_versions))
-        .route("/+analytics/sources", get(handlers::analytics_sources))
-        .route("/+analytics/timeline", get(handlers::analytics_timeline))
-        .route("/+policy/decisions", get(handlers::policy_decisions))
-        .route("/+quota", get(handlers::quota_summary))
-        .route("/+quota/repository", get(handlers::quota_repository))
-        .route("/+shadow/candidates", get(handlers::shadow_candidates))
-        .route("/+retention/plan", post(handlers::retention_plan))
-        .route("/+retention/export", post(handlers::retention_export))
-        .route("/+trash", get(handlers::list_trash))
-        .route("/+trash/record", get(handlers::inspect_trash))
-        .route("/+revocations", get(handlers::list_revocations))
-        .route(
-            "/+revocations/{digest}",
-            get(handlers::inspect_revocation).merge(put(handlers::put_revocation)),
-        )
-        .route("/+revocations/{digest}/lift", post(handlers::lift_revocation))
-        .route(
-            "/+grants",
-            get(handlers::list_grants).merge(post(handlers::create_grant)),
-        )
-        .route(
-            "/+grants/{id}",
-            get(handlers::inspect_grant).merge(delete(handlers::revoke_grant)),
-        )
-        .route(
-            "/+tokens",
-            post(handlers::create_token).merge(get(handlers::list_tokens)),
-        )
-        .route(
-            "/+tokens/{id}",
-            get(handlers::inspect_token).merge(axum::routing::delete(handlers::revoke_token)),
-        )
-        .route("/+tokens/{id}/rotate", post(handlers::rotate_token))
-        .route("/+ui/projects", get(handlers::ui_projects))
-        .route("/+ui/project", get(handlers::ui_project))
-        .route("/+ui/manifest", get(handlers::ui_manifest))
-        .route("/+ui/members", get(handlers::ui_members))
-        .route("/+ui/member", get(handlers::ui_member))
-        .route("/metrics", get(handlers::metrics));
+    let mut router = service_routes();
     if let Some(runtime) = &state.trusted_publishing {
         router = router.merge(
             Router::new()
@@ -122,16 +69,72 @@ pub fn router(state: Arc<AppState>) -> Router {
     router.with_state(state)
 }
 
+fn service_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/api-docs/openapi.json", get(handlers::openapi_spec))
+        .route("/+api", get(handlers::api))
+        .route("/+api/", get(handlers::api))
+        .route("/+search", get(handlers::search))
+        .route("/+search/", get(handlers::search))
+        .route("/+status", get(handlers::status))
+        .route("/+health", get(handlers::health))
+        .route("/+ready", get(handlers::readiness))
+        .route("/+acl", get(handlers::acl))
+        .route("/+availability/topology", get(handlers::availability_topology))
+        .route("/+stats", get(handlers::stats))
+        .route("/+analytics/top-packages", get(handlers::analytics_top))
+        .route("/+analytics/unused", get(handlers::analytics_unused))
+        .route("/+analytics/versions", get(handlers::analytics_versions))
+        .route("/+analytics/sources", get(handlers::analytics_sources))
+        .route("/+analytics/timeline", get(handlers::analytics_timeline))
+        .route("/+policy/decisions", get(handlers::policy_decisions))
+        .route(
+            "/+query",
+            post(handlers::pql_query).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route("/+quota", get(handlers::quota_summary))
+        .route("/+quota/repository", get(handlers::quota_repository))
+        .route("/+shadow/candidates", get(handlers::shadow_candidates))
+        .route("/+retention/plan", post(handlers::retention_plan))
+        .route("/+retention/export", post(handlers::retention_export))
+        .route("/+trash", get(handlers::list_trash))
+        .route("/+trash/record", get(handlers::inspect_trash))
+        .route("/+revocations", get(handlers::list_revocations))
+        .route(
+            "/+revocations/{digest}",
+            get(handlers::inspect_revocation).merge(put(handlers::put_revocation)),
+        )
+        .route("/+revocations/{digest}/lift", post(handlers::lift_revocation))
+        .route(
+            "/+grants",
+            get(handlers::list_grants).merge(post(handlers::create_grant)),
+        )
+        .route(
+            "/+grants/{id}",
+            get(handlers::inspect_grant).merge(delete(handlers::revoke_grant)),
+        )
+        .route(
+            "/+tokens",
+            post(handlers::create_token).merge(get(handlers::list_tokens)),
+        )
+        .route(
+            "/+tokens/{id}",
+            get(handlers::inspect_token).merge(axum::routing::delete(handlers::revoke_token)),
+        )
+        .route("/+tokens/{id}/rotate", post(handlers::rotate_token))
+        .route("/+ui/projects", get(handlers::ui_projects))
+        .route("/+ui/project", get(handlers::ui_project))
+        .route("/+ui/manifest", get(handlers::ui_manifest))
+        .route("/+ui/members", get(handlers::ui_members))
+        .route("/+ui/member", get(handlers::ui_member))
+        .route("/metrics", get(handlers::metrics))
+}
+
 async fn reject_replica_mutation(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     if matches!(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    ) || (*request.method() == axum::http::Method::POST
-        && state.drivers().any(|driver| {
-            driver
-                .classify_service_post(request.uri().path().trim_start_matches('/'), request.headers())
-                .is_some()
-        }))
+    ) || (*request.method() == axum::http::Method::POST && is_read_only_post(&state, &request))
     {
         return next.run(request).await;
     }
@@ -143,4 +146,16 @@ async fn reject_replica_mutation(State(state): State<Arc<AppState>>, request: Re
         })),
     )
         .into_response()
+}
+
+/// Whether a POST is a read that a read-only replica may serve: the neutral `POST /+query` surface,
+/// which is read-only by construction, or a driver-classified service read.
+fn is_read_only_post(state: &AppState, request: &Request) -> bool {
+    let path = request.uri().path();
+    path == "/+query"
+        || state.drivers().any(|driver| {
+            driver
+                .classify_service_post(path.trim_start_matches('/'), request.headers())
+                .is_some()
+        })
 }

@@ -1,0 +1,65 @@
+//! The predicate evaluator.
+//!
+//! Evaluation is total and side-effect-free: every predicate reduces to a boolean over one row in
+//! linear time, with no loops the caller controls and no function the caller can name. An
+//! incomparable pair — a null cell, or two values of different kinds — simply does not match, so the
+//! evaluator never panics on unexpected data.
+
+use std::cmp::Ordering;
+
+use crate::ast::{CompareOp, Literal, Predicate};
+use crate::value::{Row, Value};
+
+/// Evaluate a bound predicate over one row.
+///
+/// Parameters must already be bound; an unbound [`Literal::Param`] is treated as a value that
+/// matches nothing.
+#[must_use]
+pub fn evaluate(predicate: &Predicate, row: &Row) -> bool {
+    match predicate {
+        Predicate::Or(left, right) => evaluate(left, row) || evaluate(right, row),
+        Predicate::And(left, right) => evaluate(left, row) && evaluate(right, row),
+        Predicate::Not(inner) => !evaluate(inner, row),
+        Predicate::Compare { field, op, value } => compare(&row.get(field), *op, &literal_value(value)),
+        Predicate::In { field, values } => {
+            let cell = row.get(field);
+            values.iter().any(|value| cell == literal_value(value))
+        }
+        Predicate::StartsWith { field, prefix } => match (row.get(field), literal_value(prefix)) {
+            (Value::Str(cell), Value::Str(prefix)) => cell.starts_with(&prefix),
+            _ => false,
+        },
+    }
+}
+
+/// Lower a literal to its runtime value. A still-bound parameter lowers to [`Value::Null`], which
+/// matches nothing.
+#[must_use]
+pub fn literal_value(literal: &Literal) -> Value {
+    match literal {
+        Literal::Str(value) => Value::Str(value.clone()),
+        Literal::Int(value) => Value::Int(*value),
+        Literal::Bool(value) => Value::Bool(*value),
+        Literal::Timestamp(value) => Value::Timestamp(*value),
+        Literal::Param(_) => Value::Null,
+    }
+}
+
+fn compare(left: &Value, op: CompareOp, right: &Value) -> bool {
+    match op {
+        CompareOp::Eq => left == right,
+        CompareOp::Ne => left != right,
+        CompareOp::Lt => ordered(left, right, Ordering::Less, false),
+        CompareOp::Le => ordered(left, right, Ordering::Less, true),
+        CompareOp::Gt => ordered(left, right, Ordering::Greater, false),
+        CompareOp::Ge => ordered(left, right, Ordering::Greater, true),
+    }
+}
+
+fn ordered(left: &Value, right: &Value, wanted: Ordering, or_equal: bool) -> bool {
+    match left.compare(right) {
+        Some(Ordering::Equal) => or_equal,
+        Some(order) => order == wanted,
+        None => false,
+    }
+}

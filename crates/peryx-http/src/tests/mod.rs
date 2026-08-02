@@ -5,6 +5,7 @@ mod fallback_tests;
 mod grant_tests;
 mod oidc_tests;
 mod policy_decision_tests;
+mod pql_tests;
 mod quota_tests;
 mod response_security_tests;
 mod retention_tests;
