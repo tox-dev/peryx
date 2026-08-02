@@ -155,6 +155,88 @@ async fn test_buffered_virtual_shadows_upstream_when_cached_layer_is_listed_firs
     assert_upload_shadows_upstream(&detail, &hosted);
 }
 
+/// Serve an upstream page for peryxpkg carrying `status`, with one file so a quarantine has something
+/// to withhold and a benign member has something to leak.
+async fn mount_status(server: &MockServer, status: &str) {
+    let body = format!(
+        "{{\"meta\":{{\"api-version\":\"1.1\",\"project-status\":\"{status}\",\
+         \"project-status-reason\":\"upstream {status}\"}},\"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\
+         \"url\":\"https://upstream.invalid/peryxpkg-1.0-py3-none-any.whl\",\
+         \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}]}}"
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/peryxpkg/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(server)
+        .await;
+}
+
+/// Two cached members of one virtual index, listed in `layers` order. An active policy on each keeps
+/// the index on the buffered merge, the only path that reconciles member project statuses.
+fn two_cached_indexes(archived: UpstreamClient, quarantined: UpstreamClient, layers: Vec<usize>) -> Vec<Index> {
+    let cached = |name: &str, client: UpstreamClient| Index {
+        name: name.to_owned(),
+        route: name.to_owned(),
+        ecosystem: peryx_core::Ecosystem::Pypi,
+        kind: IndexKind::Cached { client, offline: false },
+        policy: active_policy(),
+        acl: IndexAcl::default(),
+    };
+    vec![
+        cached("archived", archived),
+        cached("quarantined", quarantined),
+        Index {
+            name: "root/pypi".to_owned(),
+            route: "root/pypi".to_owned(),
+            ecosystem: peryx_core::Ecosystem::Pypi,
+            kind: IndexKind::Virtual { layers, upload: None },
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+        },
+    ]
+}
+
+/// A quarantining member must dominate the merged project status regardless of where the operator lists
+/// it, so its files stay withheld even when a benign member serves the same project.
+async fn assert_quarantine_dominates(layers: Vec<usize>) {
+    let dir = tempfile::tempdir().unwrap();
+    let archived = MockServer::start().await;
+    let quarantined = MockServer::start().await;
+    mount_status(&archived, "archived").await;
+    mount_status(&quarantined, "quarantined").await;
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let archived_client = UpstreamClient::new(&format!("{}/simple/", archived.uri())).unwrap();
+    let quarantined_client = UpstreamClient::new(&format!("{}/simple/", quarantined.uri())).unwrap();
+    let indexes = two_cached_indexes(archived_client, quarantined_client, layers);
+    let state = super::wired(AppState::new(meta, blobs, 60, indexes));
+
+    let (status, _, detail) = get(&state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(
+        json["meta"]["project-status"], "quarantined",
+        "a quarantined member must dominate the merged status: {detail}"
+    );
+    assert_eq!(
+        json["files"].as_array().map(Vec::len),
+        Some(0),
+        "the quarantine must withhold every member's files: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn test_buffered_virtual_quarantine_dominates_when_listed_after_a_benign_member() {
+    assert_quarantine_dominates(vec![0, 1]).await;
+}
+
+#[tokio::test]
+async fn test_buffered_virtual_quarantine_dominates_when_listed_before_a_benign_member() {
+    assert_quarantine_dominates(vec![1, 0]).await;
+}
+
 #[tokio::test]
 async fn test_buffered_virtual_caps_version_at_a_pre_pep700_layer() {
     let dir = tempfile::tempdir().unwrap();

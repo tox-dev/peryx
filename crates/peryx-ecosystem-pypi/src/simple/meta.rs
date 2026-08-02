@@ -156,4 +156,17 @@ impl ProjectStatus {
     pub const fn offers_downloads(self) -> bool {
         !matches!(self, Self::Quarantined)
     }
+
+    /// How much the status withholds, for merging a virtual index down to its most restrictive member.
+    /// Quarantine (no downloads) outranks archival (no uploads), which outranks deprecation, then active.
+    /// Declaration order can't stand in for this: `Deprecated` follows `Quarantined` yet withholds less.
+    #[must_use]
+    pub const fn severity(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Deprecated => 1,
+            Self::Archived => 2,
+            Self::Quarantined => 3,
+        }
+    }
 }

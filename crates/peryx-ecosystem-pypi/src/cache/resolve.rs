@@ -210,7 +210,9 @@ async fn virtual_detail(
         if detail.meta.api_version == crate::API_VERSION_BASE {
             meta.api_version = crate::API_VERSION_BASE;
         }
-        if meta.project_status.is_none() && detail.meta.project_status.is_some() {
+        // Mirror the api_version floor above: a virtual index inherits its most restrictive member, so a
+        // member that quarantines a project keeps its files withheld even when a benign member serves them.
+        if detail.meta.status().severity() > meta.status().severity() {
             meta.project_status = detail.meta.project_status;
             meta.project_status_reason = detail.meta.project_status_reason;
         }
