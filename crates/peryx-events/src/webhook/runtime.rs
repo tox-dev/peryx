@@ -20,7 +20,7 @@ impl WebhookRuntime {
     pub fn disabled() -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
         Self {
-            client: reqwest::Client::new(),
+            client: delivery_client(),
             targets: HashMap::new(),
             running: AtomicBool::new(false),
             notify: tokio::sync::Notify::new(),
@@ -150,6 +150,16 @@ impl WebhookEvents {
     }
 }
 
+fn delivery_client() -> reqwest::Client {
+    // A signed delivery must reach the configured target and nowhere else. Following a 3xx would
+    // re-POST the payload and its HMAC to a Location the target picks, so delivery counts a redirect
+    // as a failed attempt. The build mirrors reqwest::Client::new, which also panics on failure.
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("webhook delivery client builds")
+}
+
 fn target_url(raw: &str) -> Result<Url, WebhookConfigError> {
     let url = Url::parse(raw).map_err(|source| WebhookConfigError::InvalidUrl {
         url: raw.to_owned(),
@@ -167,6 +177,8 @@ fn target_url(raw: &str) -> Result<Url, WebhookConfigError> {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -211,6 +223,26 @@ mod tests {
             panic!("expected an invalid-config error");
         };
         assert!(matches_error(&err));
+    }
+
+    #[tokio::test]
+    async fn test_delivery_client_surfaces_redirects_instead_of_following_them() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/followed"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let status = WebhookRuntime::disabled()
+            .client
+            .post(server.uri())
+            .send()
+            .await
+            .unwrap()
+            .status();
+
+        assert_eq!(status, 307);
     }
 
     #[test]

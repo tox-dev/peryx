@@ -1039,8 +1039,10 @@ Use one of `secret` or `secret_env`. Supported event names are `upload`, `yank`,
 write endpoints in this release; the other names reserve the contract for management surfaces that use this runtime.
 
 Peryx stores pending deliveries in the metadata database and sends them outside the request path. A failed delivery
-retries up to five attempts with capped backoff of 5, 15, 45, and 135 seconds. The delivery log stores the payload,
-target name, attempt count, next retry time, response status, and last error. It does not store webhook secrets.
+retries up to five attempts with capped backoff of 5, 15, 45, and 135 seconds. Delivery does not follow redirects. A
+`3xx` response counts as a failed attempt rather than reposting the signed payload to a location the target picks. The
+delivery log stores the payload, target name, attempt count, next retry time, response status, and last error. It does
+not store webhook secrets.
 
 ## `[log]`
 
