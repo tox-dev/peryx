@@ -618,6 +618,44 @@ impl Metrics {
         rows
     }
 
+    /// Durable lifetime download and byte totals per project, keyed by repository.
+    ///
+    /// Reads the all-time tree, where a repository maps directly to its nested projects, so a scoped
+    /// read touches only the named repository. This is the indexed accessor the query layer's
+    /// `usage.downloads` domain builds on: the join key `(repository, project)` resolves without a
+    /// daily-bucket scan. Ordered downloads-desc, then repository and project ascending, for a stable
+    /// page.
+    ///
+    /// # Panics
+    /// Panics if the aggregator thread panicked and poisoned the metrics lock.
+    #[must_use]
+    pub fn usage_totals(&self, repository: Option<&str>) -> Vec<PackageUsage> {
+        let tree = self.tree.read().expect("metrics lock");
+        let mut rows = Vec::new();
+        for (route, index) in tree.iter() {
+            if repository.is_some_and(|filter| route != filter) {
+                continue;
+            }
+            for (project, stats) in &index.projects {
+                rows.push(PackageUsage {
+                    repository: route.clone(),
+                    project: project.clone(),
+                    downloads: stats.totals.base.downloads,
+                    bytes: stats.totals.base.bytes,
+                });
+            }
+        }
+        drop(tree);
+        rows.sort_by(|left, right| {
+            right
+                .downloads
+                .cmp(&left.downloads)
+                .then_with(|| left.repository.cmp(&right.repository))
+                .then_with(|| left.project.cmp(&right.project))
+        });
+        rows
+    }
+
     /// Projects with durable downloads but none inside `interval`, ordered by lifetime downloads,
     /// repository, then project. The universe is every project the retained totals have ever served.
     ///
@@ -1110,6 +1148,51 @@ mod tests {
         let files = restarted.drill(Some("root/pypi"), Some("pandas"));
         assert_eq!(files["files"][filename]["downloads"], 2);
         assert_eq!(files["files"][filename]["bytes"], 150);
+    }
+
+    #[test]
+    fn test_usage_totals_reports_lifetime_by_repository() {
+        let (_dir, meta) = store();
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
+        metrics.record(download("pypi", "numpy", "numpy-1.whl", 100));
+        metrics.record(download("pypi", "numpy", "numpy-1.whl", 100));
+        metrics.record(download("pypi", "scipy", "scipy-1.whl", 50));
+        metrics.record(download("other", "django", "django-1.whl", 30));
+        settle(&metrics, || metrics.usage_totals(None).len() == 3);
+
+        assert_eq!(
+            metrics.usage_totals(None),
+            [
+                PackageUsage {
+                    repository: "pypi".into(),
+                    project: "numpy".into(),
+                    downloads: 2,
+                    bytes: 200,
+                },
+                PackageUsage {
+                    repository: "other".into(),
+                    project: "django".into(),
+                    downloads: 1,
+                    bytes: 30,
+                },
+                PackageUsage {
+                    repository: "pypi".into(),
+                    project: "scipy".into(),
+                    downloads: 1,
+                    bytes: 50,
+                },
+            ]
+        );
+        assert_eq!(
+            metrics.usage_totals(Some("other")),
+            [PackageUsage {
+                repository: "other".into(),
+                project: "django".into(),
+                downloads: 1,
+                bytes: 30,
+            }]
+        );
+        assert!(metrics.usage_totals(Some("missing")).is_empty());
     }
 
     #[test]

@@ -6,12 +6,14 @@
 //! total. What it never does is write: it reads rows from a [`DataSource`] and reduces them.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
-use crate::ast::{AggregateFunc, Ast, OrderKey};
+use crate::ast::{AggregateFunc, Ast, Join, OrderKey};
+use crate::catalog::DomainSchema;
 use crate::cursor;
 use crate::error::PqlError;
 use crate::eval::evaluate;
-use crate::plan::{OutputColumn, Plan, leading_filter, plan};
+use crate::plan::{OutputColumn, Plan, leading_filter, plan, validate};
 use crate::scope::{QueryScope, RepoScope};
 use crate::source::DataSource;
 use crate::value::{Row, Value};
@@ -39,33 +41,199 @@ pub fn execute(
     cursor_text: Option<&str>,
     source: &dyn DataSource,
 ) -> Result<Page, PqlError> {
+    if let Some(join) = &ast.join {
+        return execute_join(ast, join, scope, cursor_text, source);
+    }
     let schema = source.schema(&ast.domain).ok_or(PqlError::Unauthorized)?;
     let plan = plan(ast, schema)?;
-    let has_scope_column = schema.column(SCOPE_COLUMN).is_some();
-    let offset = match cursor_text {
-        Some(text) => cursor::decode(text, &ast.domain, scope)?,
-        None => 0,
-    };
     let filter = ast
         .predicate
         .as_ref()
         .and_then(|predicate| leading_filter(predicate, schema));
-    let rows = source.fetch(&ast.domain, scope, filter.as_ref())?;
-    let filtered = filter_rows(rows, ast, scope, has_scope_column);
+    let offset = decode_offset(cursor_text, &ast.domain, scope)?;
+    let candidates = scope_filter(source.fetch(&ast.domain, scope, filter.as_ref())?, scope, schema);
+    Ok(finish(
+        candidates,
+        ast,
+        plan,
+        schema.natural_order,
+        &ast.domain,
+        scope,
+        offset,
+    ))
+}
+
+/// Run one bounded, declared join between two domains on their shared keys.
+///
+/// The join is inner: an outer row appears only when the probe domain has a matching row. Scope is
+/// injected on both sides before the join, the probe side is indexed on every join key so each outer
+/// row is a bounded lookup, and the user predicate runs over the merged row. A column present in both
+/// domains keeps the more restrictive classification.
+fn execute_join(
+    ast: &Ast,
+    join: &Join,
+    scope: &QueryScope,
+    cursor_text: Option<&str>,
+    source: &dyn DataSource,
+) -> Result<Page, PqlError> {
+    let schema_a = source.schema(&ast.domain).ok_or(PqlError::Unauthorized)?;
+    let schema_b = source.schema(&join.domain).ok_or(PqlError::Unauthorized)?;
+    validate_join(&join.on, schema_a, schema_b)?;
+    let merged = merge_schemas(schema_a, schema_b);
+    let plan = validate(ast, &merged)?;
+    let cursor_domain = join_cursor_key(&ast.domain, &join.domain);
+    let offset = decode_offset(cursor_text, &cursor_domain, scope)?;
+    let outer_filter = ast
+        .predicate
+        .as_ref()
+        .and_then(|predicate| leading_filter(predicate, schema_a));
+    let outer = scope_filter(
+        source.fetch(&ast.domain, scope, outer_filter.as_ref())?,
+        scope,
+        schema_a,
+    );
+    let probe = scope_filter(source.fetch(&join.domain, scope, None)?, scope, schema_b);
+    let candidates = join_rows(outer, &probe, &join.on, schema_a, schema_b);
+    Ok(finish(
+        candidates,
+        ast,
+        plan,
+        merged.natural_order,
+        &cursor_domain,
+        scope,
+        offset,
+    ))
+}
+
+/// Apply the user predicate, aggregate or project, order, and page a set of candidate rows the scope
+/// predicate has already narrowed.
+fn finish(
+    candidates: Vec<Row>,
+    ast: &Ast,
+    plan: Plan,
+    natural_order: &str,
+    cursor_domain: &str,
+    scope: &QueryScope,
+    offset: u64,
+) -> Page {
+    let filtered: Vec<Row> = candidates
+        .into_iter()
+        .filter(|row| ast.predicate.as_ref().is_none_or(|predicate| evaluate(predicate, row)))
+        .collect();
     let mut tuples = if let Some(aggregate) = &ast.aggregate {
         aggregate_rows(&filtered, aggregate, &plan.outputs)
     } else {
         project_rows(&filtered, &plan.outputs)
     };
-    order_rows(&mut tuples, &resolved_order(&plan, schema.natural_order), &plan.outputs);
-    Ok(paginate(tuples, plan, &ast.domain, scope, offset))
+    order_rows(&mut tuples, &resolved_order(&plan, natural_order), &plan.outputs);
+    paginate(tuples, plan, cursor_domain, scope, offset)
 }
 
-fn filter_rows(rows: Vec<Row>, ast: &Ast, scope: &QueryScope, has_scope_column: bool) -> Vec<Row> {
+fn decode_offset(cursor_text: Option<&str>, domain: &str, scope: &QueryScope) -> Result<u64, PqlError> {
+    cursor_text.map_or(Ok(0), |text| cursor::decode(text, domain, scope))
+}
+
+fn scope_filter(rows: Vec<Row>, scope: &QueryScope, schema: &DomainSchema) -> Vec<Row> {
+    let has_scope_column = schema.column(SCOPE_COLUMN).is_some();
     rows.into_iter()
         .filter(|row| in_scope(row, scope, has_scope_column))
-        .filter(|row| ast.predicate.as_ref().is_none_or(|predicate| evaluate(predicate, row)))
         .collect()
+}
+
+fn validate_join(keys: &[String], outer: &DomainSchema, probe: &DomainSchema) -> Result<(), PqlError> {
+    for key in keys {
+        if outer.column(key).is_none() {
+            return Err(PqlError::Validation(format!(
+                "join key `{key}` is not a column of `{}`",
+                outer.name
+            )));
+        }
+        match probe.column(key) {
+            None => {
+                return Err(PqlError::Validation(format!(
+                    "join key `{key}` is not a column of `{}`",
+                    probe.name
+                )));
+            }
+            Some(column) if !column.indexability.is_cheap() => {
+                return Err(PqlError::UnboundedJoin(format!(
+                    "`{}` has no index on join key `{key}`, so the join cannot be bounded",
+                    probe.name
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn merge_schemas(outer: &DomainSchema, probe: &DomainSchema) -> DomainSchema {
+    let mut columns = outer.columns.clone();
+    for column in &probe.columns {
+        if let Some(shared) = columns.iter_mut().find(|existing| existing.name == column.name) {
+            shared.class = shared.class.most_restrictive(column.class);
+        } else {
+            columns.push(column.clone());
+        }
+    }
+    DomainSchema {
+        name: outer.name,
+        columns,
+        auth: outer.auth,
+        natural_order: outer.natural_order,
+        bounded: outer.bounded && probe.bounded,
+    }
+}
+
+fn join_rows(
+    outer: Vec<Row>,
+    probe: &[Row],
+    keys: &[String],
+    schema_outer: &DomainSchema,
+    schema_probe: &DomainSchema,
+) -> Vec<Row> {
+    let probe_only: Vec<&'static str> = schema_probe
+        .columns
+        .iter()
+        .filter(|column| schema_outer.column(column.name).is_none())
+        .map(|column| column.name)
+        .collect();
+    let mut index: HashMap<String, Vec<&Row>> = HashMap::new();
+    for row in probe {
+        index.entry(join_key(row, keys)).or_default().push(row);
+    }
+    let mut merged = Vec::new();
+    for row in outer {
+        if let Some(matches) = index.get(&join_key(&row, keys)) {
+            for probe_row in matches {
+                merged.push(merge_row(&row, probe_row, &probe_only));
+            }
+        }
+    }
+    merged
+}
+
+fn merge_row(outer: &Row, probe: &Row, probe_only: &[&'static str]) -> Row {
+    let mut row = outer.clone();
+    for name in probe_only {
+        row = row.with(name, probe.get(name));
+    }
+    row
+}
+
+/// A collision-free key for one row over the join columns; the value's debug form distinguishes an
+/// integer from a like-looking string.
+fn join_key(row: &Row, keys: &[String]) -> String {
+    use std::fmt::Write as _;
+    let mut key = String::new();
+    for name in keys {
+        let _ = write!(key, "{:?}\u{1}", row.get(name));
+    }
+    key
+}
+
+fn join_cursor_key(outer: &str, probe: &str) -> String {
+    format!("{outer}\u{1}{probe}")
 }
 
 fn in_scope(row: &Row, scope: &QueryScope, has_scope_column: bool) -> bool {
@@ -138,7 +306,9 @@ impl Accumulator {
             Self::Count(count) => *count += 1,
             Self::Sum(total) => {
                 if let Some(number) = value.as_ref().and_then(numeric) {
-                    *total += number;
+                    // Download and byte totals can be large; saturate rather than wrap silently in
+                    // release, so an over-budget sum reports the ceiling, never a negative rollover.
+                    *total = total.saturating_add(number);
                 }
             }
             Self::Min(current) => keep(current, value, Ordering::Less),

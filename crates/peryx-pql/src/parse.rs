@@ -277,7 +277,10 @@ impl Parser<'_> {
         }
         let domain = self.name()?;
         self.keyword("on")?;
-        let on = self.name()?;
+        let mut on = vec![self.name()?];
+        while self.take(&Token::Comma) {
+            on.push(self.name()?);
+        }
         Ok(Some(Join { domain, on }))
     }
 

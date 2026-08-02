@@ -150,12 +150,6 @@ fn test_plan_unbounded_group_key_must_be_cheap() {
 }
 
 #[test]
-fn test_plan_join_is_unavailable() {
-    let ast = parse("from policy.decisions join usage on project").expect("parses");
-    assert_eq!(plan(&ast, &schema()), Err(PqlError::JoinUnavailable));
-}
-
-#[test]
 fn test_cost_gate_bounded_domain_always_admits() {
     assert!(plan_text("from policy.decisions").is_ok());
 }

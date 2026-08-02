@@ -21,14 +21,14 @@ pub struct Ast {
     pub limit: Option<u32>,
 }
 
-/// A bounded, declared join to a second domain on one shared key.
+/// A bounded, declared join to a second domain on one or more shared keys.
 ///
-/// Both the domain and the key are named explicitly; there is no inferred join graph. Whether the
+/// Both the domain and the keys are named explicitly; there is no inferred join graph. Whether the
 /// join can be admitted at all is a cost decision made later against the probe side's indexability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Join {
     pub domain: String,
-    pub on: String,
+    pub on: Vec<String>,
 }
 
 /// The projected columns: every declared column, or a named subset.

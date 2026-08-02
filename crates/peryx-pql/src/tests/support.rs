@@ -12,6 +12,64 @@ use crate::value::{Row, Value, ValueType};
 pub const DOMAIN: &str = "policy.decisions";
 pub const BIG_DOMAIN: &str = "big";
 pub const KEYLESS_DOMAIN: &str = "notes";
+pub const USAGE_DOMAIN: &str = "usage";
+pub const USAGE_SCAN_DOMAIN: &str = "usage_scan";
+
+#[must_use]
+fn usage_columns(project: Indexability) -> Vec<Column> {
+    vec![
+        Column::new(
+            "repository",
+            ValueType::Str,
+            FieldClass::Repository,
+            Indexability::Indexed,
+            false,
+        ),
+        Column::new("project", ValueType::Str, FieldClass::Repository, project, false),
+        Column::new("hits", ValueType::Int, FieldClass::Repository, Indexability::Scan, true),
+        Column::new("bytes", ValueType::Int, FieldClass::Operator, Indexability::Scan, true),
+    ]
+}
+
+#[must_use]
+pub fn usage_schema() -> DomainSchema {
+    DomainSchema {
+        name: USAGE_DOMAIN,
+        columns: usage_columns(Indexability::Indexed),
+        auth: DomainAuth::RepositoryOrOperator,
+        natural_order: "hits",
+        bounded: true,
+    }
+}
+
+#[must_use]
+pub fn usage_scan_schema() -> DomainSchema {
+    DomainSchema {
+        name: USAGE_SCAN_DOMAIN,
+        columns: usage_columns(Indexability::Scan),
+        auth: DomainAuth::RepositoryOrOperator,
+        natural_order: "hits",
+        bounded: true,
+    }
+}
+
+#[must_use]
+pub fn usage_rows() -> Vec<Row> {
+    [
+        ("pypi", "numpy", 100, 10),
+        ("pypi", "scipy", 50, 5),
+        ("other", "django", 30, 3),
+    ]
+    .into_iter()
+    .map(|(repository, project, hits, bytes)| {
+        Row::new()
+            .with("repository", Value::Str(repository.to_owned()))
+            .with("project", Value::Str(project.to_owned()))
+            .with("hits", Value::Int(hits))
+            .with("bytes", Value::Int(bytes))
+    })
+    .collect()
+}
 
 #[must_use]
 pub fn keyless_schema() -> DomainSchema {
@@ -144,6 +202,8 @@ pub struct TestSource {
     schema: DomainSchema,
     big: DomainSchema,
     keyless: DomainSchema,
+    usage: DomainSchema,
+    usage_scan: DomainSchema,
     rows: Vec<Row>,
     fail: bool,
     /// Every `(domain, filter)` the executor asked for, so a test can prove the cost gate's leading
@@ -158,6 +218,8 @@ impl TestSource {
             schema: schema(),
             big: big_schema(),
             keyless: keyless_schema(),
+            usage: usage_schema(),
+            usage_scan: usage_scan_schema(),
             rows,
             fail: false,
             fetches: Mutex::new(Vec::new()),
@@ -185,6 +247,8 @@ impl DataSource for TestSource {
             DOMAIN => Some(&self.schema),
             BIG_DOMAIN => Some(&self.big),
             KEYLESS_DOMAIN => Some(&self.keyless),
+            USAGE_DOMAIN => Some(&self.usage),
+            USAGE_SCAN_DOMAIN => Some(&self.usage_scan),
             _ => None,
         }
     }
@@ -211,6 +275,7 @@ impl DataSource for TestSource {
                     .with("id", Value::Int(1))
                     .with("body", Value::Str("one".to_owned())),
             ]),
+            USAGE_DOMAIN | USAGE_SCAN_DOMAIN => Ok(usage_rows()),
             _ => Ok(self.rows.clone()),
         }
     }

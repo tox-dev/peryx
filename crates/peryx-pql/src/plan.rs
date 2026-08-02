@@ -33,16 +33,25 @@ pub struct Plan {
     pub outputs: Vec<OutputColumn>,
 }
 
-/// Validate and cost a query against one domain's schema.
+/// Validate and cost a single-domain query against its schema.
 ///
 /// # Errors
-/// Returns [`PqlError::JoinUnavailable`] when the query declares a join, [`PqlError::Validation`]
-/// for an unknown or mistyped field or a misused aggregate, and [`PqlError::CostExceeded`] when an
-/// unbounded domain is queried without a cheap leading filter.
+/// Returns [`PqlError::Validation`] for an unknown or mistyped field or a misused aggregate, and
+/// [`PqlError::CostExceeded`] when an unbounded domain is queried without a cheap leading filter.
 pub fn plan(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
-    if ast.join.is_some() {
-        return Err(PqlError::JoinUnavailable);
-    }
+    let plan = validate(ast, schema)?;
+    cost_gate(ast, schema)?;
+    Ok(plan)
+}
+
+/// Validate a query body against a schema without applying the single-domain cost gate.
+///
+/// A join validates its body against the two domains' merged schema and bounds its own cost through
+/// the join admission check instead, so it uses this rather than [`plan`].
+///
+/// # Errors
+/// Returns [`PqlError::Validation`] for an unknown or mistyped field or a misused aggregate.
+pub fn validate(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
     if let Some(predicate) = &ast.predicate {
         validate_predicate(predicate, schema)?;
     }
@@ -53,7 +62,6 @@ pub fn plan(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
         project(&ast.selection, schema)?
     };
     let order_by = resolve_order(&ast.order_by, &outputs)?;
-    cost_gate(ast, schema)?;
     Ok(Plan {
         order_by,
         limit,

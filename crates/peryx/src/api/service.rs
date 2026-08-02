@@ -715,13 +715,15 @@ fn pql_query() -> OperationBuilder {
         .summary(Some("Run a PQL query"))
         .description(Some(
             "Runs one read-only Peryx Query Language (PQL) query over a typed domain and returns a bounded page of \
-             rows. The `query` is a small textual DSL — `from <domain> [where ...] [select ...] [aggregate ... by \
-             ...] [order by ...] [limit n]` — and `params` binds `:name` placeholders out of band, so a value never \
-             changes the query's structure. The caller's authorized scope is injected by the evaluator and cannot \
-             be named or widened; columns above the caller's classification are dropped, and operator-classified \
-             results are never cached. `next_cursor`, presented back, resumes the next page and is refused if the \
-             caller's scope has changed. Authenticate with a repository token to read one repository, or a local \
-             administrator to read operator-wide.",
+             rows. The `query` is a small textual DSL — `from <domain> [join <domain> on <keys>] [where ...] \
+             [select ...] [aggregate ... by ...] [order by ...] [limit n]` — and `params` binds `:name` placeholders \
+             out of band, so a value never changes the query's structure. Two domains are served: `policy.decisions` \
+             and `usage.downloads`, and a bounded declared join correlates them on their shared `repository` and \
+             `project` keys. The caller's authorized scope is injected by the evaluator and cannot be named or \
+             widened; columns above the caller's classification are dropped, and operator-classified results are \
+             never cached. `next_cursor`, presented back, resumes the next page and is refused if the caller's scope \
+             has changed. Authenticate with a repository token to read one repository, or a local administrator to \
+             read operator-wide.",
         ))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .request_body(Some(
@@ -776,13 +778,6 @@ fn pql_query() -> OperationBuilder {
         .response(
             "422",
             ResponseBuilder::new().description("The JSON request body is invalid"),
-        )
-        .response(
-            "501",
-            api_json_response(
-                "The query uses a feature not yet wired, such as a join",
-                json!({"error": "joins are not available yet"}),
-            ),
         )
         .response(
             "503",

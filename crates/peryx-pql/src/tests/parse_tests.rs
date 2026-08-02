@@ -131,7 +131,14 @@ fn test_parse_join_grammar() {
     let ast = parse("from trash join retention on project where restorable == true").expect("parses");
     let join = ast.join.expect("has join");
     assert_eq!(join.domain, "retention");
-    assert_eq!(join.on, "project");
+    assert_eq!(join.on, vec!["project".to_owned()]);
+}
+
+#[test]
+fn test_parse_join_composite_key() {
+    let ast = parse("from policy.decisions join usage on repository, project").expect("parses");
+    let join = ast.join.expect("has join");
+    assert_eq!(join.on, vec!["repository".to_owned(), "project".to_owned()]);
 }
 
 #[test]

@@ -5,10 +5,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use std::time::Duration;
+
 use peryx_core::Ecosystem;
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::users::UserService;
+use peryx_events::metrics::{Event, Metrics};
 use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role};
 use peryx_policy::{Policy, PolicyAction, PolicyDecisionState};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
@@ -19,6 +22,11 @@ const READER_SECRET: &str = "reader-secret";
 const PASSWORD: &str = "local password";
 
 async fn app(read_only: bool) -> (tempfile::TempDir, MetaStore, axum::Router) {
+    let (dir, meta, _metrics, router) = build(read_only).await;
+    (dir, meta, router)
+}
+
+async fn build(read_only: bool) -> (tempfile::TempDir, MetaStore, Metrics, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -49,7 +57,34 @@ async fn app(read_only: bool) -> (tempfile::TempDir, MetaStore, axum::Router) {
     let mut state = AppState::new(meta.clone(), blobs, 60, vec![index()]);
     state.users = UserService::with_password_settings(meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 2);
     state.read_only = read_only;
-    (dir, meta, crate::router(Arc::new(state)))
+    let metrics = state.metrics.clone();
+    (dir, meta, metrics, crate::router(Arc::new(state)))
+}
+
+/// Record durable downloads for three projects and wait for the off-thread aggregator to settle, so
+/// `usage.downloads` has rows to join against.
+fn seed_usage(metrics: &Metrics) {
+    for (route, project, bytes, times) in [
+        ("private", "alpha", 100u64, 2),
+        ("private", "beta", 50, 1),
+        ("other", "gamma", 30, 1),
+    ] {
+        for _ in 0..times {
+            metrics.record(Event::Download {
+                route: route.to_owned(),
+                project: project.to_owned(),
+                filename: format!("{project}.whl"),
+                version: None,
+                source: None,
+                bytes,
+            });
+        }
+    }
+    let settled = (0..500).any(|_| {
+        std::thread::sleep(Duration::from_millis(2));
+        metrics.usage_totals(None).len() == 3
+    });
+    assert!(settled, "usage aggregator never settled");
 }
 
 fn index() -> Index {
@@ -298,16 +333,115 @@ async fn test_query_cursor_is_bound_to_scope() {
 }
 
 #[tokio::test]
-async fn test_query_joins_are_not_available_yet() {
-    let (_dir, meta, app) = app(false).await;
-    seed(&meta);
-    let (status, _headers, _document) = post(
+async fn test_query_usage_domain_reads_totals() {
+    let (_dir, _meta, metrics, app) = build(false).await;
+    seed_usage(&metrics);
+    let (status, _headers, document) = post(
         &app,
-        json!({"query": "from policy.decisions join usage on project"}),
+        json!({"query": "from usage.downloads order by downloads desc"}),
         Some(("Alice", PASSWORD)),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(projects(&document), ["alpha", "gamma", "beta"]);
+    assert_eq!(document["rows"][0]["downloads"], json!(2));
+}
+
+#[tokio::test]
+async fn test_query_join_correlates_decisions_with_usage() {
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (status, headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions join usage.downloads on repository, project order by evaluated_at desc"
+        }),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    // Inner join ordered by evaluated_at desc: only alpha, beta, gamma have both a decision and usage.
+    assert_eq!(projects(&document), ["alpha", "beta", "gamma"]);
+    let alpha = &document["rows"][0];
+    assert_eq!(alpha["project"], json!("alpha"));
+    assert_eq!(alpha["downloads"], json!(2));
+    assert_eq!(alpha["bytes"], json!(200));
+    assert_eq!(alpha["state"], json!("deny"));
+}
+
+#[tokio::test]
+async fn test_query_join_applies_most_restrictive_field_class() {
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (status, headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions join usage.downloads on repository, project where repository == \"private\""
+        }),
+        Some(("Rita", PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "private, no-cache");
+    assert_eq!(projects(&document), ["alpha", "beta"]);
+    let first = &document["rows"][0];
+    // `downloads` is repository-level and survives; `bytes` and the policy `source` are
+    // operator-only and drop for a repository reader.
+    assert!(first.get("downloads").is_some());
+    assert!(first.get("bytes").is_none());
+    assert!(first.get("source").is_none());
+}
+
+#[tokio::test]
+async fn test_query_join_cursor_is_scope_bound() {
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (_status, _headers, page) = post(
+        &app,
+        json!({"query": "from policy.decisions join usage.downloads on repository, project limit 1"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    let cursor = page["next_cursor"].as_str().expect("join paginates").to_owned();
+    let (status, _headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions join usage.downloads on repository, project where repository == \"private\"",
+            "cursor": cursor
+        }),
+        Some(("Rita", PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        document["error"],
+        json!("the caller's scope changed; restart the query")
+    );
+}
+
+#[tokio::test]
+async fn test_query_join_rejects_unknown_domain_and_key() {
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (unknown_domain, _headers, _document) = post(
+        &app,
+        json!({"query": "from policy.decisions join ghosts on repository, project"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(unknown_domain, StatusCode::NOT_FOUND);
+    let (unknown_key, _headers, _document) = post(
+        &app,
+        json!({"query": "from policy.decisions join usage.downloads on repository, evaluated_at"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(unknown_key, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

@@ -64,8 +64,10 @@ The response is a page of rows and an opaque cursor:
 
 ## Domains and fields
 
-A domain is a typed relation. This release serves one domain, `policy.decisions`, the bounded history of index policy
-evaluations. Its columns:
+A domain is a typed relation. This release serves two: `policy.decisions`, the bounded history of index policy
+evaluations, and `usage.downloads`, the durable per-project download and byte totals.
+
+`policy.decisions` columns:
 
 | Column                                         | Type      | Meaning                                                               |
 | ---------------------------------------------- | --------- | --------------------------------------------------------------------- |
@@ -76,11 +78,19 @@ evaluations. Its columns:
 | `fresh`                                        | bool      | Whether the current repository, catalog, and policy generations match |
 | `source`, `rule`, `reason`                     | string    | The routed source, matched rule, and its explanation (operator-only)  |
 
-`select *` (or omitting `select`) returns every column the caller may read; naming columns returns just those. Results
-order newest-first by `evaluated_at` unless you order otherwise.
+`usage.downloads` columns:
 
-Aggregation is capped at `count`, `sum`, `min`, and `max` over a declared numeric column, grouped by declared keys — for
-example, how many decisions each state produced:
+| Column                  | Type   | Meaning                               |
+| ----------------------- | ------ | ------------------------------------- |
+| `repository`, `project` | string | The project the totals belong to      |
+| `downloads`             | int    | Lifetime downloads served             |
+| `bytes`                 | int    | Lifetime bytes served (operator-only) |
+
+`select *` (or omitting `select`) returns every column the caller may read; naming columns returns just those. Results
+order newest-first by `evaluated_at` (or, for usage, by `downloads`) unless you order otherwise.
+
+Aggregation is capped at `count`, `sum`, `min`, and `max` over a declared numeric column, grouped by declared keys, for
+example how many decisions each state produced:
 
 ```console
 curl -u alice:$PASSWORD -H 'content-type: application/json' \
@@ -89,6 +99,23 @@ curl -u alice:$PASSWORD -H 'content-type: application/json' \
 ```
 
 Time-bucketed windowing is not part of the language; the `/+analytics/timeline` endpoint keeps serving that.
+
+## Joining two domains
+
+One query may correlate two domains through a bounded, declared join on their shared keys. The join is inner: an outer
+row appears only when the joined domain has a matching row. Correlate policy decisions with download totals to find,
+say, denied projects and how much traffic they still draw:
+
+```console
+curl -u alice:$PASSWORD -H 'content-type: application/json' \
+  -d '{"query": "from policy.decisions join usage.downloads on repository, project where state == \"deny\" order by downloads desc limit 25"}' \
+  http://127.0.0.1:4433/+query
+```
+
+A join is admitted only when the joined domain has an index on every join key, so each outer row is a bounded lookup
+rather than a scan. A join whose key the joined domain cannot serve cheaply is refused with a `400`. Field visibility
+still applies to both sides: a column present in both domains, or contributed by either, keeps the stricter
+classification, so `usage.downloads.bytes` (operator-only) drops from a join a repository reader runs.
 
 ## Authorization and field visibility
 
@@ -116,9 +143,8 @@ changed grant can never replay a stale view.
 ## Limits and errors
 
 A query defaults to 25 rows and may request up to 100. The query text is size-capped, predicate nesting is depth-capped,
-and a query over an unbounded domain must lead with an indexed filter or it is refused as too expensive. Joins across
-two domains are planned for a later release; a query that declares one is accepted by the parser but returns `501` for
-now.
+and a query over an unbounded domain, or a join whose key the joined domain cannot serve cheaply, is refused as too
+expensive.
 
 | Result | Meaning and fix                                                                                 |
 | ------ | ----------------------------------------------------------------------------------------------- |
@@ -127,7 +153,6 @@ now.
 | `404`  | You cannot read the domain; its existence is not disclosed                                      |
 | `415`  | The request body was not `application/json`                                                     |
 | `422`  | The JSON body was malformed or carried an unknown field                                         |
-| `501`  | The query used a feature not yet wired, such as a join                                          |
 | `503`  | The query backend was unavailable                                                               |
 
 Error bodies never echo your query text or parameter values, so a failed query cannot reflect a secret you embedded in a

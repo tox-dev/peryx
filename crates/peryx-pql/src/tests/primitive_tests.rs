@@ -84,7 +84,6 @@ fn test_error_status_classes() {
     assert_eq!(PqlError::InvalidCursor.status(), StatusClass::BadRequest);
     assert_eq!(PqlError::CursorScopeChanged.status(), StatusClass::BadRequest);
     assert_eq!(PqlError::Unauthorized.status(), StatusClass::NotFound);
-    assert_eq!(PqlError::JoinUnavailable.status(), StatusClass::NotImplemented);
     assert_eq!(PqlError::Backend(String::new()).status(), StatusClass::Unavailable);
 }
 

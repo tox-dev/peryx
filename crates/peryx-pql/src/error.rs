@@ -17,8 +17,6 @@ pub enum StatusClass {
     NotFound,
     /// The backing store could not answer.
     Unavailable,
-    /// The feature parsed and validated but is not wired in this build.
-    NotImplemented,
 }
 
 /// Every way a query can fail. The set is closed so the wire layer's match is exhaustive.
@@ -41,9 +39,6 @@ pub enum PqlError {
     /// scan.
     #[error("the join cannot be bounded and is refused")]
     UnboundedJoin(String),
-    /// The join grammar parsed but join execution is not wired in this build.
-    #[error("joins are not available yet")]
-    JoinUnavailable,
     /// The opaque cursor is malformed.
     #[error("the pagination cursor is not valid")]
     InvalidCursor,
@@ -71,7 +66,6 @@ impl PqlError {
             | Self::InvalidCursor
             | Self::CursorScopeChanged => StatusClass::BadRequest,
             Self::Unauthorized => StatusClass::NotFound,
-            Self::JoinUnavailable => StatusClass::NotImplemented,
             Self::Backend(_) => StatusClass::Unavailable,
         }
     }

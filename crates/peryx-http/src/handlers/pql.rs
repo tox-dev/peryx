@@ -18,6 +18,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::state::{AppState, Index};
+use peryx_events::metrics::{Metrics, PackageUsage};
 use peryx_identity::{Action, Denial, Resource, Scope, UserId, authorize_all, parse_basic};
 use peryx_pql::ast::{CompareOp, Literal, Predicate};
 use peryx_pql::catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
@@ -32,6 +33,7 @@ use crate::response_security::{
 };
 
 const POLICY_DOMAIN: &str = "policy.decisions";
+const USAGE_DOMAIN: &str = "usage.downloads";
 const MAX_BODY_BYTES: usize = 8 * 1024;
 const STORE_PAGE: usize = 100;
 
@@ -67,7 +69,7 @@ async fn query_response(state: &AppState, headers: &HeaderMap, body: Body) -> Re
         Ok(authorization) => authorization,
         Err(rejection) => return rejection.response(),
     };
-    let source = PolicyDecisionSource::new(state.meta.clone());
+    let source = NeutralSource::new(state.meta.clone(), state.metrics.clone());
     match execute(&ast, &authorization.scope, body.cursor.as_deref(), &source) {
         Ok(page) => render(&page, authorization.response),
         Err(error) => pql_error(&error),
@@ -301,27 +303,27 @@ const fn classification_of(class: FieldClass) -> FieldClassification {
     }
 }
 
-/// The read-only data source backing the neutral `policy.decisions` domain.
-struct PolicyDecisionSource {
+/// The read-only data source backing the neutral domains: `policy.decisions` over the decision
+/// history store and `usage.downloads` over the durable usage tree. Both are ecosystem-agnostic, so
+/// this source carries no per-ecosystem branch.
+struct NeutralSource {
     meta: MetaStore,
-    schema: DomainSchema,
+    metrics: Metrics,
+    policy: DomainSchema,
+    usage: DomainSchema,
 }
 
-impl PolicyDecisionSource {
-    fn new(meta: MetaStore) -> Self {
+impl NeutralSource {
+    fn new(meta: MetaStore, metrics: Metrics) -> Self {
         Self {
             meta,
-            schema: policy_schema(),
+            metrics,
+            policy: policy_schema(),
+            usage: usage_schema(),
         }
     }
-}
 
-impl DataSource for PolicyDecisionSource {
-    fn schema(&self, domain: &str) -> Option<&DomainSchema> {
-        (domain == POLICY_DOMAIN).then_some(&self.schema)
-    }
-
-    fn fetch(&self, _domain: &str, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
+    fn fetch_policy(&self, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
         let repository = single_repository(scope);
         let project = indexed_project(filter);
         let mut cursor = None;
@@ -346,6 +348,43 @@ impl DataSource for PolicyDecisionSource {
         }
         Ok(rows)
     }
+
+    fn fetch_usage(&self, scope: &QueryScope) -> Vec<Row> {
+        self.metrics
+            .usage_totals(single_repository(scope).as_deref())
+            .into_iter()
+            .map(usage_row_of)
+            .collect()
+    }
+}
+
+impl DataSource for NeutralSource {
+    fn schema(&self, domain: &str) -> Option<&DomainSchema> {
+        match domain {
+            POLICY_DOMAIN => Some(&self.policy),
+            USAGE_DOMAIN => Some(&self.usage),
+            _ => None,
+        }
+    }
+
+    fn fetch(&self, domain: &str, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
+        match domain {
+            USAGE_DOMAIN => Ok(self.fetch_usage(scope)),
+            _ => self.fetch_policy(scope, filter),
+        }
+    }
+}
+
+fn usage_row_of(usage: PackageUsage) -> Row {
+    Row::new()
+        .with("repository", PqlValue::Str(usage.repository))
+        .with("project", PqlValue::Str(usage.project))
+        .with("downloads", PqlValue::Int(clamp_i64(usage.downloads)))
+        .with("bytes", PqlValue::Int(clamp_i64(usage.bytes)))
+}
+
+fn clamp_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn single_repository(scope: &QueryScope) -> Option<String> {
@@ -468,17 +507,56 @@ const POLICY_COLUMNS: &[(&str, ValueType, FieldClass, Indexability, bool)] = &[
     ),
 ];
 
+const USAGE_COLUMNS: &[(&str, ValueType, FieldClass, Indexability, bool)] = &[
+    (
+        "repository",
+        ValueType::Str,
+        FieldClass::Repository,
+        Indexability::Indexed,
+        false,
+    ),
+    (
+        "project",
+        ValueType::Str,
+        FieldClass::Repository,
+        Indexability::Indexed,
+        false,
+    ),
+    (
+        "downloads",
+        ValueType::Int,
+        FieldClass::Repository,
+        Indexability::Scan,
+        true,
+    ),
+    ("bytes", ValueType::Int, FieldClass::Operator, Indexability::Scan, true),
+];
+
+fn columns_of(declared: &[(&'static str, ValueType, FieldClass, Indexability, bool)]) -> Vec<Column> {
+    declared
+        .iter()
+        .map(|(name, value_type, class, indexability, numeric)| {
+            Column::new(name, *value_type, *class, *indexability, *numeric)
+        })
+        .collect()
+}
+
 fn policy_schema() -> DomainSchema {
     DomainSchema {
         name: POLICY_DOMAIN,
-        columns: POLICY_COLUMNS
-            .iter()
-            .map(|(name, value_type, class, indexability, numeric)| {
-                Column::new(name, *value_type, *class, *indexability, *numeric)
-            })
-            .collect(),
+        columns: columns_of(POLICY_COLUMNS),
         auth: DomainAuth::RepositoryOrOperator,
         natural_order: "evaluated_at",
+        bounded: true,
+    }
+}
+
+fn usage_schema() -> DomainSchema {
+    DomainSchema {
+        name: USAGE_DOMAIN,
+        columns: columns_of(USAGE_COLUMNS),
+        auth: DomainAuth::RepositoryOrOperator,
+        natural_order: "downloads",
         bounded: true,
     }
 }
@@ -559,7 +637,6 @@ fn pql_error(error: &PqlError) -> Response {
         StatusClass::BadRequest => StatusCode::BAD_REQUEST,
         StatusClass::NotFound => StatusCode::NOT_FOUND,
         StatusClass::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        StatusClass::NotImplemented => StatusCode::NOT_IMPLEMENTED,
     };
     if status == StatusCode::NOT_FOUND {
         return status.into_response();

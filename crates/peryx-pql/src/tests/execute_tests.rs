@@ -183,6 +183,25 @@ fn test_execute_min_max_aggregate_over_missing_values() {
 }
 
 #[test]
+fn test_execute_sum_saturates_instead_of_wrapping() {
+    let rows = vec![
+        decision("pypi", "a", "allowed", "cache", 10, i64::MAX),
+        decision("pypi", "b", "allowed", "cache", 20, i64::MAX),
+    ];
+    let page = execute(
+        &parse("from policy.decisions aggregate sum(downloads) as total by state").expect("parses"),
+        &operator_scope(),
+        None,
+        &TestSource::new(rows),
+    )
+    .expect("runs");
+    // Two i64::MAX downloads would wrap to a negative under an unchecked add; saturating pins the
+    // sum at the ceiling instead.
+    assert_eq!(page.outputs[1].name, "total");
+    assert_eq!(page.rows[0][1], Value::Int(i64::MAX));
+}
+
+#[test]
 fn test_execute_min_timestamp_aggregate() {
     let page = query(
         "from policy.decisions aggregate min(evaluated_at) as first by state",
@@ -281,4 +300,175 @@ fn test_execute_omits_filter_without_cheap_leading_equality() {
     )
     .expect("runs");
     assert_eq!(source.fetches(), vec![("policy.decisions".to_owned(), None)]);
+}
+
+fn cell(page: &Page, project: &str, column: &str) -> Value {
+    let project_index = page
+        .outputs
+        .iter()
+        .position(|output| output.name == "project")
+        .expect("project");
+    let column_index = page
+        .outputs
+        .iter()
+        .position(|output| output.name == column)
+        .expect("column");
+    page.rows
+        .iter()
+        .find(|row| row[project_index] == Value::Str(project.to_owned()))
+        .map(|row| row[column_index].clone())
+        .expect("row for project")
+}
+
+#[test]
+fn test_execute_join_matches_on_composite_key() {
+    // Inner join on (repository, project): only projects with a usage row survive; flask and toolz
+    // have none. usage brings in `hits` and `bytes`.
+    let page = query(
+        "from policy.decisions join usage on repository, project order by evaluated_at desc",
+        &operator_scope(),
+        None,
+    )
+    .expect("runs");
+    assert_eq!(projects(&page), ["numpy", "django", "scipy"]);
+    assert_eq!(cell(&page, "numpy", "hits"), Value::Int(100));
+    assert_eq!(cell(&page, "django", "bytes"), Value::Int(3));
+}
+
+#[test]
+fn test_execute_join_scopes_both_sides() {
+    let page = query(
+        "from policy.decisions join usage on repository, project",
+        &repository_scope("pypi"),
+        None,
+    )
+    .expect("runs");
+    assert_eq!(projects(&page).len(), 2);
+    assert!(!projects(&page).contains(&"django".to_owned()));
+}
+
+#[test]
+fn test_execute_join_filters_on_probe_column() {
+    let page = query(
+        "from policy.decisions join usage on repository, project where hits >= 60",
+        &operator_scope(),
+        None,
+    )
+    .expect("runs");
+    assert_eq!(projects(&page), ["numpy"]);
+}
+
+#[test]
+fn test_execute_join_selects_columns_from_both_domains() {
+    let page = query(
+        "from policy.decisions join usage on repository, project select project, state, hits",
+        &repository_scope("pypi"),
+        None,
+    )
+    .expect("runs");
+    assert_eq!(
+        page.outputs
+            .iter()
+            .map(|output| output.name.as_str())
+            .collect::<Vec<_>>(),
+        ["project", "state", "hits"]
+    );
+}
+
+#[test]
+fn test_execute_join_rejects_unindexed_probe_key() {
+    let refused = query(
+        "from policy.decisions join usage_scan on repository, project",
+        &operator_scope(),
+        None,
+    );
+    assert!(matches!(refused, Err(PqlError::UnboundedJoin(_))));
+}
+
+#[test]
+fn test_execute_join_rejects_unknown_key() {
+    let outer = query(
+        "from policy.decisions join usage on repository, missing",
+        &operator_scope(),
+        None,
+    );
+    assert!(matches!(outer, Err(PqlError::Validation(_))));
+    let probe = query("from policy.decisions join usage on state", &operator_scope(), None);
+    assert!(matches!(probe, Err(PqlError::Validation(_))));
+}
+
+#[test]
+fn test_execute_join_unknown_probe_domain_is_not_disclosed() {
+    let result = query(
+        "from policy.decisions join ghosts on repository, project",
+        &operator_scope(),
+        None,
+    );
+    assert_eq!(result, Err(PqlError::Unauthorized));
+}
+
+#[test]
+fn test_execute_join_cursor_is_distinct_and_scope_bound() {
+    let scope = operator_scope();
+    let first = query(
+        "from policy.decisions join usage on repository, project limit 1",
+        &scope,
+        None,
+    )
+    .expect("runs");
+    let cursor = first.next_cursor.expect("join paginates");
+
+    // The join cursor names the joined pair, so a single-domain query rejects it as malformed.
+    assert_eq!(
+        query("from policy.decisions limit 1", &scope, Some(&cursor)),
+        Err(PqlError::InvalidCursor)
+    );
+    // A different grant refuses the replay.
+    assert_eq!(
+        query(
+            "from policy.decisions join usage on repository, project limit 1",
+            &repository_scope("pypi"),
+            Some(&cursor)
+        ),
+        Err(PqlError::CursorScopeChanged)
+    );
+    // The same scope resumes.
+    let second = query(
+        "from policy.decisions join usage on repository, project limit 1",
+        &scope,
+        Some(&cursor),
+    )
+    .expect("resumes");
+    assert_eq!(second.rows.len(), 1);
+}
+
+#[test]
+fn test_execute_join_aggregates_probe_metric() {
+    let page = query(
+        "from policy.decisions join usage on repository, project aggregate sum(hits) as total by repository",
+        &operator_scope(),
+        None,
+    )
+    .expect("runs");
+    let repository_index = page
+        .outputs
+        .iter()
+        .position(|output| output.name == "repository")
+        .unwrap();
+    let total_index = page.outputs.iter().position(|output| output.name == "total").unwrap();
+    let totals: BTreeMap<String, i64> = page
+        .rows
+        .iter()
+        .map(|row| {
+            let Value::Str(repository) = &row[repository_index] else {
+                panic!("repository")
+            };
+            let Value::Int(total) = &row[total_index] else {
+                panic!("total")
+            };
+            (repository.clone(), *total)
+        })
+        .collect();
+    assert_eq!(totals["pypi"], 150);
+    assert_eq!(totals["other"], 30);
 }
