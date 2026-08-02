@@ -54,7 +54,7 @@ pub use execute::{Page, execute};
 pub use parse::{Params, bind, parse};
 pub use plan::{OutputColumn, Plan, plan};
 pub use scope::{QueryScope, RepoScope};
-pub use source::DataSource;
+pub use source::{DataSource, FetchFilter};
 pub use value::{Row, Value, ValueType};
 
 /// Parse, bind, and execute a textual query in one call.

@@ -1,11 +1,12 @@
 //! Shared fixtures: a couple of domain schemas and an in-memory data source.
 
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 use crate::catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
 use crate::error::PqlError;
 use crate::scope::{QueryScope, RepoScope};
-use crate::source::DataSource;
+use crate::source::{DataSource, FetchFilter};
 use crate::value::{Row, Value, ValueType};
 
 pub const DOMAIN: &str = "policy.decisions";
@@ -145,6 +146,9 @@ pub struct TestSource {
     keyless: DomainSchema,
     rows: Vec<Row>,
     fail: bool,
+    /// Every `(domain, filter)` the executor asked for, so a test can prove the cost gate's leading
+    /// filter reaches the source rather than being applied only in memory.
+    fetches: Mutex<Vec<(String, Option<FetchFilter>)>>,
 }
 
 impl TestSource {
@@ -156,18 +160,22 @@ impl TestSource {
             keyless: keyless_schema(),
             rows,
             fail: false,
+            fetches: Mutex::new(Vec::new()),
         }
     }
 
     #[must_use]
     pub fn failing() -> Self {
         Self {
-            schema: schema(),
-            big: big_schema(),
-            keyless: keyless_schema(),
-            rows: Vec::new(),
             fail: true,
+            ..Self::new(Vec::new())
         }
+    }
+
+    /// The `(domain, filter)` pairs the executor has fetched, in call order.
+    #[must_use]
+    pub fn fetches(&self) -> Vec<(String, Option<FetchFilter>)> {
+        self.fetches.lock().expect("fetch log is not poisoned").clone()
     }
 }
 
@@ -181,7 +189,11 @@ impl DataSource for TestSource {
         }
     }
 
-    fn fetch(&self, domain: &str, _scope: &QueryScope) -> Result<Vec<Row>, PqlError> {
+    fn fetch(&self, domain: &str, _scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
+        self.fetches
+            .lock()
+            .expect("fetch log is not poisoned")
+            .push((domain.to_owned(), filter.cloned()));
         if self.fail {
             return Err(PqlError::Backend("store down".to_owned()));
         }

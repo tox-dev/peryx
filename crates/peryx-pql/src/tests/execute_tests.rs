@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::error::PqlError;
 use crate::execute::{Page, execute};
 use crate::parse::parse;
+use crate::source::FetchFilter;
 use crate::value::{Row, Value};
 use crate::{QueryScope, run};
 
@@ -225,4 +226,59 @@ fn test_run_surfaces_parse_error() {
         &TestSource::new(rows()),
     );
     assert!(matches!(result, Err(PqlError::Parse(_))));
+}
+
+#[test]
+fn test_execute_matches_non_ascii_string_literal() {
+    // A multibyte literal must survive lexing as one codepoint so it equals a multibyte field value;
+    // before the UTF-8 fix "café" lexed to "cafÃ©" and matched nothing.
+    let rows = vec![
+        decision("pypi", "café", "allowed", "cache", 10, 1),
+        decision("pypi", "resumé", "allowed", "cache", 20, 2),
+    ];
+    let page = execute(
+        &parse(r#"from policy.decisions where project == "café" select project"#).expect("parses"),
+        &operator_scope(),
+        None,
+        &TestSource::new(rows),
+    )
+    .expect("runs");
+    assert_eq!(projects(&page), ["café"]);
+}
+
+#[test]
+fn test_execute_leading_filter_reaches_source() {
+    // The cost gate admits `big` only for an indexed leading equality; that same filter must arrive at
+    // the source so an unbounded domain is narrowed through its index, not materialized whole.
+    let source = TestSource::new(rows());
+    execute(
+        &parse(r#"from big where repository == "pypi""#).expect("parses"),
+        &operator_scope(),
+        None,
+        &source,
+    )
+    .expect("runs");
+    assert_eq!(
+        source.fetches(),
+        vec![(
+            "big".to_owned(),
+            Some(FetchFilter {
+                column: "repository",
+                values: vec![Value::Str("pypi".to_owned())],
+            })
+        )]
+    );
+}
+
+#[test]
+fn test_execute_omits_filter_without_cheap_leading_equality() {
+    let source = TestSource::new(rows());
+    execute(
+        &parse(r#"from policy.decisions where state == "blocked""#).expect("parses"),
+        &operator_scope(),
+        None,
+        &source,
+    )
+    .expect("runs");
+    assert_eq!(source.fetches(), vec![("policy.decisions".to_owned(), None)]);
 }

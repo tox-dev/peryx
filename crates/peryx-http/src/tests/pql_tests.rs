@@ -171,6 +171,22 @@ async fn test_query_binds_parameters_out_of_band() {
 }
 
 #[tokio::test]
+async fn test_query_narrows_read_through_project_index() {
+    // A leading `project ==` equality is the cost gate's indexed filter; the source pushes it into the
+    // store's project index rather than paging the whole domain, and the result stays exact.
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from policy.decisions where project == \"alpha\""}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(projects(&document), ["alpha"]);
+}
+
+#[tokio::test]
 async fn test_query_aggregates_counts_by_state() {
     let (_dir, meta, app) = app(false).await;
     seed(&meta);

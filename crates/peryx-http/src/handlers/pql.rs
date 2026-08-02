@@ -22,8 +22,8 @@ use peryx_identity::{Action, Denial, Resource, Scope, UserId, authorize_all, par
 use peryx_pql::ast::{CompareOp, Literal, Predicate};
 use peryx_pql::catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
 use peryx_pql::{
-    DataSource, OutputColumn, Page, PqlError, QueryScope, RepoScope, Row, StatusClass, Value as PqlValue, ValueType,
-    bind, execute, parse,
+    DataSource, FetchFilter, OutputColumn, Page, PqlError, QueryScope, RepoScope, Row, StatusClass, Value as PqlValue,
+    ValueType, bind, execute, parse,
 };
 use peryx_storage::meta::{MetaStore, PolicyDecisionItem, PolicyDecisionQuery};
 
@@ -321,13 +321,15 @@ impl DataSource for PolicyDecisionSource {
         (domain == POLICY_DOMAIN).then_some(&self.schema)
     }
 
-    fn fetch(&self, _domain: &str, scope: &QueryScope) -> Result<Vec<Row>, PqlError> {
+    fn fetch(&self, _domain: &str, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
         let repository = single_repository(scope);
+        let project = indexed_project(filter);
         let mut cursor = None;
         let mut rows = Vec::new();
         loop {
             let query = PolicyDecisionQuery {
                 repository: repository.clone(),
+                project: project.clone(),
                 cursor: cursor.take(),
                 limit: STORE_PAGE,
                 ..PolicyDecisionQuery::default()
@@ -350,6 +352,18 @@ fn single_repository(scope: &QueryScope) -> Option<String> {
     match scope.repositories() {
         RepoScope::Only(set) if set.len() == 1 => set.iter().next().cloned(),
         RepoScope::All | RepoScope::Only(_) => None,
+    }
+}
+
+/// Narrow the store read through the `project` index when the cost gate's leading filter is a single
+/// project equality, so an indexed-equality predicate reaches redb as an indexed lookup instead of a
+/// full page-through of the domain (constraint 6). Any other leading filter falls back to the
+/// executor's in-memory predicate.
+fn indexed_project(filter: Option<&FetchFilter>) -> Option<String> {
+    let filter = filter?;
+    match (filter.column, filter.values.as_slice()) {
+        ("project", [PqlValue::Str(value)]) => Some(value.clone()),
+        _ => None,
     }
 }
 

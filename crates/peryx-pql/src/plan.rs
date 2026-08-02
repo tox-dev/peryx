@@ -8,7 +8,9 @@
 use crate::ast::{Aggregate, AggregateFunc, Ast, CompareOp, Literal, OrderKey, Predicate, Selection};
 use crate::catalog::{Column, DomainSchema, FieldClass};
 use crate::error::PqlError;
-use crate::value::ValueType;
+use crate::eval::literal_value;
+use crate::source::FetchFilter;
+use crate::value::{Value, ValueType};
 
 /// The default page size for an interactive read.
 pub const DEFAULT_LIMIT: u32 = 25;
@@ -222,11 +224,12 @@ fn cost_gate(ast: &Ast, schema: &DomainSchema) -> Result<(), PqlError> {
     if schema.bounded {
         return Ok(());
     }
-    let cheap = ast
+    if ast
         .predicate
         .as_ref()
-        .is_some_and(|predicate| has_cheap_leading_filter(predicate, schema));
-    if cheap {
+        .and_then(|predicate| leading_filter(predicate, schema))
+        .is_some()
+    {
         Ok(())
     } else {
         Err(PqlError::CostExceeded(format!(
@@ -236,19 +239,35 @@ fn cost_gate(ast: &Ast, schema: &DomainSchema) -> Result<(), PqlError> {
     }
 }
 
-fn has_cheap_leading_filter(predicate: &Predicate, schema: &DomainSchema) -> bool {
+/// The cost gate's leading filter for a predicate over a schema: the first equality or membership on
+/// a cheaply-indexed column, lowered to concrete values.
+///
+/// This is both what admits an unbounded domain (a `Some` result means the query is affordable) and
+/// what the executor hands to [`crate::source::DataSource::fetch`] so the source narrows through its
+/// index rather than scanning the whole domain (constraint 6). A leading `and` term satisfies it; an
+/// `or`, `not`, or an unbound parameter does not.
+#[must_use]
+pub fn leading_filter(predicate: &Predicate, schema: &DomainSchema) -> Option<FetchFilter> {
     match predicate {
-        Predicate::And(left, right) => {
-            has_cheap_leading_filter(left, schema) || has_cheap_leading_filter(right, schema)
-        }
+        Predicate::And(left, right) => leading_filter(left, schema).or_else(|| leading_filter(right, schema)),
         Predicate::Compare {
             field,
             op: CompareOp::Eq,
-            ..
-        }
-        | Predicate::In { field, .. } => schema
-            .column(field)
-            .is_some_and(|column| column.indexability.is_cheap()),
-        _ => false,
+            value,
+        } => cheap_filter(field, std::slice::from_ref(value), schema),
+        Predicate::In { field, values } => cheap_filter(field, values, schema),
+        _ => None,
     }
+}
+
+fn cheap_filter(field: &str, literals: &[Literal], schema: &DomainSchema) -> Option<FetchFilter> {
+    let column = schema.column(field).filter(|column| column.indexability.is_cheap())?;
+    let values: Vec<Value> = literals.iter().map(literal_value).collect();
+    if values.iter().any(|value| matches!(value, Value::Null)) {
+        return None;
+    }
+    Some(FetchFilter {
+        column: column.name,
+        values,
+    })
 }

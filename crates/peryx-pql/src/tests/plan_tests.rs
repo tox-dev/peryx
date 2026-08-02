@@ -1,10 +1,16 @@
 use crate::catalog::FieldClass;
 use crate::error::PqlError;
 use crate::parse::parse;
-use crate::plan::{DEFAULT_LIMIT, MAX_LIMIT, plan};
-use crate::value::ValueType;
+use crate::plan::{DEFAULT_LIMIT, MAX_LIMIT, leading_filter, plan};
+use crate::source::FetchFilter;
+use crate::value::{Value, ValueType};
 
 use super::support::{big_schema, schema};
+
+fn filter_of(text: &str) -> Option<FetchFilter> {
+    let ast = parse(text).expect("parses");
+    leading_filter(ast.predicate.as_ref().expect("has a predicate"), &schema())
+}
 
 fn plan_text(text: &str) -> Result<crate::plan::Plan, PqlError> {
     plan(&parse(text).expect("parses"), &schema())
@@ -172,6 +178,49 @@ fn test_cost_gate_unbounded_requires_cheap_leading_filter() {
         )
         .is_ok()
     );
+}
+
+#[test]
+fn test_leading_filter_extracts_indexed_equality() {
+    assert_eq!(
+        filter_of(r#"from policy.decisions where repository == "pypi""#),
+        Some(FetchFilter {
+            column: "repository",
+            values: vec![Value::Str("pypi".to_owned())],
+        })
+    );
+    assert_eq!(
+        filter_of(r#"from policy.decisions where project in ("numpy", "scipy")"#),
+        Some(FetchFilter {
+            column: "project",
+            values: vec![Value::Str("numpy".to_owned()), Value::Str("scipy".to_owned())],
+        })
+    );
+    assert_eq!(
+        filter_of("from policy.decisions where evaluated_at == @2026-06-01T00:00:00Z")
+            .expect("timestamp key is cheap")
+            .column,
+        "evaluated_at"
+    );
+}
+
+#[test]
+fn test_leading_filter_picks_the_cheap_side_of_an_and() {
+    let left_cheap = filter_of(r#"from policy.decisions where project == "numpy" and state == "blocked""#);
+    let right_cheap = filter_of(r#"from policy.decisions where state == "blocked" and project == "numpy""#);
+    assert_eq!(left_cheap.expect("left is indexed").column, "project");
+    assert_eq!(right_cheap.expect("right is indexed").column, "project");
+}
+
+#[test]
+fn test_leading_filter_absent_for_scan_or_or_or_unbound() {
+    // A scan column, a disjunction, and an unbound parameter each yield no indexed narrowing.
+    assert_eq!(filter_of(r#"from policy.decisions where state == "blocked""#), None);
+    assert_eq!(
+        filter_of(r#"from policy.decisions where repository == "pypi" or project == "numpy""#),
+        None
+    );
+    assert_eq!(filter_of("from policy.decisions where repository == :repo"), None);
 }
 
 #[test]

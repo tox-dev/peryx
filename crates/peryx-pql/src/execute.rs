@@ -11,7 +11,7 @@ use crate::ast::{AggregateFunc, Ast, OrderKey};
 use crate::cursor;
 use crate::error::PqlError;
 use crate::eval::evaluate;
-use crate::plan::{OutputColumn, Plan, plan};
+use crate::plan::{OutputColumn, Plan, leading_filter, plan};
 use crate::scope::{QueryScope, RepoScope};
 use crate::source::DataSource;
 use crate::value::{Row, Value};
@@ -46,7 +46,11 @@ pub fn execute(
         Some(text) => cursor::decode(text, &ast.domain, scope)?,
         None => 0,
     };
-    let rows = source.fetch(&ast.domain, scope)?;
+    let filter = ast
+        .predicate
+        .as_ref()
+        .and_then(|predicate| leading_filter(predicate, schema));
+    let rows = source.fetch(&ast.domain, scope, filter.as_ref())?;
     let filtered = filter_rows(rows, ast, scope, has_scope_column);
     let mut tuples = if let Some(aggregate) = &ast.aggregate {
         aggregate_rows(&filtered, aggregate, &plan.outputs)

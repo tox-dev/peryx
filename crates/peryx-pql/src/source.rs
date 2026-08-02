@@ -16,7 +16,23 @@
 use crate::catalog::DomainSchema;
 use crate::error::PqlError;
 use crate::scope::QueryScope;
-use crate::value::Row;
+use crate::value::{Row, Value};
+
+/// The cost gate's leading filter, lowered to concrete values, handed to the source so it can narrow
+/// the read through its own index.
+///
+/// The gate admits an unbounded domain only when the query carries an equality or membership on a
+/// cheaply-indexed column (constraint 6). Passing that same filter here is what makes admission
+/// honest: a source that honors it reads an indexed slice instead of materializing the whole domain
+/// and filtering in memory. It stays advisory — the executor re-applies the full predicate over the
+/// returned rows — so a source that cannot use it may ignore it without affecting correctness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchFilter {
+    /// The indexed column the filter narrows on.
+    pub column: &'static str,
+    /// The admitted values; the row matches when its `column` cell equals any of them.
+    pub values: Vec<Value>,
+}
 
 /// A provider of typed, read-only rows for one or more domains.
 pub trait DataSource: Send + Sync {
@@ -29,7 +45,12 @@ pub trait DataSource: Send + Sync {
     /// caller's authorized repositories where the source can do so cheaply; the executor injects the
     /// same scope again as a predicate, so a source that over-returns is corrected, never leaked.
     ///
+    /// When `filter` is `Some`, it is the cost gate's leading indexed filter (see [`FetchFilter`]): a
+    /// source SHOULD honor it through its index so an admitted unbounded-domain query does not
+    /// materialize the whole domain. Honoring it is advisory — the executor re-applies the full
+    /// predicate regardless — so a source without a matching index may ignore it.
+    ///
     /// # Errors
     /// Returns [`PqlError::Backend`] when the underlying store cannot answer.
-    fn fetch(&self, domain: &str, scope: &QueryScope) -> Result<Vec<Row>, PqlError>;
+    fn fetch(&self, domain: &str, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError>;
 }
