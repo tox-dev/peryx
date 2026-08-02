@@ -8,6 +8,7 @@ mod consensus;
 mod election;
 mod envelope;
 mod error;
+mod follower;
 mod http;
 mod liveness;
 mod peer;
@@ -25,6 +26,9 @@ pub use envelope::{
     OperationEnvelope, OperationId, OperationKind, SUPPORTED_SCHEMA_VERSIONS, SchemaVersion, TraceContext,
 };
 pub use error::SyncError;
+pub use follower::{
+    AppendAccepted, AppendReject, AppendRequest, AppendResponse, CommitTracker, receive_append_entries,
+};
 pub use http::{DEFAULT_MAX_CHANGE_PAGE_SIZE, HttpPrimary, HttpPrimaryError, PrimaryHttpConfigError, primary_router};
 pub use liveness::{
     DEFAULT_DEAD_AFTER, DEFAULT_MAX_HEARTBEAT_BYTES, DEFAULT_SUSPECT_AFTER, HeartbeatReport, LivenessRejection,
@@ -46,6 +50,8 @@ mod consensus_tests;
 mod election_tests;
 #[cfg(test)]
 mod envelope_tests;
+#[cfg(test)]
+mod follower_tests;
 #[cfg(test)]
 mod http_tests;
 #[cfg(test)]
