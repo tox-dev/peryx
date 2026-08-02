@@ -472,3 +472,31 @@ fn test_execute_join_aggregates_probe_metric() {
     assert_eq!(totals["pypi"], 150);
     assert_eq!(totals["other"], 30);
 }
+
+#[test]
+fn test_execute_join_rejects_unbounded_probe_domain() {
+    // `big` is unbounded, so materializing it as the build side is refused even though its join key is
+    // key-ordered: the executor indexes the whole probe domain, not a per-key slice.
+    let refused = query("from policy.decisions join big on repository", &operator_scope(), None);
+    assert!(matches!(refused, Err(PqlError::UnboundedJoin(_))));
+}
+
+#[test]
+fn test_execute_join_rejects_unbounded_outer_without_leading_filter() {
+    // The outer side is streamed, so an unbounded outer with no cheap leading filter is over budget,
+    // the same as a single-domain scan of it would be.
+    let refused = query("from big join policy.decisions on repository", &operator_scope(), None);
+    assert!(matches!(refused, Err(PqlError::CostExceeded(_))));
+}
+
+#[test]
+fn test_execute_join_admits_bounded_outer_with_leading_filter() {
+    // A bounded probe and an outer narrowed by an indexed equality is affordable and runs.
+    let page = query(
+        r#"from big join policy.decisions on repository where repository == "pypi""#,
+        &operator_scope(),
+        None,
+    )
+    .expect("runs");
+    assert!(!page.rows.is_empty());
+}

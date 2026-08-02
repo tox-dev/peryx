@@ -13,7 +13,7 @@ use crate::catalog::DomainSchema;
 use crate::cursor;
 use crate::error::PqlError;
 use crate::eval::evaluate;
-use crate::plan::{OutputColumn, Plan, leading_filter, plan, validate};
+use crate::plan::{OutputColumn, Plan, gate_join, leading_filter, plan, validate};
 use crate::scope::{QueryScope, RepoScope};
 use crate::source::DataSource;
 use crate::value::{Row, Value};
@@ -65,10 +65,12 @@ pub fn execute(
 
 /// Run one bounded, declared join between two domains on their shared keys.
 ///
-/// The join is inner: an outer row appears only when the probe domain has a matching row. Scope is
-/// injected on both sides before the join, the probe side is indexed on every join key so each outer
-/// row is a bounded lookup, and the user predicate runs over the merged row. A column present in both
-/// domains keeps the more restrictive classification.
+/// The join is inner: an outer row appears only when the probe domain has a matching row. The cost
+/// gate bounds it before either side is read: the probe (build) side is materialized whole, so it
+/// must be a bounded domain, and the outer side must be bounded or narrowed by a cheap leading
+/// filter, which is also pushed into the outer fetch. Scope is injected on both sides before the
+/// join, and the user predicate runs over the merged row. A column present in both domains keeps the
+/// more restrictive classification.
 fn execute_join(
     ast: &Ast,
     join: &Join,
@@ -81,6 +83,7 @@ fn execute_join(
     validate_join(&join.on, schema_a, schema_b)?;
     let merged = merge_schemas(schema_a, schema_b);
     let plan = validate(ast, &merged)?;
+    gate_join(ast, schema_a, schema_b)?;
     let cursor_domain = join_cursor_key(&ast.domain, &join.domain);
     let offset = decode_offset(cursor_text, &cursor_domain, scope)?;
     let outer_filter = ast

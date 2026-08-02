@@ -44,6 +44,27 @@ pub fn plan(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
     Ok(plan)
 }
 
+/// Cost-bound a two-domain join before either side is read.
+///
+/// The probe (build) side is materialized whole to index it, so it must be a bounded domain; the
+/// outer side is streamed, so it must be affordable on its own — bounded, or narrowed by a cheap
+/// leading filter, which is the single-domain gate applied over the outer schema. The join-key index
+/// the validator checks does not bound this cost, because the executor materializes the whole probe
+/// domain rather than doing a per-key lookup.
+///
+/// # Errors
+/// Returns [`PqlError::UnboundedJoin`] when the probe domain is unbounded, and
+/// [`PqlError::CostExceeded`] when the outer domain is unbounded without a cheap leading filter.
+pub fn gate_join(ast: &Ast, outer: &DomainSchema, probe: &DomainSchema) -> Result<(), PqlError> {
+    if !probe.bounded {
+        return Err(PqlError::UnboundedJoin(format!(
+            "`{}` is unbounded, so materializing it to build the join is refused",
+            probe.name
+        )));
+    }
+    cost_gate(ast, outer)
+}
+
 /// Validate a query body against a schema without applying the single-domain cost gate.
 ///
 /// A join validates its body against the two domains' merged schema and bounds its own cost through
