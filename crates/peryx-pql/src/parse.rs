@@ -163,28 +163,22 @@ fn lex_operator(bytes: &[u8], index: usize, tokens: &mut Vec<Token>) -> Result<u
 }
 
 fn lex_string(text: &str, index: usize, tokens: &mut Vec<Token>) -> Result<usize, PqlError> {
-    let bytes = text.as_bytes();
-    let mut cursor = index + 1;
+    // Iterate whole `char`s, not bytes: a multibyte UTF-8 char inside the quotes must survive as one
+    // codepoint rather than being split into Latin-1 bytes. Escapes only ever introduce ASCII.
     let mut value = String::new();
-    while cursor < bytes.len() {
-        match bytes[cursor] {
-            b'"' => {
+    let mut chars = text[index + 1..].char_indices();
+    while let Some((offset, character)) = chars.next() {
+        match character {
+            '"' => {
                 tokens.push(Token::Str(value));
-                return Ok(cursor + 1);
+                return Ok(index + offset + 2);
             }
-            b'\\' => {
-                let escaped = bytes.get(cursor + 1).copied();
-                match escaped {
-                    Some(b'"') => value.push('"'),
-                    Some(b'\\') => value.push('\\'),
-                    _ => return Err(PqlError::Parse("invalid string escape".to_owned())),
-                }
-                cursor += 2;
-            }
-            other => {
-                value.push(char::from(other));
-                cursor += 1;
-            }
+            '\\' => match chars.next() {
+                Some((_, '"')) => value.push('"'),
+                Some((_, '\\')) => value.push('\\'),
+                _ => return Err(PqlError::Parse("invalid string escape".to_owned())),
+            },
+            other => value.push(other),
         }
     }
     Err(PqlError::Parse("unterminated string".to_owned()))

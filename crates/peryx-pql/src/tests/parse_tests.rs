@@ -89,6 +89,26 @@ fn test_parse_string_escapes() {
 }
 
 #[test]
+fn test_parse_non_ascii_string_literal() {
+    // The byte range between the quotes is decoded as UTF-8, so a multibyte char is one codepoint, not
+    // a run of Latin-1 mojibake.
+    let ast = parse(r#"from d where name == "café — naïve""#).expect("parses");
+    let Some(Predicate::Compare { value, .. }) = ast.predicate else {
+        panic!("expected a comparison");
+    };
+    assert_eq!(value, Literal::Str("café — naïve".to_owned()));
+}
+
+#[test]
+fn test_parse_non_ascii_string_with_escape() {
+    let ast = parse(r#"from d where name == "café \"x\"""#).expect("parses");
+    let Some(Predicate::Compare { value, .. }) = ast.predicate else {
+        panic!("expected a comparison");
+    };
+    assert_eq!(value, Literal::Str(r#"café "x""#.to_owned()));
+}
+
+#[test]
 fn test_parse_aggregate() {
     let ast = parse("from d aggregate count() as n, sum(downloads) as total by state, project").expect("parses");
     let aggregate = ast.aggregate.expect("has aggregate");
