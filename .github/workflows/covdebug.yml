@@ -1,0 +1,37 @@
+name: covdebug
+
+on:
+  push:
+    branches: [covdebug-x86]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_RETRY: "10"
+
+jobs:
+  cov:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: coverage without the gate, report FNH<FNF, keep lcov
+        run: |
+          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench/)' --lcov --output-path lcov.info || true
+          echo "===== FNH<FNF across all crates (the deduced functions gate) ====="
+          awk '/^SF:/{sf=substr($0,4)} /^FNF:/{f=$0+0} /^FNH:/{h=$0+0; if(h<f && sf !~ /(main\.rs|peryx-web|peryx-bench)/) print "MISS "sf" FNH="h" FNF="f}' lcov.info
+          echo "===== END REPORT ====="
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: coverage-lcov
+          path: lcov.info
