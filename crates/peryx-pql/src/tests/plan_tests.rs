@@ -181,6 +181,20 @@ fn test_cost_gate_unbounded_requires_cheap_leading_filter() {
 }
 
 #[test]
+fn test_fetch_filter_debug_clone_and_eq() {
+    // The filter crosses the DataSource seam and is compared and logged there, so its derived Debug,
+    // Clone, and Eq are load-bearing and must each run under coverage, not only on an assert failure.
+    let filter = FetchFilter {
+        column: "repository",
+        values: vec![Value::Str("pypi".to_owned())],
+    };
+    assert_eq!(filter.clone(), filter);
+    let rendered = format!("{filter:?}");
+    assert!(rendered.contains("repository"));
+    assert!(rendered.contains("pypi"));
+}
+
+#[test]
 fn test_leading_filter_extracts_indexed_equality() {
     assert_eq!(
         filter_of(r#"from policy.decisions where repository == "pypi""#),
