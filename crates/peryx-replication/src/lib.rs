@@ -18,6 +18,7 @@ mod peer_http;
 mod protocol;
 mod replica;
 pub mod sim;
+mod visibility;
 
 pub use analytics::{
     APPLY_STATE_SCHEMA, AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, ApplyError, ApplyLimits,
@@ -52,6 +53,7 @@ pub use protocol::{
     Primary,
 };
 pub use replica::{Replica, ReplicaState, SyncOutcome};
+pub use visibility::{ApplyEffect, ArtifactId, OpOrder, Visibility, VisibilityAction, VisibilityOp, VisibilityState};
 
 #[cfg(test)]
 mod analytics_tests;
@@ -77,3 +79,5 @@ mod peer_tests;
 mod protocol_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod visibility_tests;
