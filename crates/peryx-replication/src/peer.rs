@@ -82,6 +82,12 @@ pub enum TransportError {
     Timeout,
     #[error("peer rejected the replication credential")]
     Unauthenticated,
+    #[error("peer replication endpoint returned transient server error {status}")]
+    ServerError { status: u16 },
+    #[error("peer replication endpoint returned status {status}")]
+    BadStatus { status: u16 },
+    #[error("peer replication reply was not a valid change page")]
+    Malformed,
     #[error("batch frame is {actual} bytes; the transport caps a frame at {limit}")]
     FrameTooLarge { limit: u64, actual: u64 },
     #[error("request asked for {actual} operations; the peer caps a batch at {limit}")]
@@ -99,15 +105,17 @@ impl TransportError {
     /// failures are terminal and fail closed instead.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Disconnected | Self::Timeout)
+        matches!(self, Self::Disconnected | Self::Timeout | Self::ServerError { .. })
     }
 
     /// A stable machine reason for a terminal failure, or `None` when the failure is retryable.
     #[must_use]
     pub const fn terminal_reason(&self) -> Option<&'static str> {
         match self {
-            Self::Disconnected | Self::Timeout => None,
+            Self::Disconnected | Self::Timeout | Self::ServerError { .. } => None,
             Self::Unauthenticated => Some("unauthenticated"),
+            Self::BadStatus { .. } => Some("bad_status"),
+            Self::Malformed => Some("malformed"),
             Self::FrameTooLarge { .. } => Some("frame_too_large"),
             Self::TooManyOperations { .. } => Some("too_many_operations"),
             Self::SourceChanged { .. } => Some("source_changed"),
