@@ -52,7 +52,7 @@ repos:
       - id: check-github-workflows
         args: ["--verbose"]
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.2
+    rev: v2.4.3
     hooks:
       - id: codespell
         # `opps` (a framework) and `ukranian` (deprecated) are trove classifiers, spelled as PyPI publishes them.
@@ -60,7 +60,7 @@ repos:
         # Generated mermaid SVGs contain mermaid's own class names (e.g. `.composit`).
         exclude: "^site/diagrams/"
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.26.1
+    rev: v1.29.0
     hooks:
       - id: zizmor
   - repo: meta
