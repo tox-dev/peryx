@@ -493,6 +493,60 @@ pub(super) async fn commit_blob(
     }
 }
 
+/// Publish a session's durable stage under `digest` and record its membership, the resumable
+/// counterpart to [`commit_blob`].
+///
+/// On success the session's durable record is closed. A rejected quota drops the stage and record. A
+/// commit fault — a digest mismatch, most likely — keeps both, so the client can retry the finalize
+/// with the right digest rather than re-upload every byte.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a resumable upload commits the staged blob, its quota reservation, and its outbox entry together"
+)]
+pub(super) async fn commit_staged_upload(
+    state: &ServingState,
+    session: &str,
+    index: &Index,
+    repo: &str,
+    name: &str,
+    digest: &str,
+    bytes: u64,
+    journal: bool,
+) -> Result<Response, ServeError> {
+    let Some(storage) = store::blob_digest(digest) else {
+        return Ok(error_response(
+            ErrorCode::DigestInvalid,
+            "only sha256 blob digests are supported",
+        ));
+    };
+    let reservation = if store::blob_is_member(&state.meta, &index.name, repo, digest)? {
+        None
+    } else {
+        match crate::quota::admit_push(state, index, repo, None, digest, bytes)? {
+            crate::quota::Admission::Rejected(response) => {
+                state.blobs.discard_upload(session).await.map_err(blob_fault)?;
+                state.meta.remove_upload(session)?;
+                return Ok(response);
+            }
+            crate::quota::Admission::Unmetered => None,
+            crate::quota::Admission::Reserved(record) => Some(record),
+        }
+    };
+    match state.blobs.finish_upload(session, &storage).await {
+        Ok(()) => {
+            state.meta.remove_upload(session)?;
+            crate::quota::commit_blob_membership(&state.meta, &index.name, repo, digest, reservation, journal)?;
+            Ok(blob_created(name, digest))
+        }
+        Err(err) => {
+            if let Some(record) = reservation {
+                state.meta.release_quota_reservation(record.id)?;
+            }
+            Ok(download_error_response(DownloadError::Blob(err)))
+        }
+    }
+}
+
 /// `201 Created` for a stored blob, with its location and digest.
 pub(super) fn blob_created(name: &str, digest: &str) -> Response {
     created(&format!("/v2/{name}/blobs/{digest}"), digest)

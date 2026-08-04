@@ -421,6 +421,44 @@ async fn test_policy_overflow_drops_a_chunked_upload_session(#[case] method: Met
     );
 }
 
+#[tokio::test]
+async fn test_finish_over_the_size_limit_drops_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+    let (_, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers["location"].to_str().unwrap().to_owned();
+    // Stage bytes up to the limit.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"abcd".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // A final chunk overflowing the file-size policy is denied and ends the session.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={}", oci_digest(b"abcde")),
+        &[("authorization", &auth(TOKEN))],
+        b"e".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 async fn send_stream_with_late_error(
     app: &axum::Router,
     method: Method,

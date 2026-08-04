@@ -215,6 +215,108 @@ impl BlobStorage {
         self.stage_bytes(bytes).await?.commit_as(expected).await
     }
 
+    /// Append `chunk` to `session`'s durable upload stage, returning the new staged length.
+    ///
+    /// Only a backend that proves same-DC durability behind a resumable stage supports this; an object
+    /// store does not, so it is rejected rather than treated as durable.
+    ///
+    /// # Errors
+    /// Returns a contextual write error, or an unsupported-operation error on the object store.
+    ///
+    /// # Panics
+    /// Panics if the internal blocking task panics.
+    pub async fn stage_upload_chunk(&self, session: &str, offset: u64, chunk: &[u8]) -> Result<u64, BlobError> {
+        match &self.backend {
+            Backend::Filesystem(store) => {
+                let store = store.clone();
+                let session = session.to_owned();
+                let chunk = chunk.to_vec();
+                tokio::task::spawn_blocking(move || {
+                    filesystem_context(
+                        store.stage_upload_chunk(&session, offset, &chunk),
+                        BlobOperation::Write,
+                        None,
+                    )
+                })
+                .await
+                .expect("blob upload-stage task never panics")
+            }
+            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Write)),
+        }
+    }
+
+    /// The bytes durably staged for `session` so far, or `None` when it has no stage.
+    ///
+    /// # Errors
+    /// Returns a contextual read error, or an unsupported-operation error on the object store.
+    ///
+    /// # Panics
+    /// Panics if the internal blocking task panics.
+    pub async fn staged_upload_len(&self, session: &str) -> Result<Option<u64>, BlobError> {
+        match &self.backend {
+            Backend::Filesystem(store) => {
+                let store = store.clone();
+                let session = session.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    filesystem_context(store.staged_upload_len(&session), BlobOperation::Head, None)
+                })
+                .await
+                .expect("blob upload-length task never panics")
+            }
+            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Head)),
+        }
+    }
+
+    /// Verify `session`'s staged bytes hash to `expected`, publish them, and clear the stage.
+    ///
+    /// # Errors
+    /// Returns a contextual digest mismatch, not-found, or commit error, or an unsupported-operation
+    /// error on the object store.
+    ///
+    /// # Panics
+    /// Panics if the internal blocking task panics.
+    pub async fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
+        match &self.backend {
+            Backend::Filesystem(store) => {
+                let store = store.clone();
+                let session = session.to_owned();
+                let expected = expected.clone();
+                tokio::task::spawn_blocking(move || {
+                    filesystem_context(
+                        store.finish_upload(&session, &expected),
+                        BlobOperation::Commit,
+                        Some(&expected),
+                    )
+                })
+                .await
+                .expect("blob upload-finish task never panics")
+            }
+            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Commit)),
+        }
+    }
+
+    /// Discard `session`'s durable upload stage, tolerating one already gone.
+    ///
+    /// # Errors
+    /// Returns a contextual delete error, or an unsupported-operation error on the object store.
+    ///
+    /// # Panics
+    /// Panics if the internal blocking task panics.
+    pub async fn discard_upload(&self, session: &str) -> Result<(), BlobError> {
+        match &self.backend {
+            Backend::Filesystem(store) => {
+                let store = store.clone();
+                let session = session.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    filesystem_context(store.discard_upload(&session), BlobOperation::Delete, None)
+                })
+                .await
+                .expect("blob upload-discard task never panics")
+            }
+            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Delete)),
+        }
+    }
+
     /// Verify stored bytes against their address.
     ///
     /// # Errors

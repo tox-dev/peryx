@@ -72,6 +72,270 @@ async fn test_session_upload_then_pull() {
 }
 
 #[tokio::test]
+async fn test_chunked_upload_resumes_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = b"a-real-layer-of-bytes-that-arrives-across-a-restart";
+    let digest = oci_digest(blob);
+    let split = 20;
+
+    // First process: open a session and stage the first chunk, then the process ends. Dropping the app
+    // and its state leaves only the durable store and the staged file on disk.
+    let location = {
+        let (_state, app) = hosted_writable(&dir, TOKEN);
+        let (status, headers, _) = send_body(
+            &app,
+            Method::POST,
+            "/v2/store/app/blobs/uploads/",
+            &[("authorization", &auth(TOKEN))],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+        let (status, _, _) = send_body(
+            &app,
+            Method::PATCH,
+            &location,
+            &[("authorization", &auth(TOKEN))],
+            blob[..split].to_vec(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        location
+    };
+
+    // Second process over the same directory, sharing no memory with the first.
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+
+    // The session survived: status reports the bytes staged before the restart.
+    let (status, headers, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers[header::RANGE], format!("0-{}", split - 1));
+
+    // Resume with the remaining bytes at the recorded offset, then finalize under the digest.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[
+            ("authorization", &auth(TOKEN)),
+            ("content-range", &format!("{split}-{}", blob.len() - 1)),
+        ],
+        blob[split..].to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, headers, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+
+    // The blob assembled across the restart serves whole from the store.
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &blob[..]);
+}
+
+#[tokio::test]
+async fn test_concurrent_chunks_on_one_session_do_not_interleave() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+
+    // Two chunks race to append at offset 0 on the same session. The per-session lock serializes them:
+    // one lands, and the other, finding the offset already advanced, is refused as out of range instead
+    // of overwriting or interleaving the first.
+    let first = b"first-chunk-bytes";
+    let second = b"other-chunk-value";
+    let range = format!("0-{}", first.len() - 1);
+    let token = auth(TOKEN);
+    let request_headers = [("authorization", token.as_str()), ("content-range", range.as_str())];
+    let (a, b) = tokio::join!(
+        send_body(&app, Method::PATCH, &location, &request_headers, first.to_vec()),
+        send_body(&app, Method::PATCH, &location, &request_headers, second.to_vec()),
+    );
+
+    let (winner, loser_status) = if a.0 == StatusCode::ACCEPTED {
+        (&first[..], b.0)
+    } else {
+        (&second[..], a.0)
+    };
+    assert_eq!(loser_status, StatusCode::RANGE_NOT_SATISFIABLE);
+
+    // The stage holds exactly the winning chunk: finalizing under its digest assembles that blob, proving
+    // no bytes from the losing chunk reached the stage.
+    let digest = oci_digest(winner);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, winner);
+}
+
+#[tokio::test]
+async fn test_session_upload_of_an_empty_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let digest = oci_digest(b"");
+
+    // Open a session and finalize it with no chunk and no body: a zero-byte blob.
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    let (status, headers, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+
+    // The empty blob serves.
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(got.is_empty());
+}
+
+async fn stage_one_chunk(app: &axum::Router, blob: &[u8]) -> String {
+    let (status, headers, _) = send_body(
+        app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    let (status, _, _) = send_body(
+        app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    location
+}
+
+#[tokio::test]
+async fn test_session_finish_with_an_invalid_digest_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let location = stage_one_chunk(&app, b"payload").await;
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest=not-a-sha256-digest"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "DIGEST_INVALID"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_session_finish_with_a_wrong_digest_keeps_the_stage_for_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"the-actual-bytes";
+    let location = stage_one_chunk(&app, blob).await;
+
+    // Finishing under a valid but wrong digest fails without committing the blob.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={}", oci_digest(b"different-bytes")),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_ne!(status, StatusCode::CREATED);
+
+    // The staged bytes survive, so a retry with the right digest completes without re-uploading.
+    let digest = oci_digest(blob);
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &blob[..]);
+}
+
+#[tokio::test]
+async fn test_session_finish_of_an_already_stored_blob_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"shared-layer-bytes";
+    let digest = oci_digest(blob);
+    // Store the blob once through a monolithic upload.
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A session that re-pushes the same digest finalizes without reserving quota again.
+    let location = stage_one_chunk(&app, blob).await;
+    let (status, headers, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers["docker-content-digest"], digest);
+}
+
+#[tokio::test]
 async fn test_monolithic_upload() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
@@ -1453,7 +1717,7 @@ async fn test_abandoned_upload_sessions_expire() {
     let dir = tempfile::tempdir().unwrap();
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
-    let (_state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
+    let (state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
 
     // Open a session, then abandon it.
     let (status, headers, _) = send_body(
@@ -1467,17 +1731,13 @@ async fn test_abandoned_upload_sessions_expire() {
     assert_eq!(status, StatusCode::ACCEPTED);
     let location = headers[header::LOCATION].to_str().unwrap().to_owned();
 
-    // Age past the TTL and start another upload, which reclaims the abandoned one.
+    // Age past the TTL and run the background sweep, which reclaims the abandoned session.
     now.store(1000 + 3601, Ordering::Relaxed);
-    let (status, _, _) = send_body(
-        &app,
-        Method::POST,
-        "/v2/store/app/blobs/uploads/",
-        &[("authorization", &auth(TOKEN))],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
+    state
+        .driver_for(peryx_core::Ecosystem::Oci)
+        .unwrap()
+        .reclaim_idle(state.serving.clone())
+        .await;
 
     // The abandoned session is gone.
     let (status, _, body) = send_body(
@@ -1501,7 +1761,7 @@ async fn test_background_sweep_removes_an_abandoned_upload_file() {
     let ticking = now.clone();
     let (state, app) = super::hosted_with_clock(&dir, TOKEN, Arc::new(move || ticking.load(Ordering::Relaxed)));
 
-    let (status, _, _) = send_body(
+    let (status, headers, _) = send_body(
         &app,
         Method::POST,
         "/v2/store/app/blobs/uploads/",
@@ -1510,7 +1770,17 @@ async fn test_background_sweep_removes_an_abandoned_upload_file() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let staged = std::fs::read_dir(dir.path().join("blobs"))
+    let location = headers[header::LOCATION].to_str().unwrap().to_owned();
+    // A chunk stages bytes to a durable per-session file.
+    send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"abc".to_vec(),
+    )
+    .await;
+    let staged = std::fs::read_dir(dir.path().join("blobs").join("uploads"))
         .unwrap()
         .next()
         .unwrap()
@@ -1534,7 +1804,16 @@ async fn test_cancel_removes_the_upload_file_before_responding() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let location = start_session(&app, "store/app", TOKEN).await;
-    let staged = std::fs::read_dir(dir.path().join("blobs"))
+    // A chunk stages bytes to a durable per-session file that the cancel must remove.
+    send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"abc".to_vec(),
+    )
+    .await;
+    let staged = std::fs::read_dir(dir.path().join("blobs").join("uploads"))
         .unwrap()
         .next()
         .unwrap()

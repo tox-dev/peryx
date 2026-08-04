@@ -24,6 +24,7 @@ mod revocation_tests;
 mod role_grant_tests;
 mod scoped_token_tests;
 mod transfer_attempt_tests;
+mod upload_session_tests;
 mod user_tests;
 mod visibility_tests;
 mod webhook_tests;

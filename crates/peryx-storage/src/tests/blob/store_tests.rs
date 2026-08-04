@@ -379,3 +379,126 @@ fn test_commit_into_an_unwritable_store_is_an_io_error() {
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(err.kind(), crate::blob::BlobErrorKind::Io);
 }
+
+#[test]
+fn test_stage_upload_chunk_accumulates_and_reports_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+
+    assert_eq!(store.stage_upload_chunk("sess-1", 0, b"hello ").unwrap(), 6);
+    assert_eq!(store.stage_upload_chunk("sess-1", 6, b"world").unwrap(), 11);
+    assert_eq!(store.staged_upload_len("sess-1").unwrap(), Some(11));
+}
+
+#[test]
+fn test_stage_upload_chunk_resumes_idempotently_past_a_lost_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+
+    assert_eq!(store.stage_upload_chunk("sess-1", 0, b"hello ").unwrap(), 6);
+    // A chunk synced to disk but whose offset was lost to a restart leaves the stage ahead of the
+    // committed offset. Resuming from the committed offset drops the orphaned bytes and writes the
+    // re-sent chunk there, so a duplicated region can never reach the finalized blob.
+    assert_eq!(store.stage_upload_chunk("sess-1", 6, b"WORLD").unwrap(), 11);
+    assert_eq!(store.stage_upload_chunk("sess-1", 6, b"world").unwrap(), 11);
+    let digest = Digest::of(b"hello world");
+
+    store.finish_upload("sess-1", &digest).unwrap();
+
+    assert_eq!(store.read(&digest).unwrap(), b"hello world");
+}
+
+#[test]
+fn test_staged_upload_len_is_none_for_an_unknown_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+
+    assert_eq!(store.staged_upload_len("ghost").unwrap(), None);
+}
+
+#[test]
+fn test_finish_upload_publishes_the_blob_and_clears_the_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    store.stage_upload_chunk("sess-1", 0, b"streamed ").unwrap();
+    store.stage_upload_chunk("sess-1", 9, b"content").unwrap();
+    let digest = Digest::of(b"streamed content");
+
+    store.finish_upload("sess-1", &digest).unwrap();
+
+    assert_eq!(store.read(&digest).unwrap(), b"streamed content");
+    assert_eq!(store.staged_upload_len("sess-1").unwrap(), None);
+}
+
+#[test]
+fn test_finish_upload_rejects_a_digest_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    store.stage_upload_chunk("sess-1", 0, b"tampered").unwrap();
+    let expected = Digest::of(b"expected");
+
+    let error = store.finish_upload("sess-1", &expected).unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::DigestMismatch);
+    // The stage is left intact so the client can retry the finalize.
+    assert_eq!(store.staged_upload_len("sess-1").unwrap(), Some(8));
+    assert!(!store.exists(&expected));
+}
+
+#[test]
+fn test_finish_upload_on_an_absent_stage_is_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+
+    let error = store.finish_upload("ghost", &Digest::of(b"x")).unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::NotFound);
+}
+
+#[test]
+fn test_finish_upload_deduplicates_an_already_stored_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let digest = store.write(b"present").unwrap();
+    store.stage_upload_chunk("sess-1", 0, b"present").unwrap();
+
+    store.finish_upload("sess-1", &digest).unwrap();
+
+    assert_eq!(store.read(&digest).unwrap(), b"present");
+    assert_eq!(store.staged_upload_len("sess-1").unwrap(), None);
+}
+
+#[test]
+fn test_discard_upload_removes_the_stage_and_tolerates_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    store.stage_upload_chunk("sess-1", 0, b"partial").unwrap();
+
+    store.discard_upload("sess-1").unwrap();
+    assert_eq!(store.staged_upload_len("sess-1").unwrap(), None);
+    // A second discard is a no-op.
+    store.discard_upload("sess-1").unwrap();
+}
+
+#[test]
+fn test_staged_upload_len_surfaces_an_unreadable_stage_as_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    // A stage id the operating system refuses to evaluate (an interior NUL is rejected as invalid input
+    // on every platform) is not "absent": the resume query must surface it as an error rather than
+    // mistake it for having no stage.
+    let error = store.staged_upload_len("bad\0session").unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[test]
+fn test_discard_upload_surfaces_a_filesystem_fault() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    // Discarding a stage id the operating system rejects as invalid must report the fault rather than
+    // claim the stage is already gone.
+    let error = store.discard_upload("bad\0session").unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::Io);
+}

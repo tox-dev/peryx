@@ -140,12 +140,38 @@ pub type OciRegistry = OciRegistryWithHasher<RandomState>;
 pub struct OciRegistryWithHasher<S> {
     upstream: Upstream,
     settings: std::collections::HashMap<String, IndexSettings>,
-    uploads: tokio::sync::Mutex<std::collections::HashMap<String, UploadSession>>,
     blob_memberships: RwLock<BlobMembershipCache<S>>,
+    /// Serializes the read-modify-write of one upload session's durable stage, so two concurrent chunk
+    /// writes to the same session cannot interleave on disk. Different sessions never contend.
+    session_gate: SessionGate,
     /// Whether an authoritative hosted mutation records a typed operation in the driver-transaction
     /// outbox. Set from the availability mode: `false` under single-node `none`, so its write path is
     /// byte-for-byte the pre-outbox behavior.
     journal_outbox: bool,
+}
+
+/// A per-session async lock registry. A session's lock is created on first use and dropped once no
+/// writer holds it, so the map tracks only in-flight sessions.
+#[derive(Default)]
+struct SessionGate {
+    locks: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl SessionGate {
+    /// The lock guarding `session`, shared with any concurrent writer of the same session.
+    fn lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().expect("session gate is never poisoned");
+        Arc::clone(locks.entry(session.to_owned()).or_default())
+    }
+
+    /// Drop `session`'s lock once the caller's guard is the last reference, keeping the map bounded to
+    /// sessions with a writer in flight.
+    fn release(&self, session: &str) {
+        let mut locks = self.locks.lock().expect("session gate is never poisoned");
+        if locks.get(session).is_some_and(|lock| Arc::strong_count(lock) == 1) {
+            locks.remove(session);
+        }
+    }
 }
 #[derive(Default)]
 struct BlobMembershipCache<S> {
@@ -180,20 +206,12 @@ impl<S: BuildHasher> BlobMembershipCache<S> {
         }
     }
 }
-struct UploadSession {
-    pending: BlobWrite,
-    offset: u64,
-    index: String,
-    name: String,
-    /// When the session last saw activity: its `POST`, a `PATCH`, or a status `GET`. The TTL runs from
-    /// here, not from creation, so a slow but active upload keeps its place instead of being evicted
-    /// mid-flight.
-    last_active_at: i64,
-}
-/// How long an open upload session may sit idle before it is reclaimed. Each new upload evicts sessions
-/// whose last activity is older than this, so a client that starts uploads and abandons them cannot pin
-/// their file descriptors and temp files forever; dropping the session deletes its staged temp file.
+/// How long an open upload session may sit idle before it is reclaimed. A session untouched by its
+/// `POST`, a `PATCH`, or a status `GET` for longer than this has its durable record and staged bytes
+/// dropped, so a client that starts uploads and abandons them cannot pin disk forever.
 const UPLOAD_SESSION_TTL_SECS: i64 = 3600;
+/// The most idle sessions one reclamation pass removes, bounding its scan.
+const UPLOAD_RECLAIM_BATCH: usize = 256;
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Build the driver with its shared upstream client and each OCI index's settings, keyed by index
     /// name. `journal_outbox` records authoritative hosted mutations for replication.
@@ -394,10 +412,15 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
     }
 
     async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
-        let uploads = uploads::reclaim_expired(&mut *self.uploads.lock().await, (state.clock)());
-        let reclaimed = uploads.len();
-        uploads::abort_uploads(uploads).await;
-        reclaimed
+        let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
+        let expired = state
+            .meta
+            .reclaim_uploads(cutoff, UPLOAD_RECLAIM_BATCH)
+            .unwrap_or_default();
+        for session in &expired {
+            let _ = state.blobs.discard_upload(session).await;
+        }
+        expired.len()
     }
 }
 
@@ -466,7 +489,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 self.start_upload(&state, headers, query, &name, body).await
             }
             OciRoute::UploadSession { name, session } if method == Method::GET => {
-                self.upload_status(&state, headers, &name, &session).await
+                Self::upload_status(&state, headers, &name, &session)
             }
             OciRoute::UploadSession { name, session } if method == Method::PATCH => {
                 self.patch_upload(&state, headers, &name, &session, body).await

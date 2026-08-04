@@ -9,7 +9,7 @@ use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::meta::{AccountingClass, NewQuotaReservation};
 
-use super::{app_with, auth, body_has_code, oci_digest, send, send_body};
+use super::{app_with, auth, body_has_code, oci_digest, send, send_body, send_with};
 use crate::quota_reservation;
 
 #[test]
@@ -238,6 +238,99 @@ async fn test_repeated_push_of_one_digest_charges_bytes_once() {
         (usage.accounted_bytes.committed, usage.file_bytes.committed),
         (blob.len() as u64, blob.len() as u64)
     );
+}
+
+#[tokio::test]
+async fn test_session_upload_over_quota_is_rejected_and_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = quota_store(
+        &dir,
+        &PolicyConfig {
+            max_accounted_bytes: Some(4),
+            ..PolicyConfig::default()
+        },
+    );
+    let blob = b"over-the-byte-limit";
+
+    // Open a session and stage bytes: the byte quota is enforced at finalize, not per chunk.
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers["location"].to_str().unwrap().to_owned();
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // Finalizing exceeds the byte quota, so the push is rejected.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={}", oci_digest(blob)),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_ne!(status, StatusCode::CREATED);
+
+    // A rejected finalize drops the session and its stage rather than pinning quota.
+    let (status, _, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_session_finish_with_a_wrong_digest_releases_its_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = quota_store(
+        &dir,
+        &PolicyConfig {
+            max_accounted_bytes: Some(64),
+            ..PolicyConfig::default()
+        },
+    );
+
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers["location"].to_str().unwrap().to_owned();
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"actual".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // Finalizing under a wrong digest reserves quota, then fails on the mismatch and releases it.
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={}", oci_digest(b"different")),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_ne!(status, StatusCode::CREATED);
+    assert_eq!(state.meta.quota_usage("store").unwrap().accounted_bytes.reserved, 0);
 }
 
 #[tokio::test]

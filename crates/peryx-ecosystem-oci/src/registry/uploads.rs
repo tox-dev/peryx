@@ -1,6 +1,6 @@
 //! The `POST`/`PATCH`/`PUT` blob-upload session lifecycle.
 
-use super::blobs::{blob_created, blob_fault, commit_blob};
+use super::blobs::{blob_created, blob_fault, commit_blob, commit_staged_upload};
 use super::*;
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self};
@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use peryx_driver::ServingState;
+use peryx_storage::meta::UploadRecord;
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when
@@ -69,58 +70,16 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         let now = (state.clock)();
         let session = Self::random_session()?;
-        let pending = state.blobs.begin().await.map_err(blob_fault)?;
-        let mut uploads = self.uploads.lock().await;
-        let expired = reclaim_expired(&mut uploads, now);
-        let session = std::iter::once(Ok(session))
-            .chain(std::iter::repeat_with(Self::random_session))
-            .find(|candidate| {
-                let candidate = candidate.as_ref();
-                candidate.is_err() || candidate.is_ok_and(|candidate| !uploads.contains_key(candidate))
-            })
-            .expect("session candidate iterator cannot end")?;
-        uploads.insert(
-            session.clone(),
-            UploadSession {
-                pending,
-                offset: 0,
-                index: index.name.clone(),
-                name: name.to_owned(),
-                last_active_at: now,
-            },
-        );
-        drop(uploads);
-        abort_uploads(expired).await;
+        // The session is durable from the first byte: a restart between chunks recovers it from the
+        // store and resumes at the recorded offset rather than losing the upload. The stage is opened
+        // empty now so a zero-byte upload finalized without any chunk still has bytes to verify.
+        state.meta.begin_upload(&session, &index.name, name, now)?;
+        state
+            .blobs
+            .stage_upload_chunk(&session, 0, b"")
+            .await
+            .map_err(blob_fault)?;
         Ok(upload_accepted(name, &session, 0))
-    }
-
-    async fn take_session(&self, index: &str, name: &str, session: &str) -> Option<UploadSession> {
-        let mut uploads = self.uploads.lock().await;
-        if uploads.get(session).is_none_or(|entry| !entry.belongs_to(index, name)) {
-            return None;
-        }
-        uploads.remove(session)
-    }
-
-    /// Stream `body` into a session's staged blob. On a mid-body read error the session is put back
-    /// with the bytes that landed, so a transient hiccup leaves the client a resumable session at the
-    /// recorded offset instead of forcing a full re-upload.
-    async fn append_or_restore(
-        &self,
-        session: &str,
-        mut entry: UploadSession,
-        body: Body,
-        index: &Index,
-        repo: &str,
-    ) -> Result<UploadSession, UploadBodyError> {
-        match append_body(&mut entry.pending, &mut entry.offset, body, index, repo).await {
-            Ok(()) => Ok(entry),
-            Err(UploadBodyError::Fault(err)) => {
-                self.uploads.lock().await.insert(session.to_owned(), entry);
-                Err(UploadBodyError::Fault(err))
-            }
-            Err(err @ UploadBodyError::Denied(_)) => Err(err),
-        }
     }
 
     /// Cancel an open upload session (spec end-14): remove its staged bytes and answer `204`, or `404`
@@ -136,18 +95,16 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        Ok(match self.take_session(&index.name, name, session).await {
-            Some(entry) => {
-                entry.pending.abort().await.map_err(blob_fault)?;
-                StatusCode::NO_CONTENT.into_response()
-            }
-            None => error_response(ErrorCode::BlobUploadUnknown, "upload unknown"),
-        })
+        let Some(_record) = session_record(state, &index.name, name, session)? else {
+            return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+        };
+        state.blobs.discard_upload(session).await.map_err(blob_fault)?;
+        state.meta.remove_upload(session)?;
+        Ok(StatusCode::NO_CONTENT.into_response())
     }
 
     /// Report an open upload session's progress: `204` with the bytes received so far.
-    pub(super) async fn upload_status(
-        &self,
+    pub(super) fn upload_status(
         state: &ServingState,
         headers: &HeaderMap,
         name: &str,
@@ -157,20 +114,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        let offset = self
-            .uploads
-            .lock()
-            .await
-            .get_mut(session)
-            .filter(|entry| entry.belongs_to(&index.name, name))
-            .map(|entry| {
-                entry.last_active_at = (state.clock)();
-                entry.offset
-            });
-        Ok(offset.map_or_else(
-            || error_response(ErrorCode::BlobUploadUnknown, "upload unknown"),
-            |offset| upload_status_response(name, session, offset),
-        ))
+        let Some(record) = session_record(state, &index.name, name, session)? else {
+            return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+        };
+        // A status read is activity, so it keeps the session alive against the idle TTL.
+        state.meta.advance_upload(session, record.offset, (state.clock)())?;
+        Ok(upload_status_response(name, session, record.offset))
     }
 
     /// Append a chunk to an open upload session.
@@ -186,26 +135,15 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        let Some(mut entry) = self.take_session(&index.name, name, session).await else {
-            return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+        // Serialize this session's read-modify-write so a concurrent chunk cannot read the same offset
+        // and interleave its bytes into the stage.
+        let lock = self.session_gate.lock(session);
+        let outcome = {
+            let _guard = lock.lock_owned().await;
+            patch_locked(state, index, &repo, name, session, headers, body).await
         };
-        // The TTL runs from last activity, so this chunk keeps the session alive whether or not it lands.
-        entry.last_active_at = (state.clock)();
-        // A chunk whose `Content-Range` does not start where the last one ended is out of order, and
-        // one whose `Content-Range` cannot be read makes a claim that cannot be honoured. Both answer
-        // 416, and the session keeps its bytes so the client can resend.
-        if !chunk_start(headers).continues_at(entry.offset) {
-            let offset = entry.offset;
-            self.uploads.lock().await.insert(session.to_owned(), entry);
-            return Ok(range_not_satisfiable(name, session, offset));
-        }
-        let entry = match self.append_or_restore(session, entry, body, index, &repo).await {
-            Ok(entry) => entry,
-            Err(err) => return err.into_response(),
-        };
-        let offset = entry.offset;
-        self.uploads.lock().await.insert(session.to_owned(), entry);
-        Ok(upload_accepted(name, session, offset))
+        self.session_gate.release(session);
+        outcome
     }
 
     /// Finish an upload: append any trailing bytes, then verify and commit under the given `digest`.
@@ -222,62 +160,153 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Ok(target) => target,
             Err(response) => return Ok(response),
         };
-        let Some(entry) = self.take_session(&index.name, name, session).await else {
-            return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+        let lock = self.session_gate.lock(session);
+        let outcome = {
+            let _guard = lock.lock_owned().await;
+            finish_locked(
+                state,
+                index,
+                &repo,
+                name,
+                session,
+                query,
+                headers,
+                body,
+                self.journal_outbox,
+            )
+            .await
         };
-        // A final chunk carrying a `Content-Range` must also be contiguous, exactly like a `PATCH`.
-        if !chunk_start(headers).continues_at(entry.offset) {
-            let offset = entry.offset;
-            self.uploads.lock().await.insert(session.to_owned(), entry);
-            return Ok(range_not_satisfiable(name, session, offset));
-        }
-        let entry = match self.append_or_restore(session, entry, body, index, &repo).await {
-            Ok(entry) => entry,
-            Err(err) => return err.into_response(),
-        };
-        // A `PUT` without a digest cannot commit, but the staged bytes are still good: keep the
-        // session so the client can retry with the digest rather than re-upload everything.
-        let Some(digest) = query_params(query).remove("digest") else {
-            self.uploads.lock().await.insert(session.to_owned(), entry);
-            return Ok(error_response(
-                ErrorCode::DigestInvalid,
-                "finishing an upload requires a digest",
+        self.session_gate.release(session);
+        outcome
+    }
+}
+
+/// Append a chunk under the session lock and answer `202`. Run inside the per-session guard.
+async fn patch_locked(
+    state: &ServingState,
+    index: &Index,
+    repo: &str,
+    name: &str,
+    session: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<Response, ServeError> {
+    match append_session_chunk(state, index, repo, name, session, headers, body).await? {
+        Ok(offset) => Ok(upload_accepted(name, session, offset)),
+        Err(response) => Ok(response),
+    }
+}
+
+/// Append any trailing bytes under the session lock, then verify and commit under the given `digest`.
+/// Run inside the per-session guard so the append and the commit see a stage no other writer can touch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the final PUT threads the request, session, and commit context"
+)]
+async fn finish_locked(
+    state: &ServingState,
+    index: &Index,
+    repo: &str,
+    name: &str,
+    session: &str,
+    query: &str,
+    headers: &HeaderMap,
+    body: Body,
+    journal_outbox: bool,
+) -> Result<Response, ServeError> {
+    let offset = match append_session_chunk(state, index, repo, name, session, headers, body).await? {
+        Ok(offset) => offset,
+        Err(response) => return Ok(response),
+    };
+    // A `PUT` without a digest cannot commit, but the staged bytes are still good: keep the session so
+    // the client can retry with the digest rather than re-upload everything.
+    let Some(digest) = query_params(query).remove("digest") else {
+        return Ok(error_response(
+            ErrorCode::DigestInvalid,
+            "finishing an upload requires a digest",
+        ));
+    };
+    commit_staged_upload(state, session, index, repo, name, &digest, offset, journal_outbox).await
+}
+
+/// The locked read-modify-write shared by `PATCH` and the final `PUT`: re-read the session under the lock
+/// so the offset is authoritative, reject an unknown session or an out-of-order chunk, then stream `body`
+/// into the durable stage. Returns the new offset, or a response to send unchanged.
+async fn append_session_chunk(
+    state: &ServingState,
+    index: &Index,
+    repo: &str,
+    name: &str,
+    session: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<Result<u64, Response>, ServeError> {
+    let Some(record) = session_record(state, &index.name, name, session)? else {
+        return Ok(Err(error_response(ErrorCode::BlobUploadUnknown, "upload unknown")));
+    };
+    // A chunk whose `Content-Range` does not start where the last one ended is out of order, and one
+    // whose `Content-Range` cannot be read makes a claim that cannot be honoured. Both answer 416, and the
+    // session keeps its bytes so the client can resend; the read still counts as activity.
+    if !chunk_start(headers).continues_at(record.offset) {
+        state.meta.advance_upload(session, record.offset, (state.clock)())?;
+        return Ok(Err(range_not_satisfiable(name, session, record.offset)));
+    }
+    let mut offset = record.offset;
+    if let Err(err) = append_to_stage(state, session, &mut offset, body, index, repo).await {
+        return Ok(Err(append_error_response(state, session, err).await?));
+    }
+    Ok(Ok(offset))
+}
+
+/// The session's durable record, but only when it belongs to this `index` and `name`, so a session id
+/// opened by one repository cannot be driven by another.
+fn session_record(
+    state: &ServingState,
+    index: &str,
+    name: &str,
+    session: &str,
+) -> Result<Option<UploadRecord>, ServeError> {
+    Ok(state
+        .meta
+        .upload_record(session)?
+        .filter(|record| record.index == index && record.name == name))
+}
+
+/// Stream `body` into the session's durable stage, advancing the recorded offset after each chunk lands.
+/// A mid-body read error leaves the session recorded at the bytes that reached disk, so a transient
+/// hiccup leaves the client a resumable session at that offset instead of forcing a full re-upload.
+async fn append_to_stage(
+    state: &ServingState,
+    session: &str,
+    offset: &mut u64,
+    body: Body,
+    index: &Index,
+    repo: &str,
+) -> Result<(), UploadBodyError> {
+    let mut stream = body.into_data_stream();
+    let limit = index.policy.max_file_size();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| UploadBodyError::Fault(ServeError::Transport(err.to_string())))?;
+        let size = *offset + chunk.len() as u64;
+        if limit.is_some_and(|limit| size > limit) {
+            return Err(UploadBodyError::Denied(
+                policy_size_denial(index, repo, size).expect("size above the policy limit is denied"),
             ));
-        };
-        commit_blob(
-            state,
-            entry.pending,
-            index,
-            &repo,
-            name,
-            &digest,
-            entry.offset,
-            self.journal_outbox,
-        )
-        .await
+        }
+        let staged = state
+            .blobs
+            .stage_upload_chunk(session, *offset, &chunk)
+            .await
+            .map_err(blob_fault)
+            .map_err(UploadBodyError::Fault)?;
+        *offset = staged;
+        state
+            .meta
+            .advance_upload(session, staged, (state.clock)())
+            .map_err(ServeError::from)
+            .map_err(UploadBodyError::Fault)?;
     }
-}
-
-pub(super) fn reclaim_expired(
-    uploads: &mut std::collections::HashMap<String, UploadSession>,
-    now: i64,
-) -> Vec<UploadSession> {
-    uploads
-        .extract_if(|_, session| now.saturating_sub(session.last_active_at) >= UPLOAD_SESSION_TTL_SECS)
-        .map(|(_, session)| session)
-        .collect()
-}
-
-pub(super) async fn abort_uploads(uploads: Vec<UploadSession>) {
-    for upload in uploads {
-        let _ = upload.pending.abort().await;
-    }
-}
-
-impl UploadSession {
-    fn belongs_to(&self, index: &str, name: &str) -> bool {
-        self.index == index && self.name == name
-    }
+    Ok(())
 }
 
 enum UploadBodyError {
@@ -292,6 +321,21 @@ impl UploadBodyError {
             Self::Denied(response) => Ok(response),
         }
     }
+}
+
+/// Turn an append failure into its response. A policy rejection ends the upload: its stage and record are
+/// dropped. A transient transport fault keeps them, leaving the client a resumable session at the bytes
+/// that reached disk instead of forcing a full re-upload.
+async fn append_error_response(
+    state: &ServingState,
+    session: &str,
+    err: UploadBodyError,
+) -> Result<Response, ServeError> {
+    if matches!(err, UploadBodyError::Denied(_)) {
+        state.blobs.discard_upload(session).await.map_err(blob_fault)?;
+        state.meta.remove_upload(session)?;
+    }
+    err.into_response()
 }
 
 async fn append_body(

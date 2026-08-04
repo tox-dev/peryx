@@ -1,4 +1,4 @@
-use std::io::{ErrorKind, Read as _, Seek as _, Write as _};
+use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -314,6 +314,97 @@ impl BlobStore {
             hasher.update(&buffer[..read]);
         }
         Ok(to_hex(&hasher.finalize()) == digest.as_str())
+    }
+
+    /// The directory holding durable per-session upload stages, one file per in-progress session.
+    fn upload_dir(&self) -> PathBuf {
+        self.root.join("uploads")
+    }
+
+    /// Write `chunk` into `session`'s durable stage at `offset`, creating the stage if absent, returning
+    /// the new staged length. The bytes are synced before returning, so an accepted chunk survives a
+    /// restart and a resumed upload continues from this length.
+    ///
+    /// `offset` is the last committed length: the stage is truncated to it before writing, so a chunk
+    /// that synced to disk before its offset was committed and was then lost to a restart is dropped and
+    /// the re-sent chunk lands exactly where the client resumes. Resume is therefore idempotent — the
+    /// stage is always the committed prefix plus this chunk, never a duplicated region.
+    ///
+    /// `session` must be a single safe path component; the caller supplies a generated session id.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] if the stage directory or file cannot be created or written.
+    pub fn stage_upload_chunk(&self, session: &str, offset: u64, chunk: &[u8]) -> Result<u64, BlobError> {
+        std::fs::create_dir_all(self.upload_dir())?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(self.upload_dir().join(session))?;
+        file.set_len(offset)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(chunk)?;
+        file.sync_all()?;
+        Ok(file.metadata()?.len())
+    }
+
+    /// The bytes staged for `session` so far, or `None` when it has no stage.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] if the stage exists but its metadata cannot be read.
+    pub fn staged_upload_len(&self, session: &str) -> Result<Option<u64>, BlobError> {
+        match std::fs::metadata(self.upload_dir().join(session)) {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Verify `session`'s staged bytes hash to `expected`, publish them into the content store, and
+    /// remove the stage. A staged digest already present is deduplicated and the stage removed.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::DigestMismatch`] when the staged bytes hash differently,
+    /// [`BlobError::NotFound`] when no stage exists, or [`BlobError::Io`] on a filesystem failure.
+    ///
+    /// # Panics
+    /// Never in practice: blob paths always sit inside the store root, so a parent exists.
+    pub fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
+        let stage = self.upload_dir().join(session);
+        let mut file = std::fs::File::open(&stage).map_err(|err| absent_or_io(err, expected))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; 1024 * 1024].into_boxed_slice();
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let actual_hex = to_hex(&hasher.finalize());
+        if actual_hex != expected.as_str() {
+            let actual = Digest::from_hex(&actual_hex).expect("a sha-256 hex digest is valid");
+            return Err(BlobError::digest_mismatch(expected, &actual));
+        }
+        let dest = self.path_for(expected);
+        if dest.is_file() {
+            std::fs::remove_file(&stage)?;
+            return Ok(());
+        }
+        std::fs::create_dir_all(dest.parent().expect("blob paths always have a parent"))?;
+        commit_placement(std::fs::rename(&stage, &dest), &dest)
+    }
+
+    /// Discard `session`'s durable stage, tolerating one that is already gone.
+    ///
+    /// # Errors
+    /// Returns [`BlobError::Io`] on a filesystem failure other than the stage being absent.
+    pub fn discard_upload(&self, session: &str) -> Result<(), BlobError> {
+        match std::fs::remove_file(self.upload_dir().join(session)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Remove a blob by digest, returning whether a file existed.
