@@ -21,6 +21,7 @@ mod blob_routing;
 mod byte_ack;
 mod channel;
 mod completeness;
+mod dc_copy;
 mod driver;
 mod envelope;
 mod error;
@@ -64,6 +65,7 @@ pub use blob_routing::RoutingBlobTransport;
 pub use byte_ack::{ByteAckDecision, decide_byte_ack};
 pub use channel::{BoundedChannel, BufferOutcome, ChannelFull, buffer_batch};
 pub use completeness::{Completeness, ProducerCoverage, assess};
+pub use dc_copy::{CopyPlan, plan_dc_copy};
 pub use driver::{StepOutcome, advance_once};
 pub use envelope::{
     AuthorityEpoch, DEFAULT_DECODE_LIMITS, DecodeLimits, EnvelopeError, OperationEnvelope, OperationId, OperationKind,
@@ -142,6 +144,8 @@ mod byte_ack_tests;
 mod channel_tests;
 #[cfg(test)]
 mod completeness_tests;
+#[cfg(test)]
+mod dc_copy_tests;
 #[cfg(test)]
 mod driver_tests;
 #[cfg(test)]
