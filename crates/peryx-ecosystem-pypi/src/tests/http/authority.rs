@@ -15,32 +15,44 @@ use super::support::*;
 struct RecordingAuthority {
     homed: HashSet<String>,
     fail_claim: bool,
+    epoch: u64,
+    admit: bool,
     checked: Mutex<Vec<String>>,
     claimed: Mutex<Vec<String>>,
+    admitted: Mutex<Vec<u64>>,
 }
 
 impl RecordingAuthority {
     /// A group that homes no authority yet and wins every claim.
     fn unhomed() -> Arc<Self> {
-        Self::new(HashSet::new(), false)
+        Self::new(HashSet::new(), false, 0, true)
     }
 
     /// A group that already homed `authority`, so the publish path finds a home and claims nothing.
     fn already_homed(authority: &str) -> Arc<Self> {
-        Self::new(HashSet::from([authority.to_owned()]), false)
+        Self::new(HashSet::from([authority.to_owned()]), false, 0, true)
     }
 
     /// A group that homes no authority yet but cannot commit a claim, so a claim is attempted and fails.
     fn failing() -> Arc<Self> {
-        Self::new(HashSet::new(), true)
+        Self::new(HashSet::new(), true, 0, true)
     }
 
-    fn new(homed: HashSet<String>, fail_claim: bool) -> Arc<Self> {
+    /// A group that homes `authority` at a committed epoch. `admit` models whether that epoch still holds
+    /// when the store re-admits it: `false` stands in for a home transfer that advanced the epoch mid-store.
+    fn homed_at_epoch(authority: &str, epoch: u64, admit: bool) -> Arc<Self> {
+        Self::new(HashSet::from([authority.to_owned()]), false, epoch, admit)
+    }
+
+    fn new(homed: HashSet<String>, fail_claim: bool, epoch: u64, admit: bool) -> Arc<Self> {
         Arc::new(Self {
             homed,
             fail_claim,
+            epoch,
+            admit,
             checked: Mutex::new(Vec::new()),
             claimed: Mutex::new(Vec::new()),
+            admitted: Mutex::new(Vec::new()),
         })
     }
 
@@ -50,6 +62,10 @@ impl RecordingAuthority {
 
     fn claimed(&self) -> Vec<String> {
         self.claimed.lock().unwrap().clone()
+    }
+
+    fn admitted(&self) -> Vec<u64> {
+        self.admitted.lock().unwrap().clone()
     }
 }
 
@@ -79,11 +95,12 @@ impl OwnershipAuthority for RecordingAuthority {
     }
 
     async fn committed_epoch(&self, _authority: &str) -> u64 {
-        0
+        self.epoch
     }
 
-    async fn admit_epoch(&self, _authority: &str, _presented: u64) -> bool {
-        true
+    async fn admit_epoch(&self, _authority: &str, presented: u64) -> bool {
+        self.admitted.lock().unwrap().push(presented);
+        self.admit
     }
 
     async fn transfer_home(
@@ -163,4 +180,45 @@ async fn test_a_home_claim_that_cannot_commit_does_not_block_the_publish() {
     );
     assert_eq!(group.claimed(), ["peryxpkg"], "the claim was attempted");
     assert_eq!(h.state.meta.list_upload_entries("hosted", "peryxpkg").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_a_publish_under_the_current_authority_epoch_stores() {
+    let h = harness().await;
+    let group = RecordingAuthority::homed_at_epoch("peryxpkg", 7, true);
+    h.state.set_ownership_authority(group.clone());
+
+    let (status, body) = publish(&h.state).await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
+    assert_eq!(
+        group.admitted(),
+        [7],
+        "the store re-admits the epoch it snapshotted before the record write",
+    );
+    assert_eq!(h.state.meta.list_upload_entries("hosted", "peryxpkg").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_a_stale_home_publish_is_fenced_by_the_authority_epoch() {
+    let h = harness().await;
+    let group = RecordingAuthority::homed_at_epoch("peryxpkg", 7, false);
+    h.state.set_ownership_authority(group.clone());
+
+    let (status, body) = publish(&h.state).await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "a superseded epoch fences the publish");
+    assert!(
+        body.contains("authority advanced"),
+        "the response names the fence: {body:?}"
+    );
+    assert_eq!(group.admitted(), [7], "the snapshot epoch was presented for admission");
+    assert!(
+        h.state
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty(),
+        "the record write never ran, so no file published under the stale home",
+    );
 }

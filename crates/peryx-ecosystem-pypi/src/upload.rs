@@ -354,18 +354,24 @@ fn prepared_provenance(
     })
 }
 
-/// Persist a validated upload into a local store. Returns `false` when the same file and digest are
-/// already present.
+/// A validated upload whose blobs are committed, held between the two phases of a store so the caller
+/// can fence the metadata write on the project's authority epoch before the file becomes visible.
+pub(crate) struct PreparedPublish {
+    record: PreparedRecord,
+    metadata_digest: Digest,
+    provenance: Option<(Digest, u64)>,
+}
+
+/// Stage and commit an upload's blobs, leaving only the metadata write. This is the async, I/O-bound
+/// phase a caller runs before it re-checks the authority fence, so a home transfer that lands while the
+/// bytes stage is caught before the record write publishes the file.
 ///
 /// # Errors
-/// Returns [`UploadStoreError`] if a blob write, metadata write, or existing-record decode fails.
-pub(crate) async fn store_prepared(
-    meta: &MetaStore,
+/// Returns [`UploadStoreError`] if a blob write fails.
+pub(crate) async fn stage_publish(
     blobs: &BlobStorage,
-    name: &str,
     prepared: PreparedUpload,
-    mut quota: Option<crate::quota::PendingQuota>,
-) -> Result<bool, UploadStoreError> {
+) -> Result<PreparedPublish, UploadStoreError> {
     let metadata = blobs.stage_bytes(&prepared.metadata).await?;
     let metadata_digest = metadata.digest().clone();
     let provenance = match &prepared.provenance {
@@ -379,12 +385,36 @@ pub(crate) async fn store_prepared(
     if let Some(provenance) = provenance {
         provenance.commit().await?;
     }
+    Ok(PreparedPublish {
+        record,
+        metadata_digest,
+        provenance: provenance_ref,
+    })
+}
+
+/// Write the store record that publishes a staged upload, bumping the serial. Returns `false` for a
+/// same-bytes duplicate. Runs after the caller re-checks the authority fence, so the record write is the
+/// single visible effect a superseded epoch fences out.
+///
+/// # Errors
+/// Returns [`UploadStoreError`] if the metadata write or an existing-record decode fails.
+pub(crate) fn commit_publish(
+    meta: &MetaStore,
+    name: &str,
+    publish: PreparedPublish,
+    mut quota: Option<crate::quota::PendingQuota>,
+) -> Result<bool, UploadStoreError> {
+    let PreparedPublish {
+        record,
+        metadata_digest,
+        provenance,
+    } = publish;
     let stored = store_record(
         meta,
         name,
         record,
         &metadata_digest,
-        provenance_ref.as_ref(),
+        provenance.as_ref(),
         quota.as_ref(),
     )?;
     if let Some(quota) = &mut quota {

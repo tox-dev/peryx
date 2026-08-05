@@ -35,11 +35,17 @@ async fn admit_control(state: &ServingState, authority: &str, fence: u64) -> Res
     Ok(())
 }
 
-/// Persist a prepared upload into the hosted store `name`: commit the staged blob, record the file
+/// Persist a prepared upload into the hosted store `name`: commit the staged blobs, record the file
 /// and its project, and bump the serial. Returns `false` for a same-bytes duplicate.
 ///
+/// The publish fences on the project's ownership authority like every other mutation: it snapshots the
+/// committed epoch, commits the blobs, then re-admits the epoch before the record write. A publish that
+/// reads the project as its home but whose authority moved home mid-store is rejected before the record
+/// lands, so a stale home never assigns a serial or makes a file visible under a superseded epoch.
+///
 /// # Errors
-/// Returns [`CacheError`] if a blob write, store write, or encode fails.
+/// Returns [`CacheError::AuthoritySuperseded`] when a home transfer superseded the epoch mid-store, or
+/// another [`CacheError`] if a blob write, store write, or encode fails.
 pub async fn store_upload(
     state: &ServingState,
     name: &str,
@@ -47,7 +53,10 @@ pub async fn store_upload(
     quota: Option<PendingQuota>,
 ) -> Result<bool, CacheError> {
     let project = prepared.normalized.clone();
-    let stored = upload::store_prepared(&state.meta, &state.blobs, name, prepared, quota).await?;
+    let fence = control_epoch(state, &project).await;
+    let publish = upload::stage_publish(&state.blobs, prepared).await?;
+    admit_control(state, &project, fence).await?;
+    let stored = upload::commit_publish(&state.meta, name, publish, quota)?;
     if stored {
         state.invalidate_project(&project);
     }

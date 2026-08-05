@@ -13,7 +13,7 @@ use super::support::{hex, staged_form, wheel_metadata};
 use crate::PackageName;
 use crate::quota::{Admission, PendingQuota, admit_upload, quota_reservation};
 use crate::store::PypiStore as _;
-use crate::upload::{StagedUpload, UploadStoreError, prepare, store_prepared, store_prepared_blocking};
+use crate::upload::{StagedUpload, UploadStoreError, commit_publish, prepare, stage_publish, store_prepared_blocking};
 
 const FILENAME: &str = "Flask-1.0-py3-none-any.whl";
 
@@ -118,7 +118,10 @@ async fn test_store_prepared_quota_releases_after_blob_storage_fails() {
     let blobs = BlobStorage::filesystem(invalid_root);
     let pending = pending_quota(&meta, &wheel);
 
-    let result = store_prepared(&meta, &blobs, "hosted", prepared, Some(pending)).await;
+    // The blob write fails in the staging phase, before the record commit that would finish the quota, so
+    // dropping the still-pending reservation must release it.
+    let result = stage_publish(&blobs, prepared).await;
+    drop(pending);
 
     assert!(matches!(result, Err(UploadStoreError::Blob(_))));
     assert_eq!(
@@ -139,7 +142,10 @@ async fn test_store_prepared_quota_releases_when_the_existing_record_is_invalid(
     meta.put_upload("hosted", "flask", FILENAME, b"invalid-json").unwrap();
     let pending = pending_quota(&meta, &wheel);
 
-    let result = store_prepared(&meta, &blobs, "hosted", prepared, Some(pending)).await;
+    // Staging commits the blobs; the record commit then fails decoding the existing record, before it can
+    // finish the quota, so the reservation the commit owned rolls back.
+    let staged = stage_publish(&blobs, prepared).await.unwrap();
+    let result = commit_publish(&meta, "hosted", staged, Some(pending));
 
     assert!(matches!(result, Err(UploadStoreError::Parse(_))));
     assert_eq!(
