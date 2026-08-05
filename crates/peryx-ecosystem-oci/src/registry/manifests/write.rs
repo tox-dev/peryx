@@ -9,6 +9,7 @@ use peryx_driver::ServingState;
 use peryx_events::webhook::WebhookEventKind;
 
 use crate::error::{ErrorCode, error_response, error_response_with_status};
+use crate::registry::authority::{authority_moved, epoch_admits, release_reservation, repository_epoch};
 use crate::store::{self, Manifest};
 
 use super::*;
@@ -76,19 +77,20 @@ pub(in crate::registry) async fn put_manifest(
         media_type: media_type.clone(),
         bytes: bytes.to_vec(),
     };
-    let version = reference_tag(reference);
-    // A re-push of the same manifest under the same reference is already accounted, so it must not
-    // reserve a fresh version or byte allocation.
-    let reservation =
-        if crate::quota::manifest_already_published(&state.meta, &index.name, &repo, &canonical, reference)? {
-            None
-        } else {
-            match crate::quota::admit_push(state, index, &repo, version, &canonical, bytes.len() as u64)? {
-                crate::quota::Admission::Rejected(response) => return Ok(response),
-                crate::quota::Admission::Unmetered => None,
-                crate::quota::Admission::Reserved(record) => Some(record),
-            }
-        };
+    // Snapshot the repository's committed authority epoch before the push stages anything, so a home
+    // that transfers while the manifest is validated and reserved is caught by the re-admit below.
+    let fence = repository_epoch(state, &repo).await;
+    let reservation = match reserve_push(state, index, &repo, reference, &canonical, bytes.len() as u64)? {
+        PushReservation::Rejected(response) => return Ok(response),
+        PushReservation::Admitted(reservation) => reservation,
+    };
+    // Re-admit the leased epoch immediately before the tag and manifest commit. A superseded push
+    // returns the momentary reservation and lands nothing, so a stale home cannot expose a manifest or
+    // repoint a tag; the digest bytes it uploaded stay content-addressed and unpublished.
+    if !epoch_admits(state, &repo, fence).await {
+        release_reservation(state, reservation)?;
+        return Ok(authority_moved());
+    }
     if crate::quota::publish_manifest(
         &state.meta,
         &index.name,
@@ -129,6 +131,35 @@ pub(in crate::registry) async fn put_manifest(
         Some(canonical.clone()),
     );
     Ok(manifest_created(&location, &canonical, subject.as_deref()))
+}
+/// The outcome of reserving quota for a manifest push: the quota rejection response to return, or the
+/// reservation to commit with the manifest (`None` when the push is a re-push or the index is unmetered).
+enum PushReservation {
+    Rejected(Response),
+    Admitted(Option<peryx_storage::meta::QuotaReservationRecord>),
+}
+
+/// Reserve quota for a manifest push. A re-push of the same manifest under the same reference is already
+/// accounted, so it reserves nothing; an unmetered index reserves nothing; a push that crosses a quota
+/// yields the rejection response the caller returns unchanged.
+fn reserve_push(
+    state: &ServingState,
+    index: &Index,
+    repo: &str,
+    reference: &Reference,
+    canonical: &str,
+    bytes: u64,
+) -> Result<PushReservation, ServeError> {
+    if crate::quota::manifest_already_published(&state.meta, &index.name, repo, canonical, reference)? {
+        return Ok(PushReservation::Admitted(None));
+    }
+    Ok(
+        match crate::quota::admit_push(state, index, repo, reference_tag(reference), canonical, bytes)? {
+            crate::quota::Admission::Rejected(response) => PushReservation::Rejected(response),
+            crate::quota::Admission::Unmetered => PushReservation::Admitted(None),
+            crate::quota::Admission::Reserved(record) => PushReservation::Admitted(Some(record)),
+        },
+    )
 }
 fn reference_tag(reference: &Reference) -> Option<&str> {
     match reference {
@@ -171,7 +202,7 @@ fn record_referrer(
     Ok(Some(subject.to_owned()))
 }
 /// Move a manifest reference into repository trash.
-pub(in crate::registry) fn delete_manifest(
+pub(in crate::registry) async fn delete_manifest(
     state: &Arc<ServingState>,
     headers: &HeaderMap,
     name: &str,
@@ -183,6 +214,12 @@ pub(in crate::registry) fn delete_manifest(
         Ok(target) => target,
         Err(response) => return Ok(response),
     };
+    // A delete is a metadata mutation under the repository home, so it is fenced by the committed epoch:
+    // a stale home cannot trash a tag or manifest the surviving home still serves.
+    let fence = repository_epoch(state, &repo).await;
+    if !epoch_admits(state, &repo, fence).await {
+        return Ok(authority_moved());
+    }
     let info = store::TrashInfo {
         deleted_at_unix: (state.clock)(),
         actor: peryx_events::security::actor(&identity),
@@ -224,7 +261,7 @@ pub(in crate::registry) fn delete_manifest(
 }
 
 /// Restore a retained manifest reference without overwriting a tag concurrently pushed elsewhere.
-pub(in crate::registry) fn restore_manifest(
+pub(in crate::registry) async fn restore_manifest(
     state: &Arc<ServingState>,
     headers: &HeaderMap,
     name: &str,
@@ -235,6 +272,12 @@ pub(in crate::registry) fn restore_manifest(
         Ok(target) => target,
         Err(response) => return Ok(response),
     };
+    // Restoring re-exposes a trashed manifest or tag, so it is fenced like a publish: a stale home
+    // cannot bring back a reference the surviving home has moved past.
+    let fence = repository_epoch(state, &repo).await;
+    if !epoch_admits(state, &repo, fence).await {
+        return Ok(authority_moved());
+    }
     let (version, digest, restored, conflicts) = match reference {
         Reference::Tag(tag) => match store::restore_tag(&state.meta, &index.name, &repo, tag, journal)? {
             store::RestoreTagOutcome::Missing => {

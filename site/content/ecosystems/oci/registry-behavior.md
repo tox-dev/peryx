@@ -140,6 +140,39 @@ continue instead of only reporting failure. The referrers check refuses to answe
 A strict client, and a conformance suite, reads each of these as the spec mandates; a lenient client sees a registry
 that fails in a way it can understand and act on.
 
+## Manifests and tags route through the repository authority
+
+A manifest push, a tag replacement, and a delete are metadata writes that belong to the repository's home datacenter.
+Under an availability group each of these finalizes against the repository's committed authority epoch, the same fence a
+blob upload records its membership under. The write snapshots the repository's committed epoch when the request starts,
+then re-admits that epoch in the instant before the tag and manifest commit. A write whose home did not move commits
+under the epoch it leased; a write whose home transferred while the request was in flight leased a superseded epoch and
+is turned away before it changes a single tag or manifest.
+
+### Consistency and failover
+
+The fence is what keeps a home failover to one visible result. When authority moves off a datacenter, the new home mints
+the next epoch, and any write the old home still had in flight leased the epoch before the move. That write is refused
+at commit, so it never publishes a manifest the survivor does not have or repoints a tag the survivor already moved. A
+push, a replacement, and a delete each either commit under the current epoch or land nothing; there is no partial
+outcome a puller could observe. The push also assigns the repository's home on its first manifest, so a repository that
+has never published routes its first write to the datacenter that stored it.
+
+### Stale-epoch responses and retries
+
+A write fenced by the epoch answers `503 UNAVAILABLE`. The response is deliberately blank about topology: it names no
+leader, datacenter, or peer address, so a client learns only that the authority moved and the request should be retried,
+never where the control plane lives. A retry lands once the node has applied the new epoch — it is a transient
+condition, not a rejection of the request. A fenced push holds nothing back: its manifest bytes are content-addressed
+and stay unpublished, and any quota reservation it took is released, so a retry accounts the write exactly once rather
+than twice.
+
+### Standalone deployments
+
+A process running no availability group, and any repository a group has not yet homed, holds no epoch. The fence reads
+that absent epoch as `0` and admits every write, so a single-node registry pushes, replaces, and deletes exactly as it
+did before authority existed. The routing is inert until a group configures it.
+
 ## See also
 
 - The statuses, headers, and digest grammar in full:

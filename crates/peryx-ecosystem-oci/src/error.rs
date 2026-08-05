@@ -22,6 +22,7 @@ pub enum ErrorCode {
     Denied,
     Unsupported,
     TooManyRequests,
+    Unavailable,
 }
 
 impl ErrorCode {
@@ -43,6 +44,7 @@ impl ErrorCode {
             Self::Denied => "DENIED",
             Self::Unsupported => "UNSUPPORTED",
             Self::TooManyRequests => "TOOMANYREQUESTS",
+            Self::Unavailable => "UNAVAILABLE",
         }
     }
 
@@ -63,6 +65,7 @@ impl ErrorCode {
             Self::Denied => StatusCode::FORBIDDEN,
             Self::Unsupported => StatusCode::METHOD_NOT_ALLOWED,
             Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }
@@ -133,6 +136,7 @@ mod tests {
                 "TOOMANYREQUESTS",
                 StatusCode::TOO_MANY_REQUESTS,
             ),
+            (ErrorCode::Unavailable, "UNAVAILABLE", StatusCode::SERVICE_UNAVAILABLE),
         ];
         for (code, wire, status) in table {
             assert_eq!(code.as_str(), wire);

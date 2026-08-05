@@ -45,6 +45,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod auth;
+mod authority;
 mod blobs;
 mod discovery;
 mod manifests;
@@ -470,10 +471,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 put_manifest(&state, headers, body, &name, &reference, self.journal_outbox).await
             }
             OciRoute::Manifest { name, reference } if method == Method::DELETE => {
-                delete_manifest(&state, headers, &name, &reference, query, self.journal_outbox)
+                delete_manifest(&state, headers, &name, &reference, query, self.journal_outbox).await
             }
             OciRoute::ManifestRestore { name, reference } if method == Method::PUT => {
-                restore_manifest(&state, headers, &name, &reference, self.journal_outbox)
+                restore_manifest(&state, headers, &name, &reference, self.journal_outbox).await
             }
             OciRoute::Blob { name, digest } if read => self.serve_blob(&state, &name, &digest, head, headers).await,
             OciRoute::Blob { name, digest } if method == Method::DELETE => {
