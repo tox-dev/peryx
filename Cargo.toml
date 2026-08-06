@@ -32,6 +32,8 @@ peryx-ecosystem-oci = { path = "crates/peryx-ecosystem-oci" }
 peryx-policy = { path = "crates/peryx-policy" }
 peryx-pql = { path = "crates/peryx-pql" }
 peryx-identity = { path = "crates/peryx-identity" }
+peryx-ecosystem-contract = { path = "crates/peryx-ecosystem-contract" }
+peryx-ecosystem-registry = { path = "crates/peryx-ecosystem-registry" }
 peryx-replication = { path = "crates/peryx-replication" }
 peryx-storage = { path = "crates/peryx-storage" }
 peryx-upstream = { path = "crates/peryx-upstream" }

@@ -13,6 +13,7 @@ use utoipa::openapi::{
     ComponentsBuilder, ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, PathsBuilder,
     ServerBuilder,
 };
+use peryx_ecosystem_registry as ecosystem_registry;
 
 /// The document as pretty JSON, shared by the HTTP endpoint and the `peryx openapi` subcommand.
 ///
@@ -92,7 +93,6 @@ pub fn openapi() -> OpenApi {
 /// Each ecosystem crate describes the protocol it serves; naming them here is the composition root's
 /// job, the same place their drivers are installed.
 fn paths() -> PathsBuilder {
-    let ecosystems =
-        peryx_ecosystem_oci::openapi::openapi_paths(peryx_ecosystem_pypi::openapi::openapi_paths(PathsBuilder::new()));
+    let ecosystems = ecosystem_registry::openapi_paths(PathsBuilder::new());
     shadow::shadow_paths(trash::trash_paths(service::service_paths(ecosystems)))
 }

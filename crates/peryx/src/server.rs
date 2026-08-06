@@ -4,15 +4,15 @@ use std::borrow::Cow;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read as _;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail, ensure};
 use axum::Router;
+use peryx_ecosystem_registry as ecosystem_registry;
 use peryx_core::{Ecosystem, path};
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, DriverSet, Index, IndexKind};
-use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
 use peryx_identity::{
@@ -177,10 +177,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         },
     )
     .context(format!("open search index {}", search_path.display()))?;
-    peryx_ecosystem_pypi::install(&mut state);
-    // A `dc` or `ha` node records authoritative OCI mutations in the replication outbox; single-node
-    // `none` carries no replica to reconcile them, so it journals nothing.
-    peryx_ecosystem_oci::install(&mut state, oci_settings, config.availability.replication().is_some());
+    ecosystem_registry::install_drivers(&mut state, &oci_settings, config.availability.replication().is_some());
     state.set_ldap_logins(ldap_logins(&config.auth.ldap_providers, &state.meta)?);
     let oidc_logins = oidc_logins(&config.auth.oidc_providers, &state.meta)?;
     state.set_oidc_logins(oidc_logins);
@@ -192,7 +189,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
             bail!("token realm signing key must not be empty");
         }
         state.set_session_sealer(SessionSealer::new(key.as_bytes()));
-        let signer = Signer::new(key.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE);
+        let signer = Signer::new(key.as_bytes(), ecosystem_registry::TOKEN_SERVICE);
         if let Some(runtime) = trusted_publishing(config, signer.clone())? {
             state.set_trusted_publishing(runtime);
         }
@@ -693,12 +690,7 @@ pub fn router_for(state: Arc<AppState>) -> Router {
 /// config-build and admin paths dispatch through it by an index's ecosystem, so no neutral code
 /// names an ecosystem.
 pub(crate) fn drivers() -> &'static DriverSet {
-    static DRIVERS: OnceLock<DriverSet> = OnceLock::new();
-    DRIVERS.get_or_init(|| {
-        DriverSet::default()
-            .with(Arc::new(peryx_ecosystem_pypi::PypiServing))
-            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::default()))
-    })
+    ecosystem_registry::drivers()
 }
 
 type CredentialProviders = HashMap<(String, String), CredentialProvider>;
@@ -757,12 +749,14 @@ fn build_indexes_with_providers(
 /// `PyPI` index — so the table travels raw through the neutral config and is compiled here, in the one
 /// crate that names ecosystems. An ecosystem with no settings of its own claims no key, so a key on
 /// one of its indexes is configuration that would otherwise be silently ignored.
-pub(crate) fn build_index_settings(configs: &[IndexConfig]) -> anyhow::Result<HashMap<String, IndexSettings>> {
+pub(crate) fn build_index_settings(
+    configs: &[IndexConfig],
+) -> anyhow::Result<HashMap<String, ecosystem_registry::OciIndexSettings>> {
     let mut settings = HashMap::new();
     for index in configs {
         match index.ecosystem {
             Ecosystem::Oci => {
-                let compiled = IndexSettings::compile(&index.ecosystem_settings)
+                let compiled = ecosystem_registry::compile_oci_index_settings(&index.name, &index.ecosystem_settings)
                     .map_err(|reason| anyhow::anyhow!("compile settings for {}: {reason}", index.name))?;
                 settings.insert(index.name.clone(), compiled);
             }
