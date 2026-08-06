@@ -3,12 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use peryx_core::Ecosystem;
+use peryx_core::{Ecosystem, EcosystemInstaller};
 use peryx_driver::{AppState, DriverSet};
 use utoipa::openapi::PathsBuilder;
 use toml::Table;
-
-pub use peryx_ecosystem_contract::EcosystemInstaller;
 
 #[cfg(feature = "ecosystem-oci")]
 pub use peryx_ecosystem_oci::IndexSettings;
@@ -49,12 +47,16 @@ pub fn install_drivers(
     journal_outbox: bool,
 ) {
     #[cfg(feature = "ecosystem-pypi")]
-    peryx_ecosystem_pypi::install(state);
+    EcosystemInstaller::install(&peryx_ecosystem_pypi::PypiServing, state);
 
     #[cfg(feature = "ecosystem-oci")]
-    peryx_ecosystem_oci::install(state, oci_settings.iter().map(|(name, settings)| {
-        (name.clone(), settings.clone())
-    }), journal_outbox);
+    EcosystemInstaller::install(
+        &peryx_ecosystem_oci::OciInstaller::new(
+            oci_settings.iter().map(|(name, settings)| (name.clone(), *settings)),
+            journal_outbox,
+        ),
+        state,
+    );
 }
 
 /// Compile OCI index settings for the requesting index.

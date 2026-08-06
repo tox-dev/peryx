@@ -16,7 +16,6 @@ ecosystem-oci = ["dep:peryx-ecosystem-oci"]
 [dependencies]
 peryx-core.workspace = true
 peryx-driver.workspace = true
-peryx-ecosystem-contract = { workspace = true }
 peryx-ecosystem-oci = { workspace = true, optional = true }
 peryx-ecosystem-pypi = { workspace = true, optional = true, default-features = false, features = ["serving"] }
 utoipa.workspace = true

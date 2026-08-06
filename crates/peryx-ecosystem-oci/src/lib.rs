@@ -6,9 +6,10 @@
 //! resolves any index route by. Blobs are `sha256`-addressed and map straight onto
 //! [`peryx_storage::blob::BlobStorage`]; manifests are stored byte-for-byte so their digest is stable.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use peryx_core::{Ecosystem, Lexicon};
+use peryx_core::{Ecosystem, EcosystemInstaller, Lexicon};
 use peryx_driver::AppState;
 
 /// The container ecosystem's user-facing words for peryx's neutral concepts.
@@ -55,6 +56,37 @@ pub use search_oci::OciIndexer;
 pub use settings::{IndexSettings, LibraryPrefix};
 pub use store::referenced_blob_digests;
 
+#[derive(Debug)]
+pub struct OciInstaller {
+    settings: HashMap<String, IndexSettings>,
+    journal_outbox: bool,
+}
+
+impl OciInstaller {
+    pub fn new(settings: impl IntoIterator<Item = (String, IndexSettings)>, journal_outbox: bool) -> Self {
+        Self {
+            settings: settings.into_iter().collect(),
+            journal_outbox,
+        }
+    }
+}
+
+impl EcosystemInstaller<AppState> for OciInstaller {
+    fn register_driver(&self, state: &mut AppState) {
+        if !state.indexes.iter().any(|index| index.ecosystem == Ecosystem::Oci) {
+            return;
+        }
+        state.register_ecosystem(
+            Arc::new(OciRegistry::new(
+                self.settings.iter().map(|(name, settings)| (name.clone(), *settings)),
+                self.journal_outbox,
+            )),
+            Arc::new(OciIndexer),
+        );
+        state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
+    }
+}
+
 /// Wire the OCI registry driver into a freshly built [`AppState`], with each OCI index's compiled
 /// [`IndexSettings`] keyed by index name. An index absent from `settings` takes the defaults.
 ///
@@ -69,11 +101,5 @@ pub fn install(
     settings: impl IntoIterator<Item = (String, IndexSettings)>,
     journal_outbox: bool,
 ) {
-    if state.indexes.iter().any(|index| index.ecosystem == Ecosystem::Oci) {
-        state.register_ecosystem(
-            Arc::new(OciRegistry::new(settings, journal_outbox)),
-            Arc::new(OciIndexer),
-        );
-        state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
-    }
+    OciInstaller::new(settings, journal_outbox).install(state);
 }

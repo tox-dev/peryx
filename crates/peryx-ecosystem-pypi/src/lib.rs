@@ -3,6 +3,11 @@
 //! A future ecosystem is a sibling `peryx-ecosystem-*` crate, so nothing here is tangled into shared
 //! code.
 
+use std::sync::Arc;
+
+use peryx_core::{Ecosystem, EcosystemInstaller, Lexicon};
+use peryx_driver::AppState;
+
 #[cfg(feature = "serving")]
 mod admin;
 #[cfg(feature = "serving")]
@@ -112,10 +117,17 @@ pub use version::{Version, VersionSpecifiers, parse_version, parse_version_speci
 /// dispatch through [`PypiServing`] and search indexes through [`PypiIndexer`].
 #[cfg(feature = "serving")]
 pub fn install(state: &mut peryx_driver::AppState) {
-    state.register_ecosystem(std::sync::Arc::new(PypiServing), std::sync::Arc::new(PypiIndexer));
-    // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
-    // lexicon is the neutral one; a future divergence would give this crate its own constant.
-    state.register_lexicon(peryx_core::Ecosystem::Pypi, &peryx_core::Lexicon::NEUTRAL);
+    PypiServing.install(state);
+}
+
+#[cfg(feature = "serving")]
+impl EcosystemInstaller<AppState> for PypiServing {
+    fn register_driver(&self, state: &mut AppState) {
+        state.register_ecosystem(Arc::new(*self), Arc::new(PypiIndexer));
+        // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
+        // lexicon is the neutral one; a future divergence would give this crate its own constant.
+        state.register_lexicon(Ecosystem::Pypi, &Lexicon::NEUTRAL);
+    }
 }
 
 /// Render any error as the user-visible message a driver method returns, so the many `?`-adjacent

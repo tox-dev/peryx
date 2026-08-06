@@ -132,26 +132,40 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async {
         let state = peryx::server::build_state(config)?;
-        let replication = peryx::replication::ReplicationRuntime::new(config, &state)?;
-        // Held for the process lifetime: dropping the handle shuts the ownership Raft runtime down. The
-        // mutation path reaches the same group through the state registration.
-        let consensus = replication.ignite_consensus().await?;
-        if let Some(consensus) = &consensus {
-            state.set_ownership_authority(consensus.authority.clone());
-            state.set_control_plane(std::sync::Arc::new(peryx_driver::state::ControlPlane::new(
-                consensus.control.clone(),
-                state.clock.clone(),
-            )));
-        }
-        register_availability_services(config, &state)?;
-        if !replication.is_replica() {
-            for index in &state.indexes {
-                if let peryx_driver::IndexKind::Cached { client, offline: false } = &index.kind {
-                    let client = client.clone();
-                    tokio::spawn(async move { client.warm().await });
-                }
+        let mut is_replica = false;
+        let mut router = peryx::server::router_for(state.clone());
+        let mut raft_peer_router: Option<axum::Router> = None;
+        let _replication_handle = if config.availability.replication().is_some() {
+            let replication = peryx::replication::ReplicationRuntime::new(config, &state)?;
+            // Held for the process lifetime: dropping the handle shuts the ownership Raft runtime down. The
+            // mutation path reaches the same group through the state registration.
+            let consensus = replication.ignite_consensus().await?;
+            if let Some(consensus) = &consensus {
+                state.set_ownership_authority(consensus.authority.clone());
+                state.set_control_plane(std::sync::Arc::new(peryx_driver::state::ControlPlane::new(
+                    consensus.control.clone(),
+                    state.clock.clone(),
+                )));
+                raft_peer_router = Some(consensus.peer_router.clone());
             }
-        }
+            is_replica = replication.is_replica();
+            register_availability_services(config, &state)?;
+            router = replication.mount(router);
+
+            // Same-datacenter peers query this node for its placement receipts on the token-gated replication
+            // surface, alongside the blob endpoint, so a write elsewhere in the DC can gather it into quorum.
+            if let Some(receipts) = peryx::server::receipt_endpoint_router(config, &state.serving.blobs)? {
+                router = router.merge(receipts);
+            }
+            // Remote datacenters query this node for how far it has durably applied an authority's metadata,
+            // so an `ha` write elsewhere can prove its operation remote-durable.
+            if let Some(frontiers) = peryx::server::frontier_endpoint_router(config, &state)? {
+                router = router.merge(frontiers);
+            }
+            replication.start()
+        } else {
+            None
+        };
         peryx::server::recover_job_attempts(&state)?;
         if !state.read_only && config.jobs.mode == config::JobsMode::Local {
             let scheduler = std::sync::Arc::new(peryx_driver::jobs::JobScheduler::new(
@@ -177,23 +191,19 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             // Peers dial this node's advertised address for raft RPCs, so the receive-side router rides
             // the peer-facing availability listener, not the public package routes. Without it a voter
             // sends RPCs but answers none and the group never reaches quorum.
-            if let Some(consensus) = &consensus {
-                listener_router = listener_router.merge(consensus.peer_router.clone());
+            if let Some(peer_router) = &raft_peer_router {
+                listener_router = listener_router.merge(peer_router.clone());
             }
             tokio::spawn(serve_availability_listener(listener_config, listener_router));
         }
-        let mut router = replication.mount(peryx::server::router_for(state.clone()));
-        // Same-datacenter peers query this node for its placement receipts on the token-gated replication
-        // surface, alongside the blob endpoint, so a write elsewhere in the DC can gather it into quorum.
-        if let Some(receipts) = peryx::server::receipt_endpoint_router(config, &state.serving.blobs)? {
-            router = router.merge(receipts);
+        if !state.read_only && !is_replica {
+            for index in &state.indexes {
+                if let peryx_driver::IndexKind::Cached { client, offline: false } = &index.kind {
+                    let client = client.clone();
+                    tokio::spawn(async move { client.warm().await });
+                }
+            }
         }
-        // Remote datacenters query this node for how far it has durably applied an authority's metadata,
-        // so an `ha` write elsewhere can prove its operation remote-durable.
-        if let Some(frontiers) = peryx::server::frontier_endpoint_router(config, &state)? {
-            router = router.merge(frontiers);
-        }
-        let _replication = replication.start();
         let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
             .parse()
             .with_context(|| format!("parse listen address {}:{}", config.host, config.port))?;
