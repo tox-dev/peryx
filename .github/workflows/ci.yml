@@ -52,10 +52,9 @@ jobs:
               - 'crates/peryx-upstream/**'
               - 'crates/peryx-search/**'
               - 'crates/peryx-ha/**'
-              - 'crates/peryx-ha-local/**'
               - 'crates/peryx-ha-distributed/**'
-              - 'crates/peryx-ecosystem-contract/**'
-              - 'crates/peryx-ecosystem-registry/**'
+              - 'crates/peryx-plugin-registry/**'
+              - 'crates/peryx-bench-core/**'
               - 'crates/peryx/**'
               - 'crates/peryx-bench/**'
               - 'Cargo.toml'
@@ -93,6 +92,7 @@ jobs:
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
+      - run: .github/scripts/check-ecosystem-boundaries
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Deny dead code
         run: cargo check --workspace --all-targets --all-features
@@ -226,10 +226,10 @@ jobs:
       # uncovered generic instantiations separately, so it can regress when dependency edges change.
       # Functions remain LLVM-gated. main.rs is the entrypoint shell; peryx-web is the UI, whose
       # browser-event closures only execute as wasm. peryx's UI tests assert server rendering;
-      # Playwright asserts browser interactivity.
+      # Playwright asserts browser interactivity. The benchmark crates execute measurement workloads.
       - run: .github/scripts/test-check-lcov-lines
       - run: >
-          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench/)' --fail-under-functions 100 --lcov --output-path lcov.info
+          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench(?:-core)?/)' --fail-under-functions 100 --lcov --output-path lcov.info
       - run: .github/scripts/check-lcov-lines.awk lcov.info
       # Retain lcov.info even when a gate fails so the regressed function or line can be diagnosed.
       - if: always()

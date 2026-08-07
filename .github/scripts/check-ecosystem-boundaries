@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+status=0
+while IFS= read -r manifest; do
+  case "$manifest" in
+    Cargo.toml|crates/peryx/Cargo.toml|crates/peryx-bench/Cargo.toml|crates/peryx-ecosystem-pypi/Cargo.toml|crates/peryx-ecosystem-oci/Cargo.toml)
+      ;;
+    *)
+      printf 'ecosystem implementation dependency is not allowed in %s\n' "$manifest" >&2
+      status=1
+      ;;
+  esac
+done < <(rg -l 'peryx-ecosystem-(pypi|oci)' --glob Cargo.toml)
+
+for ecosystem in pypi oci; do
+  manifest="crates/peryx-ecosystem-$ecosystem/Cargo.toml"
+  if ! awk '
+    /^\[/ { section = $0 }
+    /peryx-ha-distributed/ && section != "[dev-dependencies]" { exit 1 }
+  ' "$manifest"; then
+    printf 'distributed implementation dependency must be test-only in %s\n' "$manifest" >&2
+    status=1
+  fi
+
+  while IFS= read -r source; do
+    case "$source" in
+      */src/tests/*)
+        ;;
+      *)
+        printf 'distributed implementation import is not allowed in %s\n' "$source" >&2
+        status=1
+        ;;
+    esac
+  done < <(rg -l 'peryx_ha_distributed' "crates/peryx-ecosystem-$ecosystem/src" --glob '*.rs' || true)
+done
+exit "$status"

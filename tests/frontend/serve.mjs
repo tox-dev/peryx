@@ -308,6 +308,20 @@ if (!manifestResponse.ok) {
   process.exit(1);
 }
 
+let searchable = false;
+for (let attempt = 0; attempt < 600; attempt += 1) {
+  const response = await fetch(`${base}/+search?q=veloxdemo&page_size=1`);
+  if (response.ok && (await response.text()).includes("veloxdemo")) {
+    searchable = true;
+    break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+if (!searchable) {
+  console.error("search index did not publish the fixture");
+  process.exit(1);
+}
+
 // Bind the readiness port only now, once every fixture is in place. Playwright polls this before it
 // runs any test; peryx's /+status answers far earlier, so gating on it would race the uploads above.
 // A still-closed port reads as connection-refused, which Playwright treats as not-yet-ready.
