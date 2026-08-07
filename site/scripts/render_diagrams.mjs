@@ -28,7 +28,7 @@ const mmdc = existsSync(join(site, "node_modules", ".bin", "mmdc"))
   ? join(site, "node_modules", ".bin", "mmdc")
   : "mmdc";
 
-const BLOCK = /\{%\s*mermaid\(\)\s*%\}\n([\s\S]*?)\n\{%\s*end\s*%\}/g;
+const BLOCK = /\{%\s*mermaid\(\)\s*%\}\s*([\s\S]*?)\s*\{%\s*end\s*%\}/g;
 
 // A diagram names a role — `class cache accent` — and the palette for that role lives here, once per
 // theme, rather than as a `classDef` line repeated in every diagram. One palette baked into the
@@ -117,7 +117,12 @@ function main() {
       const source = raw.trim();
       const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
       kept.add(`${hash}.html`);
-      const { light: l, dark: d } = render(source, hash, tmp);
+      if (existsSync(join(outDir, `${hash}.html`))) {
+        count += 1;
+        continue;
+      }
+      const renderSource = source.includes(";") ? source.replace(/\s+/g, " ") : source;
+      const { light: l, dark: d } = render(renderSource, hash, tmp);
       const partial =
         `<figure class="mermaid-figure">` +
         `<div class="mermaid-svg mermaid-light">${l}</div>` +

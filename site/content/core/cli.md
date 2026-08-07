@@ -10,47 +10,38 @@ peryx <COMMAND>
 
 ## Commands
 
-| Command          | Purpose                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------- |
-| `serve`          | Run the server                                                                        |
-| `init`           | Create the data directory and its stores, then exit                                   |
-| `config check`   | Validate the resolved configuration without starting the server                       |
-| `config-snippet` | Print `pip.conf`, `uv.toml`, or `.pypirc` for one configured index                    |
-| `index`          | List and inspect the configured indexes                                               |
-| `job`            | Inspect durable job-run history and rebuild the search index                          |
-| `cache`          | Inspect, validate, and clean the on-disk cache                                        |
-| `backup`         | Create and verify offline backups                                                     |
-| `restore`        | Restore an offline backup into a data directory                                       |
-| `import-dir`     | Import local wheels and sdists into a hosted index                                    |
-| `policy`         | Preview index policy decisions against cached records                                 |
-| `quota`          | Report configured limits and use per [repository quota](@/core/quotas.md)             |
-| `retention`      | Preview and export a repository's [retention plan](@/core/retention.md)               |
-| `writer`         | Promote a replacement writer during manual failover                                   |
-| `mirror`         | Plan, populate, and verify mirror cache contents                                      |
-| `openapi`        | Print the [OpenAPI](https://www.openapis.org/) description of the HTTP API as JSON    |
-| `self update`    | Replace the binary with the newest release (installer-managed builds only; see below) |
+| Command | Purpose | | ---------------- |
+------------------------------------------------------------------------------------- | | `serve` | Run the server | |
+`init` | Create the data directory and its stores, then exit | | `config check` | Validate the resolved configuration
+without starting the server | | `config-snippet` | Print `pip.conf`, `uv.toml`, or `.pypirc` for one configured index |
+| `index` | List and inspect the configured indexes | | `job` | Inspect durable job-run history and rebuild the search
+index | | `cache` | Inspect, validate, and clean the on-disk cache | | `backup` | Create and verify offline backups | |
+`restore` | Restore an offline backup into a data directory | | `import-dir` | Import local wheels and sdists into a
+hosted index | | `policy` | Preview index policy decisions against cached records | | `quota` | Report configured limits
+and use per [repository quota](@/core/quotas.md) | | `retention` | Preview and export a repository's
+[retention plan](@/core/retention.md) | | `writer` | Promote a replacement writer during manual failover | | `mirror` |
+Plan, populate, and verify mirror cache contents | | `openapi` | Print the [OpenAPI](https://www.openapis.org/)
+description of the HTTP API as JSON | | `self update` | Replace the binary with the newest release (installer-managed
+builds only; see below) |
 
 ## `serve` and `init` options
 
-| Flag                           | Meaning                                                   | Default      |
-| ------------------------------ | --------------------------------------------------------- | ------------ |
-| `--config <path>`              | TOML configuration file                                   | (none)       |
-| `--host <addr>`                | Bind address                                              | `127.0.0.1`  |
-| `--port <port>`                | Bind port                                                 | `4433`       |
-| `--data-dir <path>`            | Data directory (redb store and blob cache)                | `peryx-data` |
-| `--writer-identity <identity>` | Identity allowed to write the metadata store              | (none)       |
-| `--offline`                    | Serve configured cached indexes from cache only           | `false`      |
-| `--read-only`                  | Serve as a replica and reject client mutations with `503` | `false`      |
+| Flag | Meaning | Default | | ------------------------------ |
+--------------------------------------------------------- | ------------ | | `--config <path>` | TOML configuration file
+| (none) | | `--host <addr>` | Bind address | `127.0.0.1` | | `--port <port>` | Bind port | `4433` | |
+`--data-dir <path>` | Data directory (redb store and blob cache) | `peryx-data` | | `--writer-identity <identity>` |
+Identity allowed to write the metadata store | (none) | | `--offline` | Serve configured cached indexes from cache only
+| `false` | | `--read-only` | Serve as a replica and reject client mutations with `503` | `false` |
 
 ### Logging
 
-| Flag                | Meaning                                                                                                                                                                    | Default  |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `--log-level <dir>` | [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `error`, `warn`, `info`, `debug`, `trace`, or per-module | `info`   |
-| `-v`, `-vv`         | Raise the level to debug / trace                                                                                                                                           |          |
-| `--log-format <f>`  | `pretty` or `json`                                                                                                                                                         | `pretty` |
-| `--log-sink <s>`    | `stdout`, `file`, `journald`, `syslog`                                                                                                                                     | `stdout` |
-| `--log-file <path>` | Log file path, required with `--log-sink file`                                                                                                                             | (none)   |
+| Flag | Meaning | Default | | ------------------- |
+\--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| -------- | | `--log-level <dir>` |
+[`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html):
+`error`, `warn`, `info`, `debug`, `trace`, or per-module | `info` | | `-v`, `-vv` | Raise the level to debug / trace | |
+| `--log-format <f>` | `pretty` or `json` | `pretty` | | `--log-sink <s>` | `stdout`, `file`, `journald`, `syslog` |
+`stdout` | | `--log-file <path>` | Log file path, required with `--log-sink file` | (none) |
 
 Flags override the config file; see [Configuration](@/core/configuration.md) for the full precedence and the `[[index]]`
 schema.
@@ -156,43 +147,21 @@ equivalent file: `docker`, `podman`, and `crane` point at the index route on the
 ## `mirror`
 
 Mirror commands read the same config, `--data-dir`, and logging flags as `serve`. The index argument is a configured
-index name or route. It may point at a cached index directly, or at a virtual index with one cached layer.
+index name or route. It may point at a cached index directly or at a virtual index with one cached layer.
 
 ```shell
-peryx mirror plan root/pypi --package "requests>=2,<3"
-peryx mirror sync root/pypi --requirements requirements.txt
-peryx mirror sync pypi --mode all --python-tag py3 --abi-tag none --platform-tag any
-peryx mirror verify pypi --mode all
-
-peryx mirror sync root/oci --image library/alpine:latest --image library/nginx:1.27
-peryx mirror verify root/oci --image library/alpine:latest
+peryx mirror plan <index> [ecosystem options]
+peryx mirror sync <index> [ecosystem options]
+peryx mirror verify <index> [ecosystem options]
 ```
 
 `plan` prints the selection without writing cache records. `sync` stores it; `verify` checks cached documents and blob
-digests. Output is tab-separated with one row per document, artifact, or summary count. The selection differs by
-ecosystem: a PyPI index takes package selectors (the `--package`/`--requirements` and artifact-filter flags above), and
-an OCI index takes `--image` references, each pulling the image's manifest and every blob it names, following a manifest
-list into its per-platform manifests. Pair either with a cached index's `offline = true` to serve the mirrored set with
-no upstream.
+digests. Output is tab-separated with one row per selected item or summary count. Core resolves the index and dispatches
+to its mirror capability; the plugin combines `[index.prefetch]` with its CLI options. Pair a mirrored index with
+`offline = true` to serve the stored set without an upstream.
 
-Selection starts from `[index.prefetch]` in the config and the CLI flags add or override it:
-
-| Flag                           | Meaning                                                       |
-| ------------------------------ | ------------------------------------------------------------- |
-| `--mode selected`              | Use configured and CLI package selectors                      |
-| `--mode all`                   | Read the upstream root Simple project list and visit projects |
-| `--mode metadata-only`         | Select packages and skip artifact downloads                   |
-| `--package <selector>` / `-p`  | Add a package selector such as `flask>=3,<4`                  |
-| `--requirements <path>` / `-r` | Read selectors from a requirements or constraints file        |
-| `--metadata-only`              | Fetch pages and metadata siblings, skip artifacts             |
-| `--no-wheels`                  | Skip wheel files                                              |
-| `--no-sdists`                  | Skip source distributions                                     |
-| `--python-tag <tag>`           | Keep wheels with this Python tag; repeat for more tags        |
-| `--abi-tag <tag>`              | Keep wheels with this ABI tag; repeat for more tags           |
-| `--platform-tag <tag>`         | Keep wheels with this platform tag; repeat for more tags      |
-| `--max-file-size-bytes <n>`    | Skip files larger than `n` when upstream reports a size       |
-
-`--mode all` can walk a large upstream. Pair it with artifact filters when you only need part of the wheel matrix.
+- [Mirror PyPI packages](@/ecosystems/pypi/reference/mirroring.md)
+- [Mirror OCI images](@/ecosystems/oci/reference/mirroring.md)
 
 ## `cache`
 

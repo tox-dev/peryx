@@ -4,12 +4,17 @@ description = "Run one writer with read replicas and promote a replica during a 
 weight = 7
 +++
 
-peryx supports one writer with multiple read replicas. Send mutation traffic to the writer. Replicas serve data copied
-from the writer and reject mutation requests with `503 Service Unavailable`.
+One peryx binary contains local, data-center, and high-availability coordination. The resolved `[availability]`
+configuration selects the implementation. There is no runtime mode flag and no separate single-node build.
 
-This page operates the `none` [availability contract](@/core/availability-contracts.md): peryx provides local durability
-and leaves copying and failover to you. That contract also defines the `dc` and `ha` modes later work adds, and the
-normative meaning of every acknowledgement below.
+When availability is omitted or set to `none`, startup selects the local coordinator. It allocates no distributed state,
+registers no availability metrics or routes, and starts no replication, membership, heartbeat, topology, or
+reconciliation task. Configuring `dc` or `ha` constructs the distributed coordinator and only the workers required by
+that configuration.
+
+In distributed modes, send mutation traffic to the writer. Replicas serve copied data and reject mutation requests with
+`503 Service Unavailable`. The [availability contract](@/core/availability-contracts.md) defines what each
+acknowledgement proves.
 
 Give every writer a distinct, stable identity:
 
@@ -217,7 +222,7 @@ list is capped so one request cannot return an unbounded roster.
 
 `none` runs no availability subsystem. A single-node process builds no availability record, route, metric, background
 client, task, timer, queue, or thread. It mounts none of the `/+replication` routes, spawns no replica poll loop, and
-registers no `peryx_replication_*` or `peryx_availability_*` metric family. The omitted `[availability]` table and an
+registers no `peryx_ha_distributed_*` or `peryx_availability_*` metric family. The omitted `[availability]` table and an
 explicit `mode = "none"` resolve to the same process; neither builds the availability surface.
 
 Ordinary work keeps running. General request metrics such as `peryx_requests_total` and the node-local `peryx_jobs_*`
@@ -225,7 +230,7 @@ counters stay present, background maintenance still runs, and single-node writes
 acknowledgement. Turning availability off removes availability cost without disabling a running server's metrics or
 jobs.
 
-The availability subsystems that later work adds hold the same guarantee. Each builds nothing under `none`.
+Every distributed subsystem follows the same guarantee: it builds nothing under `none`.
 
 ## Background worker runtime
 

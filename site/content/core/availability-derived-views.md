@@ -12,8 +12,7 @@ from a consistent one.
 
 A replica avoids that by exposing metadata only up to its *readable frontier*: the lowest metadata serial every required
 view has applied. This page describes the frontier, the views it waits on, and what a restart guarantees. It refines the
-`none` [availability contract](@/core/availability-contracts.md) for the read side; the `dc` and `ha` modes later work
-adds keep the same rule.
+read side of the [availability contracts](@/core/availability-contracts.md) in every mode.
 
 ## Per-view frontiers
 
@@ -47,7 +46,7 @@ project's rebuild fails, the driver reports the search view as blocked and the f
 lazy full refresh a later search runs re-derives every project and lifts the hold once the failing input is readable
 again. Rebuilding one project on one index deletes only that project's document and re-adds the fresh one, so re-running
 the same apply after a crash reaches the same index. The replica exports the readable serial as
-`peryx_replication_readable_serial`, so a scrape shows how far derived views trail the metadata the replica has
+`peryx_ha_distributed_readable_serial`, so a scrape shows how far derived views trail the metadata the replica has
 committed.
 
 ## Restart behavior

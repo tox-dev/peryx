@@ -41,9 +41,9 @@ group below its durability policy or strand it too far ahead of a promotable rep
   Proceed only when `ready` is `true` and `blocked` is `null`; a `writer_lost` or `insufficient_members` block names a
   group that cannot acknowledge a write right now, so draining a further node would take quorum, not remove a spare.
 - **Replication lag.** `group_readiness.durable_frontier` is the serial the policy's members have all applied; compare
-  it against the writer's own committed `serial` and against [`peryx_replication_lag`](@/core/metrics.md) per replica. A
-  replica the roll may promote mid-hop should trail by no more than your lag budget, so it starts almost current rather
-  than facing a long catch-up.
+  it against the writer's own committed `serial` and against [`peryx_ha_distributed_lag`](@/core/metrics.md) per
+  replica. A replica the roll may promote mid-hop should trail by no more than your lag budget, so it starts almost
+  current rather than facing a long catch-up.
 - **Backup currency.** A step that fails recovers from a backup no further behind than you accept, so confirm the backup
   is current and reproven — `peryx backup verify` — before you drain (see
   [verify a backup](@/core/backup-restore.md#verify-a-backup)).

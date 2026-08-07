@@ -36,7 +36,7 @@ actions = ["write", "delete"]
 
 Run it with `peryx serve --config peryx.toml`. peryx accepts any username and treats the access token's secret as the
 Basic-auth password. The `--plain-http` flags below are what each client needs to talk HTTP to a
-[loopback](@/core/glossary.md#loopback-http) registry; over the network give peryx a certificate
+[loopback](@/ecosystems/oci/guides/local-transport.md) registry; over the network give peryx a certificate
 ([serve HTTPS](@/core/serve-https.md)) and drop them.
 
 ## Push and pull a Helm chart

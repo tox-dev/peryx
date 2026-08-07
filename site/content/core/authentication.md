@@ -9,7 +9,7 @@ project in this index. The model that answers it is ecosystem-neutral, so a PyPI
 same rules and differ only in how the client presents its credential. This page is the reference for that model and its
 configuration keys.
 
-For a walkthrough see [issue your first access token](@/core/first-token.md); for task recipes see
+For a walkthrough see [issue your first access token](@/ecosystems/pypi/tutorials/access-token.md); for task recipes see
 [control access to an index](@/core/control-access.md); for the reasoning behind the design see
 [client auth versus upstream credentials](@/core/access-explained.md).
 
@@ -58,19 +58,14 @@ resource against those grants. Repository reach cannot cover operator data, even
 scope. Separate role and resource checks follow the action-and-scope model used by
 [Grafana RBAC](https://grafana.com/docs/grafana/latest/administration/roles-and-permissions/access-control/).
 
-| Fixed role           | `repository:read` | `repository:write` | `repository:delete` | `operator:read` | `analytics:read` | `administration:read` |
-| -------------------- | ----------------- | ------------------ | ------------------- | --------------- | ---------------- | --------------------- |
-| Administrator        | yes               | yes                | yes                 | yes             | yes              | yes                   |
-| Repository publisher | yes               | yes                | yes                 |                 |                  |                       |
-| Repository reader    | yes               |                    |                     |                 |                  |                       |
-| Operator             |                   |                    |                     | yes             | yes              |                       |
+| Fixed role | `repository:read` | `repository:write` | `repository:delete` | `operator:read` | `analytics:read` |
+`administration:read` | | -------------------- | ----------------- | ------------------ | ------------------- |
+--------------- | ---------------- | --------------------- | | Administrator | yes | yes | yes | yes | yes | yes | |
+Repository publisher | yes | yes | yes | | | | | Repository reader | yes | | | | | | | Operator | | | | yes | yes | |
 
-| Field classification | Public caller | Repository caller | Operator caller | Administrator caller |
-| -------------------- | ------------- | ----------------- | --------------- | -------------------- |
-| Public               | yes           | yes               | yes             | yes                  |
-| Repository           |               | yes               |                 | yes                  |
-| Operator             |               |                   | yes             | yes                  |
-| Administrator        |               |                   |                 | yes                  |
+| Field classification | Public caller | Repository caller | Operator caller | Administrator caller | |
+-------------------- | ------------- | ----------------- | --------------- | -------------------- | | Public | yes | yes
+| yes | yes | | Repository | | yes | | yes | | Operator | | | yes | yes | | Administrator | | | | yes |
 
 `operator:read` covers runtime health, queues, and configuration state. `analytics:read` covers retained usage
 aggregates. The two scopes remain distinct, so each handler states which data family it reads. `administration:read`
@@ -107,12 +102,9 @@ shared caches. These directives constrain conforming caches and do not replace r
 A grant's `projects` are patterns matched against a project or repository name. `*` stands for any run of characters,
 including `/`, and every other character matches itself.
 
-| Pattern         | Matches                      | Does not match         |
-| --------------- | ---------------------------- | ---------------------- |
-| `*`             | every project in the index   |                        |
-| `team-*`        | `team-widgets`, `team-tools` | `other-widgets`        |
-| `team/*`        | `team/api`, `team/api/edge`  | `team`, `teamwork/api` |
-| `acme-internal` | `acme-internal` only         | `acme-public`          |
+| Pattern | Matches | Does not match | | --------------- | ---------------------------- | ---------------------- | | `*`
+| every project in the index | | | `team-*` | `team-widgets`, `team-tools` | `other-widgets` | | `team/*` | `team/api`,
+`team/api/edge` | `team`, `teamwork/api` | | `acme-internal` | `acme-internal` only | `acme-public` |
 
 A PyPI project name is matched after [PEP 503](https://peps.python.org/pep-0503/) normalization; an OCI repository name
 is matched as written. Because `*` crosses `/`, `team/*` covers a whole repository subtree however deeply nested.
@@ -121,13 +113,12 @@ is matched as written. Because `*` crosses `/`, `team/*` covers a whole reposito
 
 The `[auth]` table holds the settings every index's access rules share. All keys are optional.
 
-| Key                      | Meaning                                                                              | Default |
-| ------------------------ | ------------------------------------------------------------------------------------ | ------- |
-| `signing_key`            | Secret peryx signs its own tokens with                                               | (none)  |
-| `signing_key_file`       | Path to read `signing_key` from instead of inlining it                               | (none)  |
-| `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive and at most 86400 (one day) | `300`   |
-| `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it                 | `true`  |
-| `oidc_audience`          | Audience external CI identity tokens must carry                                      | `peryx` |
+| Key | Meaning | Default | | ------------------------ |
+------------------------------------------------------------------------------------ | ------- | | `signing_key` |
+Secret peryx signs its own tokens with | (none) | | `signing_key_file` | Path to read `signing_key` from instead of
+inlining it | (none) | | `token_ttl_secs` | Lifetime of a minted token, in seconds; must be positive and at most 86400
+(one day) | `300` | | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it |
+`true` | | `oidc_audience` | Audience external CI identity tokens must carry | `peryx` |
 
 `signing_key` and `token_ttl_secs` configure the token realm used by OCI and PyPI trusted publishing. peryx reads the
 key at startup and uses it to sign repository-scoped tokens. Set at most one of `signing_key` and `signing_key_file`.
@@ -252,9 +243,9 @@ project-presentation paths; the public paths listed above stay open. An index th
 
 These keys sit in an `[[index]]` table and are also listed under [configuration](@/core/configuration.md).
 
-| Key              | Role | Meaning                                                  | Default                         |
-| ---------------- | ---- | -------------------------------------------------------- | ------------------------------- |
-| `anonymous_read` | all  | Whether a request with no credential may read this index | `[auth].default_anonymous_read` |
+| Key | Role | Meaning | Default | | ---------------- | ---- | --------------------------------------------------------
+| ------------------------------- | | `anonymous_read` | all | Whether a request with no credential may read this index
+| `[auth].default_anonymous_read` |
 
 A hosted index accepts uploads through the `[[index.access_token]]` grants that permit writes.
 
@@ -276,14 +267,13 @@ actions = ["write", "delete"]
 expires_at = "2027-01-01T00:00:00Z"
 ```
 
-| Key           | Meaning                                                                              | Default    |
-| ------------- | ------------------------------------------------------------------------------------ | ---------- |
-| `name`        | Subject a request authenticating with this token speaks as; unique per index         | (required) |
-| `secret`      | Password a client presents as its Basic password                                     | (required) |
-| `secret_file` | Path to read `secret` from instead of inlining it                                    | (none)     |
-| `projects`    | Project globs the token may act on                                                   | `["*"]`    |
-| `actions`     | Any of `read`, `write`, `delete`; at least one                                       | (required) |
-| `expires_at`  | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) time after which it stops working | never      |
+| Key | Meaning | Default | | ------------- |
+------------------------------------------------------------------------------------ | ---------- | | `name` | Subject a
+request authenticating with this token speaks as; unique per index | (required) | | `secret` | Password a client
+presents as its Basic password | (required) | | `secret_file` | Path to read `secret` from instead of inlining it |
+(none) | | `projects` | Project globs the token may act on | `["*"]` | | `actions` | Any of `read`, `write`, `delete`;
+at least one | (required) | | `expires_at` | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) time after which it
+stops working | never |
 
 A token needs exactly one of `secret` and `secret_file`. Once `expires_at` passes, the token authenticates nothing: a
 request presenting it becomes anonymous, exactly as if the password were wrong.

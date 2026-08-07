@@ -11,10 +11,8 @@ a geo-distributed group (`ha`). It reads two neighbors rather than restating the
 recovery objectives; the [`[availability]`](@/core/configuration.md#availability) reference fixes every configuration
 key. This page decides how much hardware each shape needs, how to validate its TOML, and how to watch it.
 
-peryx ships the `none` shape today: one writer with local durability, read replicas, and
-[operator-driven failover](@/core/high-availability.md). The `dc` and `ha` modes are selectable configuration whose
-replicating runtime later availability work completes, so their sections size the deployment the contract targets and
-mark what is plan rather than shipped. Size against the contract now; move traffic when the runtime lands.
+`none` uses the local coordinator. `dc` and `ha` use distributed coordination and initialize the replication, topology,
+and reconciliation resources their configuration requires.
 
 ## Choose a shape
 
@@ -22,11 +20,12 @@ A shape is chosen by the failure it must survive, and that choice fixes the dura
 time the contract already defines. Pick the smallest shape that covers the failure domain you are required to tolerate,
 because each larger shape pays synchronous cost on the write path.
 
-| Shape       | Mode   | Survives                      | Recovery point                                     | Recovery time                             |
-| ----------- | ------ | ----------------------------- | -------------------------------------------------- | ----------------------------------------- |
-| Single node | `none` | process crash, storage intact | last external backup on storage loss               | operator restore and [promotion][promote] |
-| Single DC   | `dc`   | loss of one node in the DC    | zero acknowledged metadata and bytes in the DC     | failover to the surviving in-DC node      |
-| Geo HA      | `ha`   | loss of a whole datacenter    | zero acknowledged metadata; only unconverged bytes | failover to a surviving datacenter        |
+| Shape | Mode | Survives | Recovery point | Recovery time | | ----------- | ------ | ----------------------------- |
+-------------------------------------------------- | ----------------------------------------- | | Single node | `none`
+| process crash, storage intact | last external backup on storage loss | operator restore and [promotion][promote] | |
+Single DC | `dc` | loss of one node in the DC | zero acknowledged metadata and bytes in the DC | failover to the
+surviving in-DC node | | Geo HA | `ha` | loss of a whole datacenter | zero acknowledged metadata; only unconverged bytes
+| failover to a surviving datacenter |
 
 The recovery-point and recovery-time columns are the [contract's RPO and RTO table][rpo]: a recovery point is a serial,
 "no acknowledged mutation at or before frontier *n*", not a duration, so a shape is sized by which serials it can
@@ -219,14 +218,14 @@ subsystem and mounts neither. Point a replica read pool at
 disconnected replica leaves rotation without a restart, naming its cause in `reasons` (`frontier_lag`, `sync_error`,
 `incompatible_schema`, or `blob_store`). Use the public `/+ready?writes=true` for the writer pool.
 
-Scrape [`/metrics`](@/core/metrics.md) for the durable signals. Alert on `peryx_replication_lag`, the committed-serial
-distance a replica runs behind its primary, and on a sustained `rate(peryx_availability_sync_errors_total[5m])` split by
-its bounded failure class to catch a primary a replica can no longer reach. `peryx_availability_pending_serials` is the
-queue depth behind the frontier and moves with the lag. The [monitor](@/core/monitor.md) page covers the request
-counters and cache health every shape shares. The `/+status` operator surface reveals index topology and upstream
-reachability only to an `administration:read` caller, so a pending dedicated availability topology page, which later
-observability work adds, is an operator convenience rather than the control that keeps the topology off an
-unauthenticated response.
+Scrape [`/metrics`](@/core/metrics.md) for the durable signals. Alert on `peryx_ha_distributed_lag`, the
+committed-serial distance a replica runs behind its primary, and on a sustained
+`rate(peryx_availability_sync_errors_total[5m])` split by its bounded failure class to catch a primary a replica can no
+longer reach. `peryx_availability_pending_serials` is the queue depth behind the frontier and moves with the lag. The
+[monitor](@/core/monitor.md) page covers the request counters and cache health every shape shares. The `/+status`
+operator surface reveals index topology and upstream reachability only to an `administration:read` caller, so a pending
+dedicated availability topology page, which later observability work adds, is an operator convenience rather than the
+control that keeps the topology off an unauthenticated response.
 
 ## What each claim rests on
 

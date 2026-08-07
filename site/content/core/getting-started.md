@@ -73,6 +73,6 @@ Each starts from a running peryx and takes about ten minutes.
 ## Where next
 
 - [The index model](@/core/indexes.md): cached, hosted, and virtual indexes, and how a virtual index resolves.
-- [Issue your first access token](@/core/first-token.md): scope a token to a set of projects and publish through it.
+- [Issue your first access token](@/ecosystems/pypi/tutorials/access-token.md): scope a token and publish a package.
 - [Configuration reference](@/core/configuration.md): every TOML key.
 - [Ecosystems](@/ecosystems/_index.md): the per-ecosystem "Set Me Up" hubs.

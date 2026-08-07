@@ -158,5 +158,5 @@ composes with Docker and Kubernetes secret mounts under `/run/secrets`, systemd 
 ## Related
 
 - The full model and every key: [authentication and access control](@/core/authentication.md)
-- A start-to-finish walkthrough: [issue your first access token](@/core/first-token.md)
+- A start-to-finish walkthrough: [issue your first access token](@/ecosystems/pypi/tutorials/access-token.md)
 - The `[auth]` and `[[index.access_token]]` keys in context: [configuration](@/core/configuration.md)

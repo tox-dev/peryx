@@ -4,11 +4,9 @@ description = "Turn on TLS with a certificate you provide, an automatic Let's En
 weight = 12
 +++
 
-peryx serves plain HTTP by default. That is the right choice on a laptop: `pip` and `uv` accept any URL, and `docker`
-and `podman` trust a [loopback](@/core/glossary.md#loopback-http) registry over HTTP with no configuration. Serving over
-the network is different: browsers and container clients demand HTTPS, and a container client refuses a plain-HTTP
-registry that is not loopback unless you weaken its security settings. This guide turns on TLS. It assumes a built
-peryx; see [Getting started](@/core/getting-started.md).
+peryx serves plain HTTP by default. Use HTTPS whenever clients cross a host or network boundary. This guide turns on TLS
+and assumes a built peryx; see [Getting started](@/core/getting-started.md). Ecosystem client exceptions belong in their
+own transport guides, including [local OCI transport](@/ecosystems/oci/guides/local-transport.md).
 
 TLS is off until you configure it, and an unconfigured server keeps the exact plain-HTTP path, so turning it on costs
 nothing until you do. There are three approaches; pick one.

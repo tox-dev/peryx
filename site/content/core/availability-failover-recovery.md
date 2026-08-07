@@ -7,9 +7,8 @@ weight = 10
 When a node fails, the first job is to name the failure, because the four failures peryx can suffer recover along
 different paths and the wrong path can turn a recoverable outage into data loss. This guide is symptom-driven: start
 from what you observe, classify it into one of four failure classes, run the procedure for that class, and validate
-service before you route traffic back. It operates the `none` [availability contract](@/core/availability-contracts.md)
-that peryx ships today, one writer with read replicas and operator-driven failover, and points to the contract where the
-`dc` and `ha` modes later work adds change a recovery bound.
+service before you route traffic back. The selected [availability contract](@/core/availability-contracts.md) determines
+the recovery bound and whether recovery is local, same-datacenter, or cross-datacenter.
 
 The procedures below reuse the commands and probes defined on their reference pages rather than restate them: the
 [high availability](@/core/high-availability.md) page for the writer-and-replica model,
@@ -36,18 +35,11 @@ Recovery depends on state you prepare while healthy, so confirm these before you
 
 ## Classify the failure
 
-{% mermaid() %}
-flowchart TB
-sym["node not serving correctly"] --> disk{"is the durable disk intact?"}
-disk -->|"yes, process is down or wedged"| proc["process loss"]
-disk -->|"no, disk or bucket state is gone"| store["storage loss"]
-sym --> link{"nodes healthy but cannot reach each other?"}
-link -->|"replica cannot follow the writer"| part["network partition"]
-sym --> quorum{"a dc or ha mutation refuses with 503?"}
-quorum -->|"required failure domain unreachable"| cq["control-quorum loss"]
-class proc,part good
-class store,cq warn
-{% end %}
+{% mermaid() %} flowchart TB; sym["node not serving correctly"] --> disk{"is the durable disk intact?"}; disk -->|"yes,
+process is down or wedged"| proc["process loss"]; disk -->|"no, disk or bucket state is gone"| store["storage loss"];
+sym --> link{"nodes healthy but cannot reach each other?"}; link -->|"replica cannot follow the writer"| part\["network
+partition"\]; sym --> quorum{"a dc or ha mutation refuses with 503?"}; quorum -->|"required failure domain unreachable"|
+cq["control-quorum loss"]; class proc,part good; class store,cq warn {% end %}
 
 The four classes are distinct because the contract distinguishes
 [crash from storage loss](@/core/availability-contracts.md#crash-versus-storage-loss) and a
@@ -208,12 +200,12 @@ turns a contained outage into a visible one.
 
 ## Recovery objectives by failure class
 
-| Failure class       | Data at risk (`none`)                         | Return to service                                        |
-| ------------------- | --------------------------------------------- | -------------------------------------------------------- |
-| Process loss        | none acknowledged                             | restart against the same data directory                  |
-| Storage loss        | everything after the last verified backup     | restore into a fresh directory, then promote if a writer |
-| Network partition   | none; reads stale but bounded by the frontier | heal the link; the replica advances its frontier         |
-| Control-quorum loss | not applicable to `none`                      | `dc` and `ha` refuse the mutation; restore the domain    |
+| Failure class | Data at risk (`none`) | Return to service | | ------------------- |
+--------------------------------------------- | -------------------------------------------------------- | | Process
+loss | none acknowledged | restart against the same data directory | | Storage loss | everything after the last verified
+backup | restore into a fresh directory, then promote if a writer | | Network partition | none; reads stale but bounded
+by the frontier | heal the link; the replica advances its frontier | | Control-quorum loss | not applicable to `none` |
+`dc` and `ha` refuse the mutation; restore the domain |
 
 The `dc` and `ha` columns of these bounds are the stronger
 [recovery objectives](@/core/availability-contracts.md#recovery-objectives) the contract states as a serial, not a

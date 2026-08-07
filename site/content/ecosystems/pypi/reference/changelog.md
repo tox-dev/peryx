@@ -30,12 +30,9 @@ reconstruct it.
 
 Local actions use Warehouse's human-readable form while retaining peryx's per-file precision:
 
-| Mutation                   | Changelog action                          |
-| -------------------------- | ----------------------------------------- |
-| Upload or promotion        | `add file <filename>`                     |
-| Soft or permanent deletion | `remove file <filename>`                  |
-| Yank or unyank             | `yank <filename>` or `unyank <filename>`  |
-| Hide or restore            | `hide <filename>` or `restore <filename>` |
+| Mutation | Changelog action | | -------------------------- | ----------------------------------------- | | Upload or
+promotion | `add file <filename>` | | Soft or permanent deletion | `remove file <filename>` | | Yank or unyank |
+`yank <filename>` or `unyank <filename>` | | Hide or restore | `hide <filename>` or `restore <filename>` |
 
 Each promotion record identifies one changed file rather than emitting an ambiguous project event. Each new record
 carries the release version and mutation time. Records written before timestamps were introduced remain readable and

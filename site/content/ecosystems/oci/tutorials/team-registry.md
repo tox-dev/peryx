@@ -63,11 +63,11 @@ indexes live inside it.
 peryx serve --config peryx.toml
 ```
 
-peryx is now listening on `127.0.0.1:4433`. `docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http)
-registry (`localhost`, `127.0.0.0/8`) over plain HTTP with no configuration, so on the same host the commands below work
-as written. Over the network (or from Docker Desktop, whose engine runs in a VM), a client demands HTTPS: give peryx a
-certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option. `crane` and `podman`
-take a per-command flag; the snippets show it.
+peryx is now listening on `127.0.0.1:4433`. `docker` and `podman` trust a
+[loopback](@/ecosystems/oci/guides/local-transport.md) registry (`localhost`, `127.0.0.0/8`) over plain HTTP with no
+configuration, so on the same host the commands below work as written. Over the network (or from Docker Desktop, whose
+engine runs in a VM), a client demands HTTPS: give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the
+client's insecure-registry option. `crane` and `podman` take a per-command flag; the snippets show it.
 
 The dashboard at [http://127.0.0.1:4433/](http://127.0.0.1:4433/) draws the topology: one virtual-index card,
 `root/oci`, showing its layer stack in resolution order with `team` on top of `dockerhub` and the upload target marked.
