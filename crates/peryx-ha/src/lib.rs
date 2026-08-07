@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
-use peryx_core::{TopologyConfig, TopologyMember, TopologySnapshot};
 use peryx_storage::blob::{BlobDurability, BlobError, BlobMetadata, BlobStorage, Digest, DurabilityRequirement};
 use peryx_storage::meta::{MetaError, MetaStore};
 use serde::{Deserialize, Serialize};
@@ -39,16 +38,6 @@ impl AvailabilityMode {
     #[must_use]
     pub const fn is_distributed(self) -> bool {
         matches!(self, Self::Dc | Self::Ha)
-    }
-
-    #[must_use]
-    pub const fn is_dc(self) -> bool {
-        matches!(self, Self::Dc)
-    }
-
-    #[must_use]
-    pub const fn is_ha(self) -> bool {
-        matches!(self, Self::Ha)
     }
 }
 
@@ -174,32 +163,6 @@ pub trait AnalyticsCompleteness: Send + Sync {
         expected: &[ExpectedProducer],
         query: &CompletenessQuery,
     ) -> Result<CompletenessReport, CompletenessError>;
-}
-
-/// Current membership without prescribing discovery or consensus.
-pub trait MembershipProvider: Send + Sync {
-    fn members(&self) -> &[TopologyMember];
-}
-
-/// Authority lease visible to mutation admission.
-pub trait Lease: Send + Sync {
-    fn holder(&self) -> Option<&str>;
-}
-
-/// Persistence boundary for the current topology view.
-#[async_trait]
-pub trait TopologyStore: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    async fn load(&self) -> Result<TopologySnapshot, Self::Error>;
-    async fn store(&self, topology: &TopologySnapshot) -> Result<(), Self::Error>;
-}
-
-/// Runtime availability posture used by startup and diagnostics.
-pub trait HaCoordinator: Send + Sync {
-    fn configuration(&self) -> TopologyConfig;
-    fn topology(&self, captured_at: i64) -> TopologySnapshot;
-    fn distributed(&self) -> bool;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]

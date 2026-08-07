@@ -226,28 +226,10 @@ impl AvailabilityConfig {
         !self.is_single_node_mode()
     }
 
-    /// Whether mode is `dc`.
-    #[must_use]
-    pub const fn is_dc_mode(&self) -> bool {
-        matches!(self, Self::Dc(_))
-    }
-
-    /// Whether mode is `ha`.
-    #[must_use]
-    pub const fn is_ha_mode(&self) -> bool {
-        matches!(self, Self::Ha(_))
-    }
-
     /// Whether mode is `dc` or `ha`.
     #[must_use]
     pub const fn is_distributed_mode(&self) -> bool {
         self.mode().is_distributed()
-    }
-
-    /// Whether this node is configured as the configured primary.
-    #[must_use]
-    pub const fn is_primary_mode(&self) -> bool {
-        matches!(self.replication(), Some(ReplicationConfig::Primary { .. }))
     }
 
     /// Whether this node is configured as the configured replica.

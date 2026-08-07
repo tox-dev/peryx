@@ -1,7 +1,7 @@
 //! Link-time ecosystem plugin registry.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use peryx_core::Ecosystem;
 use peryx_driver::discovery::BaseUrl;
@@ -129,14 +129,6 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
     plugins()
         .iter()
         .fold(paths, |paths, plugin| plugin.openapi_paths(paths))
-}
-
-#[must_use]
-pub fn driver_for(
-    drivers: &DriverSet,
-    ecosystem: Ecosystem,
-) -> Option<&Arc<dyn peryx_driver::serving::EcosystemDriver>> {
-    drivers.get(ecosystem)
 }
 
 /// # Errors
