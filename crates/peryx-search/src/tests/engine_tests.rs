@@ -31,7 +31,7 @@ impl PackageIndexer for NamedDocs {
                 normalized_name: name.clone(),
                 route: "root".to_owned(),
                 index: "root".to_owned(),
-                ecosystem: "pypi".to_owned(),
+                ecosystem: "alpha".to_owned(),
                 source: PackageSource::Cached,
                 available_locally: false,
                 summary: None,
@@ -55,7 +55,7 @@ impl PackageIndexer for CountingDocs {
         if self.advance_serial {
             ctx.meta.next_serial().unwrap();
         }
-        Ok(self.names.iter().map(|name| pypi_doc(name, name)).collect())
+        Ok(self.names.iter().map(|name| artifact_doc(name, name)).collect())
     }
 }
 
@@ -200,7 +200,7 @@ fn test_cancelled_rebuild_does_not_leak_into_a_later_scoped_update() {
     assert_eq!(outcome, RebuildOutcome::Aborted { documents: 1 });
 
     search
-        .update_project(&[pypi_doc("x", "x")], &crate::project_key("root", "x"))
+        .update_project(&[artifact_doc("x", "x")], &crate::project_key("root", "x"))
         .unwrap();
 
     assert_eq!(hits(&search, &stores, &lexicons, "x"), 1, "the scoped update keeps x");
@@ -364,13 +364,13 @@ fn test_rebuild_re_derives_under_lock_when_a_mutation_advances_the_serial() {
     assert_eq!(total(&search, &stores, &lexicons), 3);
 }
 
-fn pypi_doc(name: &str, text: &str) -> PackageDocument {
+fn artifact_doc(name: &str, text: &str) -> PackageDocument {
     PackageDocument {
         display_name: name.to_owned(),
         normalized_name: name.to_owned(),
         route: "root".to_owned(),
         index: "root".to_owned(),
-        ecosystem: "pypi".to_owned(),
+        ecosystem: "alpha".to_owned(),
         source: PackageSource::Cached,
         available_locally: false,
         summary: None,
@@ -406,7 +406,7 @@ fn test_update_project_replaces_only_the_named_project() {
 
     search
         .update_project(
-            &[pypi_doc("alpha", "alpha renamed")],
+            &[artifact_doc("alpha", "alpha renamed")],
             &crate::project_key("root", "alpha"),
         )
         .unwrap();
@@ -452,7 +452,7 @@ fn test_update_project_is_idempotent_across_a_repeated_apply() {
     // Re-running the same delete-then-add, as a crash-recovery replay does, reaches the same index.
     for _ in 0..2 {
         search
-            .update_project(&[pypi_doc("alpha", "alpha")], &crate::project_key("root", "alpha"))
+            .update_project(&[artifact_doc("alpha", "alpha")], &crate::project_key("root", "alpha"))
             .unwrap();
     }
 
@@ -509,7 +509,7 @@ impl PackageIndexer for TrackingDocs {
             .lock()
             .unwrap()
             .iter()
-            .map(|(name, text)| pypi_doc(name, text))
+            .map(|(name, text)| artifact_doc(name, text))
             .collect())
     }
 
@@ -520,7 +520,7 @@ impl PackageIndexer for TrackingDocs {
             .lock()
             .unwrap()
             .get(name)
-            .map(|text| pypi_doc(name, text))
+            .map(|text| artifact_doc(name, text))
             .into_iter()
             .collect();
         Ok(ProjectUpdate {
@@ -653,14 +653,14 @@ struct GatedDocs {
 
 impl PackageIndexer for GatedDocs {
     fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<PackageDocument>, SearchError> {
-        Ok(vec![pypi_doc("pkg", &self.text.lock().unwrap())])
+        Ok(vec![artifact_doc("pkg", &self.text.lock().unwrap())])
     }
 
     fn project_update(&self, _ctx: &IndexerCtx<'_>, name: &str) -> Result<ProjectUpdate, SearchError> {
         self.entered.wait();
         self.release.wait();
         let documents = (name == "pkg")
-            .then(|| pypi_doc("pkg", &self.text.lock().unwrap()))
+            .then(|| artifact_doc("pkg", &self.text.lock().unwrap()))
             .into_iter()
             .collect();
         Ok(ProjectUpdate {
@@ -741,7 +741,7 @@ impl PackageIndexer for RacingDocs {
             .lock()
             .unwrap()
             .iter()
-            .map(|(name, text)| pypi_doc(name, text))
+            .map(|(name, text)| artifact_doc(name, text))
             .collect())
     }
 
@@ -755,7 +755,7 @@ impl PackageIndexer for RacingDocs {
             .lock()
             .unwrap()
             .get(name)
-            .map(|text| pypi_doc(name, text))
+            .map(|text| artifact_doc(name, text))
             .into_iter()
             .collect();
         Ok(ProjectUpdate {

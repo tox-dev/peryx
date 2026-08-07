@@ -10,19 +10,19 @@ use crate::client::{Auth, UpstreamClient, UpstreamError, redact_url};
 async fn test_fetch_bytes() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header("accept-encoding", "identity"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let bytes = client
-        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .fetch_bytes(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test]
@@ -84,33 +84,33 @@ async fn test_send_validated_prefers_etag() {
 async fn test_fetch_bytes_limited_accepts_body_at_limit() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header("accept-encoding", "identity"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let bytes = client
-        .fetch_bytes_limited(&format!("{}/files/pkg.whl", server.uri()), 10)
+        .fetch_bytes_limited(&format!("{}/files/pkg.bin", server.uri()), b"artifactbytes".len())
         .await
         .unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test]
 async fn test_fetch_bytes_limited_rejects_content_length_over_limit() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .and(path("/files/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let err = client
-        .fetch_bytes_limited(&format!("{}/files/pkg.whl", server.uri()), 9)
+        .fetch_bytes_limited(&format!("{}/files/pkg.bin", server.uri()), 9)
         .await
         .unwrap_err();
 
@@ -121,15 +121,15 @@ async fn test_fetch_bytes_limited_rejects_content_length_over_limit() {
 async fn test_stream_bytes_streams_file() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header("accept-encoding", "identity"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let bytes = client
-        .stream_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .stream_bytes(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap()
         .try_fold(Vec::new(), |mut bytes, chunk| async move {
@@ -139,14 +139,14 @@ async fn test_stream_bytes_streams_file() {
         .await
         .unwrap();
 
-    assert_eq!(bytes, b"wheelbytes");
+    assert_eq!(bytes, b"artifactbytes");
 }
 
 #[tokio::test]
 async fn test_fetch_range_requests_identity_bytes() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header("accept-encoding", "identity"))
         .and(header("range", "bytes=1-3"))
         .respond_with(
@@ -159,7 +159,7 @@ async fn test_fetch_range_requests_identity_bytes() {
     let client = simple_client(&server);
 
     let bytes = client
-        .fetch_range(&format!("{}/files/pkg.whl", server.uri()), 1, 3)
+        .fetch_range(&format!("{}/files/pkg.bin", server.uri()), 1, 3)
         .await
         .unwrap();
 
@@ -171,7 +171,7 @@ async fn test_fetch_range_requests_identity_bytes() {
 async fn test_fetch_range_accepts_unknown_total() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(
             ResponseTemplate::new(206)
                 .insert_header("content-range", "bytes 1-3/*")
@@ -182,7 +182,7 @@ async fn test_fetch_range_accepts_unknown_total() {
     let client = simple_client(&server);
 
     let bytes = client
-        .fetch_range(&format!("{}/files/pkg.whl", server.uri()), 1, 3)
+        .fetch_range(&format!("{}/files/pkg.bin", server.uri()), 1, 3)
         .await
         .unwrap();
 
@@ -211,11 +211,11 @@ async fn test_fetch_range_disables_on_bad_range_response(
     if let Some(content_range) = content_range {
         response = response.insert_header("content-range", content_range);
     }
-    mount_get(&server, "/files/pkg.whl", response).await;
+    mount_get(&server, "/files/pkg.bin", response).await;
     let client = simple_client(&server);
 
     let err = client
-        .fetch_range(&format!("{}/files/pkg.whl", server.uri()), 1, 3)
+        .fetch_range(&format!("{}/files/pkg.bin", server.uri()), 1, 3)
         .await
         .unwrap_err();
 
@@ -227,7 +227,7 @@ async fn test_fetch_range_disables_on_bad_range_response(
 async fn test_fetch_range_rejects_short_body() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(
             ResponseTemplate::new(206)
                 .insert_header("content-range", "bytes 1-3/5")
@@ -238,7 +238,7 @@ async fn test_fetch_range_rejects_short_body() {
     let client = simple_client(&server);
 
     let err = client
-        .fetch_range(&format!("{}/files/pkg.whl", server.uri()), 1, 3)
+        .fetch_range(&format!("{}/files/pkg.bin", server.uri()), 1, 3)
         .await
         .unwrap_err();
 
@@ -253,14 +253,14 @@ async fn test_fetch_range_rejects_short_body() {
 async fn test_head_file_for_range_requires_byte_ranges() {
     let server = MockServer::start().await;
     Mock::given(method("HEAD"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(ResponseTemplate::new(200).insert_header("content-length", "10"))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let err = client
-        .head_file_for_range(&format!("{}/files/pkg.whl", server.uri()))
+        .head_file_for_range(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap_err();
 
@@ -272,14 +272,14 @@ async fn test_head_file_for_range_requires_byte_ranges() {
 async fn test_head_file_for_range_requires_content_length() {
     let server = MockServer::start().await;
     Mock::given(method("HEAD"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(ResponseTemplate::new(200).insert_header("accept-ranges", "bytes"))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let err = client
-        .head_file_for_range(&format!("{}/files/pkg.whl", server.uri()))
+        .head_file_for_range(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap_err();
 
@@ -289,7 +289,7 @@ async fn test_head_file_for_range_requires_content_length() {
 
 #[tokio::test]
 async fn test_new_adds_trailing_slash() {
-    let client = UpstreamClient::new("https://pypi.org/simple").unwrap();
+    let client = UpstreamClient::new("https://upstream.example/artifacts/").unwrap();
     // A trailing slash was added, so joining a project stays under /simple/.
     let bytes_err = client.fetch_bytes("http://127.0.0.1:0/x").await;
     assert!(bytes_err.is_err()); // exercises the Http error path on an unusable port
@@ -307,16 +307,16 @@ fn test_new_rejects_invalid_url() {
 async fn test_fetch_bytes_preserves_basic_auth_on_same_host_redirect() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/redirect/pkg.whl"))
+        .and(path("/redirect/pkg.bin"))
         .and(header_regex("authorization", "^Basic "))
-        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/files/pkg.whl", server.uri())))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/files/pkg.bin", server.uri())))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header_regex("authorization", "^Basic "))
         .and(header("accept-encoding", "identity"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&server)
         .await;
     let client = UpstreamClient::with_auth(
@@ -329,11 +329,11 @@ async fn test_fetch_bytes_preserves_basic_auth_on_same_host_redirect() {
     .unwrap();
 
     let bytes = client
-        .fetch_bytes(&format!("{}/redirect/pkg.whl", server.uri()))
+        .fetch_bytes(&format!("{}/redirect/pkg.bin", server.uri()))
         .await
         .unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test]
@@ -341,14 +341,14 @@ async fn test_fetch_bytes_strips_basic_auth_on_cross_origin_redirect() {
     let origin = MockServer::start().await;
     let target = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/redirect/pkg.whl"))
+        .and(path("/redirect/pkg.bin"))
         .and(header_regex("authorization", "^Basic "))
-        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/pkg.whl", target.uri())))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/pkg.bin", target.uri())))
         .mount(&origin)
         .await;
     Mock::given(method("GET"))
-        .and(path("/pkg.whl"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .and(path("/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&target)
         .await;
     let client = UpstreamClient::with_auth(
@@ -361,11 +361,11 @@ async fn test_fetch_bytes_strips_basic_auth_on_cross_origin_redirect() {
     .unwrap();
 
     let bytes = client
-        .fetch_bytes(&format!("{}/redirect/pkg.whl", origin.uri()))
+        .fetch_bytes(&format!("{}/redirect/pkg.bin", origin.uri()))
         .await
         .unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
     assert_eq!(
         target.received_requests().await.unwrap()[0]
             .headers
@@ -379,8 +379,8 @@ async fn test_fetch_bytes_does_not_authenticate_a_direct_cross_origin_url() {
     let origin = MockServer::start().await;
     let target = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/pkg.whl"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .and(path("/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&target)
         .await;
     let client = UpstreamClient::with_auth(
@@ -392,9 +392,9 @@ async fn test_fetch_bytes_does_not_authenticate_a_direct_cross_origin_url() {
     )
     .unwrap();
 
-    let bytes = client.fetch_bytes(&format!("{}/pkg.whl", target.uri())).await.unwrap();
+    let bytes = client.fetch_bytes(&format!("{}/pkg.bin", target.uri())).await.unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
     assert_eq!(
         target.received_requests().await.unwrap()[0]
             .headers

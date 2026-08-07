@@ -9,8 +9,8 @@
 //! # Fencing
 //!
 //! The copy is fenced by the ownership group's cluster-level monotonic epoch, [`ClusterStatus::term`],
-//! not by a per-repository authority epoch. The copy backlog is digest-keyed and node-wide — it names no
-//! repository — so a per-repository epoch is undefined here, and a node-wide job resolves one to the
+//! not by a per-repository authority epoch. The copy backlog is digest-keyed and node-wide - it names no
+//! repository - so a per-repository epoch is undefined here, and a node-wide job resolves one to the
 //! closed `0` sentinel that fences all placement writes shut (the trap this design avoids). The copy is a
 //! cluster-level replication activity, so the cluster term is its natural fence. Over-fencing by an
 //! advanced cluster term only forces a harmless re-copy under the newer term; it can never let a stale
@@ -28,8 +28,9 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
 
-use peryx_driver::jobs::{CrossDcCopier, DcCopyParameters, JobFailure, JobReport};
+use peryx_driver::jobs::{DcCopyParameters, JobFailure, JobReport};
 use peryx_driver::state::{Clock, ServingState};
+use peryx_ha::{AvailabilityTaskError, AvailabilityTaskReport};
 use peryx_ha_distributed::{
     BlobTransport, CopyError, HttpBlobTransport, TransferLimits, TransportError, copy_blob_to_target,
 };
@@ -82,7 +83,15 @@ pub struct CrossDcBlobCopier {
     sources: Arc<dyn SourceTransports>,
 }
 
+struct BoundCrossDcBlobCopier {
+    copier: CrossDcBlobCopier,
+    state: Arc<ServingState>,
+}
+
 impl CrossDcBlobCopier {
+    pub fn bind(self, state: Arc<ServingState>) -> Arc<dyn peryx_ha::CrossDcCopier> {
+        Arc::new(BoundCrossDcBlobCopier { copier: self, state })
+    }
     /// Build the copier for a filesystem node from its resolved configuration and runtime store.
     ///
     /// Returns `None` when the node copies nothing: no roster, no node identity, no replication token,
@@ -200,9 +209,8 @@ impl CrossDcBlobCopier {
     }
 }
 
-#[async_trait]
-impl CrossDcCopier for CrossDcBlobCopier {
-    async fn copy_pass(
+impl CrossDcBlobCopier {
+    pub(crate) async fn copy_pass(
         &self,
         state: &ServingState,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
@@ -225,6 +233,24 @@ impl CrossDcCopier for CrossDcBlobCopier {
             .count()
             .await as u64;
         Ok(JobReport { processed, changed })
+    }
+}
+
+#[async_trait]
+impl peryx_ha::CrossDcCopier for BoundCrossDcBlobCopier {
+    async fn copy_pass(
+        &self,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+        concurrency: std::num::NonZeroUsize,
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
+        self.copier
+            .copy_pass(&self.state, cancelled, DcCopyParameters { concurrency })
+            .await
+            .map(|report| AvailabilityTaskReport {
+                processed: report.processed,
+                changed: report.changed,
+            })
+            .map_err(|error| AvailabilityTaskError::new(error.code(), error.message()))
     }
 }
 

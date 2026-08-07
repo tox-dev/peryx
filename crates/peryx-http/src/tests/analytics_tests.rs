@@ -128,15 +128,15 @@ fn token(name: &str, secret: &str, action: Action) -> NamedToken {
 /// barrier, so the buckets are fully applied before the view is queried.
 fn seed(state: &AppState) {
     for (route, project, version, source, bytes, times) in [
-        ("private", "flask", "3.0", Some("pypi"), 10u64, 2),
+        ("private", "flask", "3.0", Some("alpha"), 10u64, 2),
         ("private", "django", "5.0", None, 5, 1),
-        ("other", "numpy", "1.0", Some("pypi"), 99, 1),
+        ("other", "numpy", "1.0", Some("alpha"), 99, 1),
     ] {
         for _ in 0..times {
             state.metrics.record(Event::Download {
                 route: route.to_owned(),
                 project: project.to_owned(),
-                filename: format!("{project}-{version}.whl"),
+                filename: format!("{project}-{version}.bin"),
                 version: Some(version.to_owned()),
                 source: source.map(str::to_owned),
                 bytes,
@@ -347,7 +347,7 @@ async fn test_sources_view_is_operator_only(
     if expected == StatusCode::OK && !uri.contains("repository") {
         assert_eq!(
             rows(&body, "sources", &["project", "source", "downloads", "bytes"]),
-            ["flask/pypi/2/20", "numpy/pypi/1/99", "django/-/1/5"]
+            ["flask/alpha/2/20", "numpy/alpha/1/99", "django/-/1/5"]
         );
     }
 }

@@ -1,6 +1,9 @@
 //! Cross-cutting serving behavior.
 
 use super::support::*;
+use peryx_driver::serving::ArtifactPathDriver as _;
+use peryx_driver::serving::EcosystemDriver as _;
+use peryx_driver::serving::ProjectPageDriver as _;
 use rstest::rstest;
 
 #[tokio::test]
@@ -142,8 +145,6 @@ fn detail_with_metadata(wheel: &str, url: &str, meta: &str) -> String {
 
 #[tokio::test]
 async fn test_artifact_path_rejects_an_invalid_digest() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let err = crate::serving::PypiServing
         .artifact_path_in_project(
@@ -160,8 +161,6 @@ async fn test_artifact_path_rejects_an_invalid_digest() {
 
 #[tokio::test]
 async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let listed = Digest::of(b"listed wheel");
     let page = format!(
@@ -190,8 +189,6 @@ async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
 
 #[tokio::test]
 async fn test_artifact_path_reports_an_unfetchable_member_file() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let digest = Digest::of(b"never stored");
     let page = format!(
@@ -219,8 +216,6 @@ async fn test_artifact_path_reports_an_unfetchable_member_file() {
 
 #[tokio::test]
 async fn test_artifact_path_reports_a_project_detail_error() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     h.state
         .meta
@@ -245,8 +240,6 @@ async fn test_artifact_path_reports_a_project_detail_error() {
 #[case::legacy(&["legacy-z", "legacy-a"], "legacy-z")]
 #[tokio::test]
 async fn test_project_page_selects_latest_version(#[case] versions: &[&str], #[case] expected: &str) {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let page = crate::to_json(&serde_json::json!({
         "meta": {"api-version": "1.1"},
@@ -298,8 +291,6 @@ async fn test_project_page_prefers_an_active_stable_release(
     #[case] files: &[(&str, bool)],
     #[case] expected: &str,
 ) {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     mount_json_page(&h.server, &detail_with_yanks(versions, files)).await;
     let (_, meta) = crate::serving::PypiServing
@@ -392,8 +383,6 @@ async fn test_project_page_reads_metadata_from_the_default_release(
     #[case] version: &str,
     #[case] summary: Option<&str>,
 ) {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     mount_json_page(&h.server, &detail_with_release_metadata(&h.server, versions, files)).await;
     // The cached page registers the siblings; their blobs then answer the metadata read locally.
@@ -416,8 +405,6 @@ async fn test_project_page_reads_metadata_from_the_default_release(
 
 #[tokio::test]
 async fn test_project_page_surfaces_a_resolve_error() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(500))
@@ -432,8 +419,6 @@ async fn test_project_page_surfaces_a_resolve_error() {
 
 #[tokio::test]
 async fn test_project_page_rejects_a_bad_metadata_wheel_digest() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     mount_json_page(&h.server, &detail_with_metadata("not-a-digest", &file_url, "also-bad")).await;
@@ -447,8 +432,6 @@ async fn test_project_page_rejects_a_bad_metadata_wheel_digest() {
 
 #[tokio::test]
 async fn test_project_page_reports_an_unfetchable_metadata_sibling() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let wheel = Digest::of(b"the wheel");
     let meta = Digest::of(b"the metadata");
@@ -469,8 +452,6 @@ async fn test_project_page_reports_an_unfetchable_metadata_sibling() {
 
 #[tokio::test]
 async fn test_project_page_reports_a_malformed_metadata_sibling() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let wheel = Digest::of(b"the wheel");
     let sibling = b"Metadata-Version: 2.4\nName: flask\nmalformed header\nVersion: 1.0\n";
@@ -500,8 +481,6 @@ async fn test_project_page_reports_a_malformed_metadata_sibling() {
 
 #[tokio::test]
 async fn test_project_page_is_absent_for_an_unknown_hosted_project() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     // The hosted store holds no uploads for `flask`, so its page resolves to nothing.
     let page = crate::serving::PypiServing
@@ -514,7 +493,6 @@ async fn test_project_page_is_absent_for_an_unknown_hosted_project() {
 #[tokio::test]
 async fn test_project_page_reads_cached_and_remote_only_placements() {
     use peryx_core::{UiArtifactSource, UiByteAvailability};
-    use peryx_driver::serving::EcosystemDriver as _;
     use peryx_storage::meta::ArtifactSource;
 
     let h = harness().await;
@@ -573,7 +551,6 @@ async fn test_project_page_reads_cached_and_remote_only_placements() {
 #[tokio::test]
 async fn test_project_page_maps_each_placement_source_and_availability() {
     use peryx_core::{UiArtifactSource, UiByteAvailability};
-    use peryx_driver::serving::EcosystemDriver as _;
     use peryx_storage::meta::ArtifactSource;
 
     let h = harness().await;
@@ -632,7 +609,6 @@ async fn test_project_page_maps_each_placement_source_and_availability() {
 #[tokio::test]
 async fn test_project_page_reads_a_hosted_upload_with_lost_bytes_as_unavailable() {
     use peryx_core::{UiArtifactSource, UiByteAvailability};
-    use peryx_driver::serving::EcosystemDriver as _;
     use peryx_storage::meta::ArtifactSource;
 
     let h = harness().await;
@@ -670,7 +646,6 @@ async fn test_project_page_reads_a_hosted_upload_with_lost_bytes_as_unavailable(
 #[tokio::test]
 async fn test_project_page_marks_a_hosted_upload_over_its_cached_blob() {
     use peryx_core::{UiArtifactSource, UiByteAvailability};
-    use peryx_driver::serving::EcosystemDriver as _;
 
     use peryx_storage::meta::ArtifactSource;
 
@@ -713,7 +688,6 @@ async fn test_project_page_marks_a_hosted_upload_over_its_cached_blob() {
 #[tokio::test]
 async fn test_upload_to_an_unresolvable_or_non_root_path_is_rejected() {
     use axum::extract::FromRequest as _;
-    use peryx_driver::serving::EcosystemDriver as _;
 
     async fn empty_multipart() -> axum::extract::Multipart {
         let request = axum::http::Request::builder()

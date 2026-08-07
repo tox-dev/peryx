@@ -119,7 +119,7 @@ impl Fixture {
                 "/+repositories",
                 Some(ADMIN),
                 Some(json!({
-                    "route": route, "display_name": "A repo", "ecosystem": "pypi", "definition": {}
+                    "route": route, "display_name": "A repo", "ecosystem": "alpha", "definition": {}
                 })),
             )
             .await;
@@ -146,9 +146,9 @@ fn etag(headers: &HeaderMap) -> String {
 async fn test_full_lifecycle_create_inspect_list_update_disable_enable() {
     let fixture = Fixture::new().await;
 
-    let created = fixture.create("root/pypi").await;
+    let created = fixture.create("root/alpha").await;
     let id = created["id"].as_str().unwrap().to_owned();
-    assert_eq!(created["route"], "root/pypi");
+    assert_eq!(created["route"], "root/alpha");
     assert_eq!(created["version"], 1);
     assert_eq!(created["state"], "enabled");
 
@@ -240,14 +240,14 @@ impl Fixture {
 #[tokio::test]
 async fn test_create_rejects_a_duplicate_route() {
     let fixture = Fixture::new().await;
-    fixture.create("root/pypi").await;
+    fixture.create("root/alpha").await;
     let (status, _, body) = fixture
         .send(
             Method::POST,
             "/+repositories",
             Some(ADMIN),
             Some(json!({
-                "route": "root/pypi", "display_name": "Other", "ecosystem": "oci", "definition": {}
+                "route": "root/alpha", "display_name": "Other", "ecosystem": "beta", "definition": {}
             })),
         )
         .await;
@@ -255,10 +255,10 @@ async fn test_create_rejects_a_duplicate_route() {
 }
 
 #[rstest]
-#[case::empty_route(json!({"route": "", "display_name": "n", "ecosystem": "pypi", "definition": {}}), "route must not be empty")]
-#[case::long_route(json!({"route": "x".repeat(600), "display_name": "n", "ecosystem": "pypi", "definition": {}}), "route is too long")]
-#[case::empty_name(json!({"route": "r", "display_name": "", "ecosystem": "pypi", "definition": {}}), "display name must not be empty")]
-#[case::long_name(json!({"route": "r", "display_name": "x".repeat(300), "ecosystem": "pypi", "definition": {}}), "display name is too long")]
+#[case::empty_route(json!({"route": "", "display_name": "n", "ecosystem": "alpha", "definition": {}}), "route must not be empty")]
+#[case::long_route(json!({"route": "x".repeat(600), "display_name": "n", "ecosystem": "alpha", "definition": {}}), "route is too long")]
+#[case::empty_name(json!({"route": "r", "display_name": "", "ecosystem": "alpha", "definition": {}}), "display name must not be empty")]
+#[case::long_name(json!({"route": "r", "display_name": "x".repeat(300), "ecosystem": "alpha", "definition": {}}), "display name is too long")]
 #[case::empty_ecosystem(json!({"route": "r", "display_name": "n", "ecosystem": "", "definition": {}}), "ecosystem must not be empty")]
 #[case::long_ecosystem(json!({"route": "r", "display_name": "n", "ecosystem": "x".repeat(100), "definition": {}}), "ecosystem is too long")]
 #[tokio::test]
@@ -292,7 +292,7 @@ async fn test_create_requires_administrator_credentials() {
 #[tokio::test]
 async fn test_a_non_administrator_cannot_distinguish_missing_from_forbidden() {
     let fixture = Fixture::new().await;
-    let created = fixture.create("root/pypi").await;
+    let created = fixture.create("root/alpha").await;
     let id = created["id"].as_str().unwrap();
     // The operator lacks administration authority: an existing repo and a missing one both read 404.
     let existing = fixture
@@ -334,7 +334,7 @@ async fn test_create_rejects_a_non_json_or_malformed_body() {
 async fn test_create_rejects_an_oversized_body() {
     let fixture = Fixture::new().await;
     let big =
-        json!({"route": "r", "display_name": "n", "ecosystem": "pypi", "definition": {"pad": "x".repeat(70_000)}});
+        json!({"route": "r", "display_name": "n", "ecosystem": "alpha", "definition": {"pad": "x".repeat(70_000)}});
     let (status, _, _) = fixture
         .raw(
             Method::POST,
@@ -397,7 +397,7 @@ async fn test_list_filters_by_state_and_paginates() {
 #[tokio::test]
 async fn test_update_enforces_the_if_match_precondition() {
     let fixture = Fixture::new().await;
-    let id = fixture.create("root/pypi").await["id"].as_str().unwrap().to_owned();
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
 
     let bad = fixture
         .if_match_put(&id, "not-a-version", json!({"display_name": "x", "definition": {}}))
@@ -442,7 +442,7 @@ async fn self_non_json_put(fixture: &Fixture, id: &str) -> StatusCode {
 #[tokio::test]
 async fn test_disable_requires_if_match_and_conflicts_on_a_stale_version() {
     let fixture = Fixture::new().await;
-    let id = fixture.create("root/pypi").await["id"].as_str().unwrap().to_owned();
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
 
     let (no_precondition, _, _) = fixture
         .run(
@@ -473,7 +473,7 @@ async fn test_disable_requires_if_match_and_conflicts_on_a_stale_version() {
 #[tokio::test]
 async fn test_disable_is_idempotent() {
     let fixture = Fixture::new().await;
-    let id = fixture.create("root/pypi").await["id"].as_str().unwrap().to_owned();
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
     let first = fixture
         .if_match_post(&format!("/+repositories/{id}/disable"), "\"1\"")
         .await;
@@ -489,7 +489,7 @@ async fn test_disable_is_idempotent() {
 #[tokio::test]
 async fn test_mutations_require_administrator_authority() {
     let fixture = Fixture::new().await;
-    let id = fixture.create("root/pypi").await["id"].as_str().unwrap().to_owned();
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
 
     // The operator lacks administration authority, so an update it authors reads as a 404.
     let update = fixture
@@ -541,7 +541,7 @@ async fn test_a_repository_store_failure_is_unavailable() {
             "/+repositories",
             Some(ADMIN),
             Some(json!({
-                "route": "r", "display_name": "n", "ecosystem": "pypi", "definition": {}
+                "route": "r", "display_name": "n", "ecosystem": "alpha", "definition": {}
             })),
         )
         .await;

@@ -84,8 +84,8 @@ async fn test_apply_stamps_the_committed_term_and_index_onto_the_assignment_audi
         .await
         .unwrap();
 
-    // The apply loop reads the entry's log position, so the assignment audit — read back through the
-    // snapshot the machine builds — carries the term and index the command committed at.
+    // The apply loop reads the entry's log position, so the assignment audit - read back through the
+    // snapshot the machine builds - carries the term and index the command committed at.
     let snapshot = machine.get_snapshot_builder().await.build_snapshot().await.unwrap();
     let restored = OwnershipState::restore(&snapshot.snapshot.into_inner()).unwrap();
     assert_eq!(
@@ -289,8 +289,8 @@ async fn test_a_built_snapshot_survives_reopening_the_store() {
     machine.get_snapshot_builder().await.build_snapshot().await.unwrap();
     drop(machine);
 
-    // Reopening the store rebuilds the machine from the persisted snapshot alone — it never replays the
-    // log — so ownership, epochs, membership, and last_applied must all survive the restart.
+    // Reopening the store rebuilds the machine from the persisted snapshot alone - it never replays the
+    // log - so ownership, epochs, membership, and last_applied must all survive the restart.
     let mut restored = OwnershipStateMachine::with_snapshot_store(reopen_store(&dir)).unwrap();
     assert_eq!(
         restored.home_of(&key("proj")).await,
@@ -353,7 +353,7 @@ async fn test_with_snapshot_store_rejects_a_snapshot_whose_state_is_corrupt() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_store(&dir);
     // Persist a real snapshot, then overwrite its data with bytes the ownership state cannot restore while
-    // keeping the valid metadata, so the restore — not the meta decode — is what fails.
+    // keeping the valid metadata, so the restore - not the meta decode - is what fails.
     let mut machine = OwnershipStateMachine::with_snapshot_store(store.clone()).unwrap();
     machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
     machine.get_snapshot_builder().await.build_snapshot().await.unwrap();

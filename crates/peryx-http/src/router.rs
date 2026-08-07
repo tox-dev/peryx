@@ -31,7 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(Extension(runtime.clone())),
         );
     }
-    // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
+    // An absolute-mount ecosystem owns the top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.
     for (prefix, driver) in state.absolute_mounts() {
         let driver = driver.clone();
@@ -180,8 +180,10 @@ fn is_read_only_post(state: &AppState, request: &Request) -> bool {
     path == "/+query"
         || path == "/_/logout"
         || state.drivers().any(|driver| {
-            driver
-                .classify_service_post(path.trim_start_matches('/'), request.headers())
-                .is_some()
+            driver.capabilities().service.is_some_and(|driver| {
+                driver
+                    .classify_service_post(path.trim_start_matches('/'), request.headers())
+                    .is_some()
+            })
         })
 }

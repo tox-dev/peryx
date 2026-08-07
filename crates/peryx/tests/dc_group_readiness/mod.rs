@@ -4,7 +4,7 @@
 //! Three real `peryx serve` binaries are never needed here: a `dc` group is one writer and its
 //! replicas, and the readiness surface lives only on the writer, which folds each replica's beaconed
 //! frontier into `group_readiness` on `GET /+replication/v1/ready`. So a writer and a single replica
-//! exercise the whole surface — a majority group of two needs both members to acknowledge, which makes
+//! exercise the whole surface - a majority group of two needs both members to acknowledge, which makes
 //! every transition (a member joining, leaving, lagging, or being lost) observable in the writer's
 //! document. The replica beacons its applied serial to the writer over the same link it syncs metadata
 //! on, so routing that link through Toxiproxy lets a test slow or cut one replica in isolation.
@@ -19,7 +19,7 @@
 //! - slow replica: a replica whose journal sync is delayed keeps beaconing a lagging applied serial, so
 //!   it reads as reporting but never advances the durable frontier past what it holds, until it catches
 //!   up.
-//! - writer loss: killing the writer stops new writes — the survivor refuses them read-only — while the
+//! - writer loss: killing the writer stops new writes - the survivor refuses them read-only - while the
 //!   durable frontier a quorum already held survives the writer's crash and restart.
 //!
 //! Gated behind the `availability-e2e` feature so the default `cargo test` and the coverage gate skip
@@ -28,7 +28,7 @@
 //!
 //! This lives in the `availability` test binary, not a target of its own, so the regular `test` job's
 //! `not(binary(availability))` nextest filter keeps these heavy multi-process tests off the fast matrix
-//! and the dedicated `availability` job — the one that installs `toxiproxy-server` — runs them.
+//! and the dedicated `availability` job - the one that installs `toxiproxy-server` - runs them.
 //!
 //! [#515]: https://github.com/tox-dev/peryx/issues/515
 //! [#970]: https://github.com/tox-dev/peryx/issues/970
@@ -51,7 +51,7 @@ const AGE_OUT: Duration = Duration::from_secs(90);
 /// window so its beacon requests keep it reporting the whole time.
 const LAG: Duration = Duration::from_secs(20);
 
-/// A two-member `dc` group — one writer, one replica — that bootstraps an administrator so a test reads
+/// A two-member `dc` group - one writer, one replica - that bootstraps an administrator so a test reads
 /// the operator-class `serial` and `group_readiness` fields off the writer's readiness document.
 fn writer_and_replica() -> Topology {
     Topology::dc(
@@ -192,7 +192,7 @@ fn test_a_slow_replica_reports_but_holds_the_durable_frontier_at_its_applied_ser
     });
 
     // Slow the link: the writer→replica direction is delayed, so the journal pages the replica applies
-    // arrive late, but its beacon requests (replica→writer) still land — it keeps reporting a frontier.
+    // arrive late, but its beacon requests (replica→writer) still land - it keeps reporting a frontier.
     let proxy = proxied.proxy("replica-b").expect("the replica has a proxy");
     proxy.pause(LAG).expect("slow the replica's link to the writer");
 
@@ -201,8 +201,7 @@ fn test_a_slow_replica_reports_but_holds_the_durable_frontier_at_its_applied_ser
     let (code, _) = writer.publish().expect("the publish reaches the writer");
     assert_eq!(code, 200);
 
-    // While the link is paused the lagging state is stable, so poll for a well-formed group document —
-    // the writer's advanced serial, both members reporting, a durable frontier present — rather than
+    // While the link is paused the lagging state is stable, so poll for a well-formed group document -     // the writer's advanced serial, both members reporting, a durable frontier present - rather than
     // trust a single snapshot that a transient auth or scheduling hiccup could leave a field out of. The
     // paused replica cannot advance, so the frontier read here holds until the link is restored.
     let lagging = await_readiness(writer, CONVERGE, |document| {
@@ -266,12 +265,12 @@ fn test_killing_the_writer_stops_writes_and_preserves_the_durable_frontier() {
         "the replica refuses the write: {body}"
     );
     assert!(
-        cluster.nodes()[writer].publish().is_none(),
+        cluster.nodes()[writer].publish().is_err(),
         "the dead writer accepts no write",
     );
 
-    // Restart the writer: the frontier the quorum already held survives the crash — the writer's serial
-    // and the replica's applied serial both persisted — and no write slipped in while the writer was
+    // Restart the writer: the frontier the quorum already held survives the crash - the writer's serial
+    // and the replica's applied serial both persisted - and no write slipped in while the writer was
     // down, so the serial has not moved.
     cluster.nodes_mut()[writer]
         .restart()

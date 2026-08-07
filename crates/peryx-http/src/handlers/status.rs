@@ -32,7 +32,7 @@ pub struct ReadinessQuery {
 const STATUS_RECENT_UPLOADS: usize = 5;
 
 /// `GET /+status`: health, identity, counters, and the configured indexes, filtered to the caller's
-/// class. The web UI's live dashboard refreshes from this document.
+/// class. The web UI's live dashboard refreshes from this response.
 pub async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let authorization = status_authorization(&state, &headers).await;
     let mut response =
@@ -146,10 +146,17 @@ fn index_documents(state: &AppState, details: bool) -> Vec<serde_json::Value> {
         .describe_indexes()
         .into_iter()
         .map(|index| {
-            let endpoint = state.driver_for_name(index.ecosystem).map_or_else(
+            let driver = state.driver_for_name(index.ecosystem);
+            let endpoint = driver.as_ref().map_or_else(
                 || format!("/{}/", index.route),
                 |driver| driver.client_endpoint(&index.route),
             );
+            let upload = driver.and_then(|driver| {
+                driver
+                    .capabilities()
+                    .upload_ui
+                    .and_then(|driver| driver.upload_ui(&index.route, index.uploads))
+            });
             let mut object = serde_json::Map::from_iter([
                 ("name".to_owned(), serde_json::json!(index.name)),
                 ("route".to_owned(), serde_json::json!(index.route)),
@@ -168,6 +175,7 @@ fn index_documents(state: &AppState, details: bool) -> Vec<serde_json::Value> {
                     ),
                 ),
                 ("uploads".to_owned(), serde_json::json!(index.uploads)),
+                ("upload".to_owned(), serde_json::json!(upload)),
                 ("volatile_deletes".to_owned(), serde_json::json!(index.volatile_deletes)),
                 ("upload_to".to_owned(), serde_json::json!(index.upload_to)),
             ]);

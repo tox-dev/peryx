@@ -64,9 +64,9 @@ async fn test_fetch_project_rejects_missing_content_type() {
 
     let err = client.fetch_project("bare", None).await.unwrap_err();
 
-    assert!(matches!(&err, UpstreamError::MissingContentType { url } if url.as_str().ends_with("/simple/bare/")));
+    assert!(matches!(&err, UpstreamError::InvalidResponse { reason } if reason.ends_with("/simple/bare/")));
     assert_eq!(err.status(), None);
-    assert_eq!(err.user_message(), "upstream response missed Simple API Content-Type");
+    assert_eq!(err.user_message(), "upstream returned an invalid response");
 }
 
 #[tokio::test]
@@ -83,13 +83,10 @@ async fn test_fetch_project_rejects_unsupported_content_type() {
     let err = client.fetch_project("bare", None).await.unwrap_err();
 
     assert!(
-        matches!(&err, UpstreamError::UnsupportedContentType { url, content_type } if url.as_str().ends_with("/simple/bare/") && content_type == "application/octet-stream")
+        matches!(&err, UpstreamError::InvalidResponse { reason } if reason.contains("application/octet-stream") && reason.ends_with("/simple/bare/"))
     );
     assert_eq!(err.status(), None);
-    assert_eq!(
-        err.user_message(),
-        "upstream returned unsupported Simple API Content-Type"
-    );
+    assert_eq!(err.user_message(), "upstream returned an invalid response");
 }
 
 #[tokio::test]

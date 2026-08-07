@@ -8,8 +8,8 @@ use crate::{parse_basic, secrets_match};
 
 /// Whether `principal` may take `action` on `project` in the index `acl` describes.
 ///
-/// `project` is `None` when the caller must decide before it knows the name — a `PyPI` upload is
-/// authorized before its multipart body is read — and then asks the weaker question: may this
+/// `project` is `None` when the caller must decide before it knows the artifact name, such as an upload
+/// authorized before its multipart body is read - and then asks the weaker question: may this
 /// principal take the action on *any* project here? The named check follows once the name is known.
 ///
 /// # Errors

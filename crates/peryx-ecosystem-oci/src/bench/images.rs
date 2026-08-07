@@ -1,10 +1,3 @@
-//! The workloads' image sets, pinned to a tag so runs stay comparable.
-//!
-//! Every reference is a Docker Hub repository path plus tag; each server prepends its own registry
-//! base (`peryx` its proxy route, `distribution`/`zot` their root, `direct` Docker Hub itself). The
-//! set is kept small and to widely-mirrored official images so a full run stays inside Docker Hub's
-//! anonymous pull budget.
-
 /// The images the pull workload fetches through each registry, cold then warm: the OCI analogue of
 /// installing the top packages. A spread of sizes, all official.
 pub const PULL_IMAGES: &[&str] = &[

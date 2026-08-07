@@ -19,6 +19,7 @@
 use crate::error::{ErrorCode, error_response, gateway_error};
 use crate::name::{OciRoute, classify};
 use crate::settings::IndexSettings;
+use crate::upload_session::UploadStore as _;
 use crate::upstream::{Upstream, UpstreamError};
 use async_trait::async_trait;
 use axum::body::Body;
@@ -29,7 +30,10 @@ use futures_util::StreamExt as _;
 use parking_lot::RwLock;
 use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
-use peryx_driver::serving::{EcosystemDriver, MaintenanceDriver, RefreshSweep, RouteMount};
+use peryx_driver::serving::{
+    ArtifactMemberDriver, BlobReferenceDriver, BrowseDriver, DriverCapabilities, EcosystemDriver, IdleReclaimer,
+    MaintenanceCapabilities, MaintenanceDriver, ManifestDriver, MetricsDriver, RouteMount, TrashDriver,
+};
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
@@ -251,8 +255,16 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         crate::ECOSYSTEM
     }
 
-    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
-        crate::quota::QUOTA_FAMILIES
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            metrics: Some(self),
+            blob_references: Some(self),
+            trash: Some(self),
+            browse: Some(self),
+            manifest: Some(self),
+            artifact_members: Some(self),
+            ..DriverCapabilities::default()
+        }
     }
 
     fn mount(&self) -> RouteMount {
@@ -304,13 +316,30 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         crate::discovery::index_entry(index, base)
     }
 
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = "/v2/".to_owned();
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push('/');
+        url
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> MetricsDriver for OciRegistryWithHasher<S> {
+    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
+        crate::quota::QUOTA_FAMILIES
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> BlobReferenceDriver for OciRegistryWithHasher<S> {
     fn referenced_blob_digests(
         &self,
         meta: &peryx_storage::meta::MetaStore,
     ) -> Result<std::collections::BTreeSet<String>, String> {
         Ok(crate::referenced_blob_digests(meta).map_err(ServeError::from)?)
     }
+}
 
+impl<S: BuildHasher + Default + Send + Sync + 'static> TrashDriver for OciRegistryWithHasher<S> {
     fn trash_records(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -322,14 +351,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         }
         Ok(records)
     }
+}
 
-    fn client_endpoint(&self, route: &str) -> String {
-        let mut url = "/v2/".to_owned();
-        peryx_core::url_encoding::push_path(&mut url, route);
-        url.push('/');
-        url
-    }
-
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegistryWithHasher<S> {
     fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         Ok(repositories(state, state.index_at(position)).map_err(ServeError::from)?)
     }
@@ -344,7 +369,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         let names = self.repository_tags(&state, index, &project).await?;
         Ok(Some(peryx_core::UiProjectView::References { names }))
     }
+}
 
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> ManifestDriver for OciRegistryWithHasher<S> {
     async fn manifest_view(
         &self,
         state: Arc<ServingState>,
@@ -363,9 +391,14 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
             return Ok(None);
         }
         let bytes = read_body(response.into_body(), MAX_MANIFEST_BYTES).await?;
-        crate::web::manifest_from_bytes(&bytes).map(Some)
+        let mut manifest = crate::web::manifest_from_bytes(&bytes)?;
+        manifest.client_command = Some(crate::web::pull_command(&name, &reference));
+        Ok(Some(manifest))
     }
+}
 
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> ArtifactMemberDriver for OciRegistryWithHasher<S> {
     async fn artifact_members(
         &self,
         state: Arc<ServingState>,
@@ -411,26 +444,23 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
             next_offset,
         })
     }
-
-    async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
-        let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
-        let expired = state
-            .meta
-            .reclaim_uploads(cutoff, UPLOAD_RECLAIM_BATCH)
-            .unwrap_or_default();
-        for session in &expired {
-            let _ = state.blobs.discard_upload(session).await;
-        }
-        expired.len()
-    }
 }
-
 #[async_trait]
 impl<S: BuildHasher + Default + Send + Sync + 'static> MaintenanceDriver for OciRegistryWithHasher<S> {
     fn ecosystem(&self) -> Ecosystem {
         crate::ECOSYSTEM
     }
 
+    fn maintenance_capabilities(&self) -> MaintenanceCapabilities<'_> {
+        MaintenanceCapabilities {
+            idle_reclaimer: Some(self),
+            ..MaintenanceCapabilities::default()
+        }
+    }
+}
+
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> IdleReclaimer for OciRegistryWithHasher<S> {
     async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
         let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
         let expired = state
@@ -441,14 +471,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> MaintenanceDriver for Oci
             let _ = state.blobs.discard_upload(session).await;
         }
         expired.len()
-    }
-
-    async fn finalize_admitted(&self, _state: Arc<ServingState>) -> u64 {
-        0
-    }
-
-    async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
-        Ok(RefreshSweep::default())
     }
 }
 
@@ -539,7 +561,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     }
 
     /// Every tag of `repo` on `index`, unioned across a virtual index's members and each proxy
-    /// member's upstream, sorted and distinct — the same union [`Self::serve_tags`] paginates.
+    /// member's upstream, sorted and distinct - the same union [`Self::serve_tags`] paginates.
     async fn repository_tags(
         &self,
         state: &ServingState,
@@ -727,7 +749,7 @@ pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a
 }
 /// A hosted index's own page serial: the whole-store serial the readable frontier governs. A proxied
 /// index reports upstream state the frontier does not govern, and a virtual index carries no serial of
-/// its own — [`holds_below_readable_frontier`] derives its effective serial from its hosted members — so
+/// its own - [`holds_below_readable_frontier`] derives its effective serial from its hosted members - so
 /// both report none here. Mirrors the `PyPI` hosted-page rule.
 fn hosted_last_serial(state: &ServingState, index: &Index) -> Result<Option<u64>, ServeError> {
     Ok(match index.kind {
@@ -1044,4 +1066,3 @@ mod tests {
         assert!(message.contains("502"), "{message}");
     }
 }
-use crate::upload_session::UploadStore as _;

@@ -4905,7 +4905,6 @@ dependencies = [
  "peryx-events",
  "peryx-ha",
  "peryx-ha-distributed",
- "peryx-ha-local",
  "peryx-http",
  "peryx-identity",
  "peryx-index",
@@ -4951,6 +4950,9 @@ dependencies = [
  "anyhow",
  "clap",
  "hdrhistogram",
+ "peryx-bench-core",
+ "peryx-ecosystem-oci",
+ "peryx-ecosystem-pypi",
  "reqwest",
  "rustls 0.23.43",
  "serde",
@@ -4961,6 +4963,20 @@ dependencies = [
  "tokio",
  "toml",
  "url",
+]
+
+[[package]]
+name = "peryx-bench-core"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "statrs",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -5018,6 +5034,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
+ "clap",
  "codspeed-criterion-compat",
  "flate2",
  "futures-util",
@@ -5027,6 +5044,7 @@ dependencies = [
  "http-body-util",
  "inventory",
  "parking_lot",
+ "peryx-bench-core",
  "peryx-core",
  "peryx-driver",
  "peryx-events",
@@ -5069,6 +5087,7 @@ dependencies = [
  "base64",
  "blake2",
  "bytes",
+ "clap",
  "codspeed-criterion-compat",
  "csv",
  "email_address",
@@ -5086,6 +5105,7 @@ dependencies = [
  "pep440_rs",
  "pep508_rs",
  "percent-encoding",
+ "peryx-bench-core",
  "peryx-core",
  "peryx-driver",
  "peryx-events",
@@ -5181,6 +5201,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
+ "codspeed-criterion-compat",
  "futures-util",
  "hdrhistogram",
  "http-body-util",
@@ -5202,14 +5223,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "peryx-ha-local"
-version = "0.0.1"
-dependencies = [
- "peryx-core",
- "peryx-ha",
 ]
 
 [[package]]

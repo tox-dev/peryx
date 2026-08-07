@@ -146,34 +146,6 @@ async fn harness_with_options(
         [("pypi".to_owned(), options.upstream_concurrency)],
     );
     state.max_stale_secs = options.max_stale_secs;
-    if options.dc_write_ack {
-        // A two-member same-datacenter group under a majority quorum: the ingress node proves one
-        // receipt, so a write cannot reach quorum from the local receipt alone and is reported
-        // retry-safe rather than durable.
-        state.set_availability_topology(peryx_core::TopologyConfig {
-            mode: peryx_core::TopologyMode::Dc,
-            group: Some("group".to_owned()),
-            members: vec![
-                peryx_core::TopologyMember {
-                    node: "a".to_owned(),
-                    dc: "east".to_owned(),
-                    address: "a.east:8080".to_owned(),
-                    role: peryx_core::NodeRole::Writer,
-                },
-                peryx_core::TopologyMember {
-                    node: "b".to_owned(),
-                    dc: "east".to_owned(),
-                    address: "b.east:8080".to_owned(),
-                    role: peryx_core::NodeRole::Replica,
-                },
-            ],
-            local_node: Some("a".to_owned()),
-        });
-        state.set_write_ack(
-            peryx_ha_distributed::DurabilityPolicy::Majority,
-            std::time::Duration::from_secs(5),
-        );
-    }
     let state = crate::tests::wired(state);
     Harness {
         dir,
@@ -187,7 +159,6 @@ struct HarnessOptions {
     max_stale_secs: i64,
     offline: bool,
     upstream_concurrency: usize,
-    dc_write_ack: bool,
 }
 
 impl Default for HarnessOptions {
@@ -196,29 +167,11 @@ impl Default for HarnessOptions {
             max_stale_secs: DEFAULT_MAX_STALE_SECS,
             offline: false,
             upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
-            dc_write_ack: false,
         }
     }
 }
 pub async fn harness() -> Harness {
     harness_with(true, true).await
-}
-
-/// A harness whose hosted writes acknowledge against a two-member same-datacenter majority quorum, so a
-/// write not reachable from the local receipt alone is reported retry-safe rather than durable.
-pub async fn dc_write_ack_harness() -> Harness {
-    harness_with_options(
-        true,
-        true,
-        Policy::default(),
-        Policy::default(),
-        Policy::default(),
-        HarnessOptions {
-            dc_write_ack: true,
-            ..HarnessOptions::default()
-        },
-    )
-    .await
 }
 
 fn clone_index(index: &Index) -> Index {

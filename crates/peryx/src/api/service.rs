@@ -1,4 +1,4 @@
-//! Server-level operations: discovery, search, status, stats, metrics, and this document.
+//! Server-level discovery, search, status, stats, metrics, and API schema operations.
 
 use serde_json::json;
 use utoipa::openapi::content::ContentBuilder;
@@ -99,8 +99,8 @@ fn repository_paths(paths: PathsBuilder) -> PathsBuilder {
 
 fn repository_example() -> serde_json::Value {
     json!({
-        "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b", "route": "root/pypi", "display_name": "PyPI mirror",
-        "ecosystem": "pypi", "definition": {}, "state": "enabled", "version": 1,
+        "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b", "route": "root/packages", "display_name": "Package mirror",
+        "ecosystem": "example", "definition": {}, "state": "enabled", "version": 1,
         "created_by": "usr_550e8400e29b41d4a716446655440000", "created_at_unix": 1_700_000_000,
         "updated_by": "usr_550e8400e29b41d4a716446655440000", "updated_at_unix": 1_700_000_000
     })
@@ -179,9 +179,9 @@ fn create_repository() -> OperationBuilder {
                  `Location`.",
             ))
             .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-            .request_body(Some(RequestBodyBuilder::new().required(Some(Required::True)).content("application/json", ContentBuilder::new().example(Some(json!({"route": "root/pypi", "display_name": "PyPI mirror", "ecosystem": "pypi", "definition": {}}))).build()).build()))
+            .request_body(Some(RequestBodyBuilder::new().required(Some(Required::True)).content("application/json", ContentBuilder::new().example(Some(json!({"route": "root/packages", "display_name": "Package mirror", "ecosystem": "example", "definition": {}}))).build()).build()))
             .response("201", api_json_response("The created repository", repository_example()))
-            .response("409", api_json_response("Another repository already serves the route", json!({"error": "a repository already serves route \"root/pypi\""})))
+            .response("409", api_json_response("Another repository already serves the route", json!({"error": "a repository already serves route \"root/packages\""})))
             .response("415", ResponseBuilder::new().description("The request is not JSON"))
             .response("422", api_json_response("The body is malformed or a field is invalid", json!({"error": "route must not be empty"}))),
     )
@@ -219,7 +219,7 @@ fn update_repository() -> OperationBuilder {
                     .content(
                         "application/json",
                         ContentBuilder::new()
-                            .example(Some(json!({"display_name": "PyPI mirror", "definition": {}})))
+                            .example(Some(json!({"display_name": "Package mirror", "definition": {}})))
                             .build(),
                     )
                     .build(),
@@ -637,17 +637,17 @@ fn status() -> OperationBuilder {
                         },
                         "requests": 128,
                         "by_ecosystem": [
-                            {"ecosystem": "pypi", "pages": 128, "downloads": 6, "bytes": 64_733_247,
+                            {"ecosystem": "example", "pages": 128, "downloads": 6, "bytes": 64_733_247,
                              "rejected": 0, "uploads": 4, "families": {"metadata": 37}}
                         ],
                         "metric_families": [
-                            {"key": "metadata", "label": "PEP 658 metadata hits",
+                            {"key": "metadata", "label": "metadata hits",
                              "roles": ["cached", "hosted", "virtual"]}
                         ],
                         "indexes": [
-                            {"name": "pypi", "route": "pypi", "kind": "cached", "layers": [],
+                            {"name": "example", "route": "example", "kind": "cached", "layers": [],
                              "uploads": false, "volatile_deletes": false, "upload_to": null,
-                             "upstream": {"url": "https://pypi.org/simple/", "auth": {"kind": "none", "redacted": null}, "status": "configured", "offline": false},
+                             "upstream": {"url": "https://upstream.example/artifacts/", "auth": {"kind": "none", "redacted": null}, "status": "configured", "offline": false},
                              "hosted": null, "project_count": 128, "upload_count": 0, "recent_uploads": []},
                             {"name": "hosted", "route": "hosted", "kind": "hosted", "layers": [],
                              "uploads": true, "volatile_deletes": true, "upload_to": null, "upstream": null,
@@ -655,8 +655,8 @@ fn status() -> OperationBuilder {
                              "project_count": 2, "upload_count": 4,
                              "recent_uploads": [{"project": "peryxpkg", "filename": "peryxpkg-1.0-py3-none-any.whl",
                                                 "version": "1.0", "uploaded_at": "2026-01-01T00:00:00Z", "size": 1832}]},
-                            {"name": "root/pypi", "route": "root/pypi", "kind": "virtual",
-                             "layers": ["hosted", "pypi"], "uploads": true, "volatile_deletes": true,
+                            {"name": "root/packages", "route": "root/packages", "kind": "virtual",
+                             "layers": ["hosted", "example"], "uploads": true, "volatile_deletes": true,
                              "upload_to": "hosted",
                              "upstream": null, "hosted": null, "project_count": 0, "upload_count": 0,
                              "recent_uploads": []}
@@ -932,7 +932,7 @@ fn stats() -> OperationBuilder {
              cached; a repository token reads its own usage through `/+analytics/*` instead. Counters \
              are grouped by the role that owns them: a neutral `base` group every index reports, a \
              `cached` group only a caching index fills, a `hosted` group only an upload store fills, \
-             and an `ecosystem` map of the driver's own counters (PyPI's PEP 658 sibling under \
+             and an `ecosystem` map of the driver's own counters (an adapter-specific metadata family under \
              `metadata`).",
         ))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
@@ -956,7 +956,7 @@ fn stats() -> OperationBuilder {
                 .name("index")
                 .parameter_in(ParameterIn::Query)
                 .description(Some("Drill into one index's projects"))
-                .example(Some(json!("root/pypi"))),
+                .example(Some(json!("root/packages"))),
         )
         .parameter(
             ParameterBuilder::new()
@@ -973,7 +973,7 @@ fn stats() -> OperationBuilder {
                     "application/json",
                     ContentBuilder::new()
                         .example(Some(json!({
-                            "root/pypi": {
+                            "root/packages": {
                                 "base": {"pages": 12, "downloads": 6, "bytes": 64_733_247, "rejected": 0},
                                 "cached": {"refreshes": 2, "changed": 1, "stale_served": 0, "upstream_errors": 0},
                                 "hosted": {"uploads": 0},
@@ -1034,7 +1034,7 @@ fn analytics_query(operation: OperationBuilder) -> OperationBuilder {
         (
             "repository",
             "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            json!("root/pypi"),
+            json!("root/packages"),
         ),
         (
             "from",
@@ -1078,7 +1078,7 @@ fn analytics_top() -> OperationBuilder {
         api_json_response(
             "The highest-usage projects, newest window first",
             json!({
-                "packages": [{"repository": "root/pypi", "project": "pandas", "downloads": 42, "bytes": 64_733_247}],
+                "packages": [{"repository": "root/packages", "project": "pandas", "downloads": 42, "bytes": 64_733_247}],
                 "interval": analytics_interval(),
                 "next_cursor": null,
             }),
@@ -1101,7 +1101,7 @@ fn analytics_unused() -> OperationBuilder {
         api_json_response(
             "Projects idle across the window",
             json!({
-                "unused": [{"repository": "root/pypi", "project": "legacy-tool", "lifetime_downloads": 7}],
+                "unused": [{"repository": "root/packages", "project": "legacy-tool", "lifetime_downloads": 7}],
                 "interval": analytics_interval(),
                 "next_cursor": null,
             }),
@@ -1124,7 +1124,7 @@ fn analytics_versions() -> OperationBuilder {
             "The highest-usage versions",
             json!({
                 "versions": [
-                    {"repository": "root/pypi", "project": "pandas", "version": "2.2.0", "downloads": 30, "bytes": 48_000_000}
+                    {"repository": "root/packages", "project": "pandas", "version": "2.2.0", "downloads": 30, "bytes": 48_000_000}
                 ],
                 "interval": analytics_interval(),
                 "next_cursor": null,
@@ -1149,7 +1149,7 @@ fn analytics_sources() -> OperationBuilder {
             "The highest-usage sources",
             json!({
                 "sources": [
-                    {"repository": "root/pypi", "project": "pandas", "source": "pypi", "downloads": 40, "bytes": 60_000_000}
+                    {"repository": "root/packages", "project": "pandas", "source": "example", "downloads": 40, "bytes": 60_000_000}
                 ],
                 "interval": analytics_interval(),
                 "next_cursor": null,
@@ -1226,8 +1226,8 @@ fn policy_decisions_example() -> serde_json::Value {
             "repository": "private",
             "project": "example",
             "version": "1.0",
-            "filename": "example-1.0-py3-none-any.whl",
-            "source": "pypi",
+            "filename": "example-1.0.bin",
+            "source": "example",
             "action": "serve",
             "state": "deny",
             "rule": "blocked-project",
@@ -1247,8 +1247,8 @@ fn pql_query() -> OperationBuilder {
         .summary(Some("Run a PQL query"))
         .description(Some(
             "Runs one read-only Peryx Query Language (PQL) query over a typed domain and returns a bounded page of \
-             rows. The `query` is a small textual DSL — `from <domain> [join <domain> on <keys>] [where ...] \
-             [select ...] [aggregate ... by ...] [order by ...] [limit n]` — and `params` binds `:name` placeholders \
+             rows. The `query` is a small textual DSL - `from <domain> [join <domain> on <keys>] [where ...] \
+             [select ...] [aggregate ... by ...] [order by ...] [limit n]` - and `params` binds `:name` placeholders \
              out of band, so a value never changes the query's structure. Two domains are served: `policy.decisions` \
              and `usage.downloads`, and a bounded declared join correlates them on their shared `repository` and \
              `project` keys. The caller's authorized scope is injected by the evaluator and cannot be named or \
@@ -1267,7 +1267,7 @@ fn pql_query() -> OperationBuilder {
                         .example(Some(json!({
                             "query": "from policy.decisions where repository == :repo and state == \"deny\" \
                                       order by evaluated_at desc limit 25",
-                            "params": {"repo": "pypi-proxy"},
+                            "params": {"repo": "package-proxy"},
                             "cursor": null
                         })))
                         .build(),
@@ -1280,7 +1280,7 @@ fn pql_query() -> OperationBuilder {
                 "One bounded page of typed rows",
                 json!({
                     "rows": [{
-                        "repository": "pypi-proxy",
+                        "repository": "package-proxy",
                         "project": "requests",
                         "state": "deny",
                         "action": "serve",
@@ -1387,7 +1387,7 @@ fn policy_decisions() -> OperationBuilder {
             "Filter by matched rule ID, at most 512 bytes",
             json!("blocked-project"),
         ),
-        ("source", "Filter by routed source, at most 512 bytes", json!("pypi")),
+        ("source", "Filter by routed source, at most 512 bytes", json!("example")),
         ("from", "Minimum evaluation Unix timestamp", json!(1_700_000_000)),
         ("to", "Maximum evaluation Unix timestamp", json!(1_800_000_000)),
         (
@@ -1609,8 +1609,8 @@ fn quota_meter_example(committed: u64, reserved: u64, limit: Option<u64>, remain
 
 fn quota_repository_example() -> serde_json::Value {
     json!({
-        "repository": "root/pypi",
-        "ecosystem": "pypi",
+        "repository": "root/packages",
+        "ecosystem": "example",
         "limits": {
             "max_file_bytes": 104_857_600,
             "max_project_bytes": null,
@@ -1704,7 +1704,7 @@ fn quota_repository() -> OperationBuilder {
                 .parameter_in(ParameterIn::Query)
                 .required(Required::True)
                 .description(Some("Index route to inspect, at most 512 bytes"))
-                .example(Some(json!("root/pypi"))),
+                .example(Some(json!("root/packages"))),
         )
         .response(
             "200",
@@ -1743,7 +1743,7 @@ fn grant_example() -> serde_json::Value {
         "id": "rg_7573725f31322f7265706f7369746f72795f726561646572",
         "user": "usr_550e8400e29b41d4a716446655440000",
         "role": "repository_reader",
-        "scope": {"kind": "repository", "name": "root/pypi"},
+        "scope": {"kind": "repository", "name": "root/packages"},
         "version": 1,
         "granted_by": "usr_98b2271831d647c09a1e6f630cc48ef7",
         "granted_at_unix": 1_800_000_000
@@ -1792,7 +1792,7 @@ fn list_grants() -> OperationBuilder {
         (
             "resource",
             "Filter to one reach: `server` or `repository/<name>`",
-            json!("repository/root/pypi"),
+            json!("repository/root/packages"),
         ),
         (
             "cursor",
@@ -1839,7 +1839,7 @@ fn create_grant() -> OperationBuilder {
                             .example(Some(json!({
                                 "user": "usr_550e8400e29b41d4a716446655440000",
                                 "role": "repository_reader",
-                                "scope": {"kind": "repository", "name": "root/pypi"}
+                                "scope": {"kind": "repository", "name": "root/packages"}
                             })))
                             .build(),
                     )
@@ -1921,7 +1921,7 @@ fn retention_request_body() -> utoipa::openapi::request_body::RequestBody {
             "application/json",
             ContentBuilder::new()
                 .example(Some(json!({
-                    "repository": "root/pypi",
+                    "repository": "root/packages",
                     "keep": [{"selector": "keep-latest", "count": 3}],
                     "expire": [{"selector": "age", "older_than_seconds": 7_776_000}],
                     "cursor": null,
@@ -1936,7 +1936,7 @@ fn retention_candidate_example() -> serde_json::Value {
     json!({
         "project": "example",
         "version": "1.0",
-        "artifact": "example-1.0-py3-none-any.whl",
+        "artifact": "example-1.0.bin",
         "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "class": "hosted",
         "visibility": "active",
@@ -2039,7 +2039,7 @@ fn retention_export() -> OperationBuilder {
                 "The plan as JSON Lines, the identity first",
                 "application/x-ndjson",
                 "{\"summary\":{\"policy_version\":42,\"frontier\":{\"repository\":7,\"catalog\":3,\"policy\":2}}}\n\
-                 {\"project\":\"example\",\"version\":\"1.0\",\"artifact\":\"example-1.0-py3-none-any.whl\",\
+                 {\"project\":\"example\",\"version\":\"1.0\",\"artifact\":\"example-1.0.bin\",\
                  \"digest\":\"sha256:0123\",\"class\":\"hosted\",\"visibility\":\"active\",\"bytes\":20480,\
                  \"outcome\":\"remove\",\"rule\":\"age\"}\n",
             ),
@@ -2298,9 +2298,9 @@ fn metrics() -> OperationBuilder {
                 "# HELP peryx_requests_total Total HTTP requests served.\n\
                  # TYPE peryx_requests_total counter\n\
                  peryx_requests_total 128\n\
-                 # HELP peryx_metadata_served_total PEP 658 metadata siblings served.\n\
+                 # HELP peryx_metadata_served_total Metadata responses served.\n\
                  # TYPE peryx_metadata_served_total counter\n\
-                 peryx_metadata_served_total{ecosystem=\"pypi\",role=\"virtual\"} 37\n",
+                 peryx_metadata_served_total{ecosystem=\"example\",role=\"virtual\"} 37\n",
             ),
         )
 }
@@ -2308,7 +2308,7 @@ fn metrics() -> OperationBuilder {
 fn openapi_endpoint() -> OperationBuilder {
     OperationBuilder::new()
         .tag("operations")
-        .summary(Some("This document"))
+        .summary(Some("OpenAPI schema"))
         .response(
             "200",
             ResponseBuilder::new()

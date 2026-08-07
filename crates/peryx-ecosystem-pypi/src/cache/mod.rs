@@ -227,7 +227,7 @@ pub(crate) fn fresh_cached(state: &ServingState, key: &str) -> Result<Option<Cac
 ///
 /// Reached only after [`fresh_cached`] has returned `None`, so a present record is already stale and
 /// the bound is all that is left to check. `None` when nothing is cached, its bytes no longer decode,
-/// or the copy has aged past `max_stale_secs` — a miss hard enough to fetch synchronously instead.
+/// or the copy has aged past `max_stale_secs` - a miss hard enough to fetch synchronously instead.
 pub(crate) fn stale_servable(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
     Ok(cached_record(state, key)?.filter(|record| servable_stale(state, record)))
 }
@@ -277,7 +277,7 @@ pub(crate) fn servable_stale(state: &ServingState, record: &CachedIndex) -> bool
 
 /// How long a page stays fresh: the lifetime upstream granted, never longer than the configured one.
 ///
-/// `Cache-Control` is the upstream's opinion, and an upstream — or any CDN that fronts it — answering
+/// `Cache-Control` is the upstream's opinion, and an upstream - or any CDN that fronts it - answering
 /// `max-age=31536000` would otherwise pin a page for a year with no revalidation. `ttl_secs` is both
 /// the fallback when no lifetime is granted and the ceiling when too much is: a shorter upstream
 /// lifetime is honoured, a longer one is not.
@@ -405,7 +405,7 @@ mod tests {
     fn test_cache_error_archive_message_is_user_visible() {
         assert_eq!(
             CacheError::Archive(crate::archive::ArchiveError::Unsupported).user_message(),
-            "unsupported archive type; accepted formats are .whl, .zip, .egg, .tar, .tar.gz, and .tgz"
+            "unsupported archive type"
         );
     }
 

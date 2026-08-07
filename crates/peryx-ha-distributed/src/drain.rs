@@ -40,8 +40,8 @@ pub struct DrainPlan {
 /// Plan the drain of `intents`, ordered by key so the outcome is deterministic and a re-run resumes at
 /// the first still-pending intent.
 ///
-/// Each intent reaches exactly one outcome — finalized when [`classify`] finds it
-/// [`Replayable`](Disposition::Replayable), retired under the disposition it reaches otherwise — so a
+/// Each intent reaches exactly one outcome - finalized when [`classify`] finds it
+/// [`Replayable`](Disposition::Replayable), retired under the disposition it reaches otherwise - so a
 /// home loss at the transfer boundary yields one outcome per operation.
 #[must_use]
 pub fn plan_drain(mut intents: Vec<DrainIntent>) -> DrainPlan {

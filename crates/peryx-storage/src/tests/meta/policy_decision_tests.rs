@@ -11,8 +11,8 @@ fn decision(project: &str, state: PolicyDecisionState, evaluated_at_unix: i64) -
         repository: "private",
         project,
         version: Some("1.0"),
-        filename: Some("package-1.0.whl"),
-        source: Some("pypi"),
+        filename: Some("package-1.0.bin"),
+        source: Some("alpha"),
         action: PolicyAction::Serve,
         state,
         rule: (state == PolicyDecisionState::Deny).then_some("blocked-project"),
@@ -191,7 +191,7 @@ fn test_policy_decision_query_filters_and_paginates() {
     let first = meta
         .query_policy_decisions(&PolicyDecisionQuery {
             state: Some(PolicyDecisionState::Deny),
-            source: Some("pypi".to_owned()),
+            source: Some("alpha".to_owned()),
             evaluated_from_unix: Some(15),
             limit: 1,
             ..PolicyDecisionQuery::default()
@@ -199,7 +199,7 @@ fn test_policy_decision_query_filters_and_paginates() {
         .unwrap();
     let second_query = PolicyDecisionQuery {
         state: Some(PolicyDecisionState::Deny),
-        source: Some("pypi".to_owned()),
+        source: Some("alpha".to_owned()),
         evaluated_from_unix: Some(15),
         cursor: first.next_cursor.clone(),
         limit: 1,

@@ -31,13 +31,13 @@ fn test_create_repository_assigns_a_stable_enabled_version_one_record() {
     let (_dir, store) = store();
     let actor = UserId::random();
     let record = store
-        .create_repository(new_repo("team/pypi", "Team PyPI", "pypi", &actor), 100)
+        .create_repository(new_repo("team/alpha", "Team ecosystem A", "alpha", &actor), 100)
         .unwrap();
 
     assert!(record.id.as_str().starts_with("repo_"));
-    assert_eq!(record.route, "team/pypi");
-    assert_eq!(record.display_name, "Team PyPI");
-    assert_eq!(record.ecosystem, "pypi");
+    assert_eq!(record.route, "team/alpha");
+    assert_eq!(record.display_name, "Team ecosystem A");
+    assert_eq!(record.ecosystem, "alpha");
     assert_eq!(record.definition, json!({"kind": "hosted"}));
     assert_eq!(record.state, RepositoryState::Enabled);
     assert_eq!(record.version, 1);
@@ -47,7 +47,7 @@ fn test_create_repository_assigns_a_stable_enabled_version_one_record() {
     assert_eq!(record.updated_at_unix, 100);
 
     assert_eq!(store.repository(&record.id).unwrap(), Some(record.clone()));
-    assert_eq!(store.repository_by_route("team/pypi").unwrap(), Some(record));
+    assert_eq!(store.repository_by_route("team/alpha").unwrap(), Some(record));
 }
 
 #[test]
@@ -62,10 +62,10 @@ fn test_create_repository_rejects_a_duplicate_route() {
     let (_dir, store) = store();
     let actor = UserId::random();
     store
-        .create_repository(new_repo("shared", "First", "pypi", &actor), 1)
+        .create_repository(new_repo("shared", "First", "alpha", &actor), 1)
         .unwrap();
     assert!(matches!(
-        store.create_repository(new_repo("shared", "Second", "oci", &actor), 2),
+        store.create_repository(new_repo("shared", "Second", "beta", &actor), 2),
         Err(CreateRepositoryError::DuplicateRoute { route }) if route == "shared"
     ));
     // The losing create leaves the first record untouched.
@@ -76,10 +76,10 @@ fn test_create_repository_rejects_a_duplicate_route() {
 }
 
 #[rstest]
-#[case::empty_route("", "name", "pypi", RepositoryFieldError::EmptyRoute)]
-#[case::long_route(&"r".repeat(513), "name", "pypi", RepositoryFieldError::RouteTooLong)]
-#[case::empty_name("route", "", "pypi", RepositoryFieldError::EmptyDisplayName)]
-#[case::long_name("route", &"n".repeat(257), "pypi", RepositoryFieldError::DisplayNameTooLong)]
+#[case::empty_route("", "name", "alpha", RepositoryFieldError::EmptyRoute)]
+#[case::long_route(&"r".repeat(513), "name", "alpha", RepositoryFieldError::RouteTooLong)]
+#[case::empty_name("route", "", "alpha", RepositoryFieldError::EmptyDisplayName)]
+#[case::long_name("route", &"n".repeat(257), "alpha", RepositoryFieldError::DisplayNameTooLong)]
 #[case::empty_ecosystem("route", "name", "", RepositoryFieldError::EmptyEcosystem)]
 #[case::long_ecosystem("route", "name", &"e".repeat(65), RepositoryFieldError::EcosystemTooLong)]
 fn test_create_repository_validates_every_field(
@@ -102,7 +102,7 @@ fn test_update_repository_preserves_identity_and_advances_the_version() {
     let creator = UserId::random();
     let editor = UserId::random();
     let record = store
-        .create_repository(new_repo("team/pypi", "Old Name", "pypi", &creator), 10)
+        .create_repository(new_repo("team/alpha", "Old Name", "alpha", &creator), 10)
         .unwrap();
 
     let updated = store
@@ -119,8 +119,8 @@ fn test_update_repository_preserves_identity_and_advances_the_version() {
         .unwrap();
 
     assert_eq!(updated.id, record.id);
-    assert_eq!(updated.route, "team/pypi");
-    assert_eq!(updated.ecosystem, "pypi");
+    assert_eq!(updated.route, "team/alpha");
+    assert_eq!(updated.ecosystem, "alpha");
     assert_eq!(updated.display_name, "New Name");
     assert_eq!(updated.definition, json!({"kind": "hosted", "volatile": true}));
     assert_eq!(updated.version, 2);
@@ -135,7 +135,7 @@ fn test_update_repository_preserves_identity_and_advances_the_version() {
 fn test_update_repository_rejects_a_missing_record_and_an_invalid_name() {
     let (_dir, store) = store();
     let record = store
-        .create_repository(new_repo("r", "R", "pypi", &UserId::random()), 1)
+        .create_repository(new_repo("r", "R", "alpha", &UserId::random()), 1)
         .unwrap();
     assert!(matches!(
         store.update_repository(
@@ -170,7 +170,7 @@ fn test_update_repository_conflict_preserves_the_winning_update() {
     let (_dir, store) = store();
     let actor = UserId::random();
     let record = store
-        .create_repository(new_repo("r", "Base", "pypi", &actor), 1)
+        .create_repository(new_repo("r", "Base", "alpha", &actor), 1)
         .unwrap();
     let winner = store
         .update_repository(
@@ -210,7 +210,7 @@ fn test_update_repository_conflict_preserves_the_winning_update() {
 fn test_set_repository_enabled_toggles_state_and_is_idempotent() {
     let (_dir, store) = store();
     let actor = UserId::random();
-    let record = store.create_repository(new_repo("r", "R", "pypi", &actor), 1).unwrap();
+    let record = store.create_repository(new_repo("r", "R", "alpha", &actor), 1).unwrap();
 
     let disabled = store.set_repository_enabled(&record.id, 1, false, &actor, 5).unwrap();
     assert_eq!(disabled.state, RepositoryState::Disabled);
@@ -231,7 +231,7 @@ fn test_set_repository_enabled_toggles_state_and_is_idempotent() {
 fn test_set_repository_enabled_rejects_missing_records_and_stale_preconditions() {
     let (_dir, store) = store();
     let record = store
-        .create_repository(new_repo("r", "R", "pypi", &UserId::random()), 1)
+        .create_repository(new_repo("r", "R", "alpha", &UserId::random()), 1)
         .unwrap();
     assert!(matches!(
         store.set_repository_enabled(&crate::meta::RepositoryId::random(), 1, false, &UserId::random(), 2),
@@ -250,7 +250,7 @@ fn test_list_repositories_filters_by_state_and_paginates_stably() {
     let mut ids = Vec::new();
     for index in 0..4 {
         let record = store
-            .create_repository(new_repo(&format!("r{index}"), "R", "pypi", &actor), 1)
+            .create_repository(new_repo(&format!("r{index}"), "R", "alpha", &actor), 1)
             .unwrap();
         ids.push(record.id);
     }
@@ -327,7 +327,7 @@ fn test_list_repositories_rejects_invalid_limits(#[case] limit: usize) {
 fn test_repository_records_survive_a_restart() {
     let (dir, store) = store();
     let record = store
-        .create_repository(new_repo("keep", "Keep", "pypi", &UserId::random()), 1)
+        .create_repository(new_repo("keep", "Keep", "alpha", &UserId::random()), 1)
         .unwrap();
     drop(store);
 
@@ -339,7 +339,7 @@ fn test_repository_records_survive_a_restart() {
 fn test_repository_operations_surface_a_corrupt_record() {
     let (dir, store) = store();
     let record = store
-        .create_repository(new_repo("team/pypi", "R", "pypi", &UserId::random()), 1)
+        .create_repository(new_repo("team/alpha", "R", "alpha", &UserId::random()), 1)
         .unwrap();
     drop(store);
     let path = dir.path().join("peryx.redb");
@@ -356,7 +356,7 @@ fn test_repository_operations_surface_a_corrupt_record() {
     let store = MetaStore::open_existing(path).unwrap();
 
     assert!(store.repository(&record.id).is_err());
-    assert!(store.repository_by_route("team/pypi").is_err());
+    assert!(store.repository_by_route("team/alpha").is_err());
     assert!(matches!(
         store.update_repository(
             &record.id,
@@ -452,7 +452,7 @@ fn test_reconcile_repositories_creates_updates_and_preserves_identifiers() {
     let actor = UserId::random();
 
     let first = store
-        .reconcile_repositories(&[desired("a", "A", "pypi"), desired("b", "B", "oci")], &actor, 10)
+        .reconcile_repositories(&[desired("a", "A", "alpha"), desired("b", "B", "beta")], &actor, 10)
         .unwrap();
     assert_eq!(
         first.iter().map(|entry| entry.action).collect::<Vec<_>>(),
@@ -464,7 +464,7 @@ fn test_reconcile_repositories_creates_updates_and_preserves_identifiers() {
     assert_eq!(first[0].record.created_by, actor);
 
     let second = store
-        .reconcile_repositories(&[desired("a", "A", "pypi"), desired("b", "B", "oci")], &actor, 20)
+        .reconcile_repositories(&[desired("a", "A", "alpha"), desired("b", "B", "beta")], &actor, 20)
         .unwrap();
     assert_eq!(
         second.iter().map(|entry| entry.action).collect::<Vec<_>>(),
@@ -479,10 +479,10 @@ fn test_reconcile_repositories_creates_updates_and_preserves_identifiers() {
             &[
                 DesiredRepository {
                     display_name: "A renamed".to_owned(),
-                    ..desired("a", "A", "pypi")
+                    ..desired("a", "A", "alpha")
                 },
-                desired("b", "B", "oci"),
-                desired("c", "C", "pypi"),
+                desired("b", "B", "beta"),
+                desired("c", "C", "alpha"),
             ],
             &editor,
             30,
@@ -509,7 +509,7 @@ fn test_reconcile_repositories_creates_updates_and_preserves_identifiers() {
         .reconcile_repositories(
             &[DesiredRepository {
                 definition: json!({"kind": "virtual"}),
-                ..desired("c", "C", "pypi")
+                ..desired("c", "C", "alpha")
             }],
             &editor,
             40,
@@ -525,7 +525,7 @@ fn test_reconcile_repositories_creates_updates_and_preserves_identifiers() {
 fn test_reconcile_repositories_rejects_duplicate_routes_in_the_batch() {
     let (_dir, store) = store();
     assert!(matches!(
-        store.reconcile_repositories(&[desired("dup", "A", "pypi"), desired("dup", "B", "pypi")], &UserId::random(), 1),
+        store.reconcile_repositories(&[desired("dup", "A", "alpha"), desired("dup", "B", "alpha")], &UserId::random(), 1),
         Err(ReconcileRepositoryError::DuplicateRoute { route }) if route == "dup"
     ));
     assert_eq!(store.repository_by_route("dup").unwrap(), None);
@@ -536,21 +536,21 @@ fn test_reconcile_repositories_rejects_an_ecosystem_change_and_rolls_back() {
     let (_dir, store) = store();
     let actor = UserId::random();
     store
-        .reconcile_repositories(&[desired("b", "B", "pypi")], &actor, 1)
+        .reconcile_repositories(&[desired("b", "B", "alpha")], &actor, 1)
         .unwrap();
 
     let error = store
-        .reconcile_repositories(&[desired("a", "A", "oci"), desired("b", "B", "oci")], &actor, 2)
+        .reconcile_repositories(&[desired("a", "A", "beta"), desired("b", "B", "beta")], &actor, 2)
         .unwrap_err();
     assert!(matches!(
         error,
         ReconcileRepositoryError::EcosystemChanged { route, found, desired }
-            if route == "b" && found == "pypi" && desired == "oci"
+            if route == "b" && found == "alpha" && desired == "beta"
     ));
     // The first entry was staged in the same transaction, so the rejection rolls it back too.
     assert_eq!(store.repository_by_route("a").unwrap(), None);
     let unchanged = store.repository_by_route("b").unwrap().unwrap();
-    assert_eq!(unchanged.ecosystem, "pypi");
+    assert_eq!(unchanged.ecosystem, "alpha");
     assert_eq!(unchanged.version, 1);
 }
 
@@ -558,7 +558,7 @@ fn test_reconcile_repositories_rejects_an_ecosystem_change_and_rolls_back() {
 fn test_reconcile_repositories_validates_fields() {
     let (_dir, store) = store();
     assert!(matches!(
-        store.reconcile_repositories(&[desired("", "A", "pypi")], &UserId::random(), 1),
+        store.reconcile_repositories(&[desired("", "A", "alpha")], &UserId::random(), 1),
         Err(ReconcileRepositoryError::Field(RepositoryFieldError::EmptyRoute))
     ));
 }
@@ -567,7 +567,7 @@ fn test_reconcile_repositories_validates_fields() {
 fn test_reconcile_repositories_surfaces_a_corrupt_record() {
     let (dir, store) = store();
     let record = store
-        .create_repository(new_repo("team/pypi", "R", "pypi", &UserId::random()), 1)
+        .create_repository(new_repo("team/alpha", "R", "alpha", &UserId::random()), 1)
         .unwrap();
     drop(store);
     let path = dir.path().join("peryx.redb");
@@ -584,7 +584,7 @@ fn test_reconcile_repositories_surfaces_a_corrupt_record() {
     let store = MetaStore::open_existing(path).unwrap();
 
     assert!(matches!(
-        store.reconcile_repositories(&[desired("team/pypi", "R2", "pypi")], &UserId::random(), 2),
+        store.reconcile_repositories(&[desired("team/alpha", "R2", "alpha")], &UserId::random(), 2),
         Err(ReconcileRepositoryError::Store(_))
     ));
 }
@@ -606,14 +606,14 @@ fn test_reconcile_types_convert_and_exercise_derives() {
     assert!(
         !ReconcileRepositoryError::EcosystemChanged {
             route: "r".to_owned(),
-            found: "pypi".to_owned(),
-            desired: "oci".to_owned(),
+            found: "alpha".to_owned(),
+            desired: "beta".to_owned(),
         }
         .to_string()
         .is_empty()
     );
 
-    let want = desired("r", "R", "pypi");
+    let want = desired("r", "R", "alpha");
     assert_eq!(want.clone(), want);
     assert!(format!("{want:?}").contains("DesiredRepository"));
     assert!(format!("{:?}", ReconcileAction::Created).contains("Created"));
@@ -632,7 +632,7 @@ fn test_reconcile_types_convert_and_exercise_derives() {
 fn test_repository_types_exercise_their_derives() {
     let (_dir, store) = store();
     let record = store
-        .create_repository(new_repo("r", "R", "pypi", &UserId::random()), 1)
+        .create_repository(new_repo("r", "R", "alpha", &UserId::random()), 1)
         .unwrap();
 
     assert!(format!("{record:?}").contains("RepositoryRecord"));
@@ -640,7 +640,7 @@ fn test_repository_types_exercise_their_derives() {
     assert!(record.id.to_string().starts_with("repo_"));
     assert!(format!("{:?}", record.id).contains("repo_"));
     assert!(format!("{:?}", RepositoryState::Enabled).contains("Enabled"));
-    assert!(format!("{:?}", new_repo("r2", "R2", "pypi", &UserId::random())).contains("NewRepository"));
+    assert!(format!("{:?}", new_repo("r2", "R2", "alpha", &UserId::random())).contains("NewRepository"));
     assert!(
         format!(
             "{:?}",

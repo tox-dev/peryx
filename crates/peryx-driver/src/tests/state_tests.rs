@@ -31,8 +31,8 @@ fn test_hot_cache_defaults_to_the_documented_budget() {
 #[rstest]
 #[case::exact("root/team", Some(("team", "")))]
 #[case::root("root/other", Some(("root", "other")))]
-#[case::nested("root/pypi/simple", Some(("pypi", "simple")))]
-#[case::boundary("root/pypithon", Some(("root", "pypithon")))]
+#[case::nested("root/alpha/simple", Some(("alpha", "simple")))]
+#[case::boundary("root/alphathon", Some(("root", "alphathon")))]
 #[case::missing("elsewhere", None)]
 fn test_repository_route_resolution(#[case] path: &str, #[case] expected: Option<(&'static str, &'static str)>) {
     let dir = tempfile::tempdir().unwrap();
@@ -68,11 +68,11 @@ fn test_token_realm_is_unset_until_installed() {
 fn test_hot_cache_budget_of_zero_retains_nothing() {
     let (_dir, state) = state_with_budget(0);
     state.cache.hot.insert(
-        "root/pypi\u{0}numpy".to_owned(),
+        "root/alpha\u{0}numpy".to_owned(),
         (Bytes::from_static(b"page"), i64::MAX, None),
     );
     state.cache.hot.run_pending_tasks();
-    assert_eq!(state.cache.hot.get("root/pypi\u{0}numpy"), None);
+    assert_eq!(state.cache.hot.get("root/alpha\u{0}numpy"), None);
 }
 
 fn state_with_budget(hot_cache_bytes: u64) -> (tempfile::TempDir, AppState) {
@@ -104,10 +104,10 @@ fn route_indexes() -> Vec<Index> {
     vec![
         route_index("root", "root", IndexKind::Hosted { volatile: false }),
         route_index(
-            "pypi",
-            "root/pypi",
+            "alpha",
+            "root/alpha",
             IndexKind::Cached {
-                client: peryx_upstream::UpstreamClient::new("https://pypi.org/simple/").unwrap(),
+                client: peryx_upstream::UpstreamClient::new("https://upstream.example/artifacts/").unwrap(),
                 offline: false,
             },
         ),
@@ -223,15 +223,10 @@ fn test_running_a_search_persists_the_view_frontier_and_lifts_readability() {
 }
 
 #[test]
-fn test_write_ack_defaults_to_local_and_takes_the_installed_quorum() {
+fn test_write_acknowledger_is_absent_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
-    let mut state = AppState::new(meta, blobs, 60, Vec::new());
-    assert_eq!(state.write_ack_policy(), peryx_ha::DurabilityPolicy::Local);
-    assert_eq!(state.write_ack_deadline(), std::time::Duration::from_secs(5));
-
-    state.set_write_ack(peryx_ha::DurabilityPolicy::Majority, std::time::Duration::from_secs(30));
-    assert_eq!(state.write_ack_policy(), peryx_ha::DurabilityPolicy::Majority);
-    assert_eq!(state.write_ack_deadline(), std::time::Duration::from_secs(30));
+    let state = AppState::new(meta, blobs, 60, Vec::new());
+    assert!(state.write_acknowledger().is_none());
 }

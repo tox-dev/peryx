@@ -103,8 +103,6 @@ fn clock() -> Clock {
     Arc::new(|| 42)
 }
 
-// --- is_withdrawn ------------------------------------------------------------
-
 #[test]
 fn test_is_withdrawn_is_false_for_a_live_digest() {
     let (_dir, meta) = meta();
@@ -154,8 +152,6 @@ fn test_is_withdrawn_is_false_for_a_skipped_reclamation() {
 
     assert!(!is_withdrawn(&meta, &artifact).unwrap());
 }
-
-// --- repair_if_corrupt -------------------------------------------------------
 
 fn placement_state(meta: &MetaStore, key: &BlobPlacementKey) -> BlobPlacementState {
     meta.blob_placement(key).unwrap().unwrap().state
@@ -309,8 +305,6 @@ fn test_repair_that_the_fence_rejects_makes_no_change() {
     );
 }
 
-// --- verify_local_placements -------------------------------------------------
-
 #[test]
 fn test_verify_pass_repairs_corrupt_and_skips_intact_and_withdrawn() {
     let (_dir, meta) = meta();
@@ -445,8 +439,6 @@ fn test_verify_pass_surfaces_a_withdrawal_read_error() {
     assert_eq!(error.code(), "placement_withdrawal_read");
 }
 
-// --- retire_out_of_policy ----------------------------------------------------
-
 #[test]
 fn test_retire_revokes_an_out_of_policy_copy_and_leaves_policy_copies() {
     let (_dir, meta) = meta();
@@ -515,8 +507,6 @@ fn test_retire_surfaces_a_scan_rejection() {
     assert_eq!(error.code(), "placement_reconcile_scan");
 }
 
-// --- reconcile_pass (fence) --------------------------------------------------
-
 struct FixedTerm(u64);
 
 #[async_trait]
@@ -564,7 +554,6 @@ async fn test_reconcile_pass_is_fenced_shut_without_a_cluster_term() {
 
     let report = reconciler("home", store, &["home", "east"])
         .reconcile_pass(&state, &|| false, PlacementReconcileParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(
@@ -587,7 +576,6 @@ async fn test_reconcile_pass_repairs_and_retires_under_a_live_term() {
 
     let report = reconciler("home", store, &["home", "east"])
         .reconcile_pass(&state, &|| false, PlacementReconcileParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(report.changed, 2, "one demotion and one retirement");
@@ -600,8 +588,6 @@ async fn test_reconcile_pass_repairs_and_retires_under_a_live_term() {
         BlobPlacementStatus::Revoked
     );
 }
-
-// --- from_config -------------------------------------------------------------
 
 #[test]
 fn test_from_config_reconciles_nothing_without_membership() {
@@ -717,8 +703,6 @@ fn test_from_config_rejects_an_invalid_datacenter() {
         .expect("an invalid datacenter is rejected");
     assert!(error.to_string().contains("datacenter"), "{error}");
 }
-
-// --- record_transition -------------------------------------------------------
 
 #[test]
 fn test_record_transition_reports_commit_and_rejection() {

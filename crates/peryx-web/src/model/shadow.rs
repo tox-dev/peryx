@@ -76,7 +76,7 @@ impl UiShadowDecision {
     /// The earliest a waiting candidate becomes eligible again, or an em dash when none applies.
     #[must_use]
     pub fn next_eligible_at(&self) -> String {
-        self.next_eligible_at_unix.map_or_else(|| "—".to_owned(), format_unix)
+        self.next_eligible_at_unix.map_or_else(|| "-".to_owned(), format_unix)
     }
 }
 
@@ -156,7 +156,7 @@ impl UiShadowCandidate {
     #[must_use]
     pub fn reason_text(&self) -> String {
         match self.reason.as_deref() {
-            None => "—".to_owned(),
+            None => "-".to_owned(),
             Some("precedence") => "Higher-precedence member".to_owned(),
             Some("fallback") => "Excluded by fallback policy".to_owned(),
             Some(other) => other.to_owned(),
@@ -166,7 +166,7 @@ impl UiShadowCandidate {
     /// The digest as shown, or an em dash when the ecosystem does not address the candidate by one.
     #[must_use]
     pub fn digest_text(&self) -> String {
-        self.digest.clone().unwrap_or_else(|| "—".to_owned())
+        self.digest.clone().unwrap_or_else(|| "-".to_owned())
     }
 }
 
@@ -180,7 +180,7 @@ mod tests {
         UiShadowCandidate {
             member: "hosted".to_owned(),
             source: source.to_owned(),
-            filename: "flask-1.0.whl".to_owned(),
+            filename: "flask-1.0.bin".to_owned(),
             digest: Some("sha256:abc".to_owned()),
             selected,
             reason: reason.map(str::to_owned),
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case::selected(None, "—")]
+    #[case::selected(None, "-")]
     #[case::precedence(Some("precedence"), "Higher-precedence member")]
     #[case::fallback(Some("fallback"), "Excluded by fallback policy")]
     #[case::unknown(Some("other"), "other")]
@@ -233,7 +233,7 @@ mod tests {
     fn test_digest_text_falls_back_to_a_dash() {
         let mut candidate = candidate("hosted", true, None);
         candidate.digest = None;
-        assert_eq!(candidate.digest_text(), "—");
+        assert_eq!(candidate.digest_text(), "-");
     }
 
     #[rstest]
@@ -260,25 +260,25 @@ mod tests {
 
     #[test]
     fn test_next_eligible_falls_back_to_a_dash_without_a_retry_window() {
-        assert_eq!(decision("deny", true, None).next_eligible_at(), "—");
+        assert_eq!(decision("deny", true, None).next_eligible_at(), "-");
     }
 
     #[test]
     fn test_filters_build_a_query_from_the_trimmed_names() {
         let filters = super::ShadowInspectionFilters {
-            repository: "  root/pypi ".to_owned(),
+            repository: "  root/alpha ".to_owned(),
             project: " flask ".to_owned(),
             limit: "50".to_owned(),
         };
         assert_eq!(
-            filters.url(Some("flask-1.0.whl\u{1f}0\u{1f}hosted")).unwrap(),
-            "/+shadow/candidates?repository=root%2Fpypi&project=flask&limit=50&cursor=flask-1.0.whl%1F0%1Fhosted",
+            filters.url(Some("flask-1.0.bin\u{1f}0\u{1f}hosted")).unwrap(),
+            "/+shadow/candidates?repository=root%2Falpha&project=flask&limit=50&cursor=flask-1.0.bin%1F0%1Fhosted",
         );
     }
 
     #[rstest]
     #[case::no_repository("", "flask")]
-    #[case::no_project("root/pypi", "")]
+    #[case::no_project("root/alpha", "")]
     fn test_filters_reject_a_blank_name(#[case] repository: &str, #[case] project: &str) {
         let filters = super::ShadowInspectionFilters {
             repository: repository.to_owned(),

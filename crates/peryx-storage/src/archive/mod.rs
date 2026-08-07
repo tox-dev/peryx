@@ -26,7 +26,7 @@ pub const MAX_NESTED_ARCHIVE_SIZE: u64 = 128 * 1024 * 1024;
 pub const MAX_LISTED_ENTRIES: usize = 10_000;
 
 /// Most decompressed bytes an archive listing or member read pulls from a top-level archive. Walking a
-/// gzip-tar (a container layer or an sdist) decompresses every entry it skips over, so an unbounded
+/// A gzip-compressed tar decompresses every entry it skips over, so an unbounded
 /// read lets a small gzip bomb inflate to gigabytes of CPU; the cap bounds that per request.
 const MAX_DECOMPRESSED_INSPECT_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -39,7 +39,7 @@ pub fn generic_format(name: &str) -> Option<ArchiveFormat> {
     } else if extension.eq_ignore_ascii_case("tar") {
         Some(ArchiveFormat::Tar)
     } else if name
-        .get(filename.len().saturating_sub(7)..)
+        .get(name.len().saturating_sub(7)..)
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
         || name
             .get(name.len().saturating_sub(4)..)
@@ -89,7 +89,10 @@ pub fn generic_member_kind(path: &str) -> MemberKind {
     ) {
         return MemberKind::Text;
     }
-    let Some(extension) = std::path::Path::new(filename).extension().and_then(|value| value.to_str()) else {
+    let Some(extension) = std::path::Path::new(filename)
+        .extension()
+        .and_then(|value| value.to_str())
+    else {
         return MemberKind::Unknown;
     };
     if matches!(
@@ -121,8 +124,20 @@ pub fn generic_member_kind(path: &str) -> MemberKind {
         MemberKind::Text
     } else if matches!(
         extension.to_ascii_lowercase().as_str(),
-        "a" | "bmp" | "bin" | "dll" | "dylib" | "exe" | "gif" | "ico" | "jpg" | "jpeg" | "o" | "png"
-            | "so" | "wasm" | "webp"
+        "a" | "bmp"
+            | "bin"
+            | "dll"
+            | "dylib"
+            | "exe"
+            | "gif"
+            | "ico"
+            | "jpg"
+            | "jpeg"
+            | "o"
+            | "png"
+            | "so"
+            | "wasm"
+            | "webp"
     ) {
         MemberKind::Binary
     } else {

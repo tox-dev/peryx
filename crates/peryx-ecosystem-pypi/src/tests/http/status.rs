@@ -88,7 +88,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: UpstreamClient::with_auth(
-                    "https://user:pass@example.invalid/simple/?token=url-secret#frag",
+                    "https://upstream-account-secret:upstream-password-secret@example.invalid/simple/?token=url-secret#frag",
                     Auth::Bearer("bearer-secret".to_owned()),
                 )
                 .unwrap(),
@@ -112,7 +112,13 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
     assert!(body.contains("https://example.invalid/simple/"));
     assert!(body.contains("\"kind\":\"bearer\""));
     assert!(body.contains("<redacted>"));
-    for secret in ["user", "pass", "url-secret", "bearer-secret", "upload-secret"] {
+    for secret in [
+        "upstream-account-secret",
+        "upstream-password-secret",
+        "url-secret",
+        "bearer-secret",
+        "upload-secret",
+    ] {
         assert!(!body.contains(secret));
     }
 }

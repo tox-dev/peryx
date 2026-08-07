@@ -1,7 +1,7 @@
 //! The resolved authorization scope the evaluator injects.
 //!
-//! The caller never writes their own scope. The wire layer resolves the caller — across both the
-//! token/ACL model and the RBAC role model — into one [`QueryScope`], and the evaluator injects it
+//! The caller never writes their own scope. The wire layer resolves the caller - across both the
+//! token/ACL model and the RBAC role model - into one [`QueryScope`], and the evaluator injects it
 //! as a mandatory predicate the query text can neither name nor remove. A broader grant only widens
 //! the injected set; it never changes what a query means.
 

@@ -57,14 +57,13 @@ pub const DEFAULT_MAX_STALE_SECS: i64 = 300;
 
 /// How long a realm token lives when an operator configures no `[auth] token_ttl_secs`.
 ///
-/// One freshness window: long enough for a `docker pull`/`push` to run against it, short enough that a
+/// One freshness window: long enough for a client transfer, short enough that a
 /// revoked ACL takes hold soon after the token that was minted under it expires.
 pub const DEFAULT_TOKEN_TTL_SECS: i64 = 300;
 
 /// The transformed-page cache budget when an operator configures none.
 ///
-/// Sized for the working set of a busy `PyPI` index, whose transformed pages are the large ones
-/// (`boto3` and `numpy` run to megabytes of JSON). Today the `PyPI` driver is the only ecosystem that
+/// Sized for transformed index pages that can reach several megabytes. The driver that
 /// populates this cache; when a second one does, this becomes a budget per ecosystem, keyed like the
 /// lexicon and serving registries already are.
 pub const DEFAULT_HOT_CACHE_BYTES: u64 = 256 * 1024 * 1024;

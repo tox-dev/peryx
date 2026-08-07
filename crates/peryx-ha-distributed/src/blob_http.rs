@@ -1,7 +1,7 @@
 //! A production HTTP [`BlobTransport`]: the concrete client a replica drives against a peer's
 //! blob-serving endpoint, in contrast to the in-process [`LoopbackBlobSource`] the tests use.
 //!
-//! It issues one `GET` per fetch — a whole blob, or a `Range` of it — streams the reply under the
+//! It issues one `GET` per fetch - a whole blob, or a `Range` of it - streams the reply under the
 //! transfer byte cap so a fast or hostile peer cannot force an unbounded read, and, for a whole-blob
 //! fetch, hashes the streamed bytes and rejects a mismatch with [`TransportError::DigestMismatch`]. A
 //! ranged fetch returns its bytes unverified, per the [module integrity contract](crate::blob): the

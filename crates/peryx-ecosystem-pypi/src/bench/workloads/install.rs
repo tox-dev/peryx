@@ -1,5 +1,3 @@
-//! The install workload: every server, cold then warm, per client, over `rounds` restarts.
-
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -8,9 +6,9 @@ use anyhow::{Context as _, bail};
 
 use super::super::packages::TOP_PACKAGES;
 use super::{BENCH_PYTHON, Rounds, report_samples, run_checked};
-use crate::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
-use crate::servers::Server;
-use crate::usage::{Cost, Usage};
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::servers::Server;
+use peryx_bench_core::usage::{Cost, Usage};
 
 /// The install workload: every server, cold then warm, per client, over `rounds` restarts.
 ///

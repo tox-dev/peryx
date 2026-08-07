@@ -105,7 +105,7 @@ pub struct IndexDescription {
     pub kind: &'static str,
     /// A virtual index's members named in the operator's configured order; empty otherwise.
     pub layers: Vec<String>,
-    /// A virtual index's members in the order requests actually merge them — cached members forced
+    /// A virtual index's members in the order requests actually merge them - cached members forced
     /// last whatever the configured `layers` order, so an earlier entry shadows a later one. Each
     /// carries its role, distinguishing a local hosted source from a proxied upstream. Empty for a
     /// non-virtual index.
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_cached_index_names_its_role_and_lists_no_members() {
-        let indexes = vec![index("pypi", cached(), IndexAcl::default())];
+        let indexes = vec![index("alpha", cached(), IndexAcl::default())];
         let described = describe_index(&indexes, 0);
         assert_eq!(described.kind, "cached");
         assert!(described.layers.is_empty());
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_virtual_precedence_forces_cached_members_last_and_tags_roles() {
         let indexes = vec![
-            index("pypi", cached(), IndexAcl::default()),
+            index("alpha", cached(), IndexAcl::default()),
             index("local", IndexKind::Hosted { volatile: false }, IndexAcl::default()),
             index(
                 "mix",
@@ -295,10 +295,10 @@ mod tests {
             ),
         ];
         let described = describe_index(&indexes, 2);
-        assert_eq!(described.layers, vec!["pypi".to_owned(), "local".to_owned()]);
+        assert_eq!(described.layers, vec!["alpha".to_owned(), "local".to_owned()]);
         assert_eq!(
             described.precedence,
-            vec![member("local", "hosted"), member("pypi", "cached")]
+            vec![member("local", "hosted"), member("alpha", "cached")]
         );
     }
 

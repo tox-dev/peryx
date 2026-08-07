@@ -33,8 +33,8 @@ async fn test_unsupported_upstream_content_type_is_bad_gateway() {
     let (status, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body.contains("unsupported upstream Simple API Content-Type"));
-    assert!(body.contains("/simple/flask/"));
+    assert!(body.contains("upstream returned an invalid response"), "{body}");
+    assert!(!body.contains("/simple/flask/"));
 }
 #[tokio::test]
 async fn test_unknown_route_is_not_found() {

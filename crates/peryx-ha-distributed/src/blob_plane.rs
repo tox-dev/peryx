@@ -50,7 +50,7 @@ pub struct BlobPlaneReport {
 /// [`fetch_missing`], which digest-verifies each in transport, and each fetched blob is committed under
 /// its digest and its placement flipped to local. A retryable loss leaves the affected blobs
 /// [pending](BlobPlaneReport::pending) for the next pass; a terminal loss on a whole-blob fetch is a real
-/// failure the caller records and retries, not a silent skip — the frontier holds that serial back until
+/// failure the caller records and retries, not a silent skip - the frontier holds that serial back until
 /// the byte lands regardless.
 ///
 /// # Errors
@@ -79,7 +79,7 @@ pub async fn pull_referenced<T: BlobTransport>(
     let fetched_count = fetched.len();
     let mut bytes_by_digest: HashMap<Digest, Vec<u8>> = fetched.into_iter().collect();
     // Committing off `absent` keeps each blob paired with the size its reference declared. A retryable
-    // pass leaves some absent blobs unfetched, so a digest with no bytes here is simply skipped.
+    // pass leaves some absent blobs unfetched, so a digest with no bytes here is skipped.
     for (digest, size) in &absent {
         if let Some(bytes) = bytes_by_digest.remove(digest) {
             commit_blob(blobs, meta, digest, *size, bytes).await?;
@@ -143,8 +143,8 @@ enum BlobDisposition {
 ///
 /// A verified placement in `local_dc` makes this replica a holder, so the blob is pulled (whole, or ranged
 /// when two or more reachable peers also hold it) rather than deferred. With no local placement but a
-/// verified placement on a reachable peer the blob is deferred to read-through. Everything else — no
-/// verified placement, or one no reachable peer can serve — falls to the whole-blob path over the upstream
+/// verified placement on a reachable peer the blob is deferred to read-through. Everything else - no
+/// verified placement, or one no reachable peer can serve - falls to the whole-blob path over the upstream
 /// `simple` transport.
 fn classify_blob(descriptors: &[PlacementDescriptor], local_dc: &str, reachable: &BTreeSet<String>) -> BlobDisposition {
     let FetchPlan::Sources(ordered) = plan_blob_fetch(descriptors, local_dc) else {
@@ -185,7 +185,7 @@ fn placement_descriptors(meta: &MetaStore, digest: &Digest) -> Result<Vec<Placem
 ///
 /// A multi-placement blob is drawn as ranges across the peers that hold it; a single-source blob is drawn
 /// whole. This is the self-healing counterpart to [`pull_referenced`]: it derives the outstanding set from
-/// durable state — the same bounded journal tail [`advance_blob_frontier`] examines — rather than the
+/// durable state - the same bounded journal tail [`advance_blob_frontier`] examines - rather than the
 /// page a single cycle produced. So a blob that back-pressured or failed on an earlier cycle is retried
 /// on a later one, and a restarted replica re-derives the set from the journal with no lost in-memory
 /// pending.
@@ -291,12 +291,12 @@ fn referenced_over_tail(meta: &MetaStore, batch: NonZeroUsize) -> Result<Vec<(Di
 ///
 /// The frontier re-derives from durable state alone: it reads the journal tail after the current
 /// [`BLOB_VIEW`] frontier, bounded to `batch` records, and folds each referenced blob's local presence
-/// through [`blob_availability`]. A blob absent locally but placed only on a reachable peer — one
-/// [`deferred_to_peer`], with `local_dc` and the `reachable` peer data centers deciding it — is serveable
+/// through [`blob_availability`]. A blob absent locally but placed only on a reachable peer - one
+/// [`deferred_to_peer`], with `local_dc` and the `reachable` peer data centers deciding it - is serveable
 /// through cross-DC read-through, so it passes the frontier rather than pinning it the way a plain local
 /// miss does. No separate durable cursor is kept, so a restart recomputes the same serial from the journal
 /// and the blob store. The `batch` bound caps the work: a persistently-missing blob pins the frontier at
-/// that serial at `O(batch)` cost per pass rather than an unbounded rescan, and the frontier simply
+/// that serial at `O(batch)` cost per pass rather than an unbounded rescan, and the frontier
 /// advances one batch at a time when the plane keeps up. It moves only the frontier, committing no bytes
 /// and no metadata.
 ///

@@ -1,18 +1,15 @@
-//! The `PyPI` index servers under test: how each starts, where its simple index lives, and its docs.
-//!
-//! Competitors run from their published packages via `uvx`; nothing is installed globally.
-
 use std::process::Command;
 
 use anyhow::{Context as _, bail};
 
-use crate::report::peryx_binary;
-use crate::servers::Server;
+use peryx_bench_core::report::peryx_binary;
+use peryx_bench_core::servers::Server;
 
 /// The always-present project every simple index answers for, used to probe readiness.
 const PROBE: &str = "six/";
 
 /// Every party the tables compare, `direct` being the no-proxy baseline.
+#[must_use]
 pub fn all() -> Vec<Server> {
     vec![peryx(), direct(), devpi(), proxpi(), pypiserver(), pypicloud()]
 }

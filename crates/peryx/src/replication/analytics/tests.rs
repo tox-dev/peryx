@@ -49,7 +49,7 @@ fn open_meta() -> (tempfile::TempDir, MetaStore) {
 fn day_key(day: i64) -> AggregateKey {
     AggregateKey {
         day,
-        repository: "pypi".to_owned(),
+        repository: "example".to_owned(),
         project: "flask".to_owned(),
         version: "1.0".to_owned(),
         source: String::new(),
@@ -184,7 +184,7 @@ async fn test_endpoint_serves_sealed_batches_to_an_authorized_pull() {
     let (_dir, meta) = open_meta();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock);
     metrics.record(Event::Download {
-        route: "pypi".to_owned(),
+        route: "example".to_owned(),
         project: "flask".to_owned(),
         filename: "flask-1.0.whl".to_owned(),
         version: Some("1.0".to_owned()),

@@ -4,8 +4,8 @@
 //! need one terminal disposition. This is that backlog: the reconciler enqueues an old-epoch operation
 //! with the facts it derived, drains the backlog by stamping each entry's terminal outcome, and prunes a
 //! settled entry once the replica and retention frontiers have passed it. The table is the durable state
-//! that makes the drain restart-safe — a process that stops mid-backlog resumes from the entries still
-//! pending, and an entry already settled is never re-run — so every operation reaches exactly one
+//! that makes the drain restart-safe - a process that stops mid-backlog resumes from the entries still
+//! pending, and an entry already settled is never re-run - so every operation reaches exactly one
 //! outcome across restarts. Bounding the drain and prune batches keeps the reconciliation scan and the
 //! retained backlog within their limits.
 //!
@@ -80,7 +80,7 @@ impl MetaStore {
     /// already staged.
     ///
     /// The read and the insert share one write transaction, so two racing enqueues of the same operation
-    /// never both stage it, and an already-settled entry is never reset to pending — a re-scan after a
+    /// never both stage it, and an already-settled entry is never reset to pending - a re-scan after a
     /// restart is idempotent.
     ///
     /// # Errors

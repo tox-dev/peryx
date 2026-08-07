@@ -153,7 +153,7 @@ async fn test_apply_replicated_changes_retires_only_the_changed_projects() {
     assert!(h.state.hot_fresh(&hot_alpha).is_some());
     assert!(h.state.hot_fresh(&hot_beta).is_some());
 
-    let driver = h.state.driver_for(crate::ECOSYSTEM).unwrap().clone();
+    let driver = h.state.replicated_apply_drivers().next().unwrap().clone();
     let changed = vec![
         format!("pypi\u{0}p\u{0}hosted/alpha"),
         // The same project twice exercises the dedup, and a non-project key is ignored.
@@ -187,7 +187,7 @@ async fn test_apply_replicated_changes_ignores_a_change_on_an_unknown_index() {
 
     // A change keyed to an index this replica never configured resolves to no serving positions, so it
     // retires nothing rather than touching an unrelated project that shares the name.
-    let driver = h.state.driver_for(crate::ECOSYSTEM).unwrap().clone();
+    let driver = h.state.replicated_apply_drivers().next().unwrap().clone();
     driver
         .apply_replicated_changes(h.state.serving.as_ref(), &["pypi\u{0}p\u{0}ghost/alpha".to_owned()])
         .unwrap();
@@ -267,7 +267,7 @@ async fn test_a_replicated_per_file_removal_retires_the_project_view() {
             .unwrap(),
         "the upload record existed"
     );
-    let driver = h.state.driver_for(crate::ECOSYSTEM).unwrap().clone();
+    let driver = h.state.replicated_apply_drivers().next().unwrap().clone();
     driver
         .apply_replicated_changes(
             replica.serving.as_ref(),
@@ -296,7 +296,7 @@ async fn test_apply_reports_a_block_when_a_project_view_cannot_rebuild() {
         .put_upload("hosted", "peryxpkg", PERYXPKG_WHEEL, b"not json")
         .unwrap();
 
-    let driver = h.state.driver_for(crate::ECOSYSTEM).unwrap().clone();
+    let driver = h.state.replicated_apply_drivers().next().unwrap().clone();
     let outcome = driver.apply_replicated_changes(
         replica.serving.as_ref(),
         &[format!("pypi\u{0}u\u{0}hosted/peryxpkg/{PERYXPKG_WHEEL}")],

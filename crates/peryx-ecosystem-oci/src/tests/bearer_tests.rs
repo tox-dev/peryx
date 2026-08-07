@@ -572,7 +572,7 @@ async fn test_a_gated_read_without_credentials_is_challenged_for_its_scope() {
     let dir = tempfile::tempdir().unwrap();
     let app = team_registry(&dir);
     // No credential on a repository whose reads are not anonymous: a plain challenge naming the pull
-    // scope, with no `error` — the client has not failed, it simply has not authenticated yet.
+    // scope, with no `error` because the client has not authenticated yet.
     let (status, headers, _) = send(&app, Method::GET, "/v2/store/team/app/manifests/latest").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(

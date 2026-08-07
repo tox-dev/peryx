@@ -1,10 +1,3 @@
-//! The three OCI workloads: image pulls, blob throughput, and a parallel pull fleet.
-//!
-//! Pulls drive `crane`, so one client handles the bearer-token dance against Docker Hub and plain
-//! pulls against the local proxies alike, and no registry sees a client-side layer cache between
-//! measurements. Blob throughput is read in process instead: a `crane` launch per stream costs more
-//! than the transfer it wraps, and it lands unevenly across the single and eight-way rows.
-
 use std::path::Path;
 use std::time::Instant;
 
@@ -13,9 +6,9 @@ use tokio::process::Command;
 
 use super::images::{FLEET_IMAGE, PULL_IMAGES, STRESS_IMAGE};
 use super::servers::{DOCKERHUB, client_reference, hub_credentials, insecure, table_name, upstream_for};
-use crate::report::{Absent, Metric, baseline, network_row, publish, row, summarize, table};
-use crate::servers::{Active, Server};
-use crate::stats::Summary;
+use peryx_bench_core::report::{Absent, Metric, baseline, network_row, publish, row, summarize, table};
+use peryx_bench_core::servers::{Active, Server};
+use peryx_bench_core::stats::Summary;
 
 /// The host architecture in the terms an image index's platform entries use.
 fn docker_arch() -> &'static str {
@@ -504,8 +497,8 @@ const ENDPOINTS: [&str; 9] = [
 /// The endpoints workload: one warm request to every endpoint the registry serves.
 ///
 /// The pull and throughput workloads only ever exercise the version check, a manifest, and a blob,
-/// because that is all `crane pull` needs. Everything a real client also does — the `HEAD` that
-/// checks a layer before fetching it, a ranged resume, listing tags — is priced here.
+/// because that is all `crane pull` needs. Everything a real client also does - the `HEAD` that
+/// checks a layer before fetching it, a ranged resume, listing tags - is priced here.
 ///
 /// # Errors
 /// Returns an error when a registry cannot start; a registry not serving an endpoint is an empty cell.

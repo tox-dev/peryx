@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use peryx_core::UiUploadSpec;
 use serde::{Deserialize, Serialize};
 
 use super::{string_at, u64_at};
@@ -41,7 +42,7 @@ pub struct UiMetricFamily {
 pub struct UiIndex {
     pub name: String,
     pub route: String,
-    /// The package ecosystem, for example `pypi`.
+    /// The ecosystem identifier.
     pub ecosystem: String,
     /// The client-facing API endpoint this index is served at, produced by its ecosystem driver.
     pub endpoint: String,
@@ -51,6 +52,7 @@ pub struct UiIndex {
     pub layers: Vec<String>,
     /// Whether uploads are enabled (a hosted layer with a token).
     pub uploads: bool,
+    pub upload: Option<UiUploadSpec>,
     /// For a virtual index: the layer uploads land in.
     pub upload_to: Option<String>,
     pub upstream: Option<UiUpstream>,
@@ -108,6 +110,7 @@ impl UiSnapshot {
                     .filter_map(|layer| layer.as_str().map(str::to_owned))
                     .collect(),
                 uploads: index["uploads"].as_bool().unwrap_or(false),
+                upload: serde_json::from_value(index["upload"].clone()).ok(),
                 upload_to: index["upload_to"].as_str().map(str::to_owned),
                 upstream: upstream_from_status(index),
                 hosted: hosted_from_status(index),

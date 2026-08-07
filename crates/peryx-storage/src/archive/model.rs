@@ -76,7 +76,7 @@ pub enum ArchiveError {
     #[error("archive member {0:?} is not a text member and cannot be previewed inline")]
     BinaryMember(String),
     /// The archive is malformed against a format's rules; the message carries the format-specific
-    /// detail (an ecosystem's wheel or sdist validator constructs this).
+    /// detail supplied by the ecosystem validator.
     #[error("{0}")]
     Invalid(String),
     #[error("archive read failed: {0}")]

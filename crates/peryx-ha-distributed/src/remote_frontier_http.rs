@@ -2,7 +2,7 @@
 //! how far it has durably applied an authority's metadata, and the client a write drives against one
 //! remote datacenter.
 //!
-//! The endpoint answers one authority-scoped question — how far has this node durably applied, and under
+//! The endpoint answers one authority-scoped question - how far has this node durably applied, and under
 //! which authority epoch? The applied frontier is the node's committed metadata serial; the epoch is the
 //! authority's own committed epoch, so a remote that has fenced past the write's epoch is excluded by the
 //! [pure fold](crate::assess_remote_metadata_durability) rather than counted. A node that cannot report
@@ -59,7 +59,7 @@ pub struct FrontierReply {
 /// serves the answer.
 #[async_trait]
 pub trait MetadataFrontierProvider: Send + Sync {
-    /// This node's frontier for `authority`, or `None` when it cannot report one — an absent group or an
+    /// This node's frontier for `authority`, or `None` when it cannot report one - an absent group or an
     /// unreadable serial, which the write treats as a remote not applying yet rather than a failure.
     async fn frontier(&self, authority: &str) -> Option<FrontierReply>;
 }

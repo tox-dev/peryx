@@ -5,8 +5,7 @@
 //! caller can render. It derives the remaining headroom every client would otherwise compute, and
 //! leaves it `null` when a counter is unlimited so "no limit" never reads as an enormous number.
 //!
-//! The model is ecosystem-neutral: quota is accounted the same way for every format, so a `PyPI` and an
-//! `OCI` repository report the same shape. Counters are keyed by an index's name, the identity a writer
+//! The model accounts quota the same way for every format. Counters use an index's name, the identity a writer
 //! reserves against, while the status reports the caller-facing route.
 
 use peryx_storage::meta::{QuotaUsage, QuotaValue};

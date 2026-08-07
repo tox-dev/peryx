@@ -5,7 +5,7 @@ use crate::transfer::{TransferAudit, TransferError, TransferPhase, TransferPlan,
 
 fn request(barrier: u64) -> TransferRequest {
     TransferRequest {
-        authority: AuthorityKey("root/pypi/flask".to_owned()),
+        authority: AuthorityKey("root/alpha/flask".to_owned()),
         source: DatacenterId("dc-east".to_owned()),
         target: DatacenterId("dc-west".to_owned()),
         actor: "alice".to_owned(),
@@ -22,7 +22,7 @@ fn ready_plan(barrier: u64) -> TransferPlan {
 
 fn sealed_audit(barrier: u64, epoch: u64, commit_index: u64) -> TransferAudit {
     TransferAudit {
-        authority: AuthorityKey("root/pypi/flask".to_owned()),
+        authority: AuthorityKey("root/alpha/flask".to_owned()),
         source: DatacenterId("dc-east".to_owned()),
         target: DatacenterId("dc-west".to_owned()),
         actor: "alice".to_owned(),

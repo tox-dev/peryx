@@ -403,7 +403,7 @@ impl PackageSearch {
         }
     }
 
-    /// Replace one project's document on one index — the record keyed by [`project_key`] — with `docs`,
+    /// Replace one project's document on one index - the record keyed by [`project_key`] - with `docs`,
     /// leaving every other project untouched.
     ///
     /// A replica calls this as it applies a metadata page: it retires the project's stale document by

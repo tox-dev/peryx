@@ -164,7 +164,7 @@ async fn test_routed_project_does_not_fall_back_on_an_invalid_response() {
     let route = route(&first, &second);
     let err = route.fetch_project("flask", None).await.unwrap_err();
 
-    assert!(matches!(err, UpstreamError::MissingContentType { .. }));
+    assert!(matches!(err, UpstreamError::InvalidResponse { .. }));
     assert!(second.received_requests().await.unwrap().is_empty());
     assert_eq!(
         route.sources().map(NamedUpstream::health).collect::<Vec<_>>(),

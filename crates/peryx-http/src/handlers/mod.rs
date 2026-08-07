@@ -85,7 +85,7 @@ fn index_by_route<'state>(state: &'state AppState, route: &str) -> Option<&'stat
 }
 
 /// The two outcomes a legacy per-index token authorization can be denied for, before a handler renders
-/// them: `403` when a known token holds no covering grant, `401` for every other denial — an unknown
+/// them: `403` when a known token holds no covering grant, `401` for every other denial - an unknown
 /// route, an absent credential, or an index whose ACL grants the action to no one.
 enum LegacyDenied {
     Forbidden,

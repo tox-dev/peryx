@@ -8,7 +8,7 @@ fn intent(idempotency_key: &str, digest: &str, size: u64) -> IngressIntent {
     IngressIntent {
         key: IntentKey {
             tenant: "acme".to_owned(),
-            authority_key: "root/pypi/flask".to_owned(),
+            authority_key: "root/alpha/flask".to_owned(),
             idempotency_key: idempotency_key.to_owned(),
         },
         ecosystem: Ecosystem::new("example"),

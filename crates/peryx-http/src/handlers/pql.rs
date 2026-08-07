@@ -194,8 +194,8 @@ const fn require_grant(decision: ScopedDecision) -> Result<(), Rejection> {
 
 /// Resolve the repository the query named to its configured index by the stable repository name.
 ///
-/// PQL's `repository` column is the stored repository name — the value grants and decision records
-/// carry — not the URL route, which may differ. Matching on the name keeps the injected scope, the
+/// PQL's `repository` column is the stored repository name - the value grants and decision records
+/// carry - not the URL route, which may differ. Matching on the name keeps the injected scope, the
 /// caller's `repository ==` filter, and the stored rows all speaking the same identifier.
 fn index_by_name<'state>(state: &'state AppState, repository: &str) -> Result<&'state Index, Rejection> {
     state

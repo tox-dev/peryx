@@ -2,7 +2,7 @@
 //!
 //! This module is the seam the wire form is kept separate from: the textual parser in [`crate::parse`]
 //! is one producer of an [`Ast`], and a future JSON-AST decoder would produce the very same tree
-//! without touching the evaluator. Nothing here is textual — it is the query's meaning, not its
+//! without touching the evaluator. Nothing here is textual - it is the query's meaning, not its
 //! spelling.
 //!
 //! Read-only by construction: there is no mutation node. The grammar can express selection,

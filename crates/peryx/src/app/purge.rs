@@ -27,7 +27,8 @@ pub(super) fn purge_project(
         .ecosystem;
     let driver = crate::server::drivers()
         .get(ecosystem)
-        .context(format!("no driver for the {ecosystem} ecosystem"))?;
+        .and_then(|driver| driver.capabilities().cache)
+        .context(format!("the {ecosystem} ecosystem does not support cache purge"))?;
     let report = driver
         .purge_project(&stores.meta, &args.index, &args.project, args.yes)
         .map_err(anyhow::Error::msg)?;
@@ -181,11 +182,14 @@ fn orphan_candidates(blobs: &BlobStorage, referenced: &BTreeSet<String>) -> anyh
 /// walks this whole set before reclaiming anything.
 pub fn referenced_blob_digests(meta: &MetaStore) -> anyhow::Result<BTreeSet<String>> {
     let mut digests = BTreeSet::new();
-    for driver in crate::server::drivers().present() {
+    for serving in crate::server::drivers().present() {
+        let Some(driver) = serving.capabilities().blob_references else {
+            continue;
+        };
         digests.extend(
             driver
                 .referenced_blob_digests(meta)
-                .map_err(|reason| anyhow::anyhow!("scan {} blob references: {reason}", driver.ecosystem().as_str()))?,
+                .map_err(|reason| anyhow::anyhow!("scan {} blob references: {reason}", serving.ecosystem().as_str()))?,
         );
     }
     Ok(digests)

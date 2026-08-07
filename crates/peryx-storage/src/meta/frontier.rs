@@ -12,7 +12,7 @@ impl MetaStore {
     /// The frontier never moves backward: a `serial` below the stored one leaves it untouched, so a
     /// reordered or replayed catch-up cannot un-apply proven work. The write is durable, so a restart
     /// reads the last frontier a rebuild actually reached rather than an optimistic one a crash never
-    /// finished — a replica computing readability from it never exposes metadata past a view.
+    /// finished - a replica computing readability from it never exposes metadata past a view.
     ///
     /// # Errors
     /// Returns a store error if the read or write fails.

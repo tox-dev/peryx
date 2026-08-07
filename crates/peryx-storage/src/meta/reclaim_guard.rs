@@ -1,8 +1,8 @@
 //! Deletion guards that coordinate single-node orphan collection with reference commits.
 //!
 //! The cache-purge collector proves a blob unreferenced, then unlinks its bytes. The proof and the
-//! unlink are separate steps, so a writer that publishes a reference to the digest in between — a fresh
-//! upload, or a dedup writer that finds the bytes already present and commits only the reference — would
+//! unlink are separate steps, so a writer that publishes a reference to the digest in between - a fresh
+//! upload, or a dedup writer that finds the bytes already present and commits only the reference - would
 //! be left pointing at content the collector is about to delete.
 //!
 //! A guard closes that window. The collector arms a guard for each candidate under a serial fence: the
@@ -22,7 +22,7 @@ impl MetaStore {
     /// `expected_serial`.
     ///
     /// Returns `true` when the guards were armed, or `false` when the serial had advanced past
-    /// `expected_serial` — the signal that a reference publication may have landed since the caller
+    /// `expected_serial` - the signal that a reference publication may have landed since the caller
     /// scanned, so it re-scans and retries rather than delete a blob a fresh commit now names. `now`
     /// timestamps each guard for operator visibility; re-arming a guarded digest refreshes it. The guard
     /// write does not itself advance the serial.

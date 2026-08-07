@@ -53,7 +53,7 @@ fn document(name: &str) -> PackageDocument {
         normalized_name: name.to_owned(),
         route: "root".to_owned(),
         index: "root".to_owned(),
-        ecosystem: "pypi".to_owned(),
+        ecosystem: "alpha".to_owned(),
         source: PackageSource::Cached,
         available_locally: false,
         summary: None,

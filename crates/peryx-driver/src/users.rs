@@ -144,7 +144,7 @@ impl UserService {
     }
 
     /// Remove a user's password, leaving the account unable to authenticate by password until a new one
-    /// is enrolled — the recovery path when a local password is lost.
+    /// is enrolled - the recovery path when a local password is lost.
     ///
     /// # Errors
     /// Returns a missing-user or storage error.
@@ -155,7 +155,7 @@ impl UserService {
     /// Authenticate a display name and password, returning the stable user ID on success.
     ///
     /// An unknown name, a disabled account, a passwordless account, and a wrong password all fail the
-    /// same way — `Ok(None)` after spending one derivation's worth of work — so none is distinguishable
+    /// same way - `Ok(None)` after spending one derivation's worth of work - so none is distinguishable
     /// from the others by its response or its timing. A successful check whose verifier has fallen
     /// behind the policy re-enrolls it under the same ID before returning, and a failure to do so does
     /// not deny the login that already succeeded.

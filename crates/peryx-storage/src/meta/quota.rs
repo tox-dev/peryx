@@ -353,8 +353,8 @@ impl MetaStore {
 
     /// Commit driver metadata and, when `release_allocation` accepts the result, release the committed
     /// allocation identified by `allocation` in the same transaction, so deleting a driver object cannot
-    /// leave its counters charged after a crash. A missing allocation — an unmetered publication, or a
-    /// second deletion — releases nothing.
+    /// leave its counters charged after a crash. A missing allocation - an unmetered publication, or a
+    /// second deletion - releases nothing.
     ///
     /// # Errors
     /// Returns the body's error or a store error. Peryx rolls back the driver rows and the counter

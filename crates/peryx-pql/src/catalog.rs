@@ -1,8 +1,8 @@
 //! The static registry of domains and their columns.
 //!
 //! A domain is a named, typed relation. Each column declares its type, the authority a caller needs
-//! to read it (its [`FieldClass`]), whether it is numeric enough to aggregate, and — the part the
-//! cost model depends on — how cheaply the backing source can filter on it ([`Indexability`]). The
+//! to read it (its [`FieldClass`]), whether it is numeric enough to aggregate, and - the part the
+//! cost model depends on - how cheaply the backing source can filter on it ([`Indexability`]). The
 //! catalog is what makes validation and field classification static rather than per-row.
 //!
 //! The classification levels mirror `peryx-http`'s `FieldClassification` one-for-one; the wire layer

@@ -5,12 +5,12 @@
 //! given the versions the committed voters advertise, may the cluster move its operating point to a
 //! chosen [`UpgradeTarget`] now? The answer is a pure decision over those inputs, so like the rest of
 //! the version layer it reaches for no transport, clock, or storage; the rollout that acts on the
-//! verdict lives above it, and the operational readiness of the group — quorum, replication lag, and
-//! backup currency — arrives already measured through [`group_readiness`](crate::group_readiness) and
+//! verdict lives above it, and the operational readiness of the group - quorum, replication lag, and
+//! backup currency - arrives already measured through [`group_readiness`](crate::group_readiness) and
 //! the durable frontier it reports.
 //!
 //! Two rules guard the version axis. Every committed member must already run the target, so a command
-//! at the new version never reaches a member that cannot apply it — the barrier
+//! at the new version never reaches a member that cannot apply it - the barrier
 //! [`feature_activated`](crate::feature_activated) enforces for one feature, widened to both dimensions
 //! of a whole target. And the target may not fall below the state-machine version at which an
 //! irreversible migration ran, because a snapshot written past that point cannot be restored by an

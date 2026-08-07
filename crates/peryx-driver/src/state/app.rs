@@ -36,7 +36,7 @@ pub trait PrometheusSource: Send + Sync {
 /// Everything a serving handler needs, and nothing about *which* ecosystems are installed.
 ///
 /// An ecosystem driver receives an `Arc<ServingState>`, so it can read the stores, the caches and the
-/// configured indexes and spawn background work over them — but it holds no driver registry, so it
+/// configured indexes and spawn background work over them - but it holds no driver registry, so it
 /// cannot reach another ecosystem's driver or enumerate them. The registry lives one level up on
 /// [`AppState`], which the router and rate limiter hold; a driver reaching for it is a compile error,
 /// not a convention.
@@ -93,7 +93,7 @@ pub struct ServingState {
     /// Signed webhook delivery runtime.
     pub webhooks: WebhookRuntime,
     /// The token realm's signing key, or `None` when no signing key is configured. Without it an
-    /// ecosystem's token endpoint cannot mint a JWT, so an OCI index falls back to Basic-only auth and
+    /// ecosystem's token endpoint cannot mint a JWT, so that driver can fall back to another scheme and
     /// never challenges with the Bearer scheme.
     pub signer: Option<peryx_identity::Signer>,
     /// How long a token the realm mints stays valid, in seconds.
@@ -116,18 +116,15 @@ pub struct ServingState {
 pub(super) struct DistributedAvailability {
     pub role: peryx_core::NodeRole,
     pub topology: peryx_core::TopologyConfig,
-    pub write_ack_policy: peryx_ha::DurabilityPolicy,
-    pub write_ack_deadline: std::time::Duration,
-    pub receipt_sources: Vec<Arc<dyn peryx_ha::ReceiptSource + Send + Sync>>,
-    pub remote_frontier_sources: Vec<Arc<dyn peryx_ha::RemoteFrontierSource + Send + Sync>>,
+    pub write_acknowledger: Option<Arc<dyn peryx_ha::WriteAcknowledger>>,
     pub analytics_completeness: OnceLock<Arc<dyn peryx_ha::AnalyticsCompleteness>>,
     pub dc_durability: Arc<crate::state::DcDurabilityMetrics>,
-    pub ownership: std::sync::OnceLock<Arc<dyn crate::state::OwnershipAuthority>>,
+    pub ownership: std::sync::OnceLock<Arc<dyn peryx_ha::OwnershipAuthority>>,
     pub control: std::sync::OnceLock<Arc<crate::state::ControlPlane>>,
-    pub cross_dc_copier: std::sync::OnceLock<Arc<dyn crate::jobs::CrossDcCopier>>,
-    pub blob_reclaimer: std::sync::OnceLock<Arc<dyn crate::jobs::BlobReclaimer>>,
+    pub cross_dc_copier: std::sync::OnceLock<Arc<dyn peryx_ha::CrossDcCopier>>,
+    pub blob_reclaimer: std::sync::OnceLock<Arc<dyn peryx_ha::BlobReclaimer>>,
     pub read_through: std::sync::OnceLock<Arc<dyn peryx_ha::RemoteBlobReader>>,
-    pub placement_reconciler: std::sync::OnceLock<Arc<dyn crate::jobs::PlacementReconciler>>,
+    pub placement_reconciler: std::sync::OnceLock<Arc<dyn peryx_ha::PlacementReconciler>>,
 }
 
 impl DistributedAvailability {
@@ -135,10 +132,7 @@ impl DistributedAvailability {
         Self {
             role: peryx_core::NodeRole::Writer,
             topology: peryx_core::TopologyConfig::default(),
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
-            write_ack_deadline: std::time::Duration::from_secs(5),
-            receipt_sources: Vec::new(),
-            remote_frontier_sources: Vec::new(),
+            write_acknowledger: None,
             analytics_completeness: OnceLock::new(),
             dc_durability: Arc::new(crate::state::DcDurabilityMetrics::default()),
             ownership: std::sync::OnceLock::new(),
@@ -217,7 +211,7 @@ impl std::ops::Deref for AppState {
 }
 
 impl std::ops::DerefMut for AppState {
-    /// Mutable access to the serving state, sound only while its `Arc` is uniquely owned — during
+    /// Mutable access to the serving state, sound only while its `Arc` is uniquely owned - during
     /// build and install, before any handler holds a clone. The router shares the state afterwards,
     /// so a mutation then is a bug, and this panics rather than silently splitting the state.
     fn deref_mut(&mut self) -> &mut ServingState {
@@ -265,38 +259,10 @@ impl ServingState {
         self.distributed().map_or(&LOCAL, |availability| &availability.topology)
     }
 
-    /// The durability quorum a hosted write must reach before it is acknowledged.
     #[must_use]
-    pub fn write_ack_policy(&self) -> peryx_ha::DurabilityPolicy {
+    pub fn write_acknowledger(&self) -> Option<&dyn peryx_ha::WriteAcknowledger> {
         self.distributed()
-            .map_or(peryx_ha::DurabilityPolicy::Local, |availability| {
-                availability.write_ack_policy
-            })
-    }
-
-    /// The deadline the client waits for a write to prove durable before it is reported retry-safe.
-    #[must_use]
-    pub fn write_ack_deadline(&self) -> std::time::Duration {
-        self.distributed()
-            .map_or(std::time::Duration::from_secs(5), |availability| {
-                availability.write_ack_deadline
-            })
-    }
-
-    /// The same-datacenter peers a filesystem write gathers placement receipts from. Empty when the local
-    /// receipt alone proves the quorum, so the producer runs no network gather.
-    #[must_use]
-    pub fn receipt_sources(&self) -> &[std::sync::Arc<dyn peryx_ha::ReceiptSource + Send + Sync>] {
-        self.distributed()
-            .map_or(&[], |availability| availability.receipt_sources.as_slice())
-    }
-
-    /// The eligible remote datacenters an `ha` write gathers metadata acknowledgements from. Empty outside
-    /// `ha` mode, so the producer runs no remote gather and the metadata dimension is the local commit.
-    #[must_use]
-    pub fn remote_frontier_sources(&self) -> &[std::sync::Arc<dyn peryx_ha::RemoteFrontierSource + Send + Sync>] {
-        self.distributed()
-            .map_or(&[], |availability| availability.remote_frontier_sources.as_slice())
+            .and_then(|availability| availability.write_acknowledger.as_deref())
     }
 
     /// Install distributed analytics convergence only for distributed deployments.
@@ -327,14 +293,14 @@ impl ServingState {
 
     /// Register the ownership consensus group once the runtime ignites it, so the mutation path can
     /// submit first-publish home claims. Set at most once; a later call is ignored.
-    pub fn set_ownership_authority(&self, authority: Arc<dyn crate::state::OwnershipAuthority>) {
+    pub fn set_ownership_authority(&self, authority: Arc<dyn peryx_ha::OwnershipAuthority>) {
         self.configure_distributed();
         let _ = self.distributed_or_init().ownership.set(authority);
     }
 
     /// The ownership consensus group, or `None` when this process runs no group and assigns no homes.
     #[must_use]
-    pub fn ownership_authority(&self) -> Option<&Arc<dyn crate::state::OwnershipAuthority>> {
+    pub fn ownership_authority(&self) -> Option<&Arc<dyn peryx_ha::OwnershipAuthority>> {
         self.distributed().and_then(|availability| availability.ownership.get())
     }
 
@@ -355,28 +321,28 @@ impl ServingState {
 
     /// Register the cross-data-center blob copier the scheduled `DcCopy` job drives. Set at most once; a
     /// later call is ignored.
-    pub fn set_cross_dc_copier(&self, copier: Arc<dyn crate::jobs::CrossDcCopier>) {
+    pub fn set_cross_dc_copier(&self, copier: Arc<dyn peryx_ha::CrossDcCopier>) {
         self.configure_distributed();
         let _ = self.distributed_or_init().cross_dc_copier.set(copier);
     }
 
     /// The registered cross-data-center blob copier, or `None` when this process copies nothing.
     #[must_use]
-    pub fn cross_dc_copier(&self) -> Option<&Arc<dyn crate::jobs::CrossDcCopier>> {
+    pub fn cross_dc_copier(&self) -> Option<&Arc<dyn peryx_ha::CrossDcCopier>> {
         self.distributed()
             .and_then(|availability| availability.cross_dc_copier.get())
     }
 
     /// Register the blob-reclamation selector the scheduled `Reclamation` job drives. Set at most once; a
     /// later call is ignored.
-    pub fn set_blob_reclaimer(&self, reclaimer: Arc<dyn crate::jobs::BlobReclaimer>) {
+    pub fn set_blob_reclaimer(&self, reclaimer: Arc<dyn peryx_ha::BlobReclaimer>) {
         self.configure_distributed();
         let _ = self.distributed_or_init().blob_reclaimer.set(reclaimer);
     }
 
     /// The registered blob-reclamation selector, or `None` when this process reclaims nothing.
     #[must_use]
-    pub fn blob_reclaimer(&self) -> Option<&Arc<dyn crate::jobs::BlobReclaimer>> {
+    pub fn blob_reclaimer(&self) -> Option<&Arc<dyn peryx_ha::BlobReclaimer>> {
         self.distributed()
             .and_then(|availability| availability.blob_reclaimer.get())
     }
@@ -399,25 +365,24 @@ impl ServingState {
 
     /// Register the placement reconciler the scheduled `PlacementReconcile` job drives. Set at most once;
     /// a later call is ignored.
-    pub fn set_placement_reconciler(&self, reconciler: Arc<dyn crate::jobs::PlacementReconciler>) {
+    pub fn set_placement_reconciler(&self, reconciler: Arc<dyn peryx_ha::PlacementReconciler>) {
         self.configure_distributed();
         let _ = self.distributed_or_init().placement_reconciler.set(reconciler);
     }
 
     /// The registered placement reconciler, or `None` when this process reconciles nothing.
     #[must_use]
-    pub fn placement_reconciler(&self) -> Option<&Arc<dyn crate::jobs::PlacementReconciler>> {
+    pub fn placement_reconciler(&self) -> Option<&Arc<dyn peryx_ha::PlacementReconciler>> {
         self.distributed()
             .and_then(|availability| availability.placement_reconciler.get())
     }
 
     /// Record this node's home datacenter as a verified holder of the blob `digest_hex`, whose bytes just
     /// committed and verified at their content address on a home publish. A peer that replicates the ledger
-    /// reads this row as a verified remote source and routes a cross-datacenter read-through fetch here —
-    /// the producer half of that path, without which a home publish leaves a sibling nothing to pull.
+    /// reads this row as a verified remote source and routes a cross-datacenter read-through fetch here.
     ///
-    /// Best effort and off the publish's critical path: a node that resolves no local datacenter — a
-    /// rosterless single node, or a replica that names no roster member — records nothing, and a malformed
+    /// Best effort and off the publish's critical path: a node that resolves no local datacenter - a
+    /// rosterless single node, or a replica that names no roster member - records nothing, and a malformed
     /// digest, an invalid datacenter component, or a rejected ledger write is logged and swallowed rather
     /// than turning a durable publish into a client error. `fence` is the publish's own authority epoch and
     /// `size` its committed byte length; a re-push is idempotent because the underlying record is.
@@ -552,8 +517,8 @@ impl ServingState {
     }
 }
 
-/// Signed webhook delivery borrows exactly three things from the process — the configured targets,
-/// the queue's store, and the clock — and reaches them through this trait rather than the whole state.
+/// Signed webhook delivery borrows exactly three things from the process - the configured targets,
+/// the queue's store, and the clock - and reaches them through this trait rather than the whole state.
 impl peryx_events::webhook::WebhookHost for ServingState {
     fn webhooks(&self) -> &WebhookRuntime {
         &self.webhooks

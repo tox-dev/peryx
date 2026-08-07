@@ -1,7 +1,7 @@
 //! The `OpenAPI` builders every ecosystem's operations share, plus peryx's own per-index endpoints.
 //!
-//! An ecosystem crate describes its own wire protocol with these. The two operations here — `+api`
-//! and `+search` — are peryx's own, served for every index whatever ecosystem it speaks, so each
+//! An ecosystem crate describes its own wire protocol with these. The two operations here - `+api`
+//! and `+search` - are peryx's own, served for every index whatever ecosystem it speaks, so each
 //! driver mounts them under its route rather than redescribing them.
 
 use serde_json::json;
@@ -15,8 +15,8 @@ pub fn route_param() -> ParameterBuilder {
         .name("route")
         .parameter_in(ParameterIn::Path)
         .required(Required::True)
-        .description(Some("The index route, for example `root/pypi`"))
-        .example(Some(json!("root/pypi")))
+        .description(Some("The index route, for example `team/packages`"))
+        .example(Some(json!("team/packages")))
 }
 
 #[must_use]
@@ -90,8 +90,8 @@ pub fn package_search(scoped: bool) -> OperationBuilder {
                     "results": [{
                         "display_name": "Flask",
                         "normalized_name": "flask",
-                        "route": "root/pypi",
-                        "index": "root/pypi",
+                        "route": "team/packages",
+                        "index": "team/packages",
                         "type": "cached",
                         "available": true,
                         "summary": "A simple framework for building complex web applications.",

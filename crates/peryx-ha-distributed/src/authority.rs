@@ -6,8 +6,8 @@
 //! carrying the current committed epoch and fences everything else, so two concurrent old- and
 //! new-epoch requests resolve to one outcome.
 //!
-//! The fence is a pure consumer of committed epochs. Producing them — the Raft-replicated ownership
-//! state machine — lives elsewhere; here [`commit`](AuthorityFence::commit) records a committed epoch
+//! The fence is a pure consumer of committed epochs. Producing them - the Raft-replicated ownership
+//! state machine - lives elsewhere; here [`commit`](AuthorityFence::commit) records a committed epoch
 //! and [`admit`](AuthorityFence::admit) reads it. Wiring the gate into metadata writes, the outbox,
 //! replica apply, acknowledgement, and background work is a deferred follow-up.
 

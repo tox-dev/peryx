@@ -184,6 +184,7 @@ pub struct Topology {
     members: Vec<MemberSpec>,
     bootstrap_admin: bool,
     oci: bool,
+    write_ack_deadline_secs: Option<u64>,
 }
 
 impl Topology {
@@ -197,6 +198,7 @@ impl Topology {
             members: vec![MemberSpec::new("node-a", "local", Role::Writer)],
             bootstrap_admin: false,
             oci: false,
+            write_ack_deadline_secs: None,
         }
     }
 
@@ -210,6 +212,7 @@ impl Topology {
             members,
             bootstrap_admin: false,
             oci: false,
+            write_ack_deadline_secs: None,
         }
     }
 
@@ -223,6 +226,7 @@ impl Topology {
             members,
             bootstrap_admin: false,
             oci: false,
+            write_ack_deadline_secs: None,
         }
     }
 
@@ -237,11 +241,17 @@ impl Topology {
 
     /// Add a hosted OCI index at route [`OCI_ROUTE`] to every node, alongside the `PyPI` `hosted` index,
     /// so a test drives the distribution-spec `/v2/` surface: a `GET /v2/` handshake, a blob push, and a
-    /// manifest publish. Opt-in and additive — the `PyPI` publish helpers keep working unchanged, and a
+    /// manifest publish. Opt-in and additive - the `PyPI` publish helpers keep working unchanged, and a
     /// topology that does not call this serves no `/v2/` API at all.
     #[must_use]
     pub const fn with_oci(mut self) -> Self {
         self.oci = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_write_ack_deadline(mut self, seconds: u64) -> Self {
+        self.write_ack_deadline_secs = Some(seconds);
         self
     }
 
@@ -286,7 +296,7 @@ impl Topology {
     /// writer's group readiness react. A replica dials the proxy as its upstream; the proxy forwards to
     /// the writer's public port, so both the follower sync and the frontier beacon share the faultable
     /// link. When `healthy` is false each proxy starts partitioned, so a replica comes up but cannot
-    /// reach the writer until the test heals it — a replica that joins the group after the writer.
+    /// reach the writer until the test heals it - a replica that joins the group after the writer.
     ///
     /// Only meaningful for a `dc`/`ha` topology, the one shape with a writer replicas follow.
     ///
@@ -740,13 +750,14 @@ impl Node {
     /// Publish the fixture [`WHEEL`] to this node's local `hosted` index through the legacy multipart
     /// upload API twine and `uv publish` drive, authenticating with the `__token__` convention and
     /// [`UPLOAD_TOKEN`]. Returns the upload's status and body (`200` and `upload accepted` on success),
-    /// or `None` when the node is unreachable.
+    ///
+    /// # Errors
+    /// Returns a transport error when the request cannot complete.
     ///
     /// Publishing to one node, not another, is how a test places a blob on a single datacenter: the
     /// bytes land only where they are uploaded, so a sibling that never replicated them answers a local
     /// [`Self::download_wheel`] with `404` until the peer-serve read-through fills it.
-    #[must_use]
-    pub fn publish(&self) -> Option<(u16, String)> {
+    pub fn publish(&self) -> Result<(u16, String), reqwest::Error> {
         let content = reqwest::blocking::multipart::Part::bytes(WHEEL.to_vec()).file_name(WHEEL_FILENAME);
         let form = reqwest::blocking::multipart::Form::new()
             .text(":action", "file_upload")
@@ -760,10 +771,9 @@ impl Node {
             .post(format!("http://127.0.0.1:{}/hosted/", self.port))
             .basic_auth("__token__", Some(UPLOAD_TOKEN))
             .multipart(form)
-            .send()
-            .ok()?;
+            .send()?;
         let code = response.status().as_u16();
-        Some((code, response.text().unwrap_or_default()))
+        Ok((code, response.text().unwrap_or_default()))
     }
 
     /// `GET {path}` against the public port, returning the status and the raw response body, or `None`
@@ -799,10 +809,11 @@ impl Node {
 
     /// Push `blob` to `repo` under the hosted OCI index by a monolithic upload, authenticating with
     /// [`UPLOAD_TOKEN`]. Returns the commit status and the blob's `sha256:<hex>` digest (`201` on
-    /// success), or `None` when unreachable. Content-addressed, so re-pushing identical bytes is
-    /// idempotent and commits under the same digest.
-    #[must_use]
-    pub fn oci_push_blob(&self, repo: &str, blob: &[u8]) -> Option<(u16, String)> {
+    /// success). Content-addressed, so re-pushing identical bytes commits under the same digest.
+    ///
+    /// # Errors
+    /// Returns a transport error when the request cannot complete.
+    pub fn oci_push_blob(&self, repo: &str, blob: &[u8]) -> Result<(u16, String), reqwest::Error> {
         let digest = oci_digest(blob);
         let response = self
             .http
@@ -812,9 +823,8 @@ impl Node {
             ))
             .basic_auth("_", Some(UPLOAD_TOKEN))
             .body(blob.to_vec())
-            .send()
-            .ok()?;
-        Some((response.status().as_u16(), digest))
+            .send()?;
+        Ok((response.status().as_u16(), digest))
     }
 
     /// Pull the blob addressed by `digest` from `repo`: `GET /v2/{OCI_ROUTE}/{repo}/blobs/{digest}`.
@@ -827,16 +837,17 @@ impl Node {
 
     /// Publish `manifest` to `repo` under `reference` (a tag or digest):
     /// `PUT /v2/{OCI_ROUTE}/{repo}/manifests/{reference}` with `media_type` and the upload credential.
-    /// Returns the status and the manifest's own `sha256:<hex>` digest (`201` on success), or `None` when
-    /// unreachable. Idempotent under the same tag and bytes.
-    #[must_use]
+    /// Returns the status and the manifest's own `sha256:<hex>` digest (`201` on success).
+    ///
+    /// # Errors
+    /// Returns a transport error when the request cannot complete.
     pub fn oci_put_manifest(
         &self,
         repo: &str,
         reference: &str,
         manifest: &[u8],
         media_type: &str,
-    ) -> Option<(u16, String)> {
+    ) -> Result<(u16, String), reqwest::Error> {
         let response = self
             .http
             .put(format!(
@@ -846,9 +857,8 @@ impl Node {
             .basic_auth("_", Some(UPLOAD_TOKEN))
             .header(reqwest::header::CONTENT_TYPE, media_type)
             .body(manifest.to_vec())
-            .send()
-            .ok()?;
-        Some((response.status().as_u16(), oci_digest(manifest)))
+            .send()?;
+        Ok((response.status().as_u16(), oci_digest(manifest)))
     }
 
     /// Resolve `reference` (a tag or digest) in `repo`: `GET /v2/{OCI_ROUTE}/{repo}/manifests/{reference}`.
@@ -1051,7 +1061,7 @@ fn node_config(
     if let Some(writer) = writer {
         // Every node follows the one writer's identity: the writer claims it on startup, and a replica
         // verifies its offline-seeded store against it. Consensus, though, needs each node's OWN identity,
-        // so it names its own member entry through `node_identity` — otherwise every node would run the
+        // so it names its own member entry through `node_identity` - otherwise every node would run the
         // ownership Raft node under the writer's voter id and the group could never fail over.
         let _ = writeln!(config, "writer_identity = \"{}\"", writer.0);
         let _ = writeln!(config, "node_identity = \"{}\"\n", member.node);
@@ -1077,6 +1087,9 @@ fn node_config(
     }
     if let Some(writer) = writer {
         config.push_str(roster);
+        if let Some(seconds) = topology.write_ack_deadline_secs {
+            let _ = writeln!(config, "[availability.write_ack]\ndeadline-secs = {seconds}\n");
+        }
         if matches!(member.role, Role::Writer) {
             let _ = write!(
                 config,
@@ -1151,14 +1164,14 @@ fn launch(config: &std::path::Path, data: &std::path::Path, port: u16) -> Child 
         .arg(data)
         .arg("--config")
         .arg(config)
-        .args(["--log-level", "debug"])
+        .args(["--log-level", "info"])
         .stdout(log.try_clone().expect("clone log handle"))
         .stderr(log);
     spawn_in_group(&mut command);
     command.spawn().expect("spawn peryx")
 }
 
-/// Put a child in its own process group so the harness can signal the whole group, not just the leader.
+/// Put a child in its own process group so the harness can signal all descendants.
 fn spawn_in_group(command: &mut Command) {
     #[cfg(unix)]
     {

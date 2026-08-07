@@ -277,8 +277,8 @@ impl<S: VisibilitySnapshotStore> VisibilityProjection<S> {
     /// Each operation folds into the apply state idempotently and monotonically, so a duplicate or a
     /// reordered older delivery leaves the visibility it targets unchanged. The batch persists once and
     /// atomically: a save failure leaves the projection and its advertised frontier untouched, so the
-    /// follower retries from the state it last durably held. A batch that changes nothing — every
-    /// operation a duplicate that neither moves the state nor raises the advertised frontier — skips
+    /// follower retries from the state it last durably held. A batch that changes nothing - every
+    /// operation a duplicate that neither moves the state nor raises the advertised frontier - skips
     /// the save.
     ///
     /// # Errors

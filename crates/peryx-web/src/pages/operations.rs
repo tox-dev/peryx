@@ -117,7 +117,7 @@ fn OperationsRows(
 fn operation_table_row(row: OperationRow) -> AnyView {
     let status = operation_status_label(row.status);
     let updated = format_instant(row.updated_at);
-    let expires = row.expires_at.map_or_else(|| "—".to_owned(), format_instant);
+    let expires = row.expires_at.map_or_else(|| "-".to_owned(), format_instant);
     view! {
         <tr>
             <td><code>{row.operation}</code></td>

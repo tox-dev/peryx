@@ -125,8 +125,6 @@ fn membership(members: Vec<DcMember>) -> DcMembership {
     }
 }
 
-// --- record ------------------------------------------------------------------
-
 #[test]
 fn test_record_reports_a_committed_transition() {
     let (_dir, meta) = meta();
@@ -173,8 +171,6 @@ fn test_record_reports_a_rejected_transition() {
     assert!(!recorded);
 }
 
-// --- failure_class -----------------------------------------------------------
-
 #[test]
 fn test_failure_class_maps_each_loss_to_its_evidence() {
     assert_eq!(
@@ -196,8 +192,6 @@ fn test_failure_class_maps_each_loss_to_its_evidence() {
     );
 }
 
-// --- replication_token -------------------------------------------------------
-
 #[test]
 fn test_replication_token_reads_either_role() {
     let primary = ReplicationConfig::Primary {
@@ -213,8 +207,6 @@ fn test_replication_token_reads_either_role() {
     assert_eq!(replication_token(&primary).read().unwrap(), "p");
     assert_eq!(replication_token(&replica).read().unwrap(), "r");
 }
-
-// --- source_roster -----------------------------------------------------------
 
 #[test]
 fn test_source_roster_prefers_a_datacenters_writer_and_excludes_the_local() {
@@ -239,8 +231,6 @@ fn test_source_roster_prefers_a_datacenters_writer_and_excludes_the_local() {
     );
 }
 
-// --- RosterTransports --------------------------------------------------------
-
 #[test]
 fn test_roster_transport_resolves_only_a_rostered_buildable_peer() {
     let good = RosterTransports {
@@ -264,8 +254,6 @@ fn test_roster_transport_resolves_only_a_rostered_buildable_peer() {
         "an address that cannot build a client resolves nothing"
     );
 }
-
-// --- plan_one ----------------------------------------------------------------
 
 fn backlog_entry(digest: &ArtifactDigest, backend: &BackendId, source_dc: &str) -> CopyBacklogEntry {
     CopyBacklogEntry {
@@ -325,8 +313,6 @@ fn test_plan_one_yields_nothing_when_fenced_or_sourceless() {
     );
 }
 
-// --- collect_backlog ---------------------------------------------------------
-
 #[test]
 fn test_collect_backlog_plans_every_owed_digest_across_pages() {
     let (_dir, meta) = meta();
@@ -367,8 +353,6 @@ fn test_collect_backlog_surfaces_a_scan_rejection() {
 
     assert_eq!(error.code(), "copy_backlog_scan");
 }
-
-// --- copy_one ----------------------------------------------------------------
 
 fn local_state(meta: &MetaStore, target: &BlobPlacementKey) -> BlobPlacementState {
     meta.blob_placement(target).unwrap().unwrap().state
@@ -541,8 +525,6 @@ async fn test_copy_one_records_a_publish_loss() {
     );
 }
 
-// --- copy_pass (fence) -------------------------------------------------------
-
 struct FixedTerm(u64);
 
 #[async_trait]
@@ -658,8 +640,6 @@ async fn test_copy_pass_drains_the_backlog_under_a_live_term() {
     let local = key(&artifact, &backend, "home", artifact.sha256());
     assert_eq!(local_state(&state.meta, &local).status(), BlobPlacementStatus::Verified);
 }
-
-// --- from_config / plan ------------------------------------------------------
 
 fn ha(token: SecretSource) -> AvailabilityConfig {
     AvailabilityConfig::Ha(ReplicationConfig::Primary {

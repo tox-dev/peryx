@@ -1,5 +1,6 @@
 //! Availability contracts independent of deployment mode.
 
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
@@ -33,11 +34,6 @@ impl AvailabilityMode {
             Self::None => DurabilityRequirement::LOCAL,
             Self::Dc | Self::Ha => DurabilityRequirement::REPLICATED,
         }
-    }
-
-    #[must_use]
-    pub const fn is_single_node(self) -> bool {
-        matches!(self, Self::None)
     }
 
     #[must_use]
@@ -170,6 +166,8 @@ pub struct CompletenessError;
 
 /// Reads a converged analytics view without exposing its implementation.
 pub trait AnalyticsCompleteness: Send + Sync {
+    /// # Errors
+    /// Returns an error when the converged view is unavailable.
     fn assess(
         &self,
         meta: &MetaStore,
@@ -202,6 +200,239 @@ pub trait HaCoordinator: Send + Sync {
     fn configuration(&self) -> TopologyConfig;
     fn topology(&self, captured_at: i64) -> TopologySnapshot;
     fn distributed(&self) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ControlCommand {
+    AddLearner {
+        datacenter: String,
+        address: String,
+    },
+    PromoteVoter {
+        datacenter: String,
+    },
+    RemoveVoter {
+        datacenter: String,
+    },
+    ReplaceVoter {
+        remove: String,
+        datacenter: String,
+        address: String,
+    },
+    TransferAuthority {
+        authority: String,
+        new_home: String,
+    },
+    AdvanceEpoch {
+        authority: String,
+    },
+}
+
+impl ControlCommand {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::AddLearner { .. } => "add_learner",
+            Self::PromoteVoter { .. } => "promote_voter",
+            Self::RemoveVoter { .. } => "remove_voter",
+            Self::ReplaceVoter { .. } => "replace_voter",
+            Self::TransferAuthority { .. } => "transfer_authority",
+            Self::AdvanceEpoch { .. } => "advance_epoch",
+        }
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &str {
+        match self {
+            Self::AddLearner { datacenter, .. }
+            | Self::PromoteVoter { datacenter }
+            | Self::RemoveVoter { datacenter }
+            | Self::ReplaceVoter { datacenter, .. } => datacenter,
+            Self::TransferAuthority { authority, .. } | Self::AdvanceEpoch { authority } => authority,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommandReceipt {
+    pub term: u64,
+    pub index: u64,
+    pub outcome: CommandOutcome,
+    pub old_voters: Vec<String>,
+    pub new_voters: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandOutcome {
+    Committed,
+    NoChange,
+}
+
+impl CommandOutcome {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Committed => "committed",
+            Self::NoChange => "no_change",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ControlError {
+    #[error("not the consensus leader{}", .leader.as_deref().map(|address| format!("; leader at {address}")).unwrap_or_default())]
+    NotLeader { leader: Option<String> },
+    #[error("consensus command did not commit: {0}")]
+    Unavailable(String),
+    #[error("invalid command: {0}")]
+    Invalid(String),
+    #[error("too many concurrent availability commands in flight")]
+    Overloaded,
+    #[error("idempotency key already used for a different command")]
+    KeyReuse,
+}
+
+impl ControlError {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::NotLeader { .. } => "not_leader",
+            Self::Unavailable(_) => "unavailable",
+            Self::Invalid(_) => "invalid",
+            Self::Overloaded => "overloaded",
+            Self::KeyReuse => "key_reuse",
+        }
+    }
+}
+
+#[async_trait]
+pub trait MembershipControl: Send + Sync {
+    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError>;
+}
+
+#[must_use]
+pub fn plan_voter_roster(current: &BTreeSet<u64>, add: Option<u64>, remove: Option<u64>) -> BTreeSet<u64> {
+    let mut roster = current.clone();
+    if let Some(id) = add {
+        roster.insert(id);
+    }
+    if let Some(id) = remove {
+        roster.remove(&id);
+    }
+    roster
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeClaim {
+    AssignedHere,
+    AlreadyHomed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferOutcome {
+    pub from: String,
+    pub to: String,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClusterStatus {
+    pub leader: Option<String>,
+    pub term: u64,
+    pub voters: Vec<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OwnershipError {
+    #[error("not the ownership leader{}", .leader.as_deref().map(|address| format!("; leader at {address}")).unwrap_or_default())]
+    NotLeader { leader: Option<String> },
+    #[error("ownership claim did not commit: {0}")]
+    Unavailable(String),
+}
+
+#[async_trait]
+pub trait OwnershipAuthority: Send + Sync {
+    async fn has_home(&self, authority: &str) -> bool;
+
+    async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError>;
+
+    fn cluster_status(&self) -> ClusterStatus;
+
+    async fn committed_epoch(&self, authority: &str) -> u64;
+
+    async fn admit_epoch(&self, authority: &str, presented: u64) -> bool;
+
+    async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError>;
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AvailabilityTaskReport {
+    pub processed: u64,
+    pub changed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvailabilityTaskError {
+    code: &'static str,
+    message: String,
+}
+
+impl AvailabilityTaskError {
+    #[must_use]
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for AvailabilityTaskError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for AvailabilityTaskError {}
+
+#[async_trait]
+pub trait CrossDcCopier: Send + Sync {
+    async fn copy_pass(
+        &self,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+        concurrency: NonZeroUsize,
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError>;
+}
+
+#[async_trait]
+pub trait PlacementReconciler: Send + Sync {
+    async fn reconcile_pass(
+        &self,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+        batch: NonZeroUsize,
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError>;
+}
+
+#[async_trait]
+pub trait BlobReclaimer: Send + Sync {
+    async fn reclaim_pass(
+        &self,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+        fence: u64,
+        batch: NonZeroUsize,
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError>;
 }
 
 /// Result of attempting to fetch a locally missing blob from distributed storage.
@@ -402,6 +633,14 @@ pub struct MetadataOperation {
     pub frontier: u64,
 }
 
+/// Evidence a hosted write asks the configured availability runtime to prove.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteAckRequest<'a> {
+    pub digest: &'a Digest,
+    pub authority: &'a str,
+    pub operation: MetadataOperation,
+}
+
 /// A byte-quorum decision and its collected node identities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ByteAckDecision {
@@ -454,6 +693,17 @@ pub enum DcAck {
     Durable { scope: BlobDurability },
     Pending,
     Unknown,
+}
+
+/// Resolves write durability without exposing deployment mechanics to an ecosystem.
+#[async_trait]
+pub trait WriteAcknowledger: Send + Sync {
+    async fn acknowledge(&self, request: WriteAckRequest<'_>) -> DcAck;
+}
+
+/// Receives bounded write-durability measurements from an availability runtime.
+pub trait WriteAckObserver: Send + Sync {
+    fn record(&self, outcome: DcAck, byte_decision: &ByteAckDecision);
 }
 
 /// Log-safe availability operation fields.

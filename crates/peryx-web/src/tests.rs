@@ -12,8 +12,8 @@ fn policy_decision(state: &str, fresh: bool) -> UiPolicyDecision {
         repository: "private".to_owned(),
         project: "example".to_owned(),
         version: Some("1.0".to_owned()),
-        filename: Some("example-1.0.whl".to_owned()),
-        source: Some("pypi".to_owned()),
+        filename: Some("example-1.0.bin".to_owned()),
+        source: Some("alpha".to_owned()),
         action: "serve".to_owned(),
         state: state.to_owned(),
         rule: Some("blocked-project".to_owned()),
@@ -41,7 +41,7 @@ fn test_policy_decision_formats_times() {
     assert_eq!(decision.evaluated_at(), "1970-01-01T00:00:00Z");
     assert_eq!(decision.next_eligible_at(), "1970-01-01T00:01:00Z");
     decision.next_eligible_at_unix = None;
-    assert_eq!(decision.next_eligible_at(), "—");
+    assert_eq!(decision.next_eligible_at(), "-");
     decision.evaluated_at_unix = i64::MAX;
     assert_eq!(decision.evaluated_at(), i64::MAX.to_string());
     decision.evaluated_at_unix = -62_198_841_600;
@@ -54,14 +54,14 @@ fn test_policy_decision_filters_build_encoded_url() {
         repository: "team/private".to_owned(),
         state: "deny".to_owned(),
         rule: "blocked project".to_owned(),
-        source: "pypi".to_owned(),
+        source: "alpha".to_owned(),
         from: "1970-01-01T00:01".to_owned(),
         to: "1970-01-01T00:02".to_owned(),
         limit: "50".to_owned(),
     };
     assert_eq!(
         filters.url(Some("next page")).unwrap(),
-        "/+policy/decisions?repository=team%2Fprivate&state=deny&rule=blocked+project&source=pypi&from=60&to=120&limit=50&cursor=next+page"
+        "/+policy/decisions?repository=team%2Fprivate&state=deny&rule=blocked+project&source=alpha&from=60&to=120&limit=50&cursor=next+page"
     );
 }
 
@@ -101,8 +101,8 @@ fn test_policy_decision_page_deserializes_api_response() {
 fn test_shadow_page_deserializes_api_response_and_defaults_absent_fields() {
     let page: UiShadowPage = serde_json::from_value(serde_json::json!({
         "candidates": [
-            {"member": "hosted", "source": "hosted", "filename": "example-1.0.whl", "digest": "sha256:1", "selected": true},
-            {"member": "pypi", "source": "cached", "filename": "example-1.0.whl", "selected": false, "reason": "precedence"}
+            {"member": "hosted", "source": "hosted", "filename": "example-1.0.bin", "digest": "sha256:1", "selected": true},
+            {"member": "alpha", "source": "cached", "filename": "example-1.0.bin", "selected": false, "reason": "precedence"}
         ],
         "next_cursor": null
     }))
@@ -118,7 +118,7 @@ fn test_shadow_page_deserializes_api_response_and_defaults_absent_fields() {
             shadowed.reason_text().as_str(),
             shadowed.digest_text().as_str()
         ),
-        ("Shadowed", "Higher-precedence member", "—")
+        ("Shadowed", "Higher-precedence member", "-")
     );
     assert!(page.next_cursor.is_none());
 }
@@ -130,20 +130,20 @@ fn test_snapshot_from_status_roundtrip() {
         "serial": 7,
         "requests": 12,
         "by_ecosystem": [
-            {"ecosystem": "pypi", "pages": 12, "downloads": 4, "bytes": 900, "rejected": 0,
+            {"ecosystem": "alpha", "pages": 12, "downloads": 4, "bytes": 900, "rejected": 0,
              "uploads": 0, "families": {"metadata": 3}}
         ],
         "metric_families": [
-            {"key": "metadata", "label": "PEP 658 metadata hits", "roles": ["cached", "hosted", "virtual"]}
+            {"key": "metadata", "label": "metadata hits", "roles": ["cached", "hosted", "virtual"]}
         ],
         "indexes": [{
-            "name": "pypi",
-            "route": "pypi",
-            "ecosystem": "pypi",
+            "name": "alpha",
+            "route": "alpha",
+            "ecosystem": "alpha",
             "kind": "cached",
             "layers": [],
             "uploads": false,
-            "upstream": {"url": "https://pypi.org/simple/", "auth": {"kind": "none"}, "status": "configured"},
+            "upstream": {"url": "https://upstream.example/artifacts/", "auth": {"kind": "none"}, "status": "configured"},
             "project_count": 2,
             "upload_count": 0,
             "recent_uploads": [],
@@ -154,15 +154,15 @@ fn test_snapshot_from_status_roundtrip() {
     assert_eq!(snapshot.serial, 7);
     assert_eq!(snapshot.requests, 12);
     assert_eq!(snapshot.ecosystems.len(), 1);
-    assert_eq!(snapshot.ecosystems[0].ecosystem, "pypi");
+    assert_eq!(snapshot.ecosystems[0].ecosystem, "alpha");
     assert_eq!(snapshot.ecosystems[0].families["metadata"], 3);
-    assert_eq!(snapshot.families[0].label, "PEP 658 metadata hits");
+    assert_eq!(snapshot.families[0].label, "metadata hits");
     assert_eq!(snapshot.indexes.len(), 1);
     assert_eq!(snapshot.indexes[0].kind, "cached");
     assert_eq!(snapshot.indexes[0].project_count, 2);
     assert_eq!(
         snapshot.indexes[0].upstream.as_ref().unwrap().url,
-        "https://pypi.org/simple/"
+        "https://upstream.example/artifacts/"
     );
 }
 
@@ -257,9 +257,9 @@ fn test_search_page_from_json() {
         "results": [{
             "display_name": "Flask",
             "normalized_name": "flask",
-            "route": "root/pypi",
-            "index": "root/pypi",
-            "ecosystem": "pypi",
+            "route": "root/alpha",
+            "index": "root/alpha",
+            "ecosystem": "alpha",
             "type_label": "package",
             "type": "override",
             "available": true,
@@ -267,9 +267,9 @@ fn test_search_page_from_json() {
         }, {
             "display_name": "Django",
             "normalized_name": "django",
-            "route": "root/pypi",
-            "index": "root/pypi",
-            "ecosystem": "pypi",
+            "route": "root/alpha",
+            "index": "root/alpha",
+            "ecosystem": "alpha",
             "type_label": "package",
             "type": "cached",
             "available": false,
@@ -331,7 +331,7 @@ fn test_search_page_accepts_empty_results() {
     "results": [{
         "display_name": "Flask",
         "normalized_name": "flask",
-        "route": "root/pypi",
+        "route": "root/alpha",
         "type": "cached",
     }],
 }))]
@@ -352,9 +352,9 @@ fn search_page(page: usize, page_size: usize, total: usize, results: usize) -> U
             .map(|index| UiSearchResult {
                 display_name: "Flask".to_owned(),
                 normalized_name: "flask".to_owned(),
-                route: "root/pypi".to_owned(),
+                route: "root/alpha".to_owned(),
                 index: index.to_string(),
-                ecosystem: "pypi".to_owned(),
+                ecosystem: "alpha".to_owned(),
                 type_label: "package".to_owned(),
                 source_type: "cached".to_owned(),
                 available: true,
@@ -387,7 +387,7 @@ fn test_search_page_shown_range(
 #[case::http("http://example.com/docs", Some("external nofollow noopener noreferrer"))]
 #[case::https("https://example.com/docs", Some("external nofollow noopener noreferrer"))]
 #[case::mailto("mailto:maintainer@example.com", None)]
-#[case::absolute_route("/pypi/files/veloxdemo-1.0.0.tar.gz", None)]
+#[case::absolute_route("/alpha/files/veloxdemo-1.0.0.tar.gz", None)]
 #[case::relative_route("../docs/", None)]
 #[case::fragment("#usage", None)]
 #[case::protocol_relative_attacker("//attacker.example/path", Some("external nofollow noopener noreferrer"))]
@@ -400,7 +400,7 @@ fn test_external_link_rel(#[case] target: &str, #[case] expected: Option<&str>) 
 #[rstest]
 #[case::https("https://example.com/docs", true)]
 #[case::mailto("mailto:maintainer@example.com", true)]
-#[case::absolute_route("/pypi/files/veloxdemo-1.0.0.tar.gz", true)]
+#[case::absolute_route("/alpha/files/veloxdemo-1.0.0.tar.gz", true)]
 #[case::fragment("#usage", true)]
 #[case::protocol_relative_attacker("//attacker.example/path", true)]
 #[case::protocol_relative_loopback("//127.0.0.1/admin", true)]
@@ -410,12 +410,12 @@ fn test_is_safe_link(#[case] target: &str, #[case] expected: bool) {
 }
 
 #[rstest]
-#[case::https("https://example.com/pkg.whl", true)]
+#[case::https("https://example.com/pkg.bin", true)]
 #[case::mailto("mailto:maintainer@example.com", false)]
-#[case::absolute_route("/pypi/files/veloxdemo-1.0.0.tar.gz", true)]
+#[case::absolute_route("/alpha/files/veloxdemo-1.0.0.tar.gz", true)]
 #[case::fragment("#usage", true)]
-#[case::protocol_relative_attacker("//attacker.example/pkg.whl", true)]
-#[case::protocol_relative_loopback("//127.0.0.1/pkg.whl", true)]
+#[case::protocol_relative_attacker("//attacker.example/pkg.bin", true)]
+#[case::protocol_relative_loopback("//127.0.0.1/pkg.bin", true)]
 #[case::javascript("javascript:alert(1)", false)]
 fn test_is_safe_artifact_link(#[case] target: &str, #[case] expected: bool) {
     assert_eq!(is_safe_artifact_link(target), expected);
@@ -425,7 +425,7 @@ fn test_is_safe_artifact_link(#[case] target: &str, #[case] expected: bool) {
 fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
     let value = serde_json::json!({
         "hosted": {"base": {"pages": 1, "downloads": 0, "bytes": 10}, "hosted": {"uploads": 2}},
-        "root/pypi": {
+        "root/alpha": {
             "base": {"pages": 5, "downloads": 3, "bytes": 900},
             "cached": {"refreshes": 2, "changed": 1}
         },
@@ -435,7 +435,7 @@ fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
     assert_eq!(stats.totals.bytes, 910);
     assert_eq!(stats.totals.uploads, 2);
     assert_eq!(stats.totals.changed, 1);
-    assert_eq!(stats.rows[0].0, "root/pypi");
+    assert_eq!(stats.rows[0].0, "root/alpha");
     assert_eq!(stats.rows[1].0, "hosted");
 }
 
@@ -467,7 +467,7 @@ fn test_stats_project_reads_grouped_totals_and_files() {
             "ecosystem": {"metadata": 2}
         },
         "files": {
-            "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.whl":
+            "pandas-3.0.3-cp314-cp314-macosx_11_0_arm64.bin":
                 {"downloads": 2, "bytes": 500, "ecosystem": {"metadata": 2}},
         },
     });
@@ -557,7 +557,7 @@ fn usage_envelope(rows_key: &str, rows: &serde_json::Value, next_cursor: &serde_
 fn test_usage_page_parses_top_rows_and_cursor() {
     let value = usage_envelope(
         "packages",
-        &serde_json::json!([{"repository": "root/pypi", "project": "veloxdemo", "downloads": 12, "bytes": 3400}]),
+        &serde_json::json!([{"repository": "root/alpha", "project": "veloxdemo", "downloads": 12, "bytes": 3400}]),
         &serde_json::json!("next-page"),
     );
     let page = crate::model::UiUsagePage::parse(crate::model::AnalyticsView::Top, &value).unwrap();
@@ -582,7 +582,7 @@ fn test_usage_page_parses_each_view() {
         (
             crate::model::AnalyticsView::Sources,
             "sources",
-            serde_json::json!([{"repository": "r", "project": "p", "source": "pypi", "downloads": 1, "bytes": 2}]),
+            serde_json::json!([{"repository": "r", "project": "p", "source": "alpha", "downloads": 1, "bytes": 2}]),
         ),
         (
             crate::model::AnalyticsView::Unused,

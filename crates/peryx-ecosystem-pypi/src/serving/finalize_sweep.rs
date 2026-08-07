@@ -55,8 +55,8 @@ pub async fn finalize_admitted(state: &Arc<ServingState>) -> u64 {
 }
 
 /// Finalize the one intent staged under `key`, returning whether it reached a terminal outcome. Returns
-/// `false` for an intent this node cannot finalize — not `PyPI`, no stored rows, no write token, or fenced
-/// out — so the caller counts only the intents it advanced.
+/// `false` for an intent this node cannot finalize - not `PyPI`, no stored rows, no write token, or fenced
+/// out - so the caller counts only the intents it advanced.
 async fn finalize_one(state: &Arc<ServingState>, key: &str, intent: &StagedIntent) -> bool {
     let Some(filename) = pypi_filename(key) else {
         return false;

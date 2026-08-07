@@ -73,7 +73,10 @@ pub async fn retention_plan(State(state): State<Arc<AppState>>, request: Request
         limit: Some(request.limit),
         expect: request.expect,
     };
-    match plan(request.driver.as_ref(), &state.meta, &query, &mut |decision| {
+    let Some(driver) = request.driver.capabilities().retention else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "retention capability unavailable").into_response();
+    };
+    match plan(driver, &state.meta, &query, &mut |decision| {
         candidates.push(decision.clone());
         Ok(())
     }) {
@@ -164,6 +167,9 @@ impl Prepared {
         // cannot probe which routes exist by the shape of the failure.
         let index = super::index_by_route(state, &request.repository).ok_or_else(not_found)?;
         let driver = state.driver_for(index.ecosystem).ok_or_else(not_found)?.clone();
+        if driver.capabilities().retention.is_none() {
+            return Err(not_found());
+        }
         let (after, expect) = match &request.cursor {
             Some(cursor) => {
                 let resume = decode_cursor(cursor).map_err(|reason| problem(StatusCode::BAD_REQUEST, &reason))?;

@@ -63,6 +63,7 @@ mod versions;
 mod visibility;
 mod visibility_feed;
 mod visibility_mint;
+mod write_ack;
 
 pub use ack::{AckDecision, acknowledge};
 pub use analytics::{
@@ -167,6 +168,7 @@ pub use visibility_feed::{
     VisibilitySnapshotStore, decode_visibility_op, visibility_change, visibility_envelope,
 };
 pub use visibility_mint::{JournalSerials, SerialSource, StaleEpoch, VisibilityMinter};
+pub use write_ack::DistributedWriteAcknowledger;
 
 #[cfg(test)]
 mod ack_tests;

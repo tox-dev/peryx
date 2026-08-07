@@ -518,7 +518,7 @@ mod tests {
     const STAGED_KEY: &str = "pypi:root/hosted:flask:flask-1.0.whl";
 
     /// Home loss before admission: the home DC is unreachable when the client uploads. Admission does not
-    /// contact the home — publication and home assignment run downstream — so it still retains the write
+    /// contact the home - publication and home assignment run downstream - so it still retains the write
     /// durably as a pending intent rather than refusing it, and nothing is published under the outage.
     #[test]
     fn test_fault_home_loss_before_admission_retains_the_write_unpublished() {

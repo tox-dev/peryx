@@ -78,7 +78,7 @@ pub fn App() -> impl IntoView {
                 // These pages read runtime state through a `Suspense`. `SsrMode::Async` resolves those
                 // resources before the server emits the document, instead of streaming the `loading`
                 // fallback first and swapping the content in. Out-of-order streaming truncates that
-                // fallback into the response under load — on the live server, not only in tests — so a
+                // fallback into the response under load on the live server, so a
                 // full resolve is both deterministic to assert on and correct for no-JS and slow clients.
                 <Routes fallback=|| view! { <p class="dim">"not found"</p> }>
                     <Route path=path!("/") view=Dashboard ssr=SsrMode::Async />

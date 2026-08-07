@@ -8,7 +8,7 @@
 //! a [`CachedCounters`] group only a caching index fills, a [`HostedCounters`] group only an upload
 //! store fills, and an open [`EcosystemCounters`] map whose keys each ecosystem driver declares
 //! through [`MetricFamily`]. The core stays ecosystem-neutral: a driver names and describes its own
-//! families (`PyPI`'s PEP 658 sibling today), and the render layer scopes each family to the roles
+//! families supplied by ecosystem adapters, and the render layer scopes each family to the roles
 //! and ecosystem that emit it, so a hosted index never reports a caching counter.
 
 use std::collections::{BTreeMap, HashMap};
@@ -71,7 +71,7 @@ pub enum Event {
     ///
     /// `version` and `source` feed the durable daily aggregate: `version` is the distribution version
     /// the driver parsed from the artifact identity (`None` when the ecosystem has no version, as with
-    /// content-addressed OCI layers), and `source` is the routed upstream a cache miss fetched from
+    /// content-addressed artifacts), and `source` is the routed upstream a cache miss fetched from
     /// (`None` when the bytes came straight from the local store, so no upstream was routed to). The
     /// driver derives both without touching the store, keeping collection off the request path.
     Download {
@@ -83,7 +83,7 @@ pub enum Event {
         bytes: u64,
     },
     /// An ecosystem-specific counter fired. `family` is a static key the ecosystem driver declares
-    /// through [`MetricFamily`] (`PyPI`'s `metadata` PEP 658 sibling today); `filename` keys the
+    /// through [`MetricFamily`]; `filename` keys the
     /// per-file breakdown when the observation is about one artifact.
     Ecosystem {
         route: String,
@@ -172,7 +172,7 @@ pub struct MetricFamily {
     pub prom_name: &'static str,
     /// The Prometheus `# HELP` line.
     pub help: &'static str,
-    /// The dashboard label, e.g. `PEP 658 metadata hits`.
+    /// The dashboard label supplied by the ecosystem adapter.
     pub ui_label: &'static str,
     /// The roles that emit this family; the render layer skips it for any other role.
     pub roles: &'static [Role],
@@ -225,7 +225,7 @@ pub struct SourceUsage {
 
 /// A project with durable lifetime downloads but none inside the queried window.
 ///
-/// `lifetime_downloads` distinguishes a package that was simply idle in the window from one whose
+/// `lifetime_downloads` distinguishes a package idle in the window from one whose
 /// activity predates the retained interval reported alongside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnusedPackage {
@@ -1468,7 +1468,7 @@ mod tests {
         Event::Download {
             route: route.into(),
             project: project.into(),
-            filename: format!("{project}-{version}.whl"),
+            filename: format!("{project}-{version}.bin"),
             version: Some(version.into()),
             source: source.map(Into::into),
             bytes,
@@ -1487,7 +1487,7 @@ mod tests {
         let processed = {
             let _parked = metrics.tree.write().unwrap();
             for _ in 0..sends {
-                metrics.record(download("pypi", "numpy", "numpy-1.whl", 1));
+                metrics.record(download("alpha", "numpy", "numpy-1.bin", 1));
             }
             assert!(metrics.dropped() > 0, "overload was not reported");
             sends - metrics.dropped()
@@ -1532,23 +1532,23 @@ mod tests {
     #[test]
     fn test_durable_downloads_survive_a_restart() {
         let (_dir, meta) = store();
-        let filename = "pandas-3.0-py3-none-any.whl";
+        let filename = "pandas-3.0-py3-none-any.bin";
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
         metrics.record(Event::Page {
-            route: "root/pypi".into(),
+            route: "root/alpha".into(),
             project: "pandas".into(),
         });
-        metrics.record(download("root/pypi", "pandas", filename, 100));
-        metrics.record(download("root/pypi", "pandas", filename, 50));
+        metrics.record(download("root/alpha", "pandas", filename, 100));
+        metrics.record(download("root/alpha", "pandas", filename, 50));
         settle_and_assert(&metrics, || persisted_downloads(&meta.analytics()) == Some(2));
         drop(metrics);
 
         let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
         let totals = restarted.index_totals();
-        let index = &totals["root/pypi"];
+        let index = &totals["root/alpha"];
         assert_eq!(index.base.downloads, 2);
         assert_eq!(index.base.bytes, 150);
-        let files = restarted.drill(Some("root/pypi"), Some("pandas"));
+        let files = restarted.drill(Some("root/alpha"), Some("pandas"));
         assert_eq!(files["files"][filename]["downloads"], 2);
         assert_eq!(files["files"][filename]["bytes"], 150);
     }
@@ -1557,11 +1557,11 @@ mod tests {
     fn test_usage_totals_reports_lifetime_by_repository() {
         let (_dir, meta) = store();
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
-        metrics.record(download("pypi", "numpy", "numpy-1.whl", 100));
-        metrics.record(download("pypi", "numpy", "numpy-1.whl", 100));
-        metrics.record(download("pypi", "scipy", "scipy-1.whl", 50));
-        metrics.record(download("pypi", "flask", "flask-1.whl", 40));
-        metrics.record(download("other", "django", "django-1.whl", 30));
+        metrics.record(download("alpha", "numpy", "numpy-1.bin", 100));
+        metrics.record(download("alpha", "numpy", "numpy-1.bin", 100));
+        metrics.record(download("alpha", "scipy", "scipy-1.bin", 50));
+        metrics.record(download("alpha", "flask", "flask-1.bin", 40));
+        metrics.record(download("other", "django", "django-1.bin", 30));
         settle_and_assert(&metrics, || metrics.usage_totals(None).len() == 4);
 
         // flask and scipy tie on downloads within the same repository, so ordering falls through to the
@@ -1571,28 +1571,28 @@ mod tests {
             metrics.usage_totals(None),
             [
                 PackageUsage {
-                    repository: "pypi".into(),
+                    repository: "alpha".into(),
                     project: "numpy".into(),
                     downloads: 2,
                     bytes: 200,
+                },
+                PackageUsage {
+                    repository: "alpha".into(),
+                    project: "flask".into(),
+                    downloads: 1,
+                    bytes: 40,
+                },
+                PackageUsage {
+                    repository: "alpha".into(),
+                    project: "scipy".into(),
+                    downloads: 1,
+                    bytes: 50,
                 },
                 PackageUsage {
                     repository: "other".into(),
                     project: "django".into(),
                     downloads: 1,
                     bytes: 30,
-                },
-                PackageUsage {
-                    repository: "pypi".into(),
-                    project: "flask".into(),
-                    downloads: 1,
-                    bytes: 40,
-                },
-                PackageUsage {
-                    repository: "pypi".into(),
-                    project: "scipy".into(),
-                    downloads: 1,
-                    bytes: 50,
                 },
             ]
         );
@@ -1613,13 +1613,13 @@ mod tests {
         let (_dir, meta) = store();
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(0));
         metrics.record(Event::Page {
-            route: "pypi".into(),
+            route: "alpha".into(),
             project: "flask".into(),
         });
         settle_and_assert(&metrics, || {
             metrics
                 .index_totals()
-                .get("pypi")
+                .get("alpha")
                 .is_some_and(|totals| totals.base.pages == 1)
         });
         assert_eq!(persisted_downloads(&meta.analytics()), None);
@@ -1630,10 +1630,10 @@ mod tests {
     fn test_daily_buckets_split_by_version_source_and_day() {
         let (_dir, meta) = store();
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(20_000));
-        metrics.record(download_of("pypi", "flask", "3.0", Some("pypi-org"), 10));
-        metrics.record(download_of("pypi", "flask", "3.0", Some("pypi-org"), 40));
-        metrics.record(download_of("pypi", "flask", "2.0", Some("pypi-org"), 5));
-        metrics.record(download_of("pypi", "flask", "3.0", None, 7));
+        metrics.record(download_of("alpha", "flask", "3.0", Some("upstream"), 10));
+        metrics.record(download_of("alpha", "flask", "3.0", Some("upstream"), 40));
+        metrics.record(download_of("alpha", "flask", "2.0", Some("upstream"), 5));
+        metrics.record(download_of("alpha", "flask", "3.0", None, 7));
         settle_and_assert(&metrics, || metrics.daily_usage().len() == 3);
 
         assert_eq!(
@@ -1641,16 +1641,16 @@ mod tests {
             [
                 DailyUsage {
                     day: 20_000,
-                    repository: "pypi".into(),
+                    repository: "alpha".into(),
                     project: "flask".into(),
                     version: "2.0".into(),
-                    source: "pypi-org".into(),
+                    source: "upstream".into(),
                     downloads: 1,
                     bytes: 5,
                 },
                 DailyUsage {
                     day: 20_000,
-                    repository: "pypi".into(),
+                    repository: "alpha".into(),
                     project: "flask".into(),
                     version: "3.0".into(),
                     source: String::new(),
@@ -1659,10 +1659,10 @@ mod tests {
                 },
                 DailyUsage {
                     day: 20_000,
-                    repository: "pypi".into(),
+                    repository: "alpha".into(),
                     project: "flask".into(),
                     version: "3.0".into(),
-                    source: "pypi-org".into(),
+                    source: "upstream".into(),
                     downloads: 2,
                     bytes: 50,
                 },
@@ -1674,20 +1674,20 @@ mod tests {
     fn test_retention_drops_expired_days_and_keeps_retained_totals() {
         let (_dir, meta) = store();
         let old = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(100));
-        old.record(download_of("pypi", "flask", "1.0", Some("up"), 3));
+        old.record(download_of("alpha", "flask", "1.0", Some("up"), 3));
         settle_and_assert(&old, || old.daily_usage().len() == 1);
         drop(old);
 
         // Ten days later a fresh download lands; the day-100 bucket is now beyond the 7-day window.
         let metrics = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(110));
-        metrics.record(download_of("pypi", "flask", "2.0", Some("up"), 9));
+        metrics.record(download_of("alpha", "flask", "2.0", Some("up"), 9));
         settle_and_assert(&metrics, || metrics.daily_usage().iter().any(|row| row.day == 110));
 
         assert_eq!(
             metrics.daily_usage(),
             [DailyUsage {
                 day: 110,
-                repository: "pypi".into(),
+                repository: "alpha".into(),
                 project: "flask".into(),
                 version: "2.0".into(),
                 source: "up".into(),
@@ -1705,13 +1705,13 @@ mod tests {
         let (day, clock) = steppable_clock();
         let metrics = Metrics::start_durable(meta.analytics(), Some(2), clock);
 
-        metrics.record(download_of("pypi", "flask", "1.0", Some("up"), 3));
+        metrics.record(download_of("alpha", "flask", "1.0", Some("up"), 3));
         settle_and_assert(&metrics, || metrics.daily_usage().iter().any(|row| row.day == 0));
 
         // Advance five days so the day-0 bucket falls outside the two-day window, then record again:
-        // the running aggregator applies retention to the live map, not just at startup.
+        // the running aggregator applies retention to the live map after startup.
         day.store(5, Ordering::SeqCst);
-        metrics.record(download_of("pypi", "flask", "2.0", Some("up"), 9));
+        metrics.record(download_of("alpha", "flask", "2.0", Some("up"), 9));
         settle_and_assert(&metrics, || metrics.daily_usage().iter().any(|row| row.day == 5));
 
         let days: Vec<i64> = metrics.daily_usage().iter().map(|row| row.day).collect();
@@ -1727,11 +1727,11 @@ mod tests {
         // The running aggregator applies retention inside the download batch on its own thread, so the
         // settle-based tests reach that flush only when the batch wins the race with the coverage
         // snapshot. Drive the loop directly over a channel that closes after one batch: the retention
-        // flush then runs on every architecture and every run, not just the lucky ones.
+        // flush then runs on every architecture and run.
         let clock = clock_on_day(30);
         let stale = DailyKey {
             day: 10,
-            repository: "pypi".into(),
+            repository: "alpha".into(),
             project: "flask".into(),
             version: "1.0".into(),
             source: "up".into(),
@@ -1749,7 +1749,7 @@ mod tests {
 
         let (sender, receiver) = channel();
         sender
-            .send(Message::Event(download_of("pypi", "flask", "2.0", Some("up"), 9)))
+            .send(Message::Event(download_of("alpha", "flask", "2.0", Some("up"), 9)))
             .unwrap();
         drop(sender);
 
@@ -1769,7 +1769,7 @@ mod tests {
     fn bucket(day: i64, version: &str) -> DailyKey {
         DailyKey {
             day,
-            repository: "pypi".into(),
+            repository: "alpha".into(),
             project: "flask".into(),
             version: version.into(),
             source: "up".into(),
@@ -1865,11 +1865,11 @@ mod tests {
 
         let (sender, receiver) = channel();
         sender
-            .send(Message::Event(download_of("pypi", "flask", "1.0", None, 10)))
+            .send(Message::Event(download_of("alpha", "flask", "1.0", None, 10)))
             .unwrap();
         assert!(step(&receiver, &ctx, policy, &mut state));
         sender
-            .send(Message::Event(download_of("pypi", "flask", "1.0", None, 20)))
+            .send(Message::Event(download_of("alpha", "flask", "1.0", None, 20)))
             .unwrap();
         assert!(step(&receiver, &ctx, policy, &mut state));
 
@@ -1915,7 +1915,7 @@ mod tests {
 
         let (sender, receiver) = channel();
         sender
-            .send(Message::Event(download_of("pypi", "flask", "1.0", None, 8)))
+            .send(Message::Event(download_of("alpha", "flask", "1.0", None, 8)))
             .unwrap();
         assert!(step(&receiver, &ctx, policy, &mut state));
         assert!(handle.load_daily().unwrap().is_none());
@@ -1946,7 +1946,7 @@ mod tests {
 
         let (sender, receiver) = channel();
         sender
-            .send(Message::Event(download_of("pypi", "flask", "1.0", None, 4)))
+            .send(Message::Event(download_of("alpha", "flask", "1.0", None, 4)))
             .unwrap();
         assert!(step(&receiver, &ctx, policy, &mut state));
         assert!(handle.load_daily().unwrap().is_none());
@@ -1964,7 +1964,7 @@ mod tests {
     fn test_daily_usage_survives_a_restart() {
         let (_dir, meta) = store();
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(42));
-        metrics.record(download_of("pypi", "flask", "3.0", Some("up"), 12));
+        metrics.record(download_of("alpha", "flask", "3.0", Some("up"), 12));
         settle_and_assert(&metrics, || meta.analytics().load_daily().unwrap().is_some());
         drop(metrics);
 
@@ -1973,7 +1973,7 @@ mod tests {
             restarted.daily_usage(),
             [DailyUsage {
                 day: 42,
-                repository: "pypi".into(),
+                repository: "alpha".into(),
                 project: "flask".into(),
                 version: "3.0".into(),
                 source: "up".into(),
@@ -1987,8 +1987,8 @@ mod tests {
     fn test_exported_daily_batch_applies_once_on_a_replica() {
         let (_dir, meta) = store();
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(20_000));
-        metrics.record(download_of("pypi", "flask", "3.0", Some("pypi-org"), 40));
-        metrics.record(download_of("pypi", "flask", "3.0", Some("pypi-org"), 10));
+        metrics.record(download_of("alpha", "flask", "3.0", Some("upstream"), 40));
+        metrics.record(download_of("alpha", "flask", "3.0", Some("upstream"), 10));
         settle_and_assert(&metrics, || metrics.daily_usage().len() == 1);
 
         let interval = IntervalId {
@@ -2001,10 +2001,10 @@ mod tests {
 
         let dimension = AggregateKey {
             day: 20_000,
-            repository: "pypi".into(),
+            repository: "alpha".into(),
             project: "flask".into(),
             version: "3.0".into(),
-            source: "pypi-org".into(),
+            source: "upstream".into(),
         };
         let mut replica = ApplyState::new(ApplyLimits::default());
         assert_eq!(replica.apply(&export).unwrap(), ApplyOutcome::Applied);
@@ -2035,14 +2035,14 @@ mod tests {
         let metrics = Metrics::start_durable(meta.analytics(), None, clock);
 
         day.store(10, SeqCst);
-        metrics.record(download_of("pypi", "flask", "1.0", Some("up"), 100));
+        metrics.record(download_of("alpha", "flask", "1.0", Some("up"), 100));
         settle_and_assert(&metrics, || metrics.daily_usage().iter().any(|usage| usage.day == 10));
         day.store(11, SeqCst);
-        metrics.record(download_of("pypi", "flask", "1.0", Some("up"), 200));
+        metrics.record(download_of("alpha", "flask", "1.0", Some("up"), 200));
         settle_and_assert(&metrics, || metrics.daily_usage().iter().any(|usage| usage.day == 11));
         // The current day has activity too, but it is not yet sealed and must be withheld.
         day.store(12, SeqCst);
-        metrics.record(download_of("pypi", "flask", "1.0", Some("up"), 5));
+        metrics.record(download_of("alpha", "flask", "1.0", Some("up"), 5));
         settle_and_assert(&metrics, || metrics.daily_usage().iter().any(|usage| usage.day == 12));
 
         let producer = ProducerId("east".to_owned());
@@ -2069,7 +2069,7 @@ mod tests {
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(7));
         assert!(metrics.daily_usage().is_empty());
 
-        metrics.record(download_of("pypi", "flask", "3.0", Some("up"), 4));
+        metrics.record(download_of("alpha", "flask", "3.0", Some("up"), 4));
         settle_and_assert(&metrics, || metrics.daily_usage().len() == 1);
         assert_eq!(metrics.daily_usage()[0].bytes, 4);
     }
@@ -2081,7 +2081,7 @@ mod tests {
             schema: super::DAILY_SCHEMA + 1,
             buckets: vec![DailyUsage {
                 day: 1,
-                repository: "pypi".into(),
+                repository: "alpha".into(),
                 project: "flask".into(),
                 version: "9.9".into(),
                 source: "up".into(),
@@ -2100,7 +2100,7 @@ mod tests {
     fn test_missing_dimensions_restore_as_empty_labels() {
         let (_dir, meta) = store();
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(3));
-        metrics.record(download("pypi", "flask", "flask-3.0.whl", 8));
+        metrics.record(download("alpha", "flask", "flask-3.0.bin", 8));
         settle_and_assert(&metrics, || meta.analytics().load_daily().unwrap().is_some());
         drop(metrics);
 
@@ -2109,7 +2109,7 @@ mod tests {
             restarted.daily_usage(),
             [DailyUsage {
                 day: 3,
-                repository: "pypi".into(),
+                repository: "alpha".into(),
                 project: "flask".into(),
                 version: String::new(),
                 source: String::new(),
@@ -2266,7 +2266,7 @@ mod tests {
         let (_dir, _meta, metrics) = durable_on(500, None);
         metrics.record(download_of("a", "flask", "3.0", None, 10));
         metrics.record(download_of("a", "flask", "3.0", None, 10));
-        metrics.record(download("a", "flask", "flask.whl", 5));
+        metrics.record(download("a", "flask", "flask.bin", 5));
         settle_and_assert(&metrics, || metrics.daily_usage().len() == 2);
         let interval = metrics.resolve_usage_interval(None, None);
 
@@ -2294,7 +2294,7 @@ mod tests {
     #[test]
     fn test_usage_sources_splits_by_source_and_labels_local_as_null() {
         let (_dir, _meta, metrics) = durable_on(500, None);
-        metrics.record(download_of("a", "flask", "1.0", Some("pypi"), 10));
+        metrics.record(download_of("a", "flask", "1.0", Some("alpha"), 10));
         metrics.record(download_of("a", "flask", "1.0", None, 5));
         settle_and_assert(&metrics, || metrics.daily_usage().len() == 2);
         let interval = metrics.resolve_usage_interval(None, None);
@@ -2305,7 +2305,7 @@ mod tests {
                 SourceUsage {
                     repository: "a".into(),
                     project: "flask".into(),
-                    source: Some("pypi".into()),
+                    source: Some("alpha".into()),
                     downloads: 1,
                     bytes: 10,
                 },
@@ -2359,13 +2359,13 @@ mod tests {
     fn test_usage_unused_distinguishes_idle_projects_from_active_and_page_only() {
         let (_dir, meta) = store();
         let past = Metrics::start_durable(meta.analytics(), None, clock_on_day(100));
-        past.record(download("a", "old", "old.whl", 7));
-        past.record(download("a", "old", "old.whl", 7));
+        past.record(download("a", "old", "old.bin", 7));
+        past.record(download("a", "old", "old.bin", 7));
         settle_and_assert(&past, || persisted_downloads(&meta.analytics()) == Some(2));
         drop(past);
 
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(500));
-        metrics.record(download("a", "flask", "flask.whl", 10));
+        metrics.record(download("a", "flask", "flask.bin", 10));
         metrics.record(Event::Page {
             route: "a".into(),
             project: "page-only".into(),
@@ -2448,7 +2448,7 @@ mod tests {
         let (_dir, meta) = store();
         let past = Metrics::start_durable(meta.analytics(), None, clock_on_day(100));
         for (route, project) in [("a", "alpha"), ("a", "beta"), ("b", "alpha")] {
-            past.record(download(route, project, "file.whl", 5));
+            past.record(download(route, project, "file.bin", 5));
         }
         settle_and_assert(&past, || persisted_downloads(&meta.analytics()) == Some(3));
         drop(past);

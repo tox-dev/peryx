@@ -22,7 +22,7 @@ use peryx_policy::{RetentionDecision, RetentionFrontier, RetentionPolicy, Retent
 use peryx_storage::meta::MetaStore;
 use serde::{Deserialize, Serialize};
 
-use crate::serving::EcosystemDriver;
+use crate::serving::{EcosystemDriver, RetentionDriver};
 
 /// Bounds how many plans one repository may compute at once, so a burst of full-scan previews on a
 /// single repository cannot starve the rest. Shared across handlers; a permit is held for one request.
@@ -159,7 +159,7 @@ impl std::error::Error for RetentionPlanError {}
 /// Returns [`RetentionPlanError`] when the repository plans no retention, the cursor is stale, `emit`
 /// stopped the stream, or the store could not be read.
 pub fn plan(
-    driver: &dyn EcosystemDriver,
+    driver: &dyn RetentionDriver,
     meta: &MetaStore,
     query: &RetentionQuery<'_>,
     emit: &mut dyn FnMut(&RetentionDecision) -> Result<(), String>,
@@ -191,9 +191,8 @@ pub fn plan(
         Ok(())
     });
     match (outcome, stop) {
-        (Ok(None), _) => Err(RetentionPlanError::Unsupported),
         (_, Some(Stop::Interrupted(reason))) => Err(RetentionPlanError::Interrupted(reason)),
-        (Ok(Some(_)), _) => Ok(RetentionPage {
+        (Ok(_), _) => Ok(RetentionPage {
             summary,
             next_cursor: None,
             emitted,
@@ -250,7 +249,7 @@ pub struct RetentionExport {
 /// Returns [`RetentionPlanError`] when the sink stopped, the store could not be read, or the repository
 /// plans no retention.
 fn write_export(
-    driver: &dyn EcosystemDriver,
+    driver: &dyn RetentionDriver,
     meta: &MetaStore,
     query: &RetentionQuery<'_>,
     summary: RetentionSummary,
@@ -275,7 +274,7 @@ fn line(value: &impl Serialize) -> Bytes {
 ///
 /// The scan runs on a blocking task feeding a bounded channel, so a slow reader backpressures the scan
 /// and a disconnected reader stops it. `permit` rides along so the repository's concurrency slot stays
-/// held for the stream's whole life, not just the handler that started it. The export's `summary` is the
+/// held for the stream's whole life. The export's `summary` is the
 /// identity the caller already read and validated the cursor against; the header carries it first.
 pub fn export_body(
     driver: Arc<dyn EcosystemDriver>,
@@ -294,7 +293,11 @@ pub fn export_body(
             limit: None,
             expect: None,
         };
-        let result = write_export(driver.as_ref(), &meta, &query, export.summary, &mut |bytes| {
+        let Some(retention) = driver.capabilities().retention else {
+            let _ = tx.blocking_send(Err(std::io::Error::other("retention capability unavailable")));
+            return;
+        };
+        let result = write_export(retention, &meta, &query, export.summary, &mut |bytes| {
             tx.blocking_send(Ok(bytes)).map_err(drop)
         });
         // A store failure mid-stream poisons the body so the reader sees a truncated transfer rather
@@ -369,7 +372,7 @@ mod tests {
     use peryx_storage::meta::MetaStore;
 
     use super::{RetentionPlanError, RetentionQuery, decode_cursor, encode_cursor, plan};
-    use crate::serving::EcosystemDriver;
+    use crate::serving::{DriverCapabilities, EcosystemDriver, RetentionDriver};
 
     #[derive(Default)]
     struct StubDriver {
@@ -377,8 +380,6 @@ mod tests {
         /// A store error the driver raises mid-scan instead of finishing, so the store-failure branch
         /// is reachable without a broken store.
         fail: Option<String>,
-        /// Plan no retention at all, so the unsupported branch is reachable without a second double.
-        unsupported: bool,
     }
 
     #[async_trait]
@@ -399,6 +400,15 @@ mod tests {
             serde_json::Value::Null
         }
 
+        fn capabilities(&self) -> DriverCapabilities<'_> {
+            DriverCapabilities {
+                retention: Some(self),
+                ..DriverCapabilities::default()
+            }
+        }
+    }
+
+    impl RetentionDriver for StubDriver {
         fn plan_retention(
             &self,
             _meta: &MetaStore,
@@ -406,20 +416,17 @@ mod tests {
             policy: &RetentionPolicy,
             _now: Option<i64>,
             emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-        ) -> Result<Option<peryx_policy::RetentionSummary>, String> {
-            if self.unsupported {
-                return Ok(None);
-            }
+        ) -> Result<peryx_policy::RetentionSummary, String> {
             for decision in &self.decisions {
                 emit(decision.clone())?;
             }
             if let Some(reason) = &self.fail {
                 return Err(reason.clone());
             }
-            Ok(Some(peryx_policy::RetentionSummary {
+            Ok(peryx_policy::RetentionSummary {
                 policy_version: policy.version(),
                 frontier: peryx_policy::RetentionFrontier::default(),
-            }))
+            })
         }
     }
 
@@ -429,7 +436,7 @@ mod tests {
         crate::state::IndexDescription {
             name: "demo".to_owned(),
             route: "demo".to_owned(),
-            ecosystem: "pypi",
+            ecosystem: "alpha",
             kind: "hosted",
             layers: Vec::new(),
             precedence: Vec::new(),
@@ -453,8 +460,7 @@ mod tests {
         assert!(driver.discover_index(index_description(), None).is_null());
     }
 
-    /// A driver that implements only the required surface, so `plan` reaches the default
-    /// [`plan_retention`](EcosystemDriver::plan_retention) an ecosystem without retention keeps.
+    /// A driver that implements only the required serving surface.
     struct DefaultDriver;
 
     #[async_trait]
@@ -477,8 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_falls_back_to_the_default_when_a_driver_omits_retention() {
-        let (_dir, meta) = store();
+    fn test_driver_without_retention_exposes_no_capability() {
         let driver = DefaultDriver;
         assert_eq!(driver.ecosystem(), Ecosystem::new("example"));
         assert!(matches!(
@@ -487,9 +492,7 @@ mod tests {
         ));
         assert!(driver.discover_index(index_description(), None).is_null());
 
-        let result = collect(&driver, &meta, &empty_policy(), 0, None, None);
-
-        assert!(matches!(result, Err(RetentionPlanError::Unsupported)));
+        assert!(driver.capabilities().retention.is_none());
     }
 
     fn decision(artifact: &str) -> RetentionDecision {
@@ -519,7 +522,7 @@ mod tests {
     }
 
     fn collect(
-        driver: &dyn EcosystemDriver,
+        driver: &dyn RetentionDriver,
         meta: &MetaStore,
         policy: &RetentionPolicy,
         after: u64,
@@ -528,7 +531,7 @@ mod tests {
     ) -> Result<(Vec<String>, super::RetentionPage), RetentionPlanError> {
         let mut seen = Vec::new();
         let query = RetentionQuery {
-            index: "pypi",
+            index: "alpha",
             policy,
             now: None,
             after,
@@ -543,25 +546,11 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_reports_unsupported_when_the_driver_plans_no_retention() {
-        let (_dir, meta) = store();
-        let driver = StubDriver {
-            unsupported: true,
-            ..StubDriver::default()
-        };
-
-        let result = collect(&driver, &meta, &empty_policy(), 0, None, None);
-
-        assert!(matches!(result, Err(RetentionPlanError::Unsupported)));
-    }
-
-    #[test]
     fn test_plan_streams_every_decision_for_an_unbounded_export() {
         let (_dir, meta) = store();
         let driver = StubDriver {
             decisions: vec![decision("a"), decision("b"), decision("c")],
             fail: None,
-            unsupported: false,
         };
 
         let (seen, page) = collect(&driver, &meta, &empty_policy(), 0, None, None).unwrap();
@@ -584,7 +573,6 @@ mod tests {
                 decision("e"),
             ],
             fail: None,
-            unsupported: false,
         };
 
         let (first, page) = collect(&driver, &meta, &policy, 0, Some(2), None).unwrap();
@@ -609,7 +597,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a")],
             fail: None,
-            unsupported: false,
         };
 
         let (seen, page) = collect(&driver, &meta, &empty_policy(), 5, Some(2), None).unwrap();
@@ -625,7 +612,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a")],
             fail: None,
-            unsupported: false,
         };
         let stale = peryx_policy::RetentionSummary {
             policy_version: 999,
@@ -647,10 +633,9 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a"), decision("b")],
             fail: None,
-            unsupported: false,
         };
         let query = RetentionQuery {
-            index: "pypi",
+            index: "alpha",
             policy: &empty_policy(),
             now: None,
             after: 0,
@@ -672,7 +657,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a")],
             fail: Some("meta read failed".to_owned()),
-            unsupported: false,
         };
 
         let result = collect(&driver, &meta, &empty_policy(), 0, None, None);
@@ -716,7 +700,7 @@ mod tests {
     }
 
     fn seed_generation(meta: &MetaStore) {
-        meta.advance_policy_generation("pypi").unwrap();
+        meta.advance_policy_generation("alpha").unwrap();
     }
 
     #[test]
@@ -725,22 +709,22 @@ mod tests {
         seed_generation(&meta);
         let policy = empty_policy();
 
-        let summary = super::summary(&meta, "pypi", &policy).unwrap();
+        let summary = super::summary(&meta, "alpha", &policy).unwrap();
 
         assert_eq!(summary.policy_version, policy.version());
         assert_eq!(summary.frontier.policy, 1);
     }
 
     fn export_lines(
-        driver: &dyn EcosystemDriver,
+        driver: &dyn RetentionDriver,
         meta: &MetaStore,
         after: u64,
         sink: &mut dyn FnMut(Bytes) -> Result<(), ()>,
     ) -> Result<(), RetentionPlanError> {
         let policy = empty_policy();
-        let summary = super::summary(meta, "pypi", &policy).unwrap();
+        let summary = super::summary(meta, "alpha", &policy).unwrap();
         let query = RetentionQuery {
-            index: "pypi",
+            index: "alpha",
             policy: &policy,
             now: None,
             after,
@@ -756,7 +740,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a"), decision("b")],
             fail: None,
-            unsupported: false,
         };
         let mut lines: Vec<serde_json::Value> = Vec::new();
 
@@ -781,7 +764,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a"), decision("b"), decision("c")],
             fail: None,
-            unsupported: false,
         };
         let mut artifacts: Vec<String> = Vec::new();
 
@@ -803,7 +785,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a")],
             fail: None,
-            unsupported: false,
         };
 
         let result = export_lines(&driver, &meta, 0, &mut |_| Err(()));
@@ -817,7 +798,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a"), decision("b")],
             fail: None,
-            unsupported: false,
         };
         let mut sent = 0_u32;
 
@@ -839,7 +819,6 @@ mod tests {
         let driver = StubDriver {
             decisions: vec![decision("a")],
             fail: Some("meta read failed".to_owned()),
-            unsupported: false,
         };
 
         let result = export_lines(&driver, &meta, 0, &mut |_| Ok(()));
@@ -853,14 +832,13 @@ mod tests {
         let driver: Arc<dyn EcosystemDriver> = Arc::new(StubDriver {
             decisions: vec![decision("a"), decision("b")],
             fail: None,
-            unsupported: false,
         });
         let policy = empty_policy();
-        let summary = super::summary(&meta, "pypi", &policy).unwrap();
+        let summary = super::summary(&meta, "alpha", &policy).unwrap();
         let gates = super::RetentionGates::new(1);
-        let permit = gates.try_enter("pypi").unwrap();
+        let permit = gates.try_enter("alpha").unwrap();
         let export = super::RetentionExport {
-            index: "pypi".to_owned(),
+            index: "alpha".to_owned(),
             policy,
             now: None,
             after: 0,
@@ -883,14 +861,13 @@ mod tests {
         let driver: Arc<dyn EcosystemDriver> = Arc::new(StubDriver {
             decisions: vec![decision("a")],
             fail: Some("meta read failed".to_owned()),
-            unsupported: false,
         });
         let policy = empty_policy();
-        let summary = super::summary(&meta, "pypi", &policy).unwrap();
+        let summary = super::summary(&meta, "alpha", &policy).unwrap();
         let gates = super::RetentionGates::new(1);
-        let permit = gates.try_enter("pypi").unwrap();
+        let permit = gates.try_enter("alpha").unwrap();
         let export = super::RetentionExport {
-            index: "pypi".to_owned(),
+            index: "alpha".to_owned(),
             policy,
             now: None,
             after: 0,

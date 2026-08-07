@@ -2,7 +2,7 @@
 //!
 //! Values are the closed set the language can express: a boolean, a signed integer, a string, or a
 //! timestamp (held as whole seconds since the Unix epoch). There is deliberately no floating point,
-//! no arbitrary object, and no byte string — the surface stays small so comparison is total and
+//! no arbitrary object, and no byte string - the surface stays small so comparison is total and
 //! cost is predictable.
 
 use std::cmp::Ordering;

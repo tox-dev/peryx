@@ -2,7 +2,7 @@
 //!
 //! The executor is where authorization becomes structural. It injects the caller's scope as a
 //! predicate `ANDed` below any user predicate and applies it before ordering and paging, so counts and
-//! pagination run over authorized rows only — there is no post-limit filtering that could leak a
+//! pagination run over authorized rows only - there is no post-limit filtering that could leak a
 //! total. What it never does is write: it reads rows from a [`DataSource`] and reduces them.
 
 use std::cmp::Ordering;

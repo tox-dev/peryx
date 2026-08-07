@@ -116,7 +116,7 @@ pub(super) fn command_options(data_dir: &Path, packages: Vec<String>) -> Prefetc
     }
 }
 
-pub(super) fn set_option(options: &mut PrefetchOptions, key: &str, value: toml::Value) {
+pub(super) fn set_option(options: &mut PrefetchOptions, key: &str, value: impl std::fmt::Display) {
     options.overrides.push(format!("{key}={value}"));
 }
 

@@ -360,7 +360,7 @@ impl PresentedIdentity {
 }
 
 /// The response for a refused resource request: with a realm configured, a `401` Bearer challenge
-/// carrying the scope the request needed and an `error` a client acts on — `invalid_token` retries with
+/// carrying the scope the request needed and an `error` a client acts on - `invalid_token` retries with
 /// fresh credentials, `insufficient_scope` does not. Without a realm the registry keeps the Basic answers
 /// a pushing client already handles, so an existing `docker login -u _ -p <token>` flow is untouched.
 pub(super) fn resource_challenge(

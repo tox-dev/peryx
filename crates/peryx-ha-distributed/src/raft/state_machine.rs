@@ -139,8 +139,8 @@ impl OwnershipStateMachine {
     /// committed command has homed it.
     ///
     /// A local read: current on the leader, possibly behind on a follower. It gates work a committed
-    /// compare-and-set still settles — skipping a redundant re-assignment of an already-homed authority —
-    /// so a stale `None` costs one rejected assignment, never a wrong home.
+    /// compare-and-set still settles without reassigning an already-homed authority, so a stale `None`
+    /// costs one rejected assignment, never a wrong home.
     pub async fn home_of(&self, authority: &AuthorityKey) -> Option<DatacenterId> {
         self.inner.lock().await.state.home(authority).cloned()
     }
@@ -160,7 +160,7 @@ impl OwnershipStateMachine {
     /// epoch, or is fenced as stale.
     ///
     /// Feeds an [`AuthorityFence`] from the applied ownership state and admits `presented`, so work
-    /// produced under a superseded epoch — a former holder's, after the authority advanced — is
+    /// produced under a superseded epoch - a former holder's, after the authority advanced - is
     /// [`Fenced`](Admission::Fenced) without effect.
     pub async fn admit(&self, authority: &AuthorityKey, presented: AuthorityEpoch) -> Admission {
         let mut fence = AuthorityFence::new();

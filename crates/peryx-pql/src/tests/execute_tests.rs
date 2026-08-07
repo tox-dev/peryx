@@ -11,13 +11,13 @@ use super::support::{TestSource, decision, operator_scope, repository_scope};
 
 fn rows() -> Vec<Row> {
     vec![
-        decision("pypi", "numpy", "blocked", "cache", 300, 10),
-        decision("pypi", "scipy", "allowed", "origin", 200, 5),
-        decision("pypi", "flask", "blocked", "cache", 100, 7),
+        decision("alpha", "numpy", "blocked", "cache", 300, 10),
+        decision("alpha", "scipy", "allowed", "origin", 200, 5),
+        decision("alpha", "flask", "blocked", "cache", 100, 7),
         decision("other", "django", "blocked", "origin", 250, 3),
         // A row missing `downloads`, so aggregation exercises the skip-null path.
         Row::new()
-            .with("repository", Value::Str("pypi".to_owned()))
+            .with("repository", Value::Str("alpha".to_owned()))
             .with("project", Value::Str("toolz".to_owned()))
             .with("state", Value::Str("allowed".to_owned()))
             .with("source", Value::Str("cache".to_owned()))
@@ -52,7 +52,7 @@ fn test_execute_orders_by_natural_key_desc() {
 
 #[test]
 fn test_execute_injects_repository_scope() {
-    let page = query("from policy.decisions", &repository_scope("pypi"), None).expect("runs");
+    let page = query("from policy.decisions", &repository_scope("alpha"), None).expect("runs");
     assert_eq!(projects(&page), ["numpy", "scipy", "toolz", "flask"]);
     assert!(!projects(&page).contains(&"django".to_owned()));
 }
@@ -63,7 +63,7 @@ fn test_execute_scope_drops_row_without_string_repository() {
     // A row missing the scope column has a non-string value there, so a repository-scoped read must
     // exclude it rather than leak it.
     let rows = vec![
-        decision("pypi", "numpy", "allowed", "cache", 100, 1),
+        decision("alpha", "numpy", "allowed", "cache", 100, 1),
         Row::new()
             .with("project", Value::Str("ghost".to_owned()))
             .with("state", Value::Str("allowed".to_owned()))
@@ -72,7 +72,7 @@ fn test_execute_scope_drops_row_without_string_repository() {
     ];
     let page = execute(
         &parse("from policy.decisions select project").expect("parses"),
-        &repository_scope("pypi"),
+        &repository_scope("alpha"),
         None,
         &TestSource::new(rows),
     )
@@ -85,8 +85,8 @@ fn test_execute_order_by_tied_key_keeps_both_rows() {
     // Two rows share the ordering key, so the tuple comparison exhausts every key and falls through to
     // `Equal`. The tie must keep both rows in their original, stable order.
     let rows = vec![
-        decision("pypi", "numpy", "blocked", "cache", 300, 10),
-        decision("pypi", "scipy", "blocked", "cache", 200, 5),
+        decision("alpha", "numpy", "blocked", "cache", 300, 10),
+        decision("alpha", "scipy", "blocked", "cache", 200, 5),
     ];
     let page = execute(
         &parse("from policy.decisions select project, state order by state asc").expect("parses"),
@@ -113,7 +113,7 @@ fn test_execute_applies_user_predicate_after_scope() {
 fn test_execute_explicit_order() {
     let page = query(
         "from policy.decisions where downloads >= 0 select project, downloads order by downloads asc",
-        &repository_scope("pypi"),
+        &repository_scope("alpha"),
         None,
     )
     .expect("runs");
@@ -123,7 +123,7 @@ fn test_execute_explicit_order() {
 
 #[test]
 fn test_execute_subset_without_natural_order_keeps_source_order() {
-    let page = query("from policy.decisions select project", &repository_scope("pypi"), None).expect("runs");
+    let page = query("from policy.decisions select project", &repository_scope("alpha"), None).expect("runs");
     assert_eq!(projects(&page), ["numpy", "scipy", "flask", "toolz"]);
 }
 
@@ -145,7 +145,7 @@ fn test_execute_paginates_with_scope_bound_cursor() {
 
 #[test]
 fn test_execute_rejects_replayed_cursor_after_scope_change() {
-    let first = query("from policy.decisions limit 2", &repository_scope("pypi"), None).expect("runs");
+    let first = query("from policy.decisions limit 2", &repository_scope("alpha"), None).expect("runs");
     let cursor = first.next_cursor.expect("has next page");
     assert_eq!(
         query(
@@ -209,7 +209,7 @@ fn test_execute_count_and_sum_aggregate() {
 fn test_execute_min_max_aggregate_over_missing_values() {
     let page = query(
         "from policy.decisions aggregate min(downloads) as lo, max(downloads) as hi by state",
-        &repository_scope("pypi"),
+        &repository_scope("alpha"),
         None,
     )
     .expect("runs");
@@ -226,8 +226,8 @@ fn test_execute_min_max_aggregate_over_missing_values() {
 #[test]
 fn test_execute_sum_saturates_instead_of_wrapping() {
     let rows = vec![
-        decision("pypi", "a", "allowed", "cache", 10, i64::MAX),
-        decision("pypi", "b", "allowed", "cache", 20, i64::MAX),
+        decision("alpha", "a", "allowed", "cache", 10, i64::MAX),
+        decision("alpha", "b", "allowed", "cache", 20, i64::MAX),
     ];
     let page = execute(
         &parse("from policy.decisions aggregate sum(downloads) as total by state").expect("parses"),
@@ -263,7 +263,7 @@ fn test_run_end_to_end_binds_parameters() {
     let page = run(
         "from policy.decisions where repository == :repo and state == :state order by evaluated_at desc",
         &[
-            ("repo".to_owned(), Value::Str("pypi".to_owned())),
+            ("repo".to_owned(), Value::Str("alpha".to_owned())),
             ("state".to_owned(), Value::Str("blocked".to_owned())),
         ]
         .into_iter()
@@ -293,8 +293,8 @@ fn test_execute_matches_non_ascii_string_literal() {
     // A multibyte literal must survive lexing as one codepoint so it equals a multibyte field value;
     // before the UTF-8 fix "café" lexed to "cafÃ©" and matched nothing.
     let rows = vec![
-        decision("pypi", "café", "allowed", "cache", 10, 1),
-        decision("pypi", "resumé", "allowed", "cache", 20, 2),
+        decision("alpha", "café", "allowed", "cache", 10, 1),
+        decision("alpha", "resumé", "allowed", "cache", 20, 2),
     ];
     let page = execute(
         &parse(r#"from policy.decisions where project == "café" select project"#).expect("parses"),
@@ -312,7 +312,7 @@ fn test_execute_leading_filter_reaches_source() {
     // the source so an unbounded domain is narrowed through its index, not materialized whole.
     let source = TestSource::new(rows());
     execute(
-        &parse(r#"from big where repository == "pypi""#).expect("parses"),
+        &parse(r#"from big where repository == "alpha""#).expect("parses"),
         &operator_scope(),
         None,
         &source,
@@ -324,7 +324,7 @@ fn test_execute_leading_filter_reaches_source() {
             "big".to_owned(),
             Some(FetchFilter {
                 column: "repository",
-                values: vec![Value::Str("pypi".to_owned())],
+                values: vec![Value::Str("alpha".to_owned())],
             })
         )]
     );
@@ -380,7 +380,7 @@ fn test_execute_join_matches_on_composite_key() {
 fn test_execute_join_scopes_both_sides() {
     let page = query(
         "from policy.decisions join usage on repository, project",
-        &repository_scope("pypi"),
+        &repository_scope("alpha"),
         None,
     )
     .expect("runs");
@@ -403,7 +403,7 @@ fn test_execute_join_filters_on_probe_column() {
 fn test_execute_join_selects_columns_from_both_domains() {
     let page = query(
         "from policy.decisions join usage on repository, project select project, state, hits",
-        &repository_scope("pypi"),
+        &repository_scope("alpha"),
         None,
     )
     .expect("runs");
@@ -468,7 +468,7 @@ fn test_execute_join_cursor_is_distinct_and_scope_bound() {
     assert_eq!(
         query(
             "from policy.decisions join usage on repository, project limit 1",
-            &repository_scope("pypi"),
+            &repository_scope("alpha"),
             Some(&cursor)
         ),
         Err(PqlError::CursorScopeChanged)
@@ -510,7 +510,7 @@ fn test_execute_join_aggregates_probe_metric() {
             (repository.clone(), *total)
         })
         .collect();
-    assert_eq!(totals["pypi"], 150);
+    assert_eq!(totals["alpha"], 150);
     assert_eq!(totals["other"], 30);
 }
 
@@ -534,7 +534,7 @@ fn test_execute_join_rejects_unbounded_outer_without_leading_filter() {
 fn test_execute_join_admits_bounded_outer_with_leading_filter() {
     // A bounded probe and an outer narrowed by an indexed equality is affordable and runs.
     let page = query(
-        r#"from big join policy.decisions on repository where repository == "pypi""#,
+        r#"from big join policy.decisions on repository where repository == "alpha""#,
         &operator_scope(),
         None,
     )
@@ -546,7 +546,7 @@ fn test_execute_join_admits_bounded_outer_with_leading_filter() {
 fn test_execute_join_refuses_an_empty_key_set() {
     // The text parser guarantees a key; build the join a JSON-AST front-end could produce instead by
     // clearing the keys after parsing. An empty key set would cross-product every row.
-    let mut ast = parse(r#"from big join policy.decisions on repository where repository == "pypi""#).expect("parses");
+    let mut ast = parse(r#"from big join policy.decisions on repository where repository == "alpha""#).expect("parses");
     ast.join.as_mut().expect("has a join").on.clear();
 
     let result = execute(&ast, &operator_scope(), None, &TestSource::new(rows()));

@@ -150,7 +150,7 @@ pub struct ProjectMetaState {
 /// The freshness fields a `304 Not Modified` advances: the fetch time and the granted lifetime.
 ///
 /// A revalidation leaves the page body untouched, so these live in their own small row that a `304`
-/// rewrites on its own — the record's multi-megabyte body row stays put.
+/// rewrites on its own - the record's multi-megabyte body row stays put.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreshnessOverlay {
     pub fetched_at_unix: i64,

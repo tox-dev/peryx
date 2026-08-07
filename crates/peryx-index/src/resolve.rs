@@ -71,10 +71,10 @@ pub fn remainder<'a>(path: &'a str, route: &str) -> Option<&'a str> {
 /// A virtual index's members in shadowing order: every non-cached member first, then the cached ones.
 ///
 /// Within each group the configured order decides precedence, but a cached member always resolves
-/// last. That is the dependency-confusion defense — a name a hosted member serves is never answered
-/// from upstream — and making it structural means no `layers` ordering an operator writes can lose it.
-/// The sort is stable, so `["hosted-a", "pypi", "hosted-b"]` merges as `["hosted-a", "hosted-b",
-/// "pypi"]`.
+/// last. That is the dependency-confusion defense - a name a hosted member serves is never answered
+/// from upstream - and making it structural means no `layers` ordering an operator writes can lose it.
+/// The sort is stable, so `["hosted-a", "cached", "hosted-b"]` merges as `["hosted-a", "hosted-b",
+/// "cached"]`.
 #[must_use]
 pub fn shadow_order(indexes: &[Index], layers: &[usize]) -> Vec<usize> {
     let mut ordered = layers.to_vec();
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_shadow_order_puts_cached_members_last_whatever_the_configured_order() {
-        let indexes = vec![index("pypi", "pypi", cached()), index("hosted", "hosted", hosted())];
+        let indexes = vec![index("alpha", "alpha", cached()), index("hosted", "hosted", hosted())];
         assert_eq!(shadow_order(&indexes, &[0, 1]), vec![1, 0]);
         assert_eq!(shadow_order(&indexes, &[1, 0]), vec![1, 0]);
     }
@@ -233,7 +233,7 @@ mod tests {
     fn test_shadow_order_keeps_configured_order_within_a_group() {
         let indexes = vec![
             index("hosted-a", "a", hosted()),
-            index("pypi", "pypi", cached()),
+            index("alpha", "alpha", cached()),
             index("hosted-b", "b", hosted()),
         ];
         assert_eq!(shadow_order(&indexes, &[0, 1, 2]), vec![0, 2, 1]);
@@ -243,7 +243,7 @@ mod tests {
     fn test_layers_include_hosted_reaches_a_hosted_member_through_a_nested_virtual() {
         let indexes = vec![
             index("hosted", "h", hosted()),
-            index("pypi", "c", cached()),
+            index("alpha", "c", cached()),
             index("inner", "inner", virtual_layers(&[0])),
         ];
         // The cached member (position 1) is inspected first and does not count; the nested virtual
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_layers_include_hosted_is_false_when_no_member_reaches_a_hosted_index() {
         let indexes = vec![
-            index("pypi", "c", cached()),
+            index("alpha", "c", cached()),
             index("proxy-only", "p", virtual_layers(&[0])),
         ];
         assert!(!layers_include_hosted(&indexes, &[0, 1]));
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_reaches_cached_reads_a_direct_member_kind() {
-        let indexes = vec![index("pypi", "c", cached()), index("hosted", "h", hosted())];
+        let indexes = vec![index("alpha", "c", cached()), index("hosted", "h", hosted())];
         assert!(reaches_cached(&indexes, 0));
         assert!(!reaches_cached(&indexes, 1));
     }
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn test_reaches_cached_finds_a_cache_one_virtual_layer_down() {
         let indexes = vec![
-            index("pypi", "c", cached()),
+            index("alpha", "c", cached()),
             index("hosted", "h", hosted()),
             index("inner", "inner", virtual_layers(&[1, 0])),
         ];
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn test_reaches_cached_finds_a_cache_several_virtual_layers_down() {
         let indexes = vec![
-            index("pypi", "c", cached()),
+            index("alpha", "c", cached()),
             index("inner", "inner", virtual_layers(&[0])),
             index("middle", "middle", virtual_layers(&[1])),
             index("outer", "outer", virtual_layers(&[2])),

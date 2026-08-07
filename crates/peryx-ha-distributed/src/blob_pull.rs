@@ -44,7 +44,7 @@ pub enum PullError {
 /// [`PullError::Exhausted`] carrying each source's failure. Each fetched range becomes a
 /// [`BlobPiece`](crate::blob_reassembly::BlobPiece) through [`blob_piece`], which fails closed when a
 /// source returns the wrong number of bytes, and [`reassemble_verified`] tiles the pieces and
-/// digest-verifies the whole against `expected` — the check that keeps falling through safe. Nothing is
+/// digest-verifies the whole against `expected` - the check that keeps falling through safe. Nothing is
 /// committed; the caller commits the returned bytes.
 ///
 /// # Errors
@@ -177,7 +177,7 @@ impl ChunkUnavailable {
 ///
 /// The per-chunk counterpart to [`pull_ranged`]: where that reassembles the whole blob and digest-verifies
 /// it once at the end, this verifies each chunk against its own recorded digest as it arrives, so a chunk
-/// is trusted — and can be staged or forwarded — before the rest of the blob is drawn. A source that
+/// is trusted - and can be staged or forwarded - before the rest of the blob is drawn. A source that
 /// disconnects, returns the wrong number of bytes, or returns right-length bytes that fail the chunk digest
 /// is skipped for the next, so one bad source never blocks a chunk another can serve. The recorded
 /// per-chunk digests are trusted metadata a node wrote from whole-verified bytes, so a source cannot forge

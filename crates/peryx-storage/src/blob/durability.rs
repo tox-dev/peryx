@@ -13,9 +13,9 @@ use super::{BlobDurability, Digest};
 /// The durability evidence one completed write earned: the per-operation counterpart to the static
 /// [`DurabilityCapabilities`] a backend advertises in advance.
 ///
-/// A filesystem backend mints one only after the write crosses its durability boundary — the bytes are
+/// A filesystem backend mints one only after the write crosses its durability boundary - the bytes are
 /// hashed, the file is synced, its temporary file is atomically renamed into the content-addressed
-/// path, and the parent directory is synced — so holding a receipt is proof that `size` bytes are
+/// path, and the parent directory is synced - so holding a receipt is proof that `size` bytes are
 /// durably stored and served under `digest`. A partial, corrupt, or abandoned write never yields one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementReceipt {

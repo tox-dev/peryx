@@ -18,11 +18,9 @@ const START_TIMEOUT: Duration = Duration::from_mins(3);
 pub struct Server {
     pub name: &'static str,
     pub homepage: &'static str,
-    /// The base URL a client points at, given the port the server listens on: a `PyPI` simple index
-    /// (`http://host/root/pypi/simple/`) or an `OCI` registry prefix (`http://host/dockerhub/`).
+    /// The base URL a client points at, given the port the server listens on.
     pub base_url: fn(u16) -> String,
-    /// The readiness URL derived from the base, hit until any HTTP status answers: a `PyPI` project
-    /// page, an `OCI` `/v2/` root.
+    /// The readiness URL derived from the base, hit until any HTTP status answers.
     pub probe: fn(&str) -> String,
     /// How to spawn the server; `None` for a party that runs no process (a direct baseline).
     pub command: Option<fn(u16, &Path) -> Command>,

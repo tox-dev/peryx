@@ -366,5 +366,5 @@ fn timeline_table(rows: Vec<UiTimelineRow>) -> AnyView {
 }
 
 fn or_dash(value: Option<String>) -> String {
-    value.unwrap_or_else(|| "—".to_owned())
+    value.unwrap_or_else(|| "-".to_owned())
 }

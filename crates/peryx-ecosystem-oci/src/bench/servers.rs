@@ -1,11 +1,3 @@
-//! The OCI registries under test: how each starts, the base a client pulls from, and its docs.
-//!
-//! Every competitor runs as a pull-through cache of Docker Hub (peryx's `cached` role, the
-//! `distribution` reference registry in `proxy` mode, and `zot` with on-demand `sync`), so the
-//! tables compare like with like against `direct`, a pull straight from Docker Hub. `distribution`
-//! runs from its official `registry:2` image (env-configured, so nothing to mount); `zot` runs from
-//! the native binary its releases ship, fetched once into `target/bench-oci`.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,8 +5,8 @@ use std::process::Command;
 use anyhow::{Context as _, bail};
 
 use super::images::{FLEET_IMAGE, PULL_IMAGES, STRESS_IMAGE};
-use crate::report::{peryx_binary, repo_root};
-use crate::servers::Server;
+use peryx_bench_core::report::{peryx_binary, repo_root};
+use peryx_bench_core::servers::Server;
 
 /// The upstream every proxy caches and `direct` pulls from, when no local mirror is set.
 const UPSTREAM: &str = "https://registry-1.docker.io";
@@ -33,15 +25,18 @@ fn mirror_override() -> &'static std::sync::Mutex<Option<String>> {
 
 /// Point every party at `url` (a local mirror) instead of Docker Hub, or clear the redirect.
 pub fn set_mirror(url: Option<String>) {
-    *mirror_override().lock().expect("mirror override lock is not poisoned") = url;
+    *mirror_override()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = url;
 }
 
 /// The upstream to use in place of `hub` (a Docker Hub URL): the local mirror when one is set, else
 /// `hub` unchanged.
+#[must_use]
 pub fn upstream_for(hub: &str) -> String {
     mirror_override()
         .lock()
-        .expect("mirror override lock is not poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
         .unwrap_or_else(|| hub.to_owned())
 }
@@ -51,7 +46,7 @@ pub fn upstream_for(hub: &str) -> String {
 fn mirrored() -> bool {
     mirror_override()
         .lock()
-        .expect("mirror override lock is not poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_some()
 }
 
@@ -70,6 +65,7 @@ fn container_upstream() -> String {
 
 /// The report table name for a workload: `base` for the against-Docker-Hub run, `base-mirror` for the
 /// shielded run, so both variants sit side by side in one report.
+#[must_use]
 pub fn table_name(base: &str) -> String {
     if mirrored() {
         format!("{base}-mirror")
@@ -83,12 +79,14 @@ const DISTRIBUTION_IMAGE: &str = "registry:2";
 const ZOT_VERSION: &str = "2.1.2";
 
 /// Every party the tables compare, `direct` being the no-proxy baseline.
+#[must_use]
 pub fn all() -> Vec<Server> {
     vec![peryx(), direct(), distribution(), zot()]
 }
 
 /// Docker Hub credentials from the environment, when both are set. Authenticated pulls get a higher
 /// rate ceiling than the anonymous 100/hour, so every proxy and crane pick these up when present.
+#[must_use]
 pub fn credentials() -> Option<(String, String)> {
     let user = std::env::var("DOCKERHUB_USERNAME")
         .ok()
@@ -123,11 +121,7 @@ pub fn login_crane() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A local pull-through cache of Docker Hub shared by every party for one run. Seeded once with the
-/// run's images (a handful of Docker Hub pulls, well under the hourly ceiling), it then answers every
-/// proxy's and `direct`'s fetches from local disk, so a multi-round comparison never re-hits Docker
-/// Hub. It isolates the servers from upstream network and rate limits, at the cost that cold rows now
-/// price proxy overhead rather than a real Docker Hub fetch; it is opt-in for exactly that reason.
+/// A local pull-through cache that removes upstream variance from comparison runs.
 pub struct Mirror {
     port: u16,
 }
@@ -237,19 +231,17 @@ fn mirror_container(port: u16) -> String {
 
 /// The `/v2/` API root of a registry base: scheme and authority, then the distribution-spec path.
 /// This doubles as the readiness probe: any HTTP status (Docker Hub answers `401`) means it is up.
+#[must_use]
 pub fn api_root(base: &str) -> String {
-    let url = url::Url::parse(base).expect("registry base is a valid URL");
-    format!(
-        "{}://{}/v2/",
-        url.scheme(),
-        url.host_str().map_or_else(String::new, |host| url
-            .port()
-            .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}")))
-    )
+    let Some((scheme, remainder)) = base.split_once("://") else {
+        return format!("{}/v2/", base.trim_end_matches('/'));
+    };
+    format!("{scheme}://{}/v2/", remainder.split('/').next().unwrap_or_default())
 }
 
 /// The reference a client (crane) pulls: the base's host and path with the scheme stripped, then the
 /// repository and tag.
+#[must_use]
 pub fn client_reference(base: &str, repo: &str) -> String {
     let host = base
         .strip_prefix("http://")
@@ -260,6 +252,7 @@ pub fn client_reference(base: &str, repo: &str) -> String {
 }
 
 /// Whether a client must be told to skip TLS: the local proxies serve plain HTTP, Docker Hub HTTPS.
+#[must_use]
 pub fn insecure(base: &str) -> bool {
     base.starts_with("http://")
 }

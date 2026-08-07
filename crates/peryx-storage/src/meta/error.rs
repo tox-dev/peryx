@@ -25,7 +25,7 @@ pub enum MetaError {
 }
 
 impl MetaError {
-    /// Whether opening failed because another process already holds the database open — a live writer
+    /// Whether opening failed because another process already holds the database open - a live writer
     /// excludes a read-only open, and a read-only open excludes a writer, through redb's file lock.
     #[must_use]
     pub const fn is_database_already_open(&self) -> bool {

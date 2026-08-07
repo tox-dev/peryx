@@ -3,13 +3,13 @@
 //! converges from.
 //!
 //! [`VisibilityState::apply`](crate::VisibilityState::apply) resolves two operations that carry the
-//! same [`OpOrder`] as a duplicate — the first applied wins — which is the right idempotent choice for
+//! same [`OpOrder`] as a duplicate - the first applied wins - which is the right idempotent choice for
 //! a resent operation but a silent divergence for two *different* actions that collide on one order. A
 //! `Trash` and a `Restore` both stamped `(epoch 1, serial 5)` would resolve by arrival order, and two
 //! replicas that receive them in opposite orders reach opposite visibilities from the same operation
 //! set. The pure apply core cannot rule that out; only the authority that stamps the order can. This
 //! minter is that authority. It draws every serial from a strictly monotonic source and stamps the
-//! current authority epoch, so no two operations it produces ever share an [`OpOrder`] — the collision
+//! current authority epoch, so no two operations it produces ever share an [`OpOrder`] - the collision
 //! the apply core cannot survive can never reach it.
 //!
 //! The uniqueness rests on two invariants the minter enforces at its boundary: the serial source never
@@ -26,7 +26,7 @@ use crate::visibility::{ArtifactId, OpOrder, VisibilityAction, VisibilityOp};
 /// A strictly monotonic source of operation serials.
 ///
 /// Each [`next_serial`](SerialSource::next_serial) returns a value greater than every value it has
-/// returned before, so a serial is never reused — the property that keeps the minter's [`OpOrder`]s
+/// returned before, so a serial is never reused - the property that keeps the minter's [`OpOrder`]s
 /// unique.
 pub trait SerialSource {
     /// The failure a serial draw can report.

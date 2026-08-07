@@ -3,7 +3,7 @@
 //! The envelope's design claim is that it stays a metadata channel, not a blob transport: encoding
 //! an operation and decoding an untrusted peer's bytes must be cheap and allocate little, so
 //! metadata replication never pays a blob-sized serialization cost. These legs measure that claim on
-//! two representative operations, a wheel upload and a registry manifest push, reporting
+//! a single-blob operation and a multi-blob graph, reporting
 //! encode/decode latency percentiles alongside the allocation count and retained bytes each leg
 //! costs.
 //!
@@ -26,8 +26,8 @@ const SAMPLES: usize = 20_000;
 static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 fn main() {
-    report("publish", &upload());
-    report("oci-manifest", &oci_manifest());
+    report("single-blob", &single_blob());
+    report("multi-blob", &multi_blob());
 }
 
 fn report(operation: &str, envelope: &OperationEnvelope) {
@@ -63,7 +63,7 @@ fn report(operation: &str, envelope: &OperationEnvelope) {
     );
 }
 
-fn upload() -> OperationEnvelope {
+fn single_blob() -> OperationEnvelope {
     OperationEnvelope::current(
         "primary-a",
         AuthorityEpoch(1),
@@ -72,7 +72,7 @@ fn upload() -> OperationEnvelope {
             serial: 4_812,
             event: vec![0x7b; 320],
             metadata: vec![MetadataMutation::Put {
-                key: "pypi/example/example-1.2.3-py3-none-any.whl".to_owned(),
+                key: "adapter-a/record-4812".to_owned(),
                 value: vec![0x42; 96],
             }],
             blobs: vec![BlobReference {
@@ -83,7 +83,7 @@ fn upload() -> OperationEnvelope {
     )
 }
 
-fn oci_manifest() -> OperationEnvelope {
+fn multi_blob() -> OperationEnvelope {
     OperationEnvelope::current(
         "primary-a",
         AuthorityEpoch(1),
@@ -92,7 +92,7 @@ fn oci_manifest() -> OperationEnvelope {
             serial: 4_813,
             event: vec![0x7b; 512],
             metadata: vec![MetadataMutation::Put {
-                key: "oci/library/example/manifests/sha256:abcd".to_owned(),
+                key: "adapter-b/record-4813".to_owned(),
                 value: vec![0x42; 160],
             }],
             blobs: (0..6)

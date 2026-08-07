@@ -1,7 +1,7 @@
 //! Serializable view models shared by the server renderer and the hydrated client.
 //!
 //! The server builds them from `AppState`; the browser rebuilds them from peryx's own JSON API
-//! (`/+status` and the PEP 691 simple endpoints), so both sides render identical pages.
+//! (`/+status` and ecosystem endpoints), so both sides render identical pages.
 
 mod analytics;
 mod login;

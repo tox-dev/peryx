@@ -8,9 +8,9 @@
 //! finalize. A bounded retention buffer refuses a new intent past its limit rather than growing without
 //! end.
 //!
-//! Each admitted intent moves through a monotonic lifecycle — [`Pending`](IntentState::Pending) at the
+//! Each admitted intent moves through a monotonic lifecycle - [`Pending`](IntentState::Pending) at the
 //! ingress DC, [`Admitted`](IntentState::Admitted) once the home DC finalizes it, then
-//! [`Expired`](IntentState::Expired) when its retention window elapses — and a transition only advances
+//! [`Expired`](IntentState::Expired) when its retention window elapses - and a transition only advances
 //! it, so a replayed or reordered lifecycle event can never move a settled intent backward.
 //!
 //! This module is the pure admission and lifecycle state. Persisting intents durably, waiting for

@@ -1,13 +1,13 @@
-//! The OCI benchmark suite: the workloads, the competitor registries, and the image fixtures.
-//!
-//! This mirrors the `peryx-ecosystem-oci` crate and the site's `content/ecosystems/oci` family.
-//! Every competitor runs as a pull-through cache of Docker Hub, the registry analogue of a caching
-//! `PyPI` mirror, so the tables read against the same `direct` baseline: talking to Docker Hub with
-//! no proxy in between.
-
 pub mod images;
 pub mod servers;
 pub mod workloads;
+
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct Options {
+    /// Use a local pull-through mirror to avoid remote rate limits and network variance.
+    #[arg(long)]
+    mirror: bool,
+}
 
 /// Run the OCI suite: every workload not in `skip`, against every registry named in `only`.
 ///
@@ -23,13 +23,13 @@ pub mod workloads;
 /// # Errors
 /// Returns an error when a registry cannot start or a workload against a healthy one fails.
 pub async fn run(
+    options: &Options,
     rounds: usize,
-    mirror: bool,
     skip: &[String],
     only: &str,
     http: &reqwest::Client,
 ) -> anyhow::Result<()> {
-    let _mirror = if mirror {
+    let _mirror = if options.mirror {
         Some(servers::start_mirror(http).await?)
     } else {
         None

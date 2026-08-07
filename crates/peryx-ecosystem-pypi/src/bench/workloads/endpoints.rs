@@ -1,31 +1,13 @@
-//! The endpoints workload: what one warm request to each endpoint peryx serves costs.
-//!
-//! The other workloads drive a real client and measure what a user feels, so they only ever touch the
-//! three endpoints an installer touches. That leaves most of the surface unmeasured, and an
-//! unmeasured endpoint is where a regression hides: the simple index root, the two PEP 503 HTML
-//! representations, the legacy JSON API, the PEP 658 sibling, and peryx's archive introspection.
-//!
-//! Each row is one endpoint, timed warm: the server has already answered it once, so the row prices
-//! serving rather than filling a cache.
-//!
-//! This one table is peryx against itself, not against the field. Unlike OCI, whose `/v2/` paths the
-//! distribution spec fixes, a `PyPI` server is free to shape its own urls and to decide what its index
-//! root even contains: pypi.org answers `/pypi/{project}/json` where peryx answers
-//! `{index}/{project}/json`, devpi addresses files by an internal path, and a proxy's index root lists
-//! what it has cached while pypi.org's lists every project that exists. Rows across those servers
-//! would compare different work and read as a ranking. The cross-server comparisons live in the
-//! workloads above, which drive one client against all of them.
-
 use std::time::Instant;
 
 use anyhow::{Context as _, bail};
 
 use super::super::packages::METADATA_PROJECT;
 use super::{Rounds, SIMPLE_ACCEPT, SIMPLE_ACCEPT_HTML};
-use crate::report::{Absent, Metric, baseline, cost_rows, publish, row, summarize, table};
-use crate::servers::Server;
-use crate::stats::Summary;
-use crate::usage::{Cost, Usage};
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, publish, row, summarize, table};
+use peryx_bench_core::servers::Server;
+use peryx_bench_core::stats::Summary;
+use peryx_bench_core::usage::{Cost, Usage};
 
 /// Requests per endpoint per round. The median of these is the round's sample, so a single scheduling
 /// hiccup cannot decide a cell.

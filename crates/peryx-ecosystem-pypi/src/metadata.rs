@@ -394,6 +394,7 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProjec
         .flatten()
         .map(|file| {
             let filename = string_at(file, "filename");
+            let browsable = crate::archive::is_supported_archive(&filename);
             let release = distribution_version_segment(&filename)
                 .and_then(|version| release_by_key.get(&version_key(version)).copied().flatten())
                 .map(str::to_owned);
@@ -410,6 +411,7 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProjec
                     .filter(|reason| !reason.is_empty())
                     .map(str::to_owned),
                 has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
+                browsable,
                 // PEP 740 provenance sits on the file it belongs to; an explicit `null` or empty URL
                 // carries none, and the renderer vets the scheme before it becomes a link.
                 provenance: file["provenance"]
@@ -432,6 +434,7 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProjec
         status: project_status(value),
         versions,
         files,
+        client_command: None,
     }
 }
 

@@ -1,19 +1,10 @@
-//! Each ecosystem's user-facing words for peryx's neutral concepts, and the registry surfaces look
-//! them up in.
+//! User-facing terms for neutral package concepts.
 
 use std::collections::HashMap;
 
 use crate::ecosystem::Ecosystem;
 
-/// One ecosystem's user-facing words for peryx's neutral concepts. The neutral name is in each
-/// field's doc comment; the value is what a user of that ecosystem calls the same thing.
-///
-/// peryx's internal model is one neutral vocabulary, but a reader arriving from Docker thinks
-/// "registry, repository, tag, blob, push, pull". Each ecosystem crate defines its own `Lexicon`
-/// value (this crate stays neutral and never names an ecosystem's words) and registers it, so
-/// user-facing surfaces localize a label by looking it up for an index's ecosystem rather than
-/// branching on the ecosystem to pick a word. [`Lexicon::NEUTRAL`] is the fallback before any
-/// ecosystem registers one.
+/// Ecosystem crates register their terms so shared surfaces do not branch on ecosystem IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lexicon {
     /// The endpoint a client points at (neutral: index).
@@ -79,9 +70,9 @@ mod tests {
     use super::{Lexicon, LexiconRegistry};
     use crate::ecosystem::Ecosystem;
 
-    const DOCKER: Lexicon = Lexicon {
-        server: "registry",
-        collection: "repository",
+    const ALTERNATE: Lexicon = Lexicon {
+        server: "catalog",
+        collection: "component",
         ..Lexicon::NEUTRAL
     };
 
@@ -107,8 +98,8 @@ mod tests {
     #[test]
     fn test_registry_returns_the_registered_lexicon() {
         let mut registry = LexiconRegistry::default();
-        registry.register(Ecosystem::new("other"), &DOCKER);
-        assert_eq!(registry.get(Ecosystem::new("other")).collection, "repository");
+        registry.register(Ecosystem::new("other"), &ALTERNATE);
+        assert_eq!(registry.get(Ecosystem::new("other")).collection, "component");
         assert_eq!(registry.get(Ecosystem::new("example")).collection, "project");
     }
 }

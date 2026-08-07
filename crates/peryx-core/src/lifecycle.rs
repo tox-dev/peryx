@@ -89,9 +89,9 @@ pub struct TrashRecord {
     pub ecosystem: Ecosystem,
     /// The peryx index the artifact was deleted from.
     pub repository: String,
-    /// The artifact's project (`PyPI`) or repository path (OCI).
+    /// The artifact's project or repository path.
     pub name: String,
-    /// The distribution filename (`PyPI`) or tag (OCI); absent for an untagged trashed manifest.
+    /// The distribution filename or reference; absent when the trashed record has neither.
     pub reference: Option<String>,
     /// The content digest, when the ecosystem addresses the artifact by one.
     pub digest: Option<String>,
@@ -156,7 +156,7 @@ mod tests {
             ecosystem: Ecosystem::new("example"),
             repository: "hosted".to_owned(),
             name: "flask".to_owned(),
-            reference: Some("flask-1.0.whl".to_owned()),
+            reference: Some("flask-1.0.bin".to_owned()),
             digest: Some("sha256:abc".to_owned()),
             reason: Some("bad build".to_owned()),
             actor: Some("alice".to_owned()),

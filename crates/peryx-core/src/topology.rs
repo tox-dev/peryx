@@ -1,7 +1,7 @@
 //! The neutral availability-topology snapshot the operator surfaces render.
 //!
-//! An operator page needs one immutable picture of the availability group — the mode, the configured
-//! roster, and this node's own live frontier — taken at a single instant, instead of traversing live
+//! An operator page needs one immutable picture of the availability group - the mode, the configured
+//! roster, and this node's own live frontier - taken at a single instant, instead of traversing live
 //! membership and storage state on every poll. [`TopologyConfig`] is the fixed input a process holds in
 //! its serving state; [`TopologyConfig::snapshot`] projects it to one caller's [`TopologyView`] and
 //! stamps it with the observation time, so a stale render shows as age rather than passing for health.
@@ -121,8 +121,8 @@ pub struct TopologyConfig {
 
 impl TopologyConfig {
     /// This process's own datacenter, the one holding the roster member it names through
-    /// [`local_node`](Self::local_node). `None` when the process names no local member — a rosterless
-    /// single node, or a replica that carries no roster identity — so a caller supplies its own fallback.
+    /// [`local_node`](Self::local_node). `None` when the process names no local member - a rosterless
+    /// single node, or a replica that carries no roster identity - so a caller supplies its own fallback.
     /// Every per-node decision that needs the local datacenter resolves it here, so the roster lookup lives
     /// in one place rather than being re-derived at each call site.
     #[must_use]

@@ -3,15 +3,15 @@
 //! A retention policy names two ordered rule groups: `keep` rules protect artifacts, `expire` rules
 //! mark them for removal. The engine evaluates one repository's [`RetentionCandidate`] stream against
 //! the compiled policy and returns a deterministic [`RetentionDecision`] per artifact without touching
-//! storage or blobs. An ecosystem crate adapts its own records (a `PyPI` upload, an `OCI` tag) into
+//! storage or blobs. An ecosystem crate adapts its own records into
 //! neutral candidates and hands them here one project at a time, so a large repository never
 //! materializes as one in-memory plan.
 //!
 //! A keep rule always wins over an expire rule (the precedence
 //! [Google Artifact Registry cleanup policies](https://cloud.google.com/artifact-registry/docs/repositories/cleanup-policy)
 //! define), and the decision names the rule that decided it. Version ordering is the caller's:
-//! candidates carry a [`rank`](RetentionCandidate::rank) an ecosystem assigns (`PyPI` through
-//! PEP 440), so this crate names no package format.
+//! candidates carry a [`rank`](RetentionCandidate::rank) an ecosystem assigns through
+//! version syntax), so this crate names no package format.
 
 use std::collections::BTreeSet;
 
@@ -111,7 +111,7 @@ impl RetentionSelector {
 pub struct RetentionCandidate {
     pub project: String,
     pub version: Option<String>,
-    /// The artifact identity within its version: a `PyPI` filename or an `OCI` tag.
+    /// The artifact identity within its version.
     pub artifact: String,
     pub digest: String,
     pub class: RetentionClass,

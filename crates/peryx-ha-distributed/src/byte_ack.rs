@@ -2,7 +2,7 @@
 //!
 //! [`assess_byte_durability`](crate::assess_byte_durability) folds independent per-node receipts into
 //! whether an artifact's bytes are datacenter-durable; [`decide_byte_ack`] turns that into a client
-//! write's acknowledgement — acknowledged, or pending with how many more independent receipts it still
+//! write's acknowledgement - acknowledged, or pending with how many more independent receipts it still
 //! needs. It is the artifact-bytes counterpart to [`acknowledge`](crate::acknowledge), which decides a
 //! metadata write from its journal frontiers.
 //!

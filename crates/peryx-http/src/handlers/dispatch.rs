@@ -15,7 +15,7 @@ use peryx_driver::state::AppState;
 /// Why a request reached no driver.
 enum NoDriver {
     /// No index owns the path, or the index's ecosystem serves under its own top-level prefix
-    /// (`OCI`'s `/v2/`) and so is not reachable through its per-index route.
+    /// and so is not reachable through its per-index route.
     Unroutable,
     /// Nothing was wired in at all. That is a build fault, not a missing index, so it says so.
     Unconfigured,
@@ -90,6 +90,7 @@ pub async fn dispatch_get(
 pub async fn dispatch_post(State(state): State<Arc<AppState>>, Path(path): Path<String>, request: Request) -> Response {
     if let Some(serving) = state
         .drivers()
+        .filter_map(|driver| driver.capabilities().service)
         .find(|driver| driver.classify_service_post(&path, request.headers()).is_some())
     {
         return serving.service_post(state.serving.clone(), request).await;

@@ -9,8 +9,8 @@
 //!
 //! A **ranged** fetch returns the requested bytes UNVERIFIED. A partial range cannot be checked against
 //! the whole-blob sha256 (peryx keeps no per-chunk checksum), so the transport cannot vouch for it. The
-//! caller MUST reassemble every range and digest-verify the whole blob — for example by committing it
-//! through the blob store's `commit(digest)`, which is the verification point — before it trusts,
+//! caller MUST reassemble every range and digest-verify the whole blob - for example by committing it
+//! through the blob store's `commit(digest)`, which is the verification point - before it trusts,
 //! serves, or commits the bytes. Trusting ranged bytes directly defeats the integrity guarantee.
 //!
 //! [`PeerTransport`]: crate::peer::PeerTransport

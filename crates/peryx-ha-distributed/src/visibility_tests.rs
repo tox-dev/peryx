@@ -28,7 +28,7 @@ fn op(artifact: &ArtifactId, action: VisibilityAction, epoch: u64, serial: u64) 
 #[test]
 fn test_trash_then_restore_toggles_visibility() {
     let mut state = VisibilityState::new();
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
 
     assert_eq!(state.apply(&op(&art, Trash, 1, 5)), ApplyEffect::Applied);
     assert_eq!(
@@ -47,7 +47,7 @@ fn test_trash_then_restore_toggles_visibility() {
 #[test]
 fn test_revoke_then_lift_toggles_visibility() {
     let mut state = VisibilityState::new();
-    let art = artifact("root/oci/nginx@sha256:deadbeef");
+    let art = artifact("root/beta/nginx@sha256:deadbeef");
 
     assert_eq!(state.apply(&op(&art, Revoke, 1, 5)), ApplyEffect::Applied);
     assert_eq!(
@@ -148,9 +148,9 @@ fn test_advancing_the_high_water_blocks_an_intermediate_op() {
 #[test]
 fn test_encode_then_restore_reproduces_the_converged_visibility() {
     let mut state = VisibilityState::new();
-    let trashed = artifact("root/pypi/flask/2.0.0");
-    let revoked = artifact("root/oci/nginx");
-    let visible = artifact("root/pypi/click/8.0.0");
+    let trashed = artifact("root/alpha/flask/2.0.0");
+    let revoked = artifact("root/beta/nginx");
+    let visible = artifact("root/alpha/click/8.0.0");
     state.apply(&op(&trashed, Trash, 1, 5));
     state.apply(&op(&revoked, Revoke, 2, 9));
     state.apply(&op(&visible, Trash, 1, 3));

@@ -2,7 +2,7 @@
 //! and that a restarted replica resumes from its durable cursor without double-counting.
 //!
 //! Unlike the shared harness this spawns its own producer/replica pair, because the proof needs to seed
-//! a sealed past-day aggregate directly into the producer's store before it boots — analytics are dated
+//! a sealed past-day aggregate directly into the producer's store before it boots - analytics are dated
 //! off the real clock, so a live download can only land on today, never on a day already sealed. The
 //! seed writes the same durable daily snapshot a live download would have persisted, using the
 //! `test-util` encoder, and the producer restores and re-exports it as a sealed-day batch on startup.
@@ -146,7 +146,7 @@ impl Node {
         let config = data.path().join("peryx.toml");
         std::fs::write(&config, replica_config(ports)).expect("write replica config");
         // A replica starts read-only and only verifies the writer identity, so its store must already
-        // hold it, and it authenticates the operator that reads completeness — both seeded offline.
+        // hold it, and it authenticates the operator that reads completeness - both seeded offline.
         run_offline(&config, data.path(), &["writer", "claim"]);
         bootstrap_admin(&config, data.path());
         Self::launch_ready(data, config, ports.replica_public)
@@ -187,7 +187,7 @@ impl Node {
     }
 
     /// Poll the operator completeness surface until the replica has folded the producer's full sealed day
-    /// — both totals and the accepted cursor — or fail with the log tail after a generous deadline.
+    /// - both totals and the accepted cursor - or fail with the log tail after a generous deadline.
     fn await_convergence(&self) -> Completeness {
         let deadline = Instant::now() + CONVERGE_TIMEOUT;
         loop {

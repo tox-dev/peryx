@@ -11,7 +11,7 @@
 //! The fault arms follow the availability harness. A replica serves a job, quota, or catalog read only
 //! within the serial it has applied, so a partition withholds authoritative state rather than exposing a
 //! frontier it has not reached ([OWASP authorization guidance]: a follower fails closed). Reassigning a
-//! repository's authority home — the ownership every one of these surfaces resolves against — commits
+//! repository's authority home - the ownership every one of these surfaces resolves against - commits
 //! under a leader, is refused when the node is not the leader, and reaches consensus once under a retried
 //! idempotency key ([Kubernetes CronJob controller]: one run under one valid authority).
 //!

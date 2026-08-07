@@ -60,7 +60,7 @@ pub const fn byte_availability_label(availability: UiByteAvailability) -> Placem
     }
 }
 
-/// How a file's PEP 740 provenance source renders: whether peryx holds the document or only relays
+/// How an artifact's provenance source renders: whether peryx holds the document or only relays
 /// an upstream claim.
 #[must_use]
 pub const fn provenance_source_label(source: UiProvenanceSource) -> PlacementLabel {
@@ -142,7 +142,7 @@ pub fn members_from_listing(value: &serde_json::Value) -> Vec<UiMember> {
         .collect()
 }
 
-/// The project names of one index, from its PEP 691 list document.
+/// The project names supplied by one index.
 #[must_use]
 pub fn projects_from_list(value: &serde_json::Value) -> Vec<String> {
     value["projects"]

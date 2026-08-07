@@ -1,11 +1,11 @@
 //! Neutral view models the web UI renders.
 //!
-//! The UI is ecosystem-agnostic: it lays out a page but knows nothing about wheels, core metadata or
-//! `PyPI` headers. Each ecosystem crate turns its own format into these neutral shapes, and the web
+//! The UI is ecosystem-agnostic: it lays out a page but knows nothing about artifact formats or
+//! protocol headers. Each ecosystem crate turns its own format into these neutral shapes, and the web
 //! crate renders them. The models are pure serde with no rendering or I/O, so they cross the
 //! server/browser boundary and pull no UI toolkit into an ecosystem crate.
 //!
-//! The metadata panel is a list of [`UiBlock`]s — a small vocabulary of presentation primitives keyed
+//! The metadata panel is a list of [`UiBlock`]s - a small vocabulary of presentation primitives keyed
 //! by *shape* (a key/value, a chip set, a link list), never by ecosystem. An ecosystem composes those
 //! primitives to describe its own format, so a new ecosystem adds no field here and no branch in the
 //! web crate. [`UiBlock`] is `#[non_exhaustive]`: a genuinely new primitive is one additive variant
@@ -43,7 +43,7 @@ pub struct RenderedDescription {
 
 /// One block of a metadata panel: a presentation primitive keyed by shape, not by ecosystem.
 ///
-/// `#[non_exhaustive]`, so a new primitive is additive — a variant here plus a match arm in the web
+/// `#[non_exhaustive]`, so a new primitive is additive - a variant here plus a match arm in the web
 /// renderer, whose catch-all keeps an unrecognized block from rendering as a blank.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -89,6 +89,8 @@ pub struct UiProject {
     pub status: Option<Box<UiProjectStatus>>,
     pub versions: Vec<UiRelease>,
     pub files: Vec<UiFile>,
+    /// A client command containing `<origin>`, replaced by the browser's current HTTP origin.
+    pub client_command: Option<String>,
 }
 
 /// One release of a project: a version and the yank state its files give it.
@@ -209,7 +211,7 @@ impl UiOperationStatus {
     }
 }
 
-/// How peryx came by a file's PEP 740 provenance, which bounds what it can say about it.
+/// How peryx obtained an artifact's provenance, which bounds what it can say about it.
 ///
 /// `Hosted` provenance was uploaded here, so peryx bound every attestation to this exact
 /// distribution (filename and sha256) before publishing and can summarize the stored document.
@@ -277,7 +279,7 @@ pub struct UiAttestation {
     pub subject: UiSubjectMatch,
 }
 
-/// A file's PEP 740 provenance as the package page renders it.
+/// Artifact provenance as the project page renders it.
 ///
 /// Derived from digest-indexed metadata read from local storage: the panel neither fetches an
 /// upstream document nor verifies a signature, so it states what the bundle claims and how peryx
@@ -312,10 +314,11 @@ pub struct UiFile {
     pub yanked: bool,
     pub yanked_reason: Option<String>,
     pub has_metadata: bool,
+    pub browsable: bool,
     /// The configured upstream source that advertised this artifact, when routing is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
-    /// The PEP 740 provenance URL this file advertises, exactly as the index published it. `None` when
+    /// The provenance URL this file advertises, exactly as the index published it. `None` when
     /// the file names no provenance, spells it as an explicit `null`, or gives an empty URL.
     ///
     /// This carries the advertised location only: peryx neither fetches the document nor verifies the
@@ -324,7 +327,7 @@ pub struct UiFile {
     /// before it becomes a link, so an unsafe value is dropped without hiding the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
-    /// The rendered provenance panel for this file, when it advertises PEP 740 provenance. The
+    /// The rendered provenance panel for this file, when it advertises provenance. The
     /// driver fills it from digest-indexed metadata read locally, so it summarizes hosted
     /// attestations and flags a mirrored claim without fetching or verifying anything. `None` when
     /// the file advertises no provenance.
@@ -345,9 +348,9 @@ pub struct UiFile {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum UiProjectView {
-    /// A file listing with descriptive metadata (a `PyPI` project page).
+    /// A file listing with descriptive metadata.
     Files { project: UiProject, meta: UiMeta },
-    /// A list of named references, each resolving to a manifest (an `OCI` repository's tags).
+    /// A list of named references, each resolving to a manifest.
     References { names: Vec<String> },
 }
 
@@ -367,6 +370,19 @@ pub struct UiArtifactRef {
     pub browsable: bool,
 }
 
+/// Browser-facing fields for an ecosystem-owned multipart upload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiUploadSpec {
+    pub endpoint: String,
+    pub form_field: String,
+    pub authorization_username: Option<String>,
+    pub token_label: String,
+    pub file_label: String,
+    pub accept: String,
+    pub help: String,
+    pub allowed_suffixes: Vec<String>,
+}
+
 /// A manifest view, neutral so the web crate renders it without parsing any wire format.
 ///
 /// A content type and total size, an optional primary item (a config) and a list of referenced items
@@ -379,6 +395,8 @@ pub struct UiManifest {
     /// Listed items: the layers of a manifest, or the per-platform children of an index.
     pub entries: Vec<UiArtifactRef>,
     pub total_size: u64,
+    /// A client command containing `<host>`, replaced by the browser's current host.
+    pub client_command: Option<String>,
 }
 
 /// One member of a nested content item (a distribution archive or an image layer), as a browser lists
@@ -445,7 +463,7 @@ mod tests {
         let provenance = UiProvenance {
             source: UiProvenanceSource::Hosted,
             attestations: vec![UiAttestation {
-                predicate_type: Some("https://docs.pypi.org/attestations/publish/v1".to_owned()),
+                predicate_type: Some("https://docs.alpha.org/attestations/publish/v1".to_owned()),
                 subject: UiSubjectMatch::Matched,
             }],
             malformed: true,
@@ -533,9 +551,9 @@ mod tests {
     #[test]
     fn test_ui_file_carries_source_and_availability_on_the_wire() {
         let file = UiFile {
-            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
+            filename: "pkg-1.0-py3-none-any.bin".to_owned(),
             release: Some("1.0".to_owned()),
-            url: "/pypi/files/aa/pkg-1.0-py3-none-any.whl".to_owned(),
+            url: "/alpha/files/aa/pkg-1.0-py3-none-any.bin".to_owned(),
             sha256: "aa".to_owned(),
             size: Some(10),
             upload_time: None,
@@ -543,7 +561,7 @@ mod tests {
             yanked_reason: None,
             has_metadata: false,
             upstream: Some("mirror".to_owned()),
-            provenance: Some("https://pypi.example/files/aa/pkg-1.0-py3-none-any.whl.provenance".to_owned()),
+            provenance: Some("https://alpha.example/files/aa/pkg-1.0-py3-none-any.bin.provenance".to_owned()),
             provenance_detail: Some(UiProvenance {
                 source: UiProvenanceSource::Mirrored,
                 attestations: Vec::new(),
@@ -551,14 +569,16 @@ mod tests {
             }),
             source: UiArtifactSource::Proxy,
             availability: UiByteAvailability::RemoteOnly,
+            browsable: true,
         };
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains("\"source\":\"proxy\""), "{json}");
         assert!(json.contains("\"availability\":\"remote_only\""), "{json}");
+        assert!(json.contains("\"browsable\":true"), "{json}");
         assert!(json.contains("\"upstream\":\"mirror\""), "{json}");
         assert!(json.contains("\"release\":\"1.0\""), "{json}");
         assert!(
-            json.contains("\"provenance\":\"https://pypi.example/files/aa/pkg-1.0-py3-none-any.whl.provenance\""),
+            json.contains("\"provenance\":\"https://alpha.example/files/aa/pkg-1.0-py3-none-any.bin.provenance\""),
             "{json}"
         );
         assert_eq!(serde_json::from_str::<UiFile>(&json).unwrap(), file);
@@ -567,9 +587,9 @@ mod tests {
     #[test]
     fn test_ui_file_omits_absent_provenance_from_the_wire() {
         let file = UiFile {
-            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
+            filename: "pkg-1.0-py3-none-any.bin".to_owned(),
             release: None,
-            url: "/pypi/files/aa/pkg-1.0-py3-none-any.whl".to_owned(),
+            url: "/alpha/files/aa/pkg-1.0-py3-none-any.bin".to_owned(),
             sha256: "aa".to_owned(),
             size: None,
             upload_time: None,
@@ -581,6 +601,7 @@ mod tests {
             provenance_detail: None,
             source: UiArtifactSource::Hosted,
             availability: UiByteAvailability::Unavailable,
+            browsable: false,
         };
         let json = serde_json::to_string(&file).unwrap();
         assert!(!json.contains("provenance"), "{json}");
@@ -598,6 +619,7 @@ mod tests {
             "yanked": false,
             "yanked_reason": null,
             "has_metadata": false,
+            "browsable": false,
             "source": "proxy",
             "availability": "remote_only",
         }))

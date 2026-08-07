@@ -203,7 +203,7 @@ async fn arm_multipart_cancel(server: &MockServer, stage: MultipartStage, marker
     // The moment the armed stage's request lands, drop the marker file the child watches so it aborts
     // the in-flight upload at exactly this stage, then withhold the response. Part and complete are
     // held until the abort drops the connection, so the first upload provably cannot finish before it
-    // is cancelled — no timing assumption. Create is issued from a detached task the abort never
+    // is cancelled - no timing assumption. Create is issued from a detached task the abort never
     // reaches, so holding it would deadlock the resume that waits on it; instead it is delayed just
     // enough to stay in flight while the marker-driven, in-process abort (microseconds) lands.
     let hold = Duration::from_mins(1);
@@ -1549,7 +1549,7 @@ async fn stream_failure(toxic: &str, attributes: &[&str], scenario: &str, after_
     let toxiproxy = toxiproxy(&minio).await;
     if after_open {
         // Throttle the body from the outset so it stays on the wire for the later failure toxic, and
-        // so toxiproxy is never pumping a full-speed stream when that toxic is added — modifying a
+        // so toxiproxy is never pumping a full-speed stream when that toxic is added - modifying a
         // proxy mid-transfer races its data path and makes the toxic API return non-JSON. The client
         // request timeout is generous enough that this throttle never starves the response headers.
         add_toxic(&toxiproxy.container, "bandwidth", &["rate=64"]).await;
@@ -1768,8 +1768,8 @@ async fn test_s3_reports_a_multipart_journal_parent_race() {
     let server = MockServer::start().await;
     let staging = tempfile::tempdir().unwrap();
     let blocker = staging.path().join("s3-multipart");
-    // Replace the journal directory with a regular file the instant create is received — before the
-    // child gets the upload id back and tries to persist the journal — so the journal write always
+    // Replace the journal directory with a regular file the instant create is received - before the
+    // child gets the upload id back and tries to persist the journal - so the journal write always
     // loses the race and fails, with no dependence on wall-clock timing.
     Mock::given(method("POST"))
         .and(query_param("uploads", ""))
@@ -1999,8 +1999,8 @@ async fn test_s3_default_credential_chain_child() {
         settings.request_timeout = Duration::from_millis(500);
         settings.max_retries = 0;
     } else if scenario.starts_with("stream_") {
-        // Comfortably clears opening the stream through the bandwidth toxic — the earlier 250 ms
-        // raced the throttled response headers and made open fail intermittently — while staying far
+        // Comfortably clears opening the stream through the bandwidth toxic - the earlier 250 ms
+        // raced the throttled response headers and made open fail intermittently - while staying far
         // below the object's throttled transfer time, so the stalled and trickling body reads still
         // hit this deadline and fail.
         settings.request_timeout = Duration::from_secs(2);

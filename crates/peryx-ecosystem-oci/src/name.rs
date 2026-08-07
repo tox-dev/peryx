@@ -45,7 +45,7 @@ const AUTHORITY_SCHEME: &str = "oci:";
 ///
 /// The path is preserved verbatim, only prefixed, so distinct repository paths keep distinct keys and
 /// two repositories never share a home. The `repository` passed here is the index-route-stripped
-/// repository name — the same string the manifest write path homes on its first publish.
+/// repository name - the same string the manifest write path homes on its first publish.
 #[must_use]
 pub fn authority_key(repository: &str) -> String {
     format!("{AUTHORITY_SCHEME}{repository}")

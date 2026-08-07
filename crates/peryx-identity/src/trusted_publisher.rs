@@ -1,7 +1,7 @@
 //! Trusted publishers: authorizing a CI identity to publish without a long-lived upload secret.
 //!
 //! A CI job already proves who it is to its platform, and its platform hands it a short-lived OIDC
-//! identity token asserting that proof — the workflow, the repository, the environment it ran in. A
+//! identity token asserting that proof - the workflow, the repository, the environment it ran in. A
 //! trusted publisher is an operator's standing decision that one such identity may publish here: match
 //! the token's issuer, audience, subject and required claims against the configured rules, and the job
 //! earns a scoped upload grant for the moment it needs one, with no rotating secret to leak.

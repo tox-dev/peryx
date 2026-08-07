@@ -14,7 +14,7 @@ use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
-use peryx_ha_distributed::AckDecision;
+use peryx_ha::WriteAckRequest;
 use peryx_identity::Action;
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
@@ -293,7 +293,7 @@ async fn admit_and_store(
     };
     // The first stored file publishes the project, so it assigns the project's home datacenter through
     // the ownership group; a later file finds a home already set and only reads it. The project routes
-    // through its canonical authority key — its PEP 503 normalized name — so every name variant homes
+    // through its canonical authority key - its PEP 503 normalized name - so every name variant homes
     // under one authority.
     let authority = crate::name::authority_key(project);
     if stored {
@@ -305,44 +305,18 @@ async fn admit_and_store(
         .meta
         .advance_intent(&intent.intent_key, IntentPhase::Admitted, (state.clock)());
     emit_store_side_effects(state, audit, stored);
-    let ack = acknowledge::local_ack(
-        state.write_ack_policy(),
-        acknowledge::same_dc_members(state.availability_topology()),
-        acknowledge::local_node_id(state.availability_topology()),
-        digest.clone(),
-    );
-    let remote_sources = state.remote_frontier_sources();
-    let metadata = if remote_sources.is_empty() {
-        // No remote datacenter is configured to wait on: a `none`/`dc` write, or an `ha` group that spans
-        // a single datacenter. The local journal commit is then the whole metadata dimension and the write
-        // acknowledges locally. This is distinct from a remote that is configured but unreachable, which
-        // the gather in the other arm waits out and reports retry-safe rather than acknowledging.
-        acknowledge::MetadataDimension::Local(AckDecision::Acknowledged)
-    } else {
-        // An `ha` write waits for an eligible remote datacenter to commit the exact operation: the
-        // authority epoch it committed under and the metadata serial that covers it. A serial that cannot
-        // be read fails closed to a frontier no remote covers, so the write reports retry-safe rather than
-        // falsely durable.
-        acknowledge::MetadataDimension::Remote {
-            sources: remote_sources,
-            authority: &authority,
-            operation: peryx_ha_distributed::MetadataOperation {
-                epoch: state.committed_authority_epoch(&authority).await,
-                frontier: state.meta.current_serial().unwrap_or(u64::MAX),
-            },
-        }
-    };
-    let response = if let Some(metrics) = state.dc_durability() {
+    let response = if let Some(acknowledger) = state.write_acknowledger() {
         acknowledge::ack_response(
-            acknowledge::resolve_dc_ack(
-                ack,
-                metadata,
-                &digest,
-                state.receipt_sources(),
-                state.write_ack_deadline(),
-                metrics,
-            )
-            .await,
+            acknowledger
+                .acknowledge(WriteAckRequest {
+                    digest: &digest,
+                    authority: &authority,
+                    operation: peryx_ha::MetadataOperation {
+                        epoch: state.committed_authority_epoch(&authority).await,
+                        frontier: state.meta.current_serial().unwrap_or(u64::MAX),
+                    },
+                })
+                .await,
             &intent.operation,
         )
     } else {

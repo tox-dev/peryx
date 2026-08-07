@@ -2,7 +2,7 @@
 //!
 //! The replication layer holds the pure admission state; this persists it so a restart recovers the
 //! intents a home DC has yet to finalize. Each intent is keyed by its opaque client-scoped identity and
-//! carries the content it binds to — a digest and byte size — so a retried admission of the same key is
+//! carries the content it binds to - a digest and byte size - so a retried admission of the same key is
 //! idempotent: the same content is a duplicate, and different content a conflict that never overwrites
 //! the bytes a home DC will finalize.
 //!
@@ -283,8 +283,8 @@ impl MetaStore {
     /// List up to `limit` intents still [`Pending`](IntentPhase::Pending), in admission order.
     ///
     /// The drain reads its work through this. The order index keys the pending set by the durable
-    /// admission sequence, so a restart resumes the drain in the exact order writes were admitted —
-    /// interleaved authorities preserved — rather than in key order. A finalized intent has advanced out
+    /// admission sequence, so a restart preserves interleaved authorities and admission order. A finalized intent has
+    /// advanced out
     /// of the pending set, so it is skipped though its order entry lingers until it is pruned.
     ///
     /// # Errors

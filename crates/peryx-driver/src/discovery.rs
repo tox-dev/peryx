@@ -2,8 +2,7 @@
 //!
 //! `GET /+api` describes the running server: its service endpoints and one entry per configured index.
 //! The envelope (version, service URLs) and the public-base-URL resolution are ecosystem-agnostic and
-//! live here; each ecosystem renders its own per-index entry (the Simple-API setup for `PyPI`, the
-//! `docker pull` setup for `OCI`) through
+//! live here; each ecosystem renders its own per-index entry through
 //! [`EcosystemDriver::discover_index`](crate::serving::EcosystemDriver::discover_index).
 
 use std::str::FromStr as _;
@@ -85,7 +84,7 @@ impl BaseUrl {
         url
     }
 
-    /// The `host[:port]` a registry client dials, without the scheme. `docker`/`podman` name a
+    /// The `host[:port]` a client dials, without the scheme. Clients name a
     /// registry by authority rather than URL.
     #[must_use]
     pub fn host_port(&self) -> &str {
@@ -226,8 +225,8 @@ mod tests {
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
         let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), true).unwrap();
         assert_eq!(
-            base.join("/root/pypi/simple/"),
-            "https://packages.example/root/pypi/simple/"
+            base.join("/root/alpha/simple/"),
+            "https://packages.example/root/alpha/simple/"
         );
     }
 
@@ -256,8 +255,8 @@ mod tests {
         headers.insert("host", HeaderValue::from_static("packages.example"));
         let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), false).unwrap();
         assert_eq!(
-            base.join("/root/pypi/simple/"),
-            "http://packages.example/root/pypi/simple/"
+            base.join("/root/alpha/simple/"),
+            "http://packages.example/root/alpha/simple/"
         );
     }
 
@@ -279,6 +278,6 @@ mod tests {
 
     #[test]
     fn test_browse_url_percent_encodes_route_query() {
-        assert_eq!(browse_path("root/pypi"), "/browse?index=root%2Fpypi");
+        assert_eq!(browse_path("root/alpha"), "/browse?index=root%2Falpha");
     }
 }

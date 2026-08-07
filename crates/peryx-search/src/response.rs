@@ -26,8 +26,7 @@ pub struct SearchResult {
     pub index: String,
     /// The index's ecosystem, so a surface can label the result in that ecosystem's own words.
     pub ecosystem: String,
-    /// That ecosystem's word for a searchable collection (`package`, `image`), filled server-side
-    /// from the lexicon so the wasm client renders it without an ecosystem lookup of its own.
+    /// That ecosystem's word for a searchable collection, resolved before serialization.
     pub type_label: String,
     #[serde(rename = "type")]
     pub source_type: PackageSource,

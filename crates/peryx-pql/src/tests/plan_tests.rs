@@ -182,13 +182,13 @@ fn test_plan_unbounded_group_key_must_be_cheap() {
     // `name` is a scan column on the unbounded `big` domain, so grouping on it is refused before the
     // cost gate even sees the query.
     let refused = plan(
-        &parse("from big where repository == \"pypi\" aggregate count() as n by name").expect("parses"),
+        &parse("from big where repository == \"alpha\" aggregate count() as n by name").expect("parses"),
         &big_schema(),
     );
     assert!(matches!(refused, Err(PqlError::Validation(_))));
     assert!(
         plan(
-            &parse("from big where repository == \"pypi\" aggregate count() as n by repository").expect("parses"),
+            &parse("from big where repository == \"alpha\" aggregate count() as n by repository").expect("parses"),
             &big_schema()
         )
         .is_ok()
@@ -209,11 +209,17 @@ fn test_cost_gate_unbounded_requires_cheap_leading_filter() {
     let no_filter = plan(&parse("from big").expect("parses"), &big);
     assert!(matches!(no_filter, Err(PqlError::CostExceeded(_))));
 
-    assert!(plan(&parse("from big where repository == \"pypi\"").expect("parses"), &big).is_ok());
-    assert!(plan(&parse("from big where repository in (\"pypi\")").expect("parses"), &big).is_ok());
+    assert!(plan(&parse("from big where repository == \"alpha\"").expect("parses"), &big).is_ok());
     assert!(
         plan(
-            &parse("from big where name starts_with \"n\" and repository == \"pypi\"").expect("parses"),
+            &parse("from big where repository in (\"alpha\")").expect("parses"),
+            &big
+        )
+        .is_ok()
+    );
+    assert!(
+        plan(
+            &parse("from big where name starts_with \"n\" and repository == \"alpha\"").expect("parses"),
             &big
         )
         .is_ok()
@@ -244,24 +250,24 @@ fn test_leading_filter_skips_a_cheap_but_unpushed_column() {
 #[test]
 fn test_fetch_filter_debug_clone_and_eq() {
     // The filter crosses the DataSource seam and is compared and logged there, so its derived Debug,
-    // Clone, and Eq are load-bearing and must each run under coverage, not only on an assert failure.
+    // Clone and Eq are load-bearing and must each run under coverage before an assertion fails.
     let filter = FetchFilter {
         column: "repository",
-        values: vec![Value::Str("pypi".to_owned())],
+        values: vec![Value::Str("alpha".to_owned())],
     };
     assert_eq!(filter.clone(), filter);
     let rendered = format!("{filter:?}");
     assert!(rendered.contains("repository"));
-    assert!(rendered.contains("pypi"));
+    assert!(rendered.contains("alpha"));
 }
 
 #[test]
 fn test_leading_filter_extracts_indexed_equality() {
     assert_eq!(
-        filter_of(r#"from policy.decisions where repository == "pypi""#),
+        filter_of(r#"from policy.decisions where repository == "alpha""#),
         Some(FetchFilter {
             column: "repository",
-            values: vec![Value::Str("pypi".to_owned())],
+            values: vec![Value::Str("alpha".to_owned())],
         })
     );
     assert_eq!(
@@ -292,7 +298,7 @@ fn test_leading_filter_absent_for_scan_or_or_or_unbound() {
     // A scan column, a disjunction, and an unbound parameter each yield no indexed narrowing.
     assert_eq!(filter_of(r#"from policy.decisions where state == "blocked""#), None);
     assert_eq!(
-        filter_of(r#"from policy.decisions where repository == "pypi" or project == "numpy""#),
+        filter_of(r#"from policy.decisions where repository == "alpha" or project == "numpy""#),
         None
     );
     assert_eq!(filter_of("from policy.decisions where repository == :repo"), None);
@@ -302,7 +308,7 @@ fn test_leading_filter_absent_for_scan_or_or_or_unbound() {
 fn test_cost_gate_ignores_or_and_not_as_leading() {
     let big = big_schema();
     let disjunction = plan(
-        &parse("from big where repository == \"pypi\" or name == \"x\"").expect("parses"),
+        &parse("from big where repository == \"alpha\" or name == \"x\"").expect("parses"),
         &big,
     );
     assert!(matches!(disjunction, Err(PqlError::CostExceeded(_))));

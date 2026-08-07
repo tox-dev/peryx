@@ -3,35 +3,13 @@
     reason = "criterion_group! expands to a temporary flagged by this nursery lint"
 )]
 
-//! What availability costs a write on the foreground path: the datacenter-acknowledgement decision a
-//! hosted upload pays before it answers the client, measured with replication off (`none`) and on
-//! (`dc`, `ha`).
-//!
-//! Every hosted write resolves a [`DcAck`] before responding: it seeds a [`FilesystemAck`] with the
-//! ingress node's own placement receipt, folds any peer receipts already gathered into the byte
-//! quorum, and — in `ha` — assesses whether an eligible remote datacenter holds the exact metadata
-//! operation. That decision is the whole foreground cost availability adds; the transport that
-//! gathers peer and remote acknowledgements runs in the background under the write deadline, so this
-//! measures the decision arithmetic alone and never a network wait. It is the same shared
-//! `peryx-ha-distributed` decision the `PyPI` upload path and the `OCI` push path both invoke, so a
-//! wheel and a manifest are two workload identities over one code path, and the reading confirms the
-//! cost is ecosystem-neutral. Artifact size never enters it — a write acknowledges against its
-//! 32-byte digest, not its bytes — so there is no small/large axis here; payload-sized cost lives in
-//! the operation envelope, measured on its own.
-//!
-//! The three postures are the comparison: `none` is a single-node write whose local receipt alone
-//! satisfies a [`Local`](DurabilityPolicy::Local) quorum, the floor a write pays with availability
-//! disabled; `dc` evaluates a [`Majority`](DurabilityPolicy::Majority) byte quorum across the
-//! datacenter's members; `ha` adds the remote metadata-durability fold on top. The gap between `none`
-//! and the others is the foreground cost replication adds. The decision is pure, so each leg is a
-//! deterministic instruction count under the `CodSpeed` simulation runner; the measurement is
-//! synchronous and batched, because driving the same work through an instrumented async runtime lets
-//! scheduling jitter dominate the reading.
+//! Measures the pure write-durability decision for local, datacenter, and cross-datacenter evidence.
+//! Transport polling has separate benchmarks.
 
 use std::collections::BTreeSet;
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use peryx_ha_distributed::{
     AckDecision, Deadline, DurabilityPolicy, FilesystemAck, MetadataOperation, ReceiptAck, RemoteAck,
     assess_remote_metadata_durability,
@@ -148,29 +126,17 @@ fn resolve(posture: &Posture, digest: &Digest) -> peryx_ha_distributed::DcAck {
     ack.decide(metadata, DEADLINE)
 }
 
-/// The foreground acknowledgement cost of each posture, for a `PyPI` wheel and an `OCI` manifest.
-///
-/// The wheel and manifest are distinct digests over one shared decision path, so their legs pricing
-/// the same posture confirm availability's foreground cost does not depend on the ecosystem.
 fn bench_availability_ack(criterion: &mut Criterion) {
-    let workloads = [
-        ("pypi_wheel", Digest::of(b"example-1.2.3-py3-none-any.whl")),
-        (
-            "oci_manifest",
-            Digest::of(b"application/vnd.oci.image.manifest.v1+json"),
-        ),
-    ];
+    let digest = Digest::of(b"artifact");
     let mut group = criterion.benchmark_group("availability_ack");
     for posture in [none(), dc(), ha()] {
-        for (workload, digest) in &workloads {
-            group.bench_function(BenchmarkId::new(*workload, posture.name), |bencher| {
-                bencher.iter(|| {
-                    for _ in 0..BATCH {
-                        black_box(resolve(black_box(&posture), black_box(digest)));
-                    }
-                });
+        group.bench_function(posture.name, |bencher| {
+            bencher.iter(|| {
+                for _ in 0..BATCH {
+                    black_box(resolve(black_box(&posture), black_box(&digest)));
+                }
             });
-        }
+        });
     }
     group.finish();
 }

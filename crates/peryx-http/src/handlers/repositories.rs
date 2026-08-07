@@ -55,7 +55,7 @@ pub struct RepositoriesQuery {
     limit: Option<usize>,
 }
 
-/// `POST /+repositories` — create a repository. Requires administrator authority.
+/// `POST /+repositories` - create a repository. Requires administrator authority.
 pub async fn create_repository(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {
     let (actor, _) = match administrator(&state, &headers, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
@@ -82,7 +82,7 @@ pub async fn create_repository(State(state): State<Arc<AppState>>, headers: Head
     }
 }
 
-/// `GET /+repositories` — list repositories, filtered and paginated. Requires administrator authority.
+/// `GET /+repositories` - list repositories, filtered and paginated. Requires administrator authority.
 pub async fn list_repositories(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -103,7 +103,7 @@ pub async fn list_repositories(
     }
 }
 
-/// `GET /+repositories/{id}` — inspect one repository. Requires administrator authority.
+/// `GET /+repositories/{id}` - inspect one repository. Requires administrator authority.
 pub async fn inspect_repository(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -119,7 +119,7 @@ pub async fn inspect_repository(
     }
 }
 
-/// `PUT /+repositories/{id}` — update a repository's display name and definition. Requires an
+/// `PUT /+repositories/{id}` - update a repository's display name and definition. Requires an
 /// administrator and an `If-Match` version.
 pub async fn update_repository(
     State(state): State<Arc<AppState>>,
@@ -152,7 +152,7 @@ pub async fn update_repository(
     }
 }
 
-/// `POST /+repositories/{id}/disable` — disable a repository. Requires an administrator and an
+/// `POST /+repositories/{id}/disable` - disable a repository. Requires an administrator and an
 /// `If-Match` version.
 pub async fn disable_repository(
     State(state): State<Arc<AppState>>,
@@ -162,7 +162,7 @@ pub async fn disable_repository(
     set_enabled(&state, &id, &headers, false).await
 }
 
-/// `POST /+repositories/{id}/enable` — re-enable a disabled repository. Requires an administrator and
+/// `POST /+repositories/{id}/enable` - re-enable a disabled repository. Requires an administrator and
 /// an `If-Match` version.
 pub async fn enable_repository(
     State(state): State<Arc<AppState>>,

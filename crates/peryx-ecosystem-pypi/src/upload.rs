@@ -397,7 +397,7 @@ pub(crate) async fn stage_publish(
 pub(crate) struct Published {
     /// `false` for a same-bytes duplicate the store left unchanged.
     pub stored: bool,
-    /// The committed blobs — the content artifact, its metadata sibling, and any provenance — each with
+    /// The committed blobs - the content artifact, its metadata sibling, and any provenance - each with
     /// its byte length. The bytes are on disk whatever `stored` reports, since a duplicate re-commits the
     /// same content, so recording each placement stays correct on a re-push.
     pub placements: Vec<(Digest, u64)>,
@@ -553,7 +553,7 @@ fn store_record(
 
 /// The upload publish precondition, evaluated inside the write transaction: a first upload commits,
 /// an identical re-upload is an idempotent no-op, and the same filename with different bytes is a
-/// conflict — so two concurrent different-content uploads cannot both publish.
+/// conflict - so two concurrent different-content uploads cannot both publish.
 fn upload_conflict(existing: Option<&[u8]>, digest: &str, filename: &str) -> Result<Guard, UploadStoreError> {
     let Some(existing) = existing else {
         return Ok(Guard::Commit);
@@ -734,8 +734,8 @@ fn validate_metadata_version(value: Option<&str>) -> Result<u8, UploadError> {
 }
 
 /// Core Metadata introduced each field in a version, and a document may not use a field that
-/// postdates the version it declares. Deprecating a field leaves it usable — `License` still reads
-/// under 2.4 — so an introduction is the only bound.
+/// postdates the version it declares. Deprecating a field leaves it usable - `License` still reads
+/// under 2.4 - so an introduction is the only bound.
 ///
 /// Versions follow the field history in
 /// <https://packaging.python.org/en/latest/specifications/core-metadata/>.

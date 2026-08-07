@@ -133,7 +133,7 @@ const OPERATION_OUTCOME: TableDefinition<&str, &[u8]> = TableDefinition::new("op
 /// admission is idempotent and a restart recovers the intents a home DC has yet to finalize.
 const INGRESS_INTENT: TableDefinition<&str, &[u8]> = TableDefinition::new("ingress_intent");
 const TRANSFER_AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("transfer_audit");
-/// Per-authority retained-usage counters — records and bytes each authority holds — so admission bounds
+/// Per-authority retained-usage counters - records and bytes each authority holds - so admission bounds
 /// and prunes a buffer per authority without scanning the whole ledger.
 const INGRESS_INTENT_COUNT: TableDefinition<&str, &[u8]> = TableDefinition::new("ingress_intent_count");
 /// The pending set keyed by durable admission sequence, so a restart resumes the drain in the exact order
@@ -161,7 +161,7 @@ const WRITER: TableDefinition<&str, &str> = TableDefinition::new("writer");
 const JOURNAL_MUTATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_mutations");
 const JOURNAL_BLOBS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_blobs");
 /// A neutral byte key-value table an ecosystem driver owns end to end: the store never interprets a
-/// key or value, so a format (OCI manifests and tags, say) serializes into its own namespace without
+/// key or value, so a format serializes into its own namespace without
 /// the store growing format-specific tables.
 const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 /// The persisted download-usage aggregates, held as one opaque snapshot blob the metrics aggregator

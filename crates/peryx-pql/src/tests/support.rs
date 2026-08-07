@@ -58,8 +58,8 @@ pub fn usage_scan_schema() -> DomainSchema {
 #[must_use]
 pub fn usage_rows() -> Vec<Row> {
     [
-        ("pypi", "numpy", 100, 10),
-        ("pypi", "scipy", 50, 5),
+        ("alpha", "numpy", 100, 10),
+        ("alpha", "scipy", 50, 5),
         ("other", "django", 30, 3),
     ]
     .into_iter()
@@ -299,7 +299,7 @@ impl DataSource for TestSource {
         match domain {
             BIG_DOMAIN => Ok(vec![
                 Row::new()
-                    .with("repository", Value::Str("pypi".to_owned()))
+                    .with("repository", Value::Str("alpha".to_owned()))
                     .with("name", Value::Str("numpy".to_owned())),
             ]),
             KEYLESS_DOMAIN => Ok(vec![

@@ -71,7 +71,7 @@ fn test_job_run_record_without_repository_remains_readable() {
     let record: JobRunRecord = serde_json::from_value(serde_json::json!({
         "id": "jr_0000000000000001",
         "kind": "cache_refresh",
-        "scope": "pypi",
+        "scope": "alpha",
         "state": "running",
         "started_at_unix": 100,
         "finished_at_unix": null,
@@ -406,7 +406,7 @@ fn test_job_run_operations_surface_an_incompatible_table() {
     assert!(matches!(
         store.start_job_run(NewJobRun {
             kind: JobKind::CacheRefresh,
-            scope: "pypi",
+            scope: "alpha",
             repository: None,
             started_at_unix: 1,
         }),
@@ -443,7 +443,7 @@ fn test_start_job_run_surfaces_an_incompatible_serial_table() {
     assert!(matches!(
         store.start_job_run(NewJobRun {
             kind: JobKind::CacheRefresh,
-            scope: "pypi",
+            scope: "alpha",
             repository: None,
             started_at_unix: 1,
         }),
@@ -454,7 +454,7 @@ fn test_start_job_run_surfaces_an_incompatible_serial_table() {
 #[test]
 fn test_job_run_operations_surface_a_corrupt_record() {
     let (dir, store) = store();
-    let id = start_job(&store, "pypi", 1);
+    let id = start_job(&store, "alpha", 1);
     drop(store);
     let path = dir.path().join("peryx.redb");
     let database = redb::Database::open(&path).unwrap();

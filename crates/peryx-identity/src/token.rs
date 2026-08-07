@@ -8,7 +8,7 @@ use crate::{Grant, Principal};
 /// The key peryx signs its own tokens with, and the only thing that verifies them.
 ///
 /// The tokens are JWTs (HS256): a client's credential is a self-contained, expiring assertion of the
-/// grants a token endpoint approved, so verifying one is a signature check with no lookup — the
+/// grants a token endpoint approved, so verifying one is a signature check with no lookup - the
 /// property a replica needs, since it can verify a token the primary minted without sharing a
 /// database. Signing and verifying come from `jsonwebtoken`, the maintained Rust implementation of
 /// RFC 7519, rather than from a hand-rolled MAC.

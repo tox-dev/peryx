@@ -70,7 +70,7 @@ async fn test_the_leader_lookup_skips_a_non_leader_member() {
     let node = leader_node(&dir).await;
 
     // A learner ordered before the leader forces the roster scan past a non-matching member, so the
-    // miss branch is exercised, not only the hit on a lone member.
+    // miss branch runs alongside the hit on a lone member.
     node.raft()
         .add_learner(0, peer("west", "localhost:4470"), false)
         .await
@@ -249,9 +249,6 @@ async fn test_a_reassignment_is_rejected_through_the_shared_state() {
 
 #[tokio::test]
 async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
-    // Build a node behind each of three peer listeners and serve its rpc handler, so the voters can
-    // exchange vote and append-entries RPCs. This is the end-to-end proof that a mounted receive router
-    // lets a real cluster form; without it the group would never reach quorum.
     const CLUSTER_TOKEN: &str = "cluster-secret";
     let mut nodes = Vec::new();
     let mut roster = BTreeMap::new();
@@ -296,7 +293,7 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
     let voters = nodes[0].metrics().borrow().membership_config.nodes().count();
     assert_eq!(voters, 3, "all three voters are in the membership");
 
-    // A committed write proves append-entries reached a quorum, not just an election.
+    // A committed write proves append-entries reached a quorum after the election.
     let response = nodes[usize::try_from(elected - 1).unwrap()]
         .submit(OwnershipCommand::AssignHome {
             authority: AuthorityKey("proj".to_owned()),

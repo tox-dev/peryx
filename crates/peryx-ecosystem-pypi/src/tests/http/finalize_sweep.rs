@@ -1,10 +1,9 @@
 //! The home-side finalize sweep over this node's pending `PyPI` ingress intents.
 
+use peryx_driver::serving::IntentFinalizer as _;
 use peryx_storage::meta::{
     ArtifactPlacement, ArtifactSource, IntentAdmission, IntentLimits, IntentPhase, OperationState,
 };
-
-use peryx_driver::serving::EcosystemDriver as _;
 
 use super::support::*;
 use crate::PypiServing;

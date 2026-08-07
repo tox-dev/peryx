@@ -67,9 +67,9 @@ fn producer_states(report: &crate::CompletenessReport) -> Vec<(String, Completen
 #[test]
 fn test_every_producer_at_the_frontier_is_complete() {
     let batches = [
-        batch("east", 1, 9, &[("pypi", "flask", 2, 20)]),
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 10, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 9, &[("alpha", "flask", 2, 20)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 10, &[("alpha", "numpy", 5, 50)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -86,9 +86,9 @@ fn test_every_producer_at_the_frontier_is_complete() {
 #[test]
 fn test_complete_totals_equal_the_sum_of_accepted_aggregates() {
     let batches = [
-        batch("east", 1, 9, &[("pypi", "flask", 2, 20)]),
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 10, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 9, &[("alpha", "flask", 2, 20)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 10, &[("alpha", "numpy", 5, 50)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -123,8 +123,8 @@ fn test_complete_totals_equal_the_sum_of_accepted_aggregates() {
 #[test]
 fn test_a_trailing_producer_is_delayed() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 8, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 8, &[("alpha", "numpy", 5, 50)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -146,8 +146,8 @@ fn test_a_trailing_producer_is_delayed() {
 #[test]
 fn test_an_expected_producer_with_no_frontier_is_unavailable() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 10, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 10, &[("alpha", "numpy", 5, 50)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -176,8 +176,8 @@ fn test_an_expected_producer_with_no_frontier_is_unavailable() {
 #[test]
 fn test_a_missing_producer_outranks_a_delayed_one() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 8, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 8, &[("alpha", "numpy", 5, 50)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -191,7 +191,7 @@ fn test_a_missing_producer_outranks_a_delayed_one() {
 #[test]
 fn test_an_empty_expected_set_is_unavailable() {
     let report = assess_completeness(
-        &receiver(&[batch("east", 1, 10, &[("pypi", "flask", 3, 30)])]),
+        &receiver(&[batch("east", 1, 10, &[("alpha", "flask", 3, 30)])]),
         &expected(&[]),
         &query(0, 10, 11, None),
     );
@@ -229,8 +229,8 @@ fn test_no_producer_has_delivered_leaves_the_frontier_absent() {
 #[test]
 fn test_a_historical_range_below_the_frontier_covers_a_laggard() {
     let batches = [
-        batch("east", 1, 20, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 10, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 20, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 10, &[("alpha", "numpy", 5, 50)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -250,12 +250,12 @@ fn test_repository_scope_confines_the_totals() {
         "east",
         1,
         10,
-        &[("pypi", "flask", 3, 30), ("other", "numpy", 5, 50)],
+        &[("alpha", "flask", 3, 30), ("other", "numpy", 5, 50)],
     )];
     let report = assess_completeness(
         &receiver(&batches),
         &expected(&[("east", "east-dc")]),
-        &query(0, 10, 11, Some("pypi")),
+        &query(0, 10, 11, Some("alpha")),
     );
 
     assert_eq!(
@@ -278,9 +278,9 @@ fn test_repository_scope_confines_the_totals() {
 #[test]
 fn test_the_day_range_bounds_the_buckets() {
     let batches = [
-        batch("east", 1, 5, &[("pypi", "flask", 1, 10)]),
-        batch("east", 1, 10, &[("pypi", "flask", 2, 20)]),
-        batch("east", 1, 15, &[("pypi", "flask", 4, 40)]),
+        batch("east", 1, 5, &[("alpha", "flask", 1, 10)]),
+        batch("east", 1, 10, &[("alpha", "flask", 2, 20)]),
+        batch("east", 1, 15, &[("alpha", "flask", 4, 40)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -308,8 +308,8 @@ fn test_the_day_range_bounds_the_buckets() {
 #[test]
 fn test_a_restart_under_a_higher_epoch_leads_the_frontier() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("east", 2, 4, &[("pypi", "flask", 1, 10)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("east", 2, 4, &[("alpha", "flask", 1, 10)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -324,8 +324,8 @@ fn test_a_restart_under_a_higher_epoch_leads_the_frontier() {
 #[test]
 fn test_an_unexpected_producer_is_left_out_of_the_totals() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 10, 100)]),
-        batch("rogue", 1, 10, &[("pypi", "flask", 1_000, 10_000)]),
+        batch("east", 1, 10, &[("alpha", "flask", 10, 100)]),
+        batch("rogue", 1, 10, &[("alpha", "flask", 1_000, 10_000)]),
     ];
     let report = assess_completeness(
         &receiver(&batches),
@@ -357,7 +357,7 @@ fn test_an_unexpected_producer_is_left_out_of_the_totals() {
 
 #[test]
 fn test_a_duplicate_delivery_folds_the_totals_once() {
-    let delivery = batch("east", 1, 10, &[("pypi", "flask", 3, 30)]);
+    let delivery = batch("east", 1, 10, &[("alpha", "flask", 3, 30)]);
     let mut receiver = AnalyticsReceiver::new(DEFAULT_APPLY_LIMITS);
     receiver.apply(&delivery).unwrap();
     receiver.apply(&delivery).unwrap();
@@ -376,8 +376,8 @@ fn test_a_duplicate_delivery_folds_the_totals_once() {
 #[test]
 fn test_a_restored_receiver_still_excludes_an_unexpected_producer() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 10, 100)]),
-        batch("rogue", 1, 10, &[("pypi", "flask", 1_000, 10_000)]),
+        batch("east", 1, 10, &[("alpha", "flask", 10, 100)]),
+        batch("rogue", 1, 10, &[("alpha", "flask", 1_000, 10_000)]),
     ];
     let members = expected(&[("east", "east-dc")]);
     let query = query(0, 10, 11, None);
@@ -395,8 +395,8 @@ fn test_a_restored_receiver_still_excludes_an_unexpected_producer() {
 #[test]
 fn test_a_restored_receiver_reports_the_same_completeness() {
     let batches = [
-        batch("east", 1, 10, &[("pypi", "flask", 3, 30)]),
-        batch("west", 1, 8, &[("pypi", "numpy", 5, 50)]),
+        batch("east", 1, 10, &[("alpha", "flask", 3, 30)]),
+        batch("west", 1, 8, &[("alpha", "numpy", 5, 50)]),
     ];
     let members = expected(&[("east", "east-dc"), ("west", "west-dc")]);
     let query = query(0, 10, 11, None);

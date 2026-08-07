@@ -1,9 +1,9 @@
 //! The neutral finalize primitive: commit an admitted write's metadata, its outbox journal, its
 //! terminal operation outcome, and the advance of its staging intent in one redb transaction.
 //!
-//! A home DC finalizes an upload another node admitted. The four facts a finalize records — the
+//! A home DC finalizes an upload another node admitted. The four facts a finalize records - the
 //! authoritative rows, the journal entries a replica reconciles, the operation outcome a retry
-//! replays, and the intent's advance out of [`Pending`](super::IntentPhase::Pending) — are one fact,
+//! replays, and the intent's advance out of [`Pending`](super::IntentPhase::Pending) - are one fact,
 //! so they commit together: a crash between any two would leave a published artifact no replica
 //! receives, an outcome a retry cannot find, or an intent a home DC finalizes twice. The outcome
 //! check runs in that transaction too, so a duplicate finalize racing the first cannot slip between a
@@ -69,8 +69,8 @@ impl MetaStore {
     ///
     /// `body` reads and stages the authoritative rows through the [`DriverTxn`] and returns the journal
     /// entries to record, exactly as [`commit_driver_txn`](MetaStore::commit_driver_txn) takes them.
-    /// The outcome for `operation` is read inside that transaction: a terminal outcome — the write
-    /// already published, by a first attempt or a racing duplicate — discards the staged rows and the
+    /// The outcome for `operation` is read inside that transaction: a terminal outcome - the write
+    /// already published, by a first attempt or a racing duplicate - discards the staged rows and the
     /// journal and returns [`Replayed`](FinalizeOutcome::Replayed) with the stored record, so the
     /// mutation and its journal entries commit exactly once. `expiry_unix` bounds when the outcome may
     /// be pruned. An absent `intent_key` advances nothing.

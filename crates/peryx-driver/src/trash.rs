@@ -188,7 +188,10 @@ impl AppState {
         }
         let mut records = Vec::new();
         for (ecosystem, names) in by_ecosystem {
-            if let Some(driver) = self.driver_for(ecosystem) {
+            if let Some(driver) = self
+                .driver_for(ecosystem)
+                .and_then(|driver| driver.capabilities().trash)
+            {
                 records.extend(
                     driver
                         .trash_records(&self.meta, &names)
@@ -228,7 +231,7 @@ mod tests {
             ecosystem: Ecosystem::new("example"),
             repository: repository.to_owned(),
             name: name.to_owned(),
-            reference: Some(format!("{name}.whl")),
+            reference: Some(format!("{name}.bin")),
             digest: Some("sha256:abc".to_owned()),
             reason: None,
             actor: Some("alice".to_owned()),
@@ -403,7 +406,7 @@ mod tests {
             ecosystem: Ecosystem::new("example"),
             repository: "hosted".to_owned(),
             name: "flask".to_owned(),
-            reference: Some("flask.whl".to_owned()),
+            reference: Some("flask.bin".to_owned()),
             digest: Some("sha256:abc".to_owned()),
         };
         assert!(reference.matches(&record));

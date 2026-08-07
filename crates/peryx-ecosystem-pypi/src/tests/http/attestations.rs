@@ -2,6 +2,7 @@
 
 use super::support::*;
 use crate::policy::AttestationMode;
+use peryx_driver::serving::BrowseDriver as _;
 
 pub(super) const FILENAME: &str = "peryxpkg-1.0-py3-none-any.whl";
 const PUBLISH_PREDICATE: &str = "https://docs.pypi.org/attestations/publish/v1";
@@ -153,8 +154,6 @@ async fn test_project_page_flags_an_unreadable_hosted_provenance() {
 
 /// Browse the virtual `root/pypi` index and return the provenance panel resolved for `filename`.
 async fn browse_provenance(harness: &Harness, filename: &str) -> peryx_core::UiProvenance {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let view = crate::serving::PypiServing
         .browse_project(harness.state.serving.clone(), 2, "peryxpkg".to_owned())
         .await

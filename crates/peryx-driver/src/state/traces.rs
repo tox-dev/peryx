@@ -8,7 +8,7 @@
 //!
 //! The root trace-id is folded from the operation's `(source, epoch, serial, kind)` identity rather than
 //! drawn from an entropy source, so the same operation opens the same trace across a re-push or an
-//! epoch-replay while distinct operations stay distinct — a follower that later derives a child span joins
+//! epoch-replay while distinct operations stay distinct - a follower that later derives a child span joins
 //! one stable trace. The sampled flag is a head decision under a fixed ratio that bounds exporter cost,
 //! and [`OperationTelemetry::emit`](peryx_ha_distributed::OperationTelemetry::emit) records nothing for an
 //! unsampled operation, so a publish that is not traced adds no log volume. Only the identity, kind, and

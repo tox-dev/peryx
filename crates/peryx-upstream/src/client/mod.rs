@@ -42,7 +42,7 @@ const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How peryx authenticates to a private upstream. `Basic` covers pypi.org tokens (`__token__` +
+/// How peryx authenticates to a private upstream. `Basic` carries a username and secret;
 /// token) and Artifactory/GitLab username/password; `Bearer` covers access/identity tokens.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub enum Auth {
@@ -127,7 +127,7 @@ const REACHABILITY_REACHABLE: u8 = 1;
 const REACHABILITY_UNREACHABLE: u8 = 2;
 
 impl UpstreamClient {
-    /// Build an unauthenticated client for `base` (for example `https://pypi.org/simple/`).
+    /// Build an unauthenticated client for `base`.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Url`] if `base` is not a valid URL, or [`UpstreamError::Http`] if
@@ -526,7 +526,7 @@ impl UpstreamClient {
     }
 
     /// The configured upstream base URL as a [`Url`], for an ecosystem layer that joins ecosystem
-    /// paths onto it (the `PyPI` Simple client builds `{base}/{project}/`). Carries credential
+    /// paths onto it. Carries credential
     /// material if the configured URL did, so anything user-facing must redact first.
     #[must_use]
     pub const fn base(&self) -> &Url {
@@ -559,7 +559,7 @@ impl UpstreamClient {
 
     /// Send a conditional `GET` to `url` with the caller's `Accept` and optional `If-None-Match`,
     /// run through the shared retry engine, and hand back the open response for the caller to read or
-    /// stream. This is the neutral primitive an ecosystem's index-fetch layer (the `PyPI` Simple
+    /// stream. This is the neutral primitive an ecosystem's index-fetch layer
     /// client) builds its document requests on; `304`/`404` are surfaced, not raised.
     ///
     /// # Errors

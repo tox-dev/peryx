@@ -10,12 +10,12 @@
 //! content or races garbage collection:
 //!
 //! - **Integrity.** It re-verifies the local data center's verified placements against their stored
-//!   bytes. A copy that fails — its bytes rotted, or its file vanished under a live record — demotes to a
+//!   bytes. A copy that fails - its bytes rotted, or its file vanished under a live record - demotes to a
 //!   digest-mismatch failure and its bad bytes are dropped, so it leaves the served set and the copy
 //!   backlog schedules a fresh copy from a verified peer. Detecting the rot is this job's; the repair copy
 //!   is the [`DcCopy`](peryx_driver::jobs::ScheduledJob::DcCopy) job's.
 //! - **Policy.** It classifies each digest's placements against the target data centers and retires the
-//!   verified copies that sit outside the policy — a data center dropped from membership, say — by
+//!   verified copies that sit outside the policy - a data center dropped from membership, say - by
 //!   revoking them from serving. A target data center that lacks a copy is that data center's copy backlog
 //!   to fill, not this pass's.
 //!
@@ -28,12 +28,14 @@
 //! [`ClusterStatus::term`]: peryx_driver::state::ClusterStatus::term
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
 
-use peryx_driver::jobs::{JobFailure, JobReport, PlacementReconcileParameters, PlacementReconciler};
+use peryx_driver::jobs::{JobFailure, JobReport, PlacementReconcileParameters};
 use peryx_driver::state::{Clock, ServingState};
+use peryx_ha::{AvailabilityTaskError, AvailabilityTaskReport};
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::{BlobErrorKind, BlobStore, Digest};
 use peryx_storage::meta::{
@@ -61,7 +63,18 @@ pub struct FilesystemPlacementReconciler {
     target_dcs: BTreeSet<DataCenterId>,
 }
 
+struct BoundPlacementReconciler {
+    reconciler: FilesystemPlacementReconciler,
+    state: Arc<ServingState>,
+}
+
 impl FilesystemPlacementReconciler {
+    pub fn bind(self, state: Arc<ServingState>) -> Arc<dyn peryx_ha::PlacementReconciler> {
+        Arc::new(BoundPlacementReconciler {
+            reconciler: self,
+            state,
+        })
+    }
     /// Build the reconciler for a filesystem node from its configuration and runtime store.
     ///
     /// Returns `None` when the node reconciles nothing: no membership, no node identity, this node
@@ -202,7 +215,7 @@ impl FilesystemPlacementReconciler {
                 break;
             }
             // Retiring an out-of-policy copy is a removal, which never resurrects withdrawn content, so the
-            // retire pass classifies every digest — a withdrawn one included — rather than skip it.
+            // retire pass classifies every digest - a withdrawn one included - rather than skip it.
             let page = meta
                 .reconcile_placement_policy(&self.target_dcs, cursor.as_deref(), batch, |_digest| false)
                 .map_err(|error| JobFailure::new("placement_reconcile_scan", error.to_string()))?;
@@ -223,9 +236,8 @@ impl FilesystemPlacementReconciler {
     }
 }
 
-#[async_trait]
-impl PlacementReconciler for FilesystemPlacementReconciler {
-    async fn reconcile_pass(
+impl FilesystemPlacementReconciler {
+    pub(crate) fn reconcile_pass(
         &self,
         state: &ServingState,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
@@ -245,6 +257,23 @@ impl PlacementReconciler for FilesystemPlacementReconciler {
             processed: integrity.scanned + policy.scanned,
             changed: integrity.changed + policy.changed,
         })
+    }
+}
+
+#[async_trait]
+impl peryx_ha::PlacementReconciler for BoundPlacementReconciler {
+    async fn reconcile_pass(
+        &self,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+        batch: std::num::NonZeroUsize,
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
+        self.reconciler
+            .reconcile_pass(&self.state, cancelled, PlacementReconcileParameters { batch })
+            .map(|report| AvailabilityTaskReport {
+                processed: report.processed,
+                changed: report.changed,
+            })
+            .map_err(|error| AvailabilityTaskError::new(error.code(), error.message()))
     }
 }
 

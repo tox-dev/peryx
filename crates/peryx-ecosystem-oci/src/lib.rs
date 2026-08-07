@@ -48,7 +48,7 @@ pub const DEFAULT_INDEXES: &[peryx_core::DefaultIndex] = &[
 pub struct OciPlugin;
 
 inventory::submit! {
-    peryx_plugin_registry::EcosystemRegistration {
+    peryx_plugin_registry::PluginRegistration {
         plugin: &OciPlugin,
         priority: 1,
     }
@@ -152,29 +152,40 @@ impl EcosystemPlugin for OciPlugin {
             .map_err(|reason| format!("compile settings for {name}: {reason}"))
     }
 
-    fn install(
+    fn install(&self, state: &mut AppState, settings: &[(&str, &CompiledEcosystemSettings)]) -> Result<(), String> {
+        install_compiled(state, settings, false)
+    }
+
+    fn install_distributed(
         &self,
         state: &mut AppState,
         settings: &[(&str, &CompiledEcosystemSettings)],
-        distributed: bool,
     ) -> Result<(), String> {
-        let settings = settings
-            .iter()
-            .map(|(name, settings)| {
-                settings
-                    .value::<IndexSettings>()
-                    .copied()
-                    .map(|settings| ((*name).to_owned(), settings))
-                    .ok_or_else(|| format!("compiled settings for {name} have the wrong type"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        OciInstaller::new(settings, distributed).install(state);
-        Ok(())
+        install_compiled(state, settings, true)
     }
 
     fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
         openapi::openapi_paths(paths)
     }
+}
+
+fn install_compiled(
+    state: &mut AppState,
+    settings: &[(&str, &CompiledEcosystemSettings)],
+    journal_outbox: bool,
+) -> Result<(), String> {
+    let settings = settings
+        .iter()
+        .map(|(name, settings)| {
+            settings
+                .value::<IndexSettings>()
+                .copied()
+                .map(|settings| ((*name).to_owned(), settings))
+                .ok_or_else(|| format!("compiled settings for {name} have the wrong type"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    OciInstaller::new(settings, journal_outbox).install(state);
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -276,4 +287,6 @@ pub fn install(
 ) {
     OciInstaller::new(settings, journal_outbox).install(state);
 }
+#[cfg(feature = "bench")]
+pub mod bench;
 mod upload_session;

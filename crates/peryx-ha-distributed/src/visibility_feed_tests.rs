@@ -60,7 +60,7 @@ fn op(coordinate: &str, action: VisibilityAction, epoch: u64, serial: u64) -> Vi
 
 #[test]
 fn test_visibility_change_carries_the_operation_serial_without_row_or_blob_changes() {
-    let change = visibility_change(&op("root/pypi/flask/2.0.0", Trash, 3, 9));
+    let change = visibility_change(&op("root/alpha/flask/2.0.0", Trash, 3, 9));
     assert_eq!(change.serial, 9);
     assert!(change.metadata.is_empty());
     assert!(change.blobs.is_empty());
@@ -69,7 +69,7 @@ fn test_visibility_change_carries_the_operation_serial_without_row_or_blob_chang
 
 #[test]
 fn test_visibility_envelope_tags_the_kind_and_epoch_and_round_trips_the_operation() {
-    let minted = op("root/pypi/flask/2.0.0", Revoke, 4, 12);
+    let minted = op("root/alpha/flask/2.0.0", Revoke, 4, 12);
     let envelope = visibility_envelope("dc-a", &minted);
     assert_eq!(envelope.kind, OperationKind::Visibility);
     assert_eq!(envelope.epoch, AuthorityEpoch(4));
@@ -79,7 +79,7 @@ fn test_visibility_envelope_tags_the_kind_and_epoch_and_round_trips_the_operatio
 
 #[test]
 fn test_decode_ignores_an_envelope_of_another_kind() {
-    let change = visibility_change(&op("root/pypi/flask/2.0.0", Trash, 1, 1));
+    let change = visibility_change(&op("root/alpha/flask/2.0.0", Trash, 1, 1));
     let envelope = OperationEnvelope::current("dc-a", AuthorityEpoch(1), OperationKind::Publish, change);
     assert_eq!(decode_visibility_op(&envelope).unwrap(), None);
 }
@@ -107,7 +107,7 @@ fn test_decode_rejects_a_malformed_visibility_payload() {
 fn test_decode_rejects_a_payload_schema_this_build_does_not_apply() {
     let event = serde_json::to_vec(&serde_json::json!({
         "schema": 2,
-        "artifact": {"coordinate": "root/pypi/flask/2.0.0", "digest": "sha256:deadbeef"},
+        "artifact": {"coordinate": "root/alpha/flask/2.0.0", "digest": "sha256:deadbeef"},
         "action": "trash",
         "order": {"epoch": 1, "serial": 1},
     }))
@@ -131,7 +131,7 @@ fn test_decode_rejects_a_payload_schema_this_build_does_not_apply() {
 
 #[test]
 fn test_decode_rejects_a_serial_that_disagrees_with_the_envelope() {
-    let mut change = visibility_change(&op("root/pypi/flask/2.0.0", Trash, 7, 7));
+    let mut change = visibility_change(&op("root/alpha/flask/2.0.0", Trash, 7, 7));
     change.serial = 5;
     let envelope = OperationEnvelope::current("dc-a", AuthorityEpoch(7), OperationKind::Visibility, change);
     assert!(matches!(
@@ -146,7 +146,7 @@ fn test_decode_rejects_a_serial_that_disagrees_with_the_envelope() {
 
 #[test]
 fn test_decode_rejects_an_epoch_that_disagrees_with_the_envelope() {
-    let change = visibility_change(&op("root/pypi/flask/2.0.0", Trash, 9, 5));
+    let change = visibility_change(&op("root/alpha/flask/2.0.0", Trash, 9, 5));
     let envelope = OperationEnvelope::current("dc-a", AuthorityEpoch(1), OperationKind::Visibility, change);
     assert!(matches!(
         decode_visibility_op(&envelope),
@@ -163,7 +163,7 @@ fn test_open_on_an_empty_store_serves_the_visible_default() {
     let store = MemStore::default();
     let projection = VisibilityProjection::open(&store).unwrap();
     assert_eq!(projection.retained_artifacts(), 0);
-    assert!(projection.visibility(&artifact("root/pypi/flask/2.0.0")).is_visible());
+    assert!(projection.visibility(&artifact("root/alpha/flask/2.0.0")).is_visible());
     assert!(projection.advertised().high_water(1).is_none());
 }
 

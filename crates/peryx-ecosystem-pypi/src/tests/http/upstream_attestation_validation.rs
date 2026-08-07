@@ -8,8 +8,8 @@ use super::upstream_attestations::{
 use peryx_policy::RemoteMetadataMode;
 
 #[rstest]
-#[case::missing_content_type(None, PYPI_PROVENANCE, "missed Simple API Content-Type")]
-#[case::unsupported_content_type(Some("text/plain"), PYPI_PROVENANCE, "unsupported Simple API Content-Type")]
+#[case::missing_content_type(None, PYPI_PROVENANCE, "upstream returned an invalid response")]
+#[case::unsupported_content_type(Some("text/plain"), PYPI_PROVENANCE, "upstream returned an invalid response")]
 #[case::malformed_json(Some("application/json"), "{", "could not be parsed")]
 #[case::empty_bundles(Some("application/json"), r#"{"version":1,"attestation_bundles":[]}"#, "PEP 740")]
 #[case::wrong_document_version(Some("application/json"), r#"{"version":2,"attestation_bundles":[{"publisher":{"kind":"test","claims":{}},"attestations":[{"version":1,"verification_material":{"certificate":"Zm9v","transparency_entries":[]},"envelope":{"statement":"e30=","signature":"YmFy"}}]}]}"#, "PEP 740")]

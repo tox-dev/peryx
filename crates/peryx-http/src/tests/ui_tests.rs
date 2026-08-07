@@ -31,6 +31,15 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
         Ecosystem::new("example")
     }
 
+    fn capabilities(&self) -> peryx_driver::serving::DriverCapabilities<'_> {
+        peryx_driver::serving::DriverCapabilities {
+            browse: Some(self),
+            manifest: Some(self),
+            artifact_members: Some(self),
+            ..peryx_driver::serving::DriverCapabilities::default()
+        }
+    }
+
     fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
         peryx_driver::rate_limit::RouteClass::Listing
     }
@@ -42,7 +51,10 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
     ) -> serde_json::Value {
         peryx_driver::discovery::minimal_entry(&index)
     }
+}
 
+#[async_trait::async_trait]
+impl peryx_driver::serving::BrowseDriver for UiStub {
     fn project_names(&self, _state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         if position == 0 {
             Ok(vec!["flask".to_owned()])
@@ -64,9 +76,9 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
                 project: UiProject {
                     name: "placement".to_owned(),
                     files: vec![
-                        placement_file("held-1.0.whl", UiArtifactSource::Hosted, UiByteAvailability::Local),
+                        placement_file("held-1.0.bin", UiArtifactSource::Hosted, UiByteAvailability::Local),
                         placement_file(
-                            "cached-1.0.whl",
+                            "cached-1.0.bin",
                             UiArtifactSource::Proxy,
                             UiByteAvailability::RemoteOnly,
                         ),
@@ -95,7 +107,10 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
             })),
         }
     }
+}
 
+#[async_trait::async_trait]
+impl peryx_driver::serving::ManifestDriver for UiStub {
     async fn manifest_view(
         &self,
         _state: Arc<ServingState>,
@@ -107,12 +122,15 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
             "boom" => Err("manifest unreadable".to_owned()),
             "absent" => Ok(None),
             _ => Ok(Some(UiManifest {
-                media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+                media_type: "application/vnd.beta.image.manifest.v1+json".to_owned(),
                 ..UiManifest::default()
             })),
         }
     }
+}
 
+#[async_trait::async_trait]
+impl peryx_driver::serving::ArtifactMemberDriver for UiStub {
     async fn artifact_members(
         &self,
         _state: Arc<ServingState>,
@@ -161,6 +179,7 @@ fn placement_file(filename: &str, source: UiArtifactSource, availability: UiByte
         yanked: false,
         yanked_reason: None,
         has_metadata: false,
+        browsable: true,
         upstream: None,
         provenance: None,
         provenance_detail: None,
@@ -552,7 +571,7 @@ async fn test_ui_manifest_returns_the_manifest_view() {
     let (_dir, app) = ui_app();
     let (status, document) = get_json(&app, "/+ui/manifest?index=good&project=img&ref=1.0").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(document["media_type"], "application/vnd.oci.image.manifest.v1+json");
+    assert_eq!(document["media_type"], "application/vnd.beta.image.manifest.v1+json");
 }
 
 #[tokio::test]

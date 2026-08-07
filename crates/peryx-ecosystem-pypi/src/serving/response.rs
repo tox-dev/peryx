@@ -67,12 +67,9 @@ pub fn detail_response(result: Result<Option<DetailPage>, CacheError>, index: &s
             )
                 .into_response();
         }
-        Err(CacheError::Upstream(
-            err @ (peryx_upstream::UpstreamError::MissingContentType { .. }
-            | peryx_upstream::UpstreamError::UnsupportedContentType { .. }),
-        )) => {
+        Err(CacheError::Upstream(err @ peryx_upstream::UpstreamError::InvalidResponse { .. })) => {
             tracing::warn!(error = ?err, "unsupported upstream simple api content type");
-            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+            return (StatusCode::BAD_GATEWAY, err.user_message()).into_response();
         }
         Err(err) => {
             tracing::error!(error = ?err, "project detail failed");
@@ -108,12 +105,9 @@ pub(super) fn legacy_json_response(
             format!("project {project:?} was not found on index {index:?}"),
         )
             .into_response(),
-        Err(CacheError::Upstream(
-            err @ (peryx_upstream::UpstreamError::MissingContentType { .. }
-            | peryx_upstream::UpstreamError::UnsupportedContentType { .. }),
-        )) => {
+        Err(CacheError::Upstream(err @ peryx_upstream::UpstreamError::InvalidResponse { .. })) => {
             tracing::warn!(error = ?err, "unsupported upstream simple api content type");
-            (StatusCode::BAD_GATEWAY, err.to_string()).into_response()
+            (StatusCode::BAD_GATEWAY, err.user_message()).into_response()
         }
         Err(err) => {
             tracing::error!(error = ?err, "legacy project json failed");

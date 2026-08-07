@@ -4,7 +4,7 @@
 //! result once the bytes commit. The ledger records the write's convergence for the pending-operations
 //! view and dedups a retry to a single terminal record. Recording is best effort and off the publish's
 //! critical path: a ledger fault is swallowed rather than turned into a client error, so it never fails a
-//! durable publish, and the response bytes never reach a log. The ledger only records — it never gates
+//! durable publish, and the response bytes never reach a log. The ledger only records - it never gates
 //! the mutation, so a repeated write always re-commits its content-addressed bytes and stays retrievable
 //! rather than short-circuiting on the recorded claim.
 

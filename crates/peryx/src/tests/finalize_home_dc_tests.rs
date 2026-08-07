@@ -4,10 +4,10 @@
 //! [`EcosystemDriver::finalize_admitted`] entry the maintenance job calls, so the home-side finalize is
 //! exercised the way the running server reaches it.
 
+use peryx_driver::serving::IntentFinalizer as _;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use peryx_driver::serving::EcosystemDriver;
 use peryx_driver::state::AppState;
 use peryx_ecosystem_pypi::PypiServing;
 use peryx_ecosystem_pypi::store::put_upload;

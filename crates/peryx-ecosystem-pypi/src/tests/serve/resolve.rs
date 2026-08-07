@@ -2,6 +2,7 @@
 
 use super::support::*;
 use crate::tests::http::{LogCapture, field, policy, put_local_project};
+use peryx_driver::serving::ProjectPageDriver as _;
 use peryx_identity::IndexAcl;
 use peryx_policy::FallbackMode;
 
@@ -771,8 +772,6 @@ async fn test_private_first_shadows_a_cache_reached_through_a_nested_virtual() {
 
 #[tokio::test]
 async fn test_project_page_reports_an_unreachable_upstream() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, "http://127.0.0.1:9/simple/", |client| {
         vec![Index {

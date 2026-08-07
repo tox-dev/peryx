@@ -102,7 +102,9 @@ impl AppState {
         }
         let mut summaries = HashMap::new();
         for (ecosystem, names) in by_ecosystem {
-            if let Some(driver) = self.driver_for(ecosystem)
+            if let Some(driver) = self
+                .driver_for(ecosystem)
+                .and_then(|driver| driver.capabilities().index_summary)
                 && let Ok(map) = driver.summarize_indexes(&self.meta, &names, recent_limit)
             {
                 summaries.extend(map);
@@ -140,7 +142,7 @@ impl AppState {
         Arc::get_mut(&mut self.serving).expect("serving state is registered before it is served")
     }
 
-    /// The absolute-mount driver that owns `path` (`OCI`'s `/v2/`), or `None` when the path falls under
+    /// The absolute-mount driver that owns `path`, or `None` when the path falls under
     /// no such prefix and the per-index router handles it.
     #[must_use]
     pub fn absolute_driver_for_path(&self, path: &str) -> Option<&Arc<dyn crate::serving::EcosystemDriver>> {
@@ -196,26 +198,8 @@ impl AppState {
         self.serving_mut().enable_distributed().topology = topology;
     }
 
-    /// Install the resolved hosted-write acknowledgement quorum and client deadline.
-    pub fn set_write_ack(&mut self, policy: peryx_ha::DurabilityPolicy, deadline: std::time::Duration) {
-        let availability = self.serving_mut().enable_distributed();
-        availability.write_ack_policy = policy;
-        availability.write_ack_deadline = deadline;
-    }
-
-    /// Install the same-datacenter peers a filesystem write gathers placement receipts from, so a
-    /// multi-node-DC quorum resolves from real evidence rather than the local receipt alone.
-    pub fn set_receipt_sources(&mut self, sources: Vec<std::sync::Arc<dyn peryx_ha::ReceiptSource + Send + Sync>>) {
-        self.serving_mut().enable_distributed().receipt_sources = sources;
-    }
-
-    /// Install the eligible remote datacenters an `ha` write gathers metadata acknowledgements from, so
-    /// its metadata dimension resolves from a remote commit rather than the local journal alone.
-    pub fn set_remote_frontier_sources(
-        &mut self,
-        sources: Vec<std::sync::Arc<dyn peryx_ha::RemoteFrontierSource + Send + Sync>>,
-    ) {
-        self.serving_mut().enable_distributed().remote_frontier_sources = sources;
+    pub fn set_write_acknowledger(&mut self, acknowledger: std::sync::Arc<dyn peryx_ha::WriteAcknowledger>) {
+        self.serving_mut().enable_distributed().write_acknowledger = Some(acknowledger);
     }
 
     /// Install the authority role the binary resolved from the configured replication role, so the

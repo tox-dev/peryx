@@ -2,8 +2,8 @@
 //!
 //! The [`AuthorityFence`] fails closed on the [`AuthorityEpoch(0)`](crate::AuthorityEpoch) sentinel: it
 //! admits work only under a nonzero committed epoch, so an unassigned authority fences everything. That
-//! guard is correct only while the epoch producer — the [`OwnershipState`] the Raft ownership machine
-//! drives — reserves `0` for "unassigned" and never hands a real authority epoch `0`. If it ever homed
+//! guard is correct only while the epoch producer - the [`OwnershipState`] the Raft ownership machine
+//! drives - reserves `0` for "unassigned" and never hands a real authority epoch `0`. If it ever homed
 //! an authority at epoch `0`, that authority could never commit at the fence (`commit(0)` is
 //! [`Ignored`](CommitOutcome::Ignored)) and every operation it presented would be
 //! [`Fenced`](Admission::Fenced) forever. These tests confirm the contract at the producer layer.
@@ -110,7 +110,7 @@ fn test_the_fence_admits_every_epoch_the_producer_mints_and_fences_the_reserved_
     let mut fence = AuthorityFence::new();
     let authority = key("proj");
 
-    // The reserved sentinel never commits, so an unassigned authority fences all work — the fence's
+    // The reserved sentinel never commits, so an unassigned authority fences all work - the fence's
     // fail-closed guard, and the reason the producer must never hand it a real authority at epoch zero.
     assert_eq!(fence.commit(&authority, RESERVED), CommitOutcome::Ignored);
     assert!(matches!(

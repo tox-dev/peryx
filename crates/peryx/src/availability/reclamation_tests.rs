@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use peryx_driver::serving::EcosystemDriver;
+use peryx_driver::serving::{DriverCapabilities, EcosystemDriver, TrashDriver};
 use peryx_driver::state::AppState;
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::{BlobStorage, Digest};
@@ -105,8 +105,6 @@ fn tombstone_status(meta: &MetaStore, digest: &ArtifactDigest) -> Option<Reclama
         .map(|tombstone| tombstone.state.status())
 }
 
-// --- fence -------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_reclaim_pass_is_a_no_op_without_a_cluster_term() {
     let (_meta_dir, meta) = meta();
@@ -115,14 +113,11 @@ async fn test_reclaim_pass_is_a_no_op_without_a_cluster_term() {
 
     let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
         .reclaim_pass(&state, &|| false, 0, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(report, JobReport::default(), "term 0 fences the pass shut");
     assert_eq!(tombstone_status(&state.meta, &artifact), None);
 }
-
-// --- select ------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_pass_selects_an_unreferenced_digest_and_stamps_the_frontier() {
@@ -133,7 +128,6 @@ async fn test_pass_selects_an_unreferenced_digest_and_stamps_the_frontier() {
 
     let report = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(report.processed, 1);
@@ -154,7 +148,6 @@ async fn test_pass_leaves_a_referenced_digest_untouched() {
 
     let report = selector(&[&artifact], ObservedFrontier { replica: 9, backup: 9 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(report.processed, 1);
@@ -175,7 +168,6 @@ async fn test_pass_leaves_a_serveable_digest_untouched() {
 
     let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(report.changed, 0);
@@ -197,13 +189,10 @@ async fn test_pass_scans_only_the_batch() {
 
     let report = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
         .reclaim_pass(&state, &|| false, 9, params)
-        .await
         .unwrap();
 
     assert_eq!(report.processed, 1, "the batch bounds one pass to a single candidate");
 }
-
-// --- finalize / frontier gate ------------------------------------------------
 
 #[tokio::test]
 async fn test_a_covered_frontier_marks_a_candidate_ready() {
@@ -214,7 +203,6 @@ async fn test_a_covered_frontier_marks_a_candidate_ready() {
 
     let report = selector(&[], ObservedFrontier { replica: 4, backup: 6 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(tombstone_status(&state.meta, &artifact), Some(ReclamationStatus::Ready));
@@ -230,7 +218,6 @@ async fn test_a_lagging_replica_blocks_readiness() {
 
     selector(&[], ObservedFrontier { replica: 2, backup: 9 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(
@@ -249,7 +236,6 @@ async fn test_a_lagging_backup_blocks_readiness() {
 
     selector(&[], ObservedFrontier { replica: 9, backup: 2 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(
@@ -268,7 +254,6 @@ async fn test_a_reference_returning_before_the_final_check_skips_the_candidate()
     // First pass with a lagging replica arms a pending tombstone but cannot mark it ready.
     selector(&[], ObservedFrontier { replica: 0, backup: 0 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
     assert_eq!(
         tombstone_status(&state.meta, &artifact),
@@ -278,7 +263,6 @@ async fn test_a_reference_returning_before_the_final_check_skips_the_candidate()
     // A reference reappears; the frontier is now covered, but the final check abandons the candidate.
     selector(&[&artifact], ObservedFrontier { replica: 9, backup: 9 })
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(
@@ -287,8 +271,6 @@ async fn test_a_reference_returning_before_the_final_check_skips_the_candidate()
         "a reference that returned skips the candidate rather than marking it ready"
     );
 }
-
-// --- fencing -----------------------------------------------------------------
 
 #[tokio::test]
 async fn test_a_stale_worker_is_fenced_out_of_selection() {
@@ -303,7 +285,6 @@ async fn test_a_stale_worker_is_fenced_out_of_selection() {
 
     let error = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
         .reclaim_pass(&state, &|| false, 5, ReclamationParameters::new())
-        .await
         .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_select");
@@ -314,8 +295,6 @@ async fn test_a_stale_worker_is_fenced_out_of_selection() {
     );
 }
 
-// --- cancellation and failure ------------------------------------------------
-
 #[tokio::test]
 async fn test_a_cancelled_pass_selects_nothing() {
     let (_meta_dir, meta) = meta();
@@ -324,7 +303,6 @@ async fn test_a_cancelled_pass_selects_nothing() {
 
     let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
         .reclaim_pass(&state, &|| true, 9, ReclamationParameters::new())
-        .await
         .unwrap();
 
     assert_eq!(report, JobReport::default());
@@ -343,13 +321,10 @@ async fn test_a_reference_scan_failure_surfaces() {
 
     let error = reclaimer
         .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .await
         .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_references");
 }
-
-// --- production reference and frontier sources -------------------------------
 
 #[test]
 fn test_driver_references_reads_the_reference_inventory() {
@@ -385,6 +360,15 @@ impl EcosystemDriver for StubDriver {
         serde_json::Value::Null
     }
 
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            trash: Some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+}
+
+impl TrashDriver for StubDriver {
     fn trash_records(
         &self,
         _meta: &MetaStore,
@@ -463,8 +447,6 @@ fn test_collect_references_folds_trashed_digests_over_the_base_set() {
 fn test_deferred_frontiers_report_the_closed_frontier() {
     assert_eq!(DeferredFrontiers.observe(), ObservedFrontier { replica: 0, backup: 0 });
 }
-
-// --- from_config -------------------------------------------------------------
 
 fn member(node: &str, data_center: &str) -> DcMember {
     DcMember {

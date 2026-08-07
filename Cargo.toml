@@ -25,6 +25,7 @@ unused_imports = "warn"
 peryx-core = { path = "crates/peryx-core" }
 peryx-driver = { path = "crates/peryx-driver" }
 peryx-events = { path = "crates/peryx-events" }
+peryx-bench-core = { path = "crates/peryx-bench-core" }
 peryx-index = { path = "crates/peryx-index" }
 peryx-search = { path = "crates/peryx-search" }
 peryx-ecosystem-pypi = { path = "crates/peryx-ecosystem-pypi", default-features = false }
@@ -34,7 +35,6 @@ peryx-pql = { path = "crates/peryx-pql" }
 peryx-identity = { path = "crates/peryx-identity" }
 peryx-plugin-registry = { path = "crates/peryx-plugin-registry" }
 peryx-ha = { path = "crates/peryx-ha" }
-peryx-ha-local = { path = "crates/peryx-ha-local" }
 peryx-ha-distributed = { path = "crates/peryx-ha-distributed" }
 peryx-storage = { path = "crates/peryx-storage" }
 peryx-upstream = { path = "crates/peryx-upstream" }

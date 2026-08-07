@@ -107,7 +107,7 @@ pub struct PackageDocument {
     pub normalized_name: String,
     pub route: String,
     pub index: String,
-    /// The lowercase ecosystem identifier of the owning index (`pypi`, `oci`).
+    /// The lowercase ecosystem identifier of the owning index.
     pub ecosystem: String,
     pub source: PackageSource,
     /// Whether at least one of this package's artifacts can be served from local storage right now,

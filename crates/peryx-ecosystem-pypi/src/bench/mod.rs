@@ -1,10 +1,9 @@
-//! The `PyPI` benchmark suite: the workloads, the competitor servers, and the package fixtures.
-//!
-//! This mirrors the `peryx-ecosystem-pypi` crate and the site's `content/ecosystems/pypi.md`.
-
 pub mod packages;
 pub mod servers;
 pub mod workloads;
+
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct Options {}
 
 /// Run the `PyPI` suite: every workload not in `skip`, against every server named in `only`.
 ///
@@ -13,7 +12,13 @@ pub mod workloads;
 ///
 /// # Errors
 /// Returns an error when a server cannot start or a workload against a healthy server fails.
-pub async fn run(rounds: usize, skip: &[String], only: &str, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn run(
+    _options: &Options,
+    rounds: usize,
+    skip: &[String],
+    only: &str,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let servers: Vec<_> = servers::all()
         .into_iter()
         .filter(|server| only.is_empty() || only.split(',').any(|name| name == server.name))

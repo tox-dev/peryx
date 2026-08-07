@@ -150,7 +150,7 @@ const MAX_PREDICATE_TYPE_CHARS: usize = 256;
 /// Summarize a stored PEP 740 provenance document into the neutral per-attestation view the package
 /// page renders, one record per attestation across every bundle.
 ///
-/// This reads the document peryx already stored — it fetches nothing and verifies no signature. It
+/// This reads the document peryx already stored - it fetches nothing and verifies no signature. It
 /// decodes each DSSE statement only far enough to read its `predicateType` and check that a subject
 /// digest binds to `sha256`, mirroring the binding [`build_provenance`] enforced at upload.
 ///

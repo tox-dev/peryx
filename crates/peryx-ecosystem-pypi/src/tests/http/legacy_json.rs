@@ -227,7 +227,7 @@ async fn test_legacy_json_unsupported_upstream_content_type_is_bad_gateway() {
     let (status, _, body) = get(&h.state, "/pypi/flask/json", None).await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body.contains("unsupported upstream Simple API Content-Type"));
+    assert!(body.contains("upstream returned an invalid response"), "{body}");
 }
 #[tokio::test]
 async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {

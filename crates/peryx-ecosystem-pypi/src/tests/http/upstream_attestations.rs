@@ -3,6 +3,7 @@
 use super::attestations::{attestations_field, upload_with_attestations};
 use super::support::*;
 use crate::store::UpstreamAttestation;
+use peryx_driver::serving::BrowseDriver as _;
 use peryx_policy::RemoteMetadataMode;
 
 pub(super) const FILENAME: &str = "peryxpkg-1.0-py3-none-any.whl";
@@ -168,8 +169,6 @@ pub(super) async fn provenance_requests(harness: &Harness) -> usize {
 
 #[tokio::test]
 async fn test_project_page_flags_a_mirrored_provenance_claim() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let harness = upstream_harness(RemoteMetadataMode::Proxy).await;
     let digest = "2".repeat(64);
     mount_upstream_attestation_page(&harness, &digest).await;

@@ -38,11 +38,11 @@ mod tests {
     #[test]
     fn test_push_path_keeps_segment_separators() {
         let mut out = String::new();
-        push_path(&mut out, "root/pypi");
-        assert_eq!(out, "root/pypi");
+        push_path(&mut out, "root/alpha");
+        assert_eq!(out, "root/alpha");
 
         let mut out = String::new();
-        push_path(&mut out, "root/pypi mirror");
-        assert_eq!(out, "root/pypi%20mirror");
+        push_path(&mut out, "root/alpha mirror");
+        assert_eq!(out, "root/alpha%20mirror");
     }
 }

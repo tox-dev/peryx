@@ -202,7 +202,7 @@ impl MetaStore {
 
     /// Apply a batch of driver-owned writes in one transaction. `durable` requests an fsync-backed
     /// commit; pass `false` for re-fetchable cache data, where skipping the fsync keeps a large-page
-    /// write at memory speed and a crash before the next durable commit only costs a refetch — the
+    /// write at memory speed and a crash before the next durable commit only costs a refetch - the
     /// fast path a write per key would lose.
     ///
     /// # Errors

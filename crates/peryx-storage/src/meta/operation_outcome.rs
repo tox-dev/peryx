@@ -4,8 +4,8 @@
 //! A write admitted at one node can outlive the request that opened it and be retried. Claiming the
 //! operation id records it as pending before the mutation runs; finalizing stamps the terminal result
 //! and the response bytes a retry replays. A retry re-claims the same id, finds the existing record, and
-//! replays it — pending while the first attempt is still in flight, or the finalized response once it
-//! committed — so the mutation runs once. This module owns the persistence; deriving the client-facing
+//! replays it - pending while the first attempt is still in flight, or the finalized response once it
+//! committed - so the mutation runs once. This module owns the persistence; deriving the client-facing
 //! status and scoping the id to an authority live above it.
 
 use std::ops::Bound::{Excluded, Unbounded};

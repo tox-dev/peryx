@@ -457,6 +457,7 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     let service_post_class = if *request.method() == Method::POST {
         state
             .drivers()
+            .filter_map(|driver| driver.capabilities().service)
             .find_map(|driver| driver.classify_service_post(path.trim_start_matches('/'), request.headers()))
     } else {
         None
@@ -527,7 +528,7 @@ pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     if path == "+revocations" || path.starts_with("+revocations/") {
         return Some(RouteClass::Admin);
     }
-    // HEAD and OPTIONS are reads (an OCI client HEADs every manifest and blob before a pull); only a
+    // Clients use HEAD and OPTIONS to inspect artifacts before reads; only a
     // body-bearing write method is an upload. Classifying them here as reads lets the owning driver's
     // `classify_route` bucket them with GET instead of spending the strict upload budget.
     if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) {
@@ -727,7 +728,7 @@ mod tests {
     #[test]
     fn test_service_route_class_handles_writes_and_service_routes() {
         assert_eq!(
-            service_route_class(&Method::POST, "/pypi/simple/"),
+            service_route_class(&Method::POST, "/alpha/simple/"),
             Some(RouteClass::Upload)
         );
         assert_eq!(service_route_class(&Method::GET, "/+status"), Some(RouteClass::Admin));
@@ -745,24 +746,24 @@ mod tests {
             Some(RouteClass::Admin)
         );
         assert_eq!(
-            service_route_class(&Method::GET, "/pypi/hosted/+api"),
+            service_route_class(&Method::GET, "/alpha/hosted/+api"),
             Some(RouteClass::Admin)
         );
         assert_eq!(
-            service_route_class(&Method::GET, "/pypi/files/abc/x.whl.metadata"),
+            service_route_class(&Method::GET, "/alpha/files/abc/x.bin.metadata"),
             None
         );
     }
 
     #[test]
     fn test_service_route_class_treats_head_and_options_as_reads() {
-        // An OCI client HEADs every manifest and blob before a pull; classing HEAD/OPTIONS as reads
+        // Clients inspect artifacts with HEAD and OPTIONS before reads; classing them as reads
         // defers to the driver's own route class instead of spending the strict upload budget.
         assert_eq!(
             service_route_class(&Method::HEAD, "/v2/hub/library/nginx/manifests/latest"),
             None
         );
-        assert_eq!(service_route_class(&Method::OPTIONS, "/pypi/simple/flask/"), None);
+        assert_eq!(service_route_class(&Method::OPTIONS, "/alpha/simple/flask/"), None);
         assert_eq!(service_route_class(&Method::HEAD, "/+status"), Some(RouteClass::Admin));
         for method in [Method::PUT, Method::PATCH, Method::DELETE] {
             assert_eq!(
@@ -772,7 +773,7 @@ mod tests {
         }
         // Any other method keeps the original strict-budget default rather than deferring to the driver.
         assert_eq!(
-            service_route_class(&Method::TRACE, "/pypi/simple/"),
+            service_route_class(&Method::TRACE, "/alpha/simple/"),
             Some(RouteClass::Upload)
         );
     }

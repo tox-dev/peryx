@@ -1,14 +1,12 @@
-//! The file-transfer workload: one large wheel, cold under contention and hot at full speed.
-
 use std::time::Instant;
 
 use anyhow::Context as _;
 
 use super::super::packages::STRESS_PROJECT;
 use super::{Rounds, median_or_dash_rate};
-use crate::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
-use crate::servers::{Active, Server};
-use crate::usage::{Cost, Usage};
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::servers::{Active, Server};
+use peryx_bench_core::usage::{Cost, Usage};
 
 /// The file-transfer workload: one large wheel, cold under contention and hot at full speed.
 ///

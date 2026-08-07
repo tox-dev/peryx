@@ -2,10 +2,10 @@
 //! bound.
 //!
 //! Every cached (proxy) role does the same two things around an upstream fetch, whatever it caches.
-//! It coalesces concurrent misses for one key so a cold page is fetched once, not once per waiter —
-//! the difference between a warm cache and a thundering herd on a popular project. And it decides how
+//! It coalesces concurrent misses for one key so a cold page is fetched once, not once per waiter.
+//! This prevents a thundering herd on a popular project. It also decides how
 //! long a page past its freshness window may still answer while the upstream is unreachable. Both live
-//! here so a `PyPI` page and an `OCI` manifest share one implementation rather than drifting apart.
+//! here so ecosystem representations share one implementation.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -109,7 +109,7 @@ pub fn flight_gate(inflight: &Inflight, key: &str) -> FlightGate {
 impl Inflight {
     /// The number of callers currently registered on `key`'s gate, or `0` when no gate exists for it.
     ///
-    /// A test observes this to know a racing request has reached the gate — a deterministic replacement
+    /// A test observes this to know a racing request has reached the gate - a deterministic replacement
     /// for sleeping and hoping the request has parked, since [`flight_gate`] bumps the count before the
     /// caller awaits the lock.
     #[must_use]
@@ -131,7 +131,7 @@ pub fn release_flight(inflight: &Inflight, key: &str, guard: FlightGuard) {
 /// cache that answers with whatever it last saw, forever, has stopped being a cache and become a
 /// fork. `max_stale_secs` bounds the outage a stale page papers over; `0` removes the bound, which is
 /// what an operator deliberately mirroring an unreliable upstream asks for. `freshness_secs` is the
-/// lifetime the page was fresh for — an ecosystem passes the upstream-granted lifetime, or its own
+/// lifetime the page was fresh for - an ecosystem passes the upstream-granted lifetime, or its own
 /// fallback.
 #[must_use]
 pub const fn within_stale_bound(now: i64, max_stale_secs: i64, fetched_at: i64, freshness_secs: i64) -> bool {
@@ -214,7 +214,7 @@ impl ServingCache {
 
     /// The hot-cache key for one representation of a page as served on `route` right now.
     ///
-    /// `variant` separates the representations a page has (PEP 691 JSON, PEP 503 HTML, legacy JSON):
+    /// `variant` separates the representations a page has:
     /// different bytes. The project's epoch makes a mutation to it retire them all at once, while
     /// leaving other projects' keys unchanged.
     ///

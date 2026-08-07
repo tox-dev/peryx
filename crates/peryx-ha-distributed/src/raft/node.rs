@@ -1,7 +1,7 @@
 //! Assembling and driving the ownership consensus group's `OpenRaft` node.
 //!
-//! [`RaftNode`] wires the three adapters — the log storage, the network factory, and the
-//! [`OwnershipStateMachine`] — into one [`openraft::Raft`] instance, and wraps the operations the app
+//! [`RaftNode`] wires the three adapters - the log storage, the network factory, and the
+//! [`OwnershipStateMachine`] - into one [`openraft::Raft`] instance, and wraps the operations the app
 //! uses: bootstrap a fresh cluster, submit an [`OwnershipCommand`], and find the current leader to
 //! forward a write to. The log-storage and network adapters arrive behind their traits, so this
 //! assembles against [`RaftLogStorage`] and [`RaftNetworkFactory`] and takes the concrete

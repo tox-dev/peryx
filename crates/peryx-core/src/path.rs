@@ -27,8 +27,8 @@ pub enum PathSafetyError {
     InvalidEncoding(String),
 }
 
-/// Top-level path prefixes peryx's own router owns — the neutral API surface, the web UI's pages, and
-/// its static assets — that an index route would otherwise be shadowed by. Kept in step with the axum
+/// Top-level path prefixes peryx's own router owns - the neutral API surface, the web UI's pages, and
+/// its static assets - that an index route would otherwise be shadowed by. Kept in step with the axum
 /// router and the web UI's page table; a served path missing here lets an index route resolve to a
 /// built-in page instead. `_` is the machine-endpoint namespace (the `/_/oidc/*` trusted-publishing
 /// routes): a valid route segment, so a route claiming it would shadow those endpoints.
@@ -62,7 +62,7 @@ pub fn local_file_url(route: &str, sha256: &str, filename: &str) -> String {
 /// Whether `url` is a peryx-local file URL on `route`, the shape [`local_file_url`] produces.
 ///
 /// This is the marker for an already-rewritten cache record. A bare leading `/` is not enough: a
-/// PEP 691 upstream may serve a legitimate root-relative file URL (`/packages/x.whl`), which must
+/// An upstream may serve a legitimate root-relative artifact URL (`/artifacts/x.bin`), which must
 /// still resolve to a real blob rather than be mistaken for a local record.
 #[must_use]
 pub fn is_local_file_url(route: &str, url: &str) -> bool {
@@ -170,7 +170,7 @@ fn hex_byte(hex: &[u8]) -> Option<u8> {
 
 /// Percent-decode, borrowing when there is nothing to decode.
 ///
-/// An escape starts with `%`, and a project name, version, or wheel filename almost never carries
+/// An escape starts with `%`, and artifact coordinates seldom carry
 /// one. Copying every byte through a fresh buffer to discover that cost an allocation per segment on
 /// every request.
 fn decode_percent(input: &str) -> Result<Cow<'_, str>, PathSafetyError> {
@@ -219,23 +219,23 @@ mod tests {
     #[test]
     fn test_path_segments_encode_reserved_characters() {
         assert_eq!(
-            local_file_url("root/pypi", "aa", "pkg 1.0#x?.whl"),
-            "/root/pypi/files/aa/pkg%201.0%23x%3F.whl"
+            local_file_url("root/alpha", "aa", "pkg 1.0#x?.bin"),
+            "/root/alpha/files/aa/pkg%201.0%23x%3F.bin"
         );
     }
 
     #[test]
     fn test_is_local_file_url_matches_only_the_route_files_prefix() {
-        assert!(is_local_file_url("root/pypi", "/root/pypi/files/aa/pkg.whl"));
-        assert!(!is_local_file_url("root/pypi", "/packages/pkg.whl"));
-        assert!(!is_local_file_url("root/pypi", "/other/files/aa/pkg.whl"));
-        assert!(!is_local_file_url("root/pypi", "https://files.example/pkg.whl"));
+        assert!(is_local_file_url("root/alpha", "/root/alpha/files/aa/pkg.bin"));
+        assert!(!is_local_file_url("root/alpha", "/packages/pkg.bin"));
+        assert!(!is_local_file_url("root/alpha", "/other/files/aa/pkg.bin"));
+        assert!(!is_local_file_url("root/alpha", "https://files.example/pkg.bin"));
     }
 
     #[test]
     fn test_path_segments_decode_percent_encoding() {
-        assert_eq!(decode_path_segment("pkg%201.0%23x%3F.whl").unwrap(), "pkg 1.0#x?.whl");
-        assert_eq!(decode_path_segment("pkg%252Fname.whl").unwrap(), "pkg%2Fname.whl");
+        assert_eq!(decode_path_segment("pkg%201.0%23x%3F.bin").unwrap(), "pkg 1.0#x?.bin");
+        assert_eq!(decode_path_segment("pkg%252Fname.bin").unwrap(), "pkg%2Fname.bin");
         assert_eq!(
             decode_path_segment("pkg%2"),
             Err(PathSafetyError::InvalidEncoding("pkg%2".to_owned()))
@@ -264,19 +264,19 @@ mod tests {
 
     #[test]
     fn test_route_validation_accepts_nested_unreserved_routes() {
-        assert_eq!(validate_route("root/pypi-1.0_~"), Ok(()));
+        assert_eq!(validate_route("root/alpha-1.0_~"), Ok(()));
     }
 
     #[test]
     fn test_route_validation_rejects_unsafe_or_reserved_routes() {
         for route in [
             "",
-            "/pypi",
-            "pypi/",
-            "root//pypi",
+            "/alpha",
+            "alpha/",
+            "root//alpha",
             ".",
             "root/..",
-            "root/pypi mirror",
+            "root/alpha mirror",
             "root/%70ypi",
         ] {
             assert_eq!(
@@ -307,14 +307,14 @@ mod tests {
             "",
             ".",
             "..",
-            "../pkg.whl",
-            "pkg/name.whl",
-            "pkg\\name.whl",
-            "pkg\u{7}.whl",
+            "../pkg.bin",
+            "pkg/name.bin",
+            "pkg\\name.bin",
+            "pkg\u{7}.bin",
         ] {
             assert!(validate_filename(filename).is_err(), "{filename:?}");
         }
-        assert!(validate_filename("pkg 1.0#x?.whl").is_ok());
+        assert!(validate_filename("pkg 1.0#x?.bin").is_ok());
     }
 
     #[test]

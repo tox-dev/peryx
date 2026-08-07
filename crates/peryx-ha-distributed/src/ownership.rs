@@ -1,7 +1,7 @@
 //! The replicated ownership state machine: which datacenter homes each authority, the authority epoch
 //! that fences its work, and the transfer trail behind it.
 //!
-//! Home authority moves between datacenters — a project or repository is first homed where it is
+//! Home authority moves between datacenters - a project or repository is first homed where it is
 //! published, and a failover transfers it to a surviving datacenter. Every replica must agree on who
 //! owns an authority and under which epoch, or two datacenters could both accept writes for it. This is
 //! the deterministic state behind that agreement: [`apply`](OwnershipState::apply) folds one committed
@@ -11,13 +11,13 @@
 //! It is the producer half of the authority-epoch fence. [`AuthorityFence`](crate::AuthorityFence)
 //! consumes committed epochs and admits only the work that carries the current one; this mints them.
 //! Epochs are one-based and strictly increasing: an authority no command has homed reads as
-//! [`AuthorityEpoch(0)`](crate::AuthorityEpoch) — the same unassigned sentinel the fence fails closed
-//! on — and the first assignment mints epoch one, so a real epoch is never zero and the fence can trust
+//! [`AuthorityEpoch(0)`](crate::AuthorityEpoch) - the same unassigned sentinel the fence fails closed
+//! on - and the first assignment mints epoch one, so a real epoch is never zero and the fence can trust
 //! a nonzero epoch as an owned authority.
 //!
 //! The fold is pure and total: a command and the current state decide the next state, with no clock,
-//! network, or storage. An invalid transition — assigning an already-owned authority, advancing or
-//! transferring one that was never assigned, or transferring to the home it already holds — is rejected
+//! network, or storage. An invalid transition - assigning an already-owned authority, advancing or
+//! transferring one that was never assigned, or transferring to the home it already holds - is rejected
 //! without touching the state, so a replayed or malformed command cannot corrupt ownership.
 //!
 //! Wiring this behind a Raft state machine that applies committed commands, and driving the minted
@@ -42,7 +42,7 @@ pub struct DatacenterId(pub String);
 /// The committed-entry provenance the state machine reads off each applied log entry: the leader term
 /// and log index of the [`OwnershipCommand`] that produced a transition.
 ///
-/// The Raft log position `(term, index)` is the operation's identity — unique and totally ordered — so
+/// The Raft log position `(term, index)` is the operation's identity - unique and totally ordered - so
 /// recording it on an assignment ties the home to the exact committed command for audit and replay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppliedMeta {
@@ -66,7 +66,7 @@ pub struct Assignment {
     pub cause: AssignmentCause,
     pub term: u64,
     pub index: u64,
-    /// The epoch the assignment minted, always [`AuthorityEpoch(1)`](crate::AuthorityEpoch) — the first
+    /// The epoch the assignment minted, always [`AuthorityEpoch(1)`](crate::AuthorityEpoch) - the first
     /// epoch of a freshly homed authority, before any advance or transfer.
     pub epoch: AuthorityEpoch,
 }
@@ -240,7 +240,7 @@ impl OwnershipState {
     }
 
     /// The current epoch of `authority`, or the [`AuthorityEpoch(0)`](crate::AuthorityEpoch) unassigned
-    /// sentinel when no command has homed it — the value to hand [`AuthorityFence`](crate::AuthorityFence).
+    /// sentinel when no command has homed it - the value to hand [`AuthorityFence`](crate::AuthorityFence).
     #[must_use]
     pub fn epoch(&self, authority: &AuthorityKey) -> AuthorityEpoch {
         self.authorities
@@ -254,7 +254,7 @@ impl OwnershipState {
         self.authorities.get(&authority.0).map(|record| &record.home)
     }
 
-    /// The assignment audit of `authority` — its cause, committed log position, and minted epoch — or
+    /// The assignment audit of `authority` - its cause, committed log position, and minted epoch - or
     /// `None` when no command has homed it. The trail a replay or an operator reads to see where and how
     /// a home was first assigned.
     #[must_use]

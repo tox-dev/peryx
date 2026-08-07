@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use peryx_core::{Ecosystem, LexiconRegistry};
 
-use super::{OCI_WORDS, Stores};
+use super::{ALT_WORDS, Stores};
 use crate::context::IndexerCtx;
 use crate::{
     AvailabilityFilter, PackageDocument, PackageIndexer, PackageSearch, PackageSource, SearchAccess,
@@ -36,15 +36,15 @@ fn test_add_indexer_composes_both_ecosystems_with_localized_labels() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let mut lexicons = LexiconRegistry::default();
-    lexicons.register(Ecosystem::new("other"), &OCI_WORDS);
+    lexicons.register(Ecosystem::new("beta"), &ALT_WORDS);
     let mut search = PackageSearch::in_memory();
     search.add_indexer(Arc::new(OneDoc {
         name: "pyalpha",
-        ecosystem: "pypi",
+        ecosystem: "alpha",
     }));
     search.add_indexer(Arc::new(OneDoc {
-        name: "ocibeta",
-        ecosystem: "oci",
+        name: "beta-collection",
+        ecosystem: "beta",
     }));
 
     let all = search
@@ -57,19 +57,19 @@ fn test_add_indexer_composes_both_ecosystems_with_localized_labels() {
         )
         .unwrap();
 
-    let pypi = all
+    let alpha = all
         .results
         .iter()
         .find(|result| result.display_name == "pyalpha")
         .unwrap();
-    let oci = all
+    let beta = all
         .results
         .iter()
-        .find(|result| result.display_name == "ocibeta")
+        .find(|result| result.display_name == "beta-collection")
         .unwrap();
     // Each result is labeled in its ecosystem's own word, resolved server-side from the lexicon.
-    assert_eq!(pypi.type_label, "package");
-    assert_eq!(oci.type_label, "image");
+    assert_eq!(alpha.type_label, "package");
+    assert_eq!(beta.type_label, "component");
 }
 
 #[test]
@@ -77,14 +77,14 @@ fn test_search_rebuilds_after_epoch_bump() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let mut lexicons = LexiconRegistry::default();
-    lexicons.register(Ecosystem::new("other"), &OCI_WORDS);
+    lexicons.register(Ecosystem::new("other"), &ALT_WORDS);
     let mut search = PackageSearch::in_memory();
     let params = SearchParams::default();
     let before = search.search(&stores.ctx(&lexicons), params.clone()).unwrap().total;
 
     search.add_indexer(Arc::new(OneDoc {
-        name: "ocibeta",
-        ecosystem: "oci",
+        name: "beta-collection",
+        ecosystem: "beta",
     }));
     search.bump_epoch();
 
@@ -102,7 +102,7 @@ fn test_search_folds_case_for_non_ascii_text() {
     let mut search = PackageSearch::in_memory();
     search.add_indexer(Arc::new(OneDoc {
         name: "ZÜRICH",
-        ecosystem: "pypi",
+        ecosystem: "alpha",
     }));
 
     for (case, query) in [
@@ -149,7 +149,7 @@ impl PackageIndexer for SubstringDocs {
             normalized_name: name.to_owned(),
             route: "root".to_owned(),
             index: "root".to_owned(),
-            ecosystem: "pypi".to_owned(),
+            ecosystem: "alpha".to_owned(),
             source: PackageSource::Cached,
             available_locally: false,
             summary: None,
@@ -284,7 +284,7 @@ impl PackageIndexer for AvailabilityDocs {
                 normalized_name: name.to_owned(),
                 route: "root".to_owned(),
                 index: "root".to_owned(),
-                ecosystem: "pypi".to_owned(),
+                ecosystem: "alpha".to_owned(),
                 source: PackageSource::Cached,
                 available_locally,
                 summary: None,
@@ -354,7 +354,7 @@ impl PackageIndexer for AccessDocs {
                 normalized_name: name.to_owned(),
                 route: route.to_owned(),
                 index: route.to_owned(),
-                ecosystem: "pypi".to_owned(),
+                ecosystem: "alpha".to_owned(),
                 source: PackageSource::Cached,
                 available_locally: false,
                 summary: None,

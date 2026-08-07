@@ -1,61 +1,27 @@
-//! Benchmark peryx against direct `PyPI` and competing index servers.
-//!
-//! Five workloads, each a table in the site's TOML report:
-//!
-//! - **install**: time `uv pip install` and `pip install` of the top `PyPI` packages through each server, cold (fresh
-//!   server state) and warm (the server keeps its cache, the client starts over). This is the number a user feels.
-//! - **throughput**: move one large wheel; four clients racing for it cold, then single and eight-way parallel
-//!   downloads of it hot.
-//! - **parallel installs**: ten venvs install polars at once with separate client caches, like ten CI jobs hitting the
-//!   same server, cold and warm.
-//! - **metadata**: fetch a batch of PEP 658 metadata siblings cold, then hot, pricing the resolver fast path without
-//!   downloading the whole artifact.
-//! - **load**: request-level throughput, one user and a concurrent swarm, against each warm server.
-//!
-//! Every table also reports what the server itself burned while its workload ran: CPU seconds and
-//! peak resident memory across the whole process tree. Before any of them, the run profiles the
-//! machine — CPU, memory, the volume the stores live on, and the raw memory/disk/loopback ceilings
-//! those tables are read against — into `site/data/bench/machine.toml`.
-//!
-//! Results land in `site/data/bench/report.toml`; the documentation renders them as tinted tables
-//! (best-in-row green to worst-in-row red) via the `bench` shortcode, and the host profile via the
-//! `machine` shortcode. One command reproduces every table (peryx is built automatically when the
-//! release binary is missing):
-//!
-//! ```shell
-//! cargo run --release -p peryx-bench
-//! ```
-
-mod compare;
-mod ecosystems;
-mod machine;
-mod report;
-mod servers;
-mod stats;
-mod usage;
-
 use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
 
-use crate::ecosystems::Ecosystem;
-use crate::report::repo_root;
+use peryx_bench_core::report::repo_root;
+use peryx_bench_core::{compare, machine, report};
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum Ecosystem {
+    Pypi,
+    Oci,
+}
 
 /// Benchmark peryx against direct upstreams and competing index servers.
-///
-/// Selection is two-axis: `--ecosystem` picks the suite, `--skip` leaves parts of it out. Each suite
-/// names its own parts: `PyPI` has install/pip/throughput/parallel/metadata/load, `OCI` has
-/// pull/throughput/parallel/load. Every suite also profiles the host first as the part `machine`.
 #[derive(Parser, Clone)]
 struct Cli {
-    /// The package ecosystem to benchmark.
+    /// The ecosystem suite to benchmark.
     #[arg(long, value_enum, default_value_t = Ecosystem::Pypi)]
     ecosystem: Ecosystem,
 
     /// Independent rounds per measurement: each restarts the server on empty state, and the round
-    /// samples reduce to a median with its spread. Three gives a robust median, and the per-cell
+    /// samples reduce to a median with its spread. Three supplies a median, and the per-cell
     /// coefficient of variation flags anything still too noisy to trust; raise it for the `ab` mode,
     /// where the single peryx party is cheap and a few more rounds sharpen the regression verdict.
     #[arg(long, default_value_t = 3)]
@@ -69,15 +35,14 @@ struct Cli {
     #[arg(long, default_value = "")]
     only: String,
 
-    /// OCI only: put a local pull-through cache in front of Docker Hub so a many-round run is shielded
-    /// from upstream rate limits and network variance. Reproducible serving numbers, but the cold rows
-    /// then price proxy overhead rather than a real Docker Hub fetch. Without it the run talks to
-    /// Docker Hub directly and `--rounds` should stay small to respect the hourly ceiling.
-    #[arg(long)]
-    mirror: bool,
-
     #[command(subcommand)]
     mode: Option<Mode>,
+
+    #[command(flatten)]
+    pypi: peryx_ecosystem_pypi::bench::Options,
+
+    #[command(flatten)]
+    oci: peryx_ecosystem_oci::bench::Options,
 }
 
 /// The two things the benchmark compares.
@@ -121,8 +86,8 @@ async fn run_suite(cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
         machine::publish().await?;
     }
     match cli.ecosystem {
-        Ecosystem::Pypi => ecosystems::pypi::run(cli.rounds, &cli.skip, &cli.only, http).await,
-        Ecosystem::Oci => ecosystems::oci::run(cli.rounds, cli.mirror, &cli.skip, &cli.only, http).await,
+        Ecosystem::Pypi => peryx_ecosystem_pypi::bench::run(&cli.pypi, cli.rounds, &cli.skip, &cli.only, http).await,
+        Ecosystem::Oci => peryx_ecosystem_oci::bench::run(&cli.oci, cli.rounds, &cli.skip, &cli.only, http).await,
     }
 }
 

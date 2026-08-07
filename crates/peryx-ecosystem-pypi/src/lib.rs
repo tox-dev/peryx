@@ -50,7 +50,7 @@ pub struct PypiPlugin;
 
 #[cfg(feature = "serving")]
 inventory::submit! {
-    peryx_plugin_registry::EcosystemRegistration {
+    peryx_plugin_registry::PluginRegistration {
         plugin: &PypiPlugin,
         priority: 0,
     }
@@ -62,6 +62,8 @@ mod admin;
 pub mod archive;
 #[cfg(feature = "serving")]
 pub mod attestation;
+#[cfg(feature = "bench")]
+pub mod bench;
 #[cfg(feature = "serving")]
 pub mod cache;
 #[cfg(feature = "serving")]
@@ -210,12 +212,7 @@ impl EcosystemPlugin for PypiPlugin {
         })
     }
 
-    fn install(
-        &self,
-        state: &mut AppState,
-        _settings: &[(&str, &CompiledEcosystemSettings)],
-        _distributed: bool,
-    ) -> Result<(), String> {
+    fn install(&self, state: &mut AppState, _: &[(&str, &CompiledEcosystemSettings)]) -> Result<(), String> {
         PypiServing.install(state);
         Ok(())
     }

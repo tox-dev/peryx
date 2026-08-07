@@ -1,6 +1,4 @@
-//! Descriptive statistics for repeated measurements: a robust point estimate with enough
-//! dispersion to tell a real change from laptop noise. The heavy lifting is `statrs`; this module
-//! only picks the estimators the methodology calls for and names the noise threshold.
+//! Statistics for repeated benchmark measurements.
 
 use statrs::statistics::{Data, OrderStatistics, Statistics};
 
@@ -9,7 +7,7 @@ use statrs::statistics::{Data, OrderStatistics, Statistics};
 /// excellent, up to ~5% acceptable, beyond that dominated by the environment).
 const NOISY_CV: f64 = 0.05;
 
-/// A metric measured over `n` independent rounds, reduced to a robust estimate plus the spread that
+/// A metric measured over `n` independent rounds, reduced to a median plus the spread that
 /// says whether to trust it.
 ///
 /// The median is the point estimate: unlike best-of-`n` (the old `min`) its bias does not grow with
@@ -64,10 +62,7 @@ fn tukey_fences(data: &mut Data<Vec<f64>>) -> (f64, f64) {
     (1.5f64.mul_add(-iqr, q1), 1.5f64.mul_add(iqr, q3))
 }
 
-/// The geometric mean of per-workload ratios: the normalization-invariant way to reduce a suite of
-/// "B is k times A" ratios to one headline number. The arithmetic mean of ratios depends on the
-/// arbitrary choice of which side is the reference; the geometric mean does not (Fleming & Wallace,
-/// CACM 1986), which is why SPEC aggregates this way.
+/// Use a geometric mean because reversing a ratio only inverts the result.
 #[must_use]
 pub fn geometric_mean(ratios: &[f64]) -> Option<f64> {
     let positive: Vec<f64> = ratios.iter().copied().filter(|&ratio| ratio > 0.0).collect();

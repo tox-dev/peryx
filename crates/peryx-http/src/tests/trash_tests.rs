@@ -148,7 +148,7 @@ async fn test_trash_list_returns_an_empty_page_for_an_authorized_administrator()
 
     let (status, headers, document) = get(
         &app,
-        "/+trash?ecosystem=pypi&state=restorable&deadline_before=1000&limit=25",
+        "/+trash?ecosystem=alpha&state=restorable&deadline_before=1000&limit=25",
         Some(("Alice", USER_PASSWORD)),
     )
     .await;
@@ -202,7 +202,6 @@ async fn test_trash_list_authorization(
 }
 
 #[rstest]
-#[case::unknown_ecosystem("/+trash?ecosystem=npm")]
 #[case::unknown_state("/+trash?state=gone")]
 #[case::non_numeric_limit("/+trash?limit=abc")]
 #[tokio::test]
@@ -246,7 +245,7 @@ async fn test_trash_inspect_returns_not_found_for_an_absent_record() {
 
     let (status, headers, _) = get(
         &app,
-        "/+trash/record?ecosystem=pypi&repository=private&name=flask",
+        "/+trash/record?ecosystem=alpha&repository=private&name=flask",
         Some(("Alice", USER_PASSWORD)),
     )
     .await;
@@ -255,24 +254,33 @@ async fn test_trash_inspect_returns_not_found_for_an_absent_record() {
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
-#[rstest]
-#[case::anonymous(None, StatusCode::UNAUTHORIZED)]
-#[case::unknown_ecosystem(Some(("Alice", USER_PASSWORD)), StatusCode::BAD_REQUEST)]
 #[tokio::test]
-async fn test_trash_inspect_rejects_bad_requests(
-    #[case] credential: Option<(&str, &str)>,
-    #[case] expected: StatusCode,
-) {
+async fn test_trash_inspect_rejects_anonymous() {
     let (_dir, app) = app().await;
-    let uri = if credential.is_some() {
-        "/+trash/record?ecosystem=npm&repository=private&name=flask"
-    } else {
-        "/+trash/record?ecosystem=pypi&repository=private&name=flask"
-    };
+    let (status, _, _) = get(
+        &app,
+        "/+trash/record?ecosystem=alpha&repository=private&name=flask",
+        None,
+    )
+    .await;
 
-    let (status, _, _) = get(&app, uri, credential).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
 
-    assert_eq!(status, expected);
+#[tokio::test]
+async fn test_trash_accepts_unregistered_ecosystems() {
+    let (_dir, app) = app().await;
+    let (list_status, _, document) = get(&app, "/+trash?ecosystem=unregistered", Some(("Alice", USER_PASSWORD))).await;
+    let (inspect_status, _, _) = get(
+        &app,
+        "/+trash/record?ecosystem=unregistered&repository=private&name=flask",
+        Some(("Alice", USER_PASSWORD)),
+    )
+    .await;
+
+    assert_eq!(list_status, StatusCode::OK);
+    assert_eq!(document, serde_json::json!({"trash": [], "next_cursor": null}));
+    assert_eq!(inspect_status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -281,7 +289,7 @@ async fn test_trash_inspect_rejects_a_query_missing_the_required_name() {
 
     let (status, _, document) = get(
         &app,
-        "/+trash/record?ecosystem=pypi&repository=private",
+        "/+trash/record?ecosystem=alpha&repository=private",
         Some(("Alice", USER_PASSWORD)),
     )
     .await;
@@ -296,7 +304,7 @@ async fn test_trash_inspect_forbids_a_repository_token_without_write() {
 
     let (status, _, _) = get(
         &app,
-        "/+trash/record?ecosystem=pypi&repository=private&name=flask",
+        "/+trash/record?ecosystem=alpha&repository=private&name=flask",
         Some(("__token__", READER_SECRET)),
     )
     .await;

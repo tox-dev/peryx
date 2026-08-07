@@ -1,7 +1,7 @@
 //! The HTTP protocol behind the peer-receipt transport: the endpoint a node serves for its same-DC
 //! peers, and the client a write drives against one peer.
 //!
-//! The endpoint answers one question about the local filesystem store — does it durably hold this
+//! The endpoint answers one question about the local filesystem store - does it durably hold this
 //! digest? A filesystem backend exposes only committed, content-addressed bytes, so a [`head`] hit is
 //! itself the placement receipt: the peer holds the digest, and its byte length is reported for fidelity.
 //! A miss is a `404`, which the client reads as "not yet" rather than a failure, so a write keeps polling

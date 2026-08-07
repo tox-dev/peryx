@@ -45,7 +45,7 @@ const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Cyan.on_default());
 
-/// peryx: one blazing-fast vault for a wide range of ecosystems — caching proxy, hosted store, and virtual index.
+/// peryx: one blazing-fast vault for a wide range of ecosystems - caching proxy, hosted store, and virtual index.
 #[derive(Debug, Parser)]
 #[command(
     name = "peryx",
@@ -78,9 +78,6 @@ pub enum Command {
     #[command(subcommand)]
     Revocation(RevocationCommand),
     /// Print client configuration for one index.
-    #[command(
-        after_help = "Examples:\n  peryx config-snippet --base-url https://packages.example --index root/pypi pip.conf\n  peryx config-snippet --base-url https://packages.example --index root/pypi uv.toml\n  peryx config-snippet --base-url https://packages.example --index root/pypi .pypirc"
-    )]
     ConfigSnippet(ConfigSnippetArgs),
     /// List and inspect the configured indexes.
     #[command(subcommand)]
@@ -96,7 +93,7 @@ pub enum Command {
     Backup(BackupCommand),
     /// Restore an offline backup into a data directory.
     Restore(RestoreArgs),
-    /// Import local wheels and sdists into a hosted index.
+    /// Import local artifacts into a hosted index.
     ImportDir(ImportDirArgs),
     /// Preview index policy decisions against cached records.
     #[command(subcommand)]

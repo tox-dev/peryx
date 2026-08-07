@@ -84,7 +84,7 @@ async fn delivery_loop<H: WebhookHost>(host: Arc<H>) {
 
 /// Seconds to wait before the next scheduling wakeup, clamped to at least one.
 ///
-/// A `next` at or behind `now` — clock drift, a stale queue key, or a loop that woke late — must not
+/// A `next` at or behind `now` - clock drift, a stale queue key, or a loop that woke late - must not
 /// collapse into a zero-second sleep, or the loop would busy-poll the store. Saturating subtraction
 /// also keeps a far-future `next` from overflowing the signed delta.
 fn wait_secs(next: i64, now: i64) -> u64 {

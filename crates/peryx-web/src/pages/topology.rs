@@ -119,7 +119,7 @@ fn topology_view(
         </p>
         <div class="stat-row topology-summary">
             <div class="stat"><strong>{move || summary().mode}</strong><span>"mode"</span></div>
-            <div class="stat"><strong>{move || summary().group.unwrap_or_else(|| "—".to_owned())}</strong><span>"group"</span></div>
+            <div class="stat"><strong>{move || summary().group.unwrap_or_else(|| "-".to_owned())}</strong><span>"group"</span></div>
             <div class="stat"><strong>{move || summary().node_count}</strong><span>"roster nodes"</span></div>
             <div class="stat"><strong>{move || format_instant(live.get().captured_at)}</strong><span>"snapshot taken (UTC)"</span></div>
         </div>
@@ -216,9 +216,9 @@ fn node_row(node: &TopologyNode, show_address: bool) -> AnyView {
             <td>{node.dc.clone()}</td>
             <td><span class=format!("badge role-{}", role_label(node.role).to_lowercase())>{role_label(node.role)}</span></td>
             <td><HealthBadge health /></td>
-            <td class="num">{node.frontier.map_or_else(|| "—".to_owned(), |value| value.to_string())}</td>
+            <td class="num">{node.frontier.map_or_else(|| "-".to_owned(), |value| value.to_string())}</td>
             {show_address.then(|| view! {
-                <td>{node.address.clone().unwrap_or_else(|| "—".to_owned())}</td>
+                <td>{node.address.clone().unwrap_or_else(|| "-".to_owned())}</td>
             })}
         </tr>
     }
@@ -414,7 +414,7 @@ mod tests {
 
             assert!(html.contains("runs standalone"), "{html}");
             assert!(html.contains("Single node"), "{html}");
-            assert!(html.contains("—"), "{html}");
+            assert!(html.contains('-'), "{html}");
             assert!(!html.contains("id=\"topology-role\""), "{html}");
         });
     }

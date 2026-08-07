@@ -8,8 +8,8 @@
 //! do so the caller can warn before removing the sole remote copy.
 //!
 //! The fold is pure: the acknowledgements are an input, so no transport, deadline, or storage is
-//! consulted. A remote is eligible only at the operation's own epoch — a stale or advanced epoch is
-//! fenced out — and only once it has applied through the operation's frontier. Selecting which replicas
+//! consulted. A remote is eligible only at the operation's own epoch - a stale or advanced epoch is
+//! fenced out - and only once it has applied through the operation's frontier. Selecting which replicas
 //! to wait on, enforcing the deadline, and the retry lookup compose on top.
 
 pub use peryx_ha::{MetadataOperation, RemoteAck};
@@ -49,8 +49,8 @@ impl RemoteDurability {
 
 /// Decide whether `operation` is remote-durable given the acknowledgements received so far.
 ///
-/// A remote counts only when its epoch matches the operation's — a stale or advanced epoch is fenced —
-/// and it has applied through the operation's frontier. Each datacenter counts once however many
+/// A remote counts only when its epoch matches the operation and it has applied through the operation's
+/// frontier. Stale and advanced epochs are fenced. Each datacenter counts once however many
 /// acknowledgements it sent, so a duplicated or reordered response never inflates the holder set. One
 /// eligible remote is enough; below that the write is pending.
 #[must_use]

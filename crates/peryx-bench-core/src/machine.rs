@@ -5,7 +5,7 @@
 //! 30 MB body over loopback HTTP. A warm registry reads the page cache and writes a socket, so its
 //! throughput belongs between the disk and the memory scales, and a serving row far outside them is a
 //! bug in the measurement rather than a fast server. That bracket is what caught the `crane`
-//! subprocess that once dominated the OCI throughput rows.
+//! subprocess that once dominated network throughput rows.
 //!
 //! The loopback row is a scale, not a ceiling. Its server does the least a server can do, one write of
 //! one buffer, and it runs in this process rather than its own, so a registry with its own cores can
@@ -29,7 +29,7 @@ use tokio::net::TcpListener;
 
 use crate::report::repo_root;
 
-/// Matches the OCI throughput workload's layer, so the loopback row is directly comparable.
+/// Matches the large-artifact workload, so the loopback row is directly comparable.
 const PAYLOAD_BYTES: usize = 30 * 1024 * 1024;
 /// Comfortably past the 4 MB L2, so the copy prices memory rather than cache.
 const MEMORY_BYTES: usize = 256 * 1024 * 1024;
@@ -53,8 +53,9 @@ pub async fn publish() -> anyhow::Result<()> {
         baselines: baselines(&scratch, &volumes).await?,
         volumes,
     };
-    let path = repo_root().join("site").join("data").join("bench").join("machine.toml");
-    std::fs::create_dir_all(path.parent().expect("the profile lives under site/data"))?;
+    let directory = repo_root().join("site").join("data").join("bench");
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("machine.toml");
     std::fs::write(&path, toml::to_string_pretty(&profile)?)?;
     println!("updated {}", path.display());
     Ok(())

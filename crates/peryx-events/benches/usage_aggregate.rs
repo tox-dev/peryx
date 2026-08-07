@@ -46,11 +46,11 @@ fn fixed_clock() -> Clock {
 fn batch(size: usize) -> Vec<Event> {
     (0..size)
         .map(|index| Event::Download {
-            route: "pypi".to_owned(),
+            route: "alpha".to_owned(),
             project: format!("project-{}", index % 8),
-            filename: format!("project-{}-{}.0.whl", index % 8, index % 16),
+            filename: format!("project-{}-{}.0.bin", index % 8, index % 16),
             version: Some(format!("{}.0", index % 16)),
-            source: Some("pypi-org".to_owned()),
+            source: Some("upstream".to_owned()),
             bytes: 4096,
         })
         .collect()
@@ -89,10 +89,10 @@ fn seed(count: usize) -> Vec<DailyUsage> {
     (0..count)
         .map(|index| DailyUsage {
             day: 20_000 - i64::try_from(index % 366).unwrap_or(0),
-            repository: "pypi".to_owned(),
+            repository: "alpha".to_owned(),
             project: format!("project-{}", index % 512),
             version: format!("{}.{}.0", index % 64, index % 16),
-            source: "pypi-org".to_owned(),
+            source: "upstream".to_owned(),
             downloads: 1,
             bytes: 4096,
         })
@@ -115,11 +115,11 @@ fn bench_isolated_checkpoint(criterion: &mut Criterion) {
                 let metrics = Metrics::start_durable(meta.analytics(), Some(366), fixed_clock());
                 bencher.iter(|| {
                     metrics.record(Event::Download {
-                        route: "pypi".to_owned(),
+                        route: "alpha".to_owned(),
                         project: "project-0".to_owned(),
-                        filename: "project-0-0.0.0.whl".to_owned(),
+                        filename: "project-0-0.0.0.bin".to_owned(),
                         version: Some("0.0.0".to_owned()),
-                        source: Some("pypi-org".to_owned()),
+                        source: Some("upstream".to_owned()),
                         bytes: 4096,
                     });
                     metrics.settle();

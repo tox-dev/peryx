@@ -10,7 +10,7 @@ use crate::serving::EcosystemDriver;
 /// The installed ecosystem drivers keyed by [`Ecosystem`], without any of the running server's state.
 ///
 /// The router reaches drivers through [`AppState`](crate::AppState). The binary's config-build and
-/// admin commands never construct an `AppState` — they open the stores directly — and reach the
+/// admin commands never construct an `AppState` - they open the stores directly - and reach the
 /// drivers through this instead. The composition root builds one, naming its ecosystems in a single
 /// place, and neutral build and admin code dispatches through it by an index's ecosystem without
 /// naming any.

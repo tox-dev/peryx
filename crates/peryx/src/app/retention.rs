@@ -39,6 +39,10 @@ fn dry_run(
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let driver = resolve_driver(config, &args.index)?;
+    let driver = driver
+        .capabilities()
+        .retention
+        .context("the ecosystem does not support retention planning")?;
     let policy = load_rules(args.rules.as_deref())?;
     let (after, expect) = resume(args.cursor.as_deref())?;
     writeln!(
@@ -53,7 +57,7 @@ fn dry_run(
         limit: args.limit,
         expect,
     };
-    let page = plan(driver.as_ref(), &stores.meta, &query, &mut |decision| {
+    let page = plan(driver, &stores.meta, &query, &mut |decision| {
         write_row(out, decision).map_err(|err| err.to_string())
     })
     .map_err(|err| anyhow::anyhow!("{err}"))?;
@@ -71,6 +75,10 @@ fn export(
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let driver = resolve_driver(config, &args.index)?;
+    let driver = driver
+        .capabilities()
+        .retention
+        .context("the ecosystem does not support retention planning")?;
     let policy = load_rules(args.rules.as_deref())?;
     let (after, expect) = resume(args.cursor.as_deref())?;
     let summary = summary(&stores.meta, &args.index, &policy).map_err(|err| anyhow::anyhow!("{err}"))?;
@@ -91,7 +99,7 @@ fn export(
         limit: None,
         expect: None,
     };
-    plan(driver.as_ref(), &stores.meta, &query, &mut |decision| {
+    plan(driver, &stores.meta, &query, &mut |decision| {
         write_json_line(out, decision).map_err(|err| err.to_string())
     })
     .map_err(|err| anyhow::anyhow!("{err}"))?;

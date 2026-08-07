@@ -59,7 +59,9 @@ pub(super) fn ManifestView(route: String, repo: String, reference: String) -> im
 fn ManifestBody(route: String, repo: String, reference: String, manifest: UiManifest) -> impl IntoView {
     let is_index = manifest.is_index;
     let entry_heading = if is_index { "Platform manifests" } else { "Layers" };
-    let pull = view! { <PullSnippet route=route.clone() repo=repo.clone() reference=reference.clone() /> };
+    let command = manifest
+        .client_command
+        .map(|template| view! { <ClientCommand template /> });
     let config = manifest.config.map(|config| {
         view! {
             <p><strong>"Config"</strong>": "<code>{config.digest}</code>" ("{human_size(config.size)}")"</p>
@@ -69,7 +71,7 @@ fn ManifestBody(route: String, repo: String, reference: String, manifest: UiMani
         <p class="dim">
             <code>{manifest.media_type}</code>" · "{human_size(manifest.total_size)}
         </p>
-        {pull}
+        {command}
         {config}
         <h2>{entry_heading}</h2>
         <div class="table-scroll">
@@ -110,11 +112,10 @@ fn ManifestBody(route: String, repo: String, reference: String, manifest: UiMani
     }
 }
 
-/// The `docker pull` command for one reference. The registry host is unknown during server rendering,
-/// so the snippet ships a `<host>` placeholder that a client-side effect rewrites to the page's own
-/// host. Both sides render the placeholder first, so hydration matches.
+/// The adapter supplies the command with a `<host>` placeholder because server rendering does not know
+/// the browser's host. Rendering the placeholder before hydration keeps both trees equal.
 #[component]
-fn PullSnippet(route: String, repo: String, reference: String) -> impl IntoView {
+fn ClientCommand(template: String) -> impl IntoView {
     let (host, set_host) = signal("<host>".to_owned());
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
@@ -129,12 +130,11 @@ fn PullSnippet(route: String, repo: String, reference: String) -> impl IntoView 
     }
     #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
     let _ = set_host;
-    let suffix = format!("/{route}/{repo}:{reference}");
     let display = {
-        let suffix = suffix.clone();
-        move || format!("docker pull {}{suffix}", host.get())
+        let template = template.clone();
+        move || template.replace("<host>", &host.get())
     };
-    let copy = move || format!("docker pull {}{suffix}", host.get());
+    let copy = move || template.replace("<host>", &host.get());
     view! {
         <div class="install">
             <code>{display}</code>
@@ -144,7 +144,7 @@ fn PullSnippet(route: String, repo: String, reference: String) -> impl IntoView 
 }
 
 /// Browse one layer's contents: a flat member listing, or one text member previewed. A layer is a
-/// tar, so it drives the same neutral archive engine and member model the wheel browser uses.
+/// tar, so it uses the shared archive engine and member model.
 #[component]
 pub(super) fn LayerView(
     route: String,

@@ -1,6 +1,6 @@
 //! The readable-frontier calculation gating replica reads on derived views.
 //!
-//! A replica applies authoritative metadata ahead of the views it derives from it — the search
+//! A replica applies authoritative metadata ahead of the views it derives from it - the search
 //! index, the rendered-page cache, the protocol responses. Serving a record before every required
 //! view reflects it would mix new metadata with a stale view, so a replica must expose metadata only up
 //! to the *readable frontier*: the lowest serial every required view has applied. Each view records
@@ -9,8 +9,8 @@
 //! and names the view holding it back.
 //!
 //! This module computes the frontier and the replica loop exports it as
-//! `peryx_ha_distributed_readable_serial`. Each ecosystem enforces it on the serving path: a `PyPI` page
-//! and an `OCI` tag response are held until every required view reflects the serial they carry, whether
+//! `peryx_ha_distributed_readable_serial`. Each ecosystem holds a response until every required view
+//! reflects the serial it carries, whether
 //! served from a hosted index directly or surfaced through a virtual index that layers one.
 //!
 //! The registry is ecosystem-neutral: a view is a stable name, and an ecosystem crate wires its own

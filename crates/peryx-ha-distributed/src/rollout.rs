@@ -8,12 +8,12 @@
 //! together with the version verdict into one operator-facing go decision, [`rollout_preflight`], and
 //! fixes the order a rolling upgrade replaces members in, [`upgrade_order`].
 //!
-//! Both are pure decisions over measured inputs — frontiers, versions, and operator budgets — so like
+//! Both are pure decisions over measured inputs - frontiers, versions, and operator budgets - so like
 //! the rest of the version layer nothing here reaches for transport, a clock, or storage. Measuring the
 //! frontiers and acting on the verdict is the rollout job's wiring.
 //!
-//! A verdict names every unmet rule in a fixed order — version rules first (in their own evaluation
-//! order), then quorum, capacity, replication lag, and backup currency — so it is deterministic and an
+//! A verdict names every unmet rule in a fixed order - version rules first (in their own evaluation
+//! order), then quorum, capacity, replication lag, and backup currency - so it is deterministic and an
 //! operator sees every reason to wait at once.
 
 use std::collections::BTreeSet;
@@ -79,8 +79,8 @@ impl RolloutPreflight {
 /// `membership` and `irreversible_floor` feed the version gate exactly as
 /// [`upgrade_preflight`](crate::upgrade_preflight) reads them. `members` is the group's configured
 /// roster with each member's currently reported frontier, `policy` its durability policy, and
-/// `backup_applied` the highest serial the backup has stored. The writer's frontier — the highest serial
-/// the writer reports, since the writer is the sole source of serials and bounds every member — anchors
+/// `backup_applied` the highest serial the backup has stored. The writer's frontier - the highest serial
+/// the writer reports, since the writer is the sole source of serials and bounds every member - anchors
 /// both lag checks; when no writer reports it reads zero, and the quorum rule already names the lost
 /// writer as the real fault.
 ///

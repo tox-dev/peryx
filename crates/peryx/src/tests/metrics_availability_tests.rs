@@ -135,13 +135,13 @@ fn claim_writer(dir: &tempfile::TempDir) {
         .unwrap();
 }
 
-/// Build a node's state and router for `config`, holding the runtime so its registered series and any
-/// worker threads stay alive for the scrape. The runtime's construction is what registers the mode's
-/// metric sources onto the state the `/metrics` handler reads.
-fn node(config: &Config) -> (Arc<AppState>, Router, ReplicationRuntime) {
+fn node(config: &Config) -> (Arc<AppState>, Router, Option<ReplicationRuntime>) {
     let state = build_state(config).unwrap();
-    let runtime = ReplicationRuntime::new(config, &state).unwrap();
-    let router = runtime.mount(router_for(state.clone()));
+    let runtime = ReplicationRuntime::from_config(config, &state).unwrap();
+    let router = runtime.as_ref().map_or_else(
+        || router_for(state.clone()),
+        |runtime| runtime.mount(router_for(state.clone())),
+    );
     (state, router, runtime)
 }
 

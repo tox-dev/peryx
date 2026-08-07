@@ -449,6 +449,9 @@ async fn test_proxy_tag_filter_resolves_and_caches_targets() {
 
     let driver = state.driver_for(crate::ECOSYSTEM).unwrap().clone();
     let view = driver
+        .capabilities()
+        .browse
+        .unwrap()
         .browse_project(state.serving.clone(), 0, "app".to_owned())
         .await
         .unwrap()

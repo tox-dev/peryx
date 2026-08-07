@@ -8,7 +8,7 @@ fn key(name: &str) -> AuthorityKey {
 #[test]
 fn test_admit_only_at_the_committed_epoch() {
     let mut fence = AuthorityFence::new();
-    let home = key("root/pypi/flask");
+    let home = key("root/alpha/flask");
 
     assert_eq!(fence.commit(&home, AuthorityEpoch(3)), CommitOutcome::Committed);
 

@@ -1,8 +1,8 @@
 //! Stand up and hold the ownership consensus node an `ha` process runs.
 //!
 //! A single-datacenter `dc` group and single-node `none` run no consensus, so only [`AvailabilityMode::Ha`]
-//! builds anything here. [`ConsensusPlan::from_config`] resolves the roster synchronously — validating
-//! every member address and deriving each voter's stable id before any runtime starts — so a bad topology
+//! builds anything here. [`ConsensusPlan::from_config`] resolves the roster synchronously - validating
+//! every member address and deriving each voter's stable id before any runtime starts - so a bad topology
 //! fails config assembly rather than a live node. [`ConsensusPlan::ignite`] then opens the durable log
 //! store and assembles the [`RaftNode`], seeding a fresh group with an idempotent bootstrap so a restart
 //! rejoins the existing one.
@@ -93,8 +93,8 @@ impl ConsensusPlan {
             return Ok(None);
         };
         // Each node runs the ownership Raft node under its OWN voter identity, so it must name itself in
-        // the roster through `node-identity`. Deriving this from `writer-identity` — the one writer every
-        // node claims and follows on the metadata plane, identical across the group — would make every
+        // the roster through `node-identity`. Deriving this from `writer-identity` - the one writer every
+        // node claims and follows on the metadata plane, identical across the group - would make every
         // node share the writer's voter id, so no genuine multi-voter group forms and a home failure
         // cannot transfer authority off the dead node.
         let identity = config

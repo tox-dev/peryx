@@ -3,12 +3,12 @@
 //! Failover's design claim is that moving a dead home's authority is a decision, not a scan: selecting
 //! the target weighs a bounded candidate set, and draining the old home's retained intents plans a
 //! bounded batch, so neither stalls on a long roster or an unbounded backlog. These legs measure that
-//! claim on the two pure hot paths #539 adds — the failover selection and the drain plan — reporting
+//! claim on the two pure hot paths #539 adds - the failover selection and the drain plan - reporting
 //! latency percentiles alongside the allocation count and retained bytes each leg costs, and the drain's
 //! throughput in intents per second.
 //!
-//! The system-level acceptance numbers a live cluster reports — end-to-end failover RTO wall-clock, the
-//! drained ledger's disk footprint, and an unaffected datacenter's serving p99 during a failover — belong
+//! The system-level acceptance numbers a live cluster reports - end-to-end failover RTO wall-clock, the
+//! drained ledger's disk footprint, and an unaffected datacenter's serving p99 during a failover - belong
 //! to the comparative `peryx-bench` harness against running nodes, not this microbenchmark.
 //!
 //! The CI performance runner does not build this package's benches, so this is a local

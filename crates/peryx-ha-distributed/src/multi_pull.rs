@@ -36,7 +36,7 @@ pub struct PullRound {
 
 /// Advance `set` one round and fold every fresh change it buffered into the replica's serial.
 ///
-/// `apply` folds one page beginning at the current serial and returns the serial it reached — the
+/// `apply` folds one page beginning at the current serial and returns the serial it reached - the
 /// replica's real apply in production, a serial-tracking double under test. Each page is stamped with the
 /// authoritative source: `committed` when the replica already has one, else the source a peer advertised
 /// this round, so a fresh replica's first apply still pins to the writer's identity rather than an empty
@@ -120,8 +120,7 @@ where
     }
 
     // Release every drained peer to the serial the round reached: peers whose changes applied move in
-    // lockstep, and a peer whose changes a faster one already delivered — or an apply left unapplied —
-    // resumes from that serial without replaying a committed change.
+    // lockstep, and a peer whose changes a faster one already delivered - or an apply left unapplied -     // resumes from that serial without replaying a committed change.
     for (peer, _changes) in &drained {
         set.commit(peer, serial);
     }

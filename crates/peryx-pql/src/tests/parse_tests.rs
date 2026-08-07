@@ -92,11 +92,11 @@ fn test_parse_string_escapes() {
 fn test_parse_non_ascii_string_literal() {
     // The byte range between the quotes is decoded as UTF-8, so a multibyte char is one codepoint, not
     // a run of Latin-1 mojibake.
-    let ast = parse(r#"from d where name == "café — naïve""#).expect("parses");
+    let ast = parse(r#"from d where name == "café - naïve""#).expect("parses");
     let Some(Predicate::Compare { value, .. }) = ast.predicate else {
         panic!("expected a comparison");
     };
-    assert_eq!(value, Literal::Str("café — naïve".to_owned()));
+    assert_eq!(value, Literal::Str("café - naïve".to_owned()));
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn test_bind_replaces_each_param_type() {
 
 #[test]
 fn test_bind_replaces_params_under_or_and_not() {
-    // Binding must recurse through `or` and `not`, not only `and`: the right branch is a negated
+    // Binding must recurse through `or`, `not`, and `and`: the right branch is a negated
     // comparison, so both the disjunction and the negation carry a parameter that has to be replaced.
     let ast = parse("from d where a == :x or not b == :y").expect("parses");
     let bound = bind(
@@ -245,7 +245,7 @@ fn test_parse_rejects_deep_nesting() {
 #[test]
 fn test_parse_rejects_deep_boolean_chains() {
     // A long conjunction, disjunction, or `not` run builds a tree the evaluator would recurse down,
-    // so the depth cap covers boolean nesting, not just parentheses.
+    // so the depth cap covers boolean nesting and parentheses.
     let conjunction = format!("from d where {}", vec!["a == 1"; 60].join(" and "));
     assert!(matches!(parse(&conjunction), Err(PqlError::Parse(_))));
     let disjunction = format!("from d where {}", vec!["a == 1"; 60].join(" or "));

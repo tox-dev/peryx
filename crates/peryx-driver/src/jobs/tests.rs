@@ -21,7 +21,10 @@ use super::{
     PlacementReconcileJob, PlacementReconcileParameters, PlacementReconciler, ReclamationJob, ReclamationParameters,
     Schedule, ScheduledJob, SearchRebuildJob, run_schedules, scheduled_job, submit_maintenance,
 };
-use crate::serving::{EcosystemDriver, MaintenanceDriver, RefreshSweep};
+use crate::serving::{
+    CacheRefresher, DriverCapabilities, EcosystemDriver, IdleReclaimer, JobDriver, MaintenanceCapabilities,
+    MaintenanceDriver, RefreshSweep,
+};
 use crate::state::{AppState, Clock, ServingState};
 use peryx_search::{IndexerCtx, PackageDocument, PackageIndexer, PackageSource, SearchError};
 
@@ -32,26 +35,6 @@ fn serving() -> (tempfile::TempDir, Arc<ServingState>) {
     let clock: Clock = Arc::new(|| 1_000);
     let state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock);
     (dir, state.serving)
-}
-
-#[test]
-fn test_apply_replicated_changes_defaults_to_a_no_op() {
-    let (_dir, state) = serving();
-    let hot = state.hot_key("hosted", "flask", "simple.html");
-    state
-        .cache
-        .store_hot(hot.clone(), bytes::Bytes::from_static(b"x"), i64::MAX);
-    // A driver with no replicated derived views inherits the neutral default, which retires nothing,
-    // unlike an ecosystem that owns the changed keys.
-    StubDriver::new(0, Ok(RefreshSweep::default()))
-        .apply_replicated_changes(&state, &["pypi\u{0}p\u{0}hosted/flask".to_owned()])
-        .unwrap();
-    assert_eq!(
-        state.hot_key("hosted", "flask", "simple.html"),
-        hot,
-        "the default advanced no epoch"
-    );
-    assert!(state.hot_fresh(&hot).is_some(), "the default left the hot page intact");
 }
 
 fn limits(workers: usize, queue: usize, per_kind: usize, per_repository: usize) -> JobLimits {
@@ -237,8 +220,11 @@ impl EcosystemDriver for StubDriver {
         self.ecosystem
     }
 
-    fn node_job(&self, _job: &ScheduledJob) -> Option<Result<Arc<dyn NodeJob>, String>> {
-        self.scheduled.clone().map(Ok)
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            jobs: Some(self),
+            ..DriverCapabilities::default()
+        }
     }
 
     fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
@@ -252,19 +238,11 @@ impl EcosystemDriver for StubDriver {
     ) -> serde_json::Value {
         serde_json::Value::Null
     }
+}
 
-    async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
-        self.reclaim_calls.fetch_add(1, Ordering::SeqCst);
-        self.reclaim
-    }
-
-    async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
-        self.refresh_calls.fetch_add(1, Ordering::SeqCst);
-        self.refresh_started.notify_one();
-        if let Some(hold) = &self.hold {
-            hold.notified().await;
-        }
-        self.refresh.clone()
+impl JobDriver for StubDriver {
+    fn node_job(&self, _job: &ScheduledJob) -> Option<Result<Arc<dyn NodeJob>, String>> {
+        self.scheduled.clone().map(Ok)
     }
 }
 
@@ -274,15 +252,25 @@ impl MaintenanceDriver for StubDriver {
         self.ecosystem
     }
 
+    fn maintenance_capabilities(&self) -> MaintenanceCapabilities<'_> {
+        MaintenanceCapabilities {
+            idle_reclaimer: Some(self),
+            cache_refresher: Some(self),
+            ..MaintenanceCapabilities::default()
+        }
+    }
+}
+
+#[async_trait]
+impl IdleReclaimer for StubDriver {
     async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
         self.reclaim_calls.fetch_add(1, Ordering::SeqCst);
         self.reclaim
     }
+}
 
-    async fn finalize_admitted(&self, _state: Arc<ServingState>) -> u64 {
-        0
-    }
-
+#[async_trait]
+impl CacheRefresher for StubDriver {
     async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
         self.refresh_calls.fetch_add(1, Ordering::SeqCst);
         self.refresh_started.notify_one();
@@ -312,25 +300,6 @@ fn test_subscriber() -> impl tracing::Subscriber + Send + Sync {
         .with_test_writer()
         .with_max_level(tracing::Level::TRACE)
         .finish()
-}
-
-// A driver that keeps the default trash source contributes no records, so an ecosystem without
-// soft-delete opts out of trash inspection for free.
-#[test]
-fn test_default_trash_records_are_empty() {
-    let dir = tempfile::tempdir().unwrap();
-    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let driver = StubDriver::new(0, Ok(RefreshSweep::default()));
-    assert!(driver.trash_records(&meta, &["hosted".to_owned()]).unwrap().is_empty());
-}
-
-// A driver that keeps the default resolution explanation shadows nothing, so an ecosystem without
-// virtual resolution opts out of the shadowed-candidate query for free.
-#[test]
-fn test_default_shadowed_candidates_are_empty() {
-    let (_dir, state) = serving();
-    let driver = StubDriver::new(0, Ok(RefreshSweep::default()));
-    assert!(driver.shadowed_candidates(&state, 0, "flask").unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -729,7 +698,7 @@ fn test_attempt_control_start_and_finish_owns_the_active_token() {
         .start(
             NewJobRun {
                 kind: JobKind::CacheRefresh,
-                scope: "pypi",
+                scope: "alpha",
                 repository: None,
                 started_at_unix: 100,
             },
@@ -754,7 +723,7 @@ fn test_attempt_control_rejects_an_external_finish_and_releases_the_token() {
         .start(
             NewJobRun {
                 kind: JobKind::CacheRefresh,
-                scope: "pypi",
+                scope: "alpha",
                 repository: None,
                 started_at_unix: 100,
             },
@@ -821,7 +790,7 @@ fn start_corruptible_attempt(store: &MetaStore) -> String {
     store
         .start_job_run(NewJobRun {
             kind: JobKind::CacheRefresh,
-            scope: "pypi",
+            scope: "alpha",
             repository: None,
             started_at_unix: 100,
         })
@@ -851,7 +820,7 @@ async fn test_recovering_scheduler_fails_an_interrupted_attempt_before_accepting
         .meta
         .start_job_run(NewJobRun {
             kind: JobKind::CacheRefresh,
-            scope: "pypi",
+            scope: "alpha",
             repository: None,
             started_at_unix: 900,
         })
@@ -865,7 +834,7 @@ async fn test_recovering_scheduler_fails_an_interrupted_attempt_before_accepting
         peryx_storage::meta::JobRunRecord {
             id,
             kind: JobKind::CacheRefresh,
-            scope: "pypi".to_owned(),
+            scope: "alpha".to_owned(),
             repository: None,
             state: JobState::Failed,
             started_at_unix: 900,
@@ -902,7 +871,7 @@ async fn test_shutdown_returns_after_the_grace_period_when_a_job_ignores_cancell
 async fn test_a_failing_persisted_job_records_a_failed_run() {
     let (_dir, state) = serving();
     let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
-    let job = TestJob::persisting("cache_maintenance", "pypi", Action::Return(Err("boom".to_owned())));
+    let job = TestJob::persisting("cache_maintenance", "alpha", Action::Return(Err("boom".to_owned())));
     scheduler.submit(job.clone());
     job.started.notified().await;
     scheduler.shutdown().await;
@@ -1076,11 +1045,7 @@ impl EcosystemDriver for NoScheduledJobsDriver {
 
 #[test]
 fn test_a_driver_without_scheduled_jobs_declines_by_default() {
-    assert!(
-        NoScheduledJobsDriver
-            .node_job(&ScheduledJob::CacheMaintenance)
-            .is_none()
-    );
+    assert!(NoScheduledJobsDriver.capabilities().jobs.is_none());
 }
 
 #[test]
@@ -1218,13 +1183,15 @@ struct StubCopier {
 impl CrossDcCopier for StubCopier {
     async fn copy_pass(
         &self,
-        _state: &ServingState,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
-        _params: DcCopyParameters,
-    ) -> Result<JobReport, JobFailure> {
+        _concurrency: std::num::NonZeroUsize,
+    ) -> Result<peryx_ha::AvailabilityTaskReport, peryx_ha::AvailabilityTaskError> {
         assert!(!cancelled(), "the pass observes the cooperative cancellation signal");
         self.ran.fetch_add(1, Ordering::SeqCst);
-        Ok(self.report)
+        Ok(peryx_ha::AvailabilityTaskReport {
+            processed: self.report.processed,
+            changed: self.report.changed,
+        })
     }
 }
 
@@ -1315,13 +1282,15 @@ struct StubReconciler {
 impl PlacementReconciler for StubReconciler {
     async fn reconcile_pass(
         &self,
-        _state: &ServingState,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
-        _params: PlacementReconcileParameters,
-    ) -> Result<JobReport, JobFailure> {
+        _batch: std::num::NonZeroUsize,
+    ) -> Result<peryx_ha::AvailabilityTaskReport, peryx_ha::AvailabilityTaskError> {
         assert!(!cancelled(), "the pass observes the cooperative cancellation signal");
         self.ran.fetch_add(1, Ordering::SeqCst);
-        Ok(self.report)
+        Ok(peryx_ha::AvailabilityTaskReport {
+            processed: self.report.processed,
+            changed: self.report.changed,
+        })
     }
 }
 
@@ -1422,15 +1391,17 @@ struct StubReclaimer {
 impl BlobReclaimer for StubReclaimer {
     async fn reclaim_pass(
         &self,
-        _state: &ServingState,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
         fence: u64,
-        _params: ReclamationParameters,
-    ) -> Result<JobReport, JobFailure> {
+        _batch: std::num::NonZeroUsize,
+    ) -> Result<peryx_ha::AvailabilityTaskReport, peryx_ha::AvailabilityTaskError> {
         assert!(!cancelled(), "the pass observes the cooperative cancellation signal");
         self.ran.fetch_add(1, Ordering::SeqCst);
         self.seen_fence.store(fence, Ordering::SeqCst);
-        Ok(self.report)
+        Ok(peryx_ha::AvailabilityTaskReport {
+            processed: self.report.processed,
+            changed: self.report.changed,
+        })
     }
 }
 
@@ -1546,7 +1517,7 @@ async fn test_a_reclamation_schedule_submits_the_registered_reclaimer() {
 fn catalog_schedule(secs: u64) -> Vec<Schedule> {
     vec![Schedule {
         job: ScheduledJob::CatalogSync(CatalogSyncParameters {
-            repository: "pypi".to_owned(),
+            repository: "alpha".to_owned(),
             source: None,
             max_projects: NonZeroUsize::new(1).unwrap(),
             concurrency: NonZeroUsize::new(1).unwrap(),
@@ -1584,7 +1555,7 @@ async fn test_an_unsupported_scheduled_job_is_rejected_without_submission() {
 
 #[tokio::test(start_paused = true)]
 async fn test_a_supported_scheduled_job_is_submitted() {
-    let job = TestJob::new("catalog_sync", "pypi", Action::Return(Ok(JobReport::default())));
+    let job = TestJob::new("catalog_sync", "alpha", Action::Return(Ok(JobReport::default())));
     let driver = StubDriver::new(0, Ok(RefreshSweep::default())).with_scheduled(job.clone());
     let (_dir, app) = scheduled_app(Arc::new(driver));
     let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
@@ -1797,7 +1768,7 @@ impl PackageIndexer for CountedDocs {
                 normalized_name: format!("pkg{serial}"),
                 route: "root".to_owned(),
                 index: "root".to_owned(),
-                ecosystem: "pypi".to_owned(),
+                ecosystem: "alpha".to_owned(),
                 source: PackageSource::Cached,
                 available_locally: false,
                 summary: None,

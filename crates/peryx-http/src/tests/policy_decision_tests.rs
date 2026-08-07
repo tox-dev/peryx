@@ -155,8 +155,8 @@ fn decision(project: &str, state: PolicyDecisionState, evaluated_at_unix: i64) -
         repository: "private",
         project,
         version: Some("1.0"),
-        filename: Some("package-1.0.whl"),
-        source: Some("pypi"),
+        filename: Some("package-1.0.bin"),
+        source: Some("alpha"),
         action: PolicyAction::Serve,
         state,
         rule: (state == PolicyDecisionState::Deny).then_some("blocked-project"),
@@ -203,7 +203,7 @@ async fn test_policy_decisions_filters_authorized_repository_history() {
 
     let (status, headers, document) = get(
         &app,
-        "/+policy/decisions?repository=private&state=deny&rule=blocked-project&source=pypi&from=15&to=25",
+        "/+policy/decisions?repository=private&state=deny&rule=blocked-project&source=alpha&from=15&to=25",
         Some(("__token__", ADMIN_SECRET)),
     )
     .await;
@@ -219,8 +219,8 @@ async fn test_policy_decisions_filters_authorized_repository_history() {
                     "repository": "private",
                     "project": "beta",
                     "version": "1.0",
-                    "filename": "package-1.0.whl",
-                    "source": "pypi",
+                    "filename": "package-1.0.bin",
+                    "source": "alpha",
                     "action": "serve",
                     "state": "deny",
                     "rule": "blocked-project",

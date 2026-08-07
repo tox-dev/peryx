@@ -135,7 +135,7 @@ fn tag_trash_prefix(index: &str, repo: &str) -> String {
     format!("{TAG_TRASH_PREFIX}{index}\u{0}{repo}\u{0}")
 }
 
-/// Store a manifest under its digest, without recording membership — a test seed for the by-digest
+/// Store a manifest under its digest, without recording membership - a test seed for the by-digest
 /// read and delete paths that expects a manifest present in the global pool but served by no
 /// repository.
 ///
@@ -146,8 +146,8 @@ pub fn put_manifest(meta: &MetaStore, digest: &str, manifest: &Manifest) -> Resu
     meta.put_driver_value(&manifest_key(digest), &manifest.encode())
 }
 
-/// Store a manifest and record it as one `(index, repo)` serves: its own digest, and — for an image
-/// index or manifest list — each child it names. A by-digest read authorizes against this per-repository
+/// Store a manifest and record it as one `(index, repo)` serves: its own digest, and - for an image
+/// index or manifest list - each child it names. A by-digest read authorizes against this per-repository
 /// membership, not the digest's presence in the global content store the bytes dedupe into, so a
 /// manifest one repository cached is not readable by digest under another.
 ///
@@ -221,7 +221,7 @@ pub fn get_manifest(meta: &MetaStore, digest: &str) -> Result<Option<Manifest>, 
         .and_then(|raw| Manifest::decode(&raw)))
 }
 
-/// Whether `(index, repo)` records `digest` as one it serves — the authorization for a by-digest read.
+/// Whether `(index, repo)` records `digest` as one it serves - the authorization for a by-digest read.
 ///
 /// # Errors
 /// Returns a store error if the read fails.

@@ -68,7 +68,7 @@ pub struct Cell {
     /// The dispersion around `text` (the median), as `±CV%`; empty when a party has no number.
     #[serde(default)]
     pub spread: String,
-    /// The observed `min–max` across the rounds; empty when a party has no number.
+    /// The observed `min..max` across the rounds; empty when a party has no number.
     #[serde(default)]
     pub range: String,
     /// The round-to-round spread is too wide to read this number as fact.
@@ -103,14 +103,12 @@ pub enum Metric {
     Amount(&'static str),
 }
 
-/// Format one local-serving row: median value with its spread, ratio against the baseline party, and
-/// a best-to-worst tint. See [`build_row`].
+#[must_use]
 pub fn row(name: &str, values: &[Option<Summary>], baseline: usize, metric: Metric, absent: Absent) -> Row {
     build_row(name, values, baseline, metric, absent, false)
 }
 
-/// Format one network-bound row (a cold pass whose time is dominated by the upstream, not peryx);
-/// tinted and reported like any other but marked so a regression check skips it. See [`build_row`].
+#[must_use]
 pub fn network_row(name: &str, values: &[Option<Summary>], baseline: usize, metric: Metric, absent: Absent) -> Row {
     build_row(name, values, baseline, metric, absent, true)
 }
@@ -212,14 +210,14 @@ fn format_spread(summary: &Summary) -> String {
     format!("±{percent}%")
 }
 
-/// The observed `min–max` band across the rounds, for the site to show behind the median; empty when
+/// The observed `min..max` band across the rounds, for the site to show behind the median; empty when
 /// a single round leaves nothing to bound.
 fn format_range(summary: &Summary, metric: Metric) -> String {
     if summary.n < 2 {
         return String::new();
     }
     format!(
-        "{}–{}",
+        "{}..{}",
         format_value(summary.min, metric),
         format_value(summary.max, metric)
     )
@@ -247,11 +245,13 @@ fn absent_cell(absent: Absent) -> Cell {
 }
 
 /// The index of the no-proxy baseline party, `direct`; every ratio reads against it.
+#[must_use]
 pub fn baseline(servers: &[Server]) -> usize {
     servers.iter().position(|server| server.name == "direct").unwrap_or(0)
 }
 
 /// The party resource rows compare against: direct runs no server, so it cannot anchor them.
+#[must_use]
 pub fn anchor(servers: &[Server]) -> usize {
     servers
         .iter()
@@ -259,10 +259,8 @@ pub fn anchor(servers: &[Server]) -> usize {
         .unwrap_or_else(|| baseline(servers))
 }
 
-/// The rows every table ends with: what the server itself burned while the workload ran, summarized
-/// across the rounds. Each party carries one [`Cost`] per round (`None` for `direct`, which runs no
-/// server); the CPU seconds and peak resident memory are reduced to a median with its spread like any
-/// other measurement.
+/// Summarize server CPU and memory across benchmark rounds.
+#[must_use]
 pub fn cost_rows(servers: &[Server], costs: &[Option<Vec<Cost>>]) -> Vec<Row> {
     let anchor = anchor(servers);
     let cpu = summaries(costs, |cost| cost.cpu_seconds);
@@ -341,6 +339,7 @@ fn summaries(costs: &[Option<Vec<Cost>>], field: impl Fn(&Cost) -> f64) -> Vec<O
 }
 
 /// Assemble a table over the run's parties.
+#[must_use]
 pub fn table(label: &str, servers: &[Server], baseline: usize, rows: Vec<Row>) -> Table {
     Table {
         label: label.to_owned(),
@@ -372,7 +371,7 @@ pub fn publish(name: &str, table: Table) -> anyhow::Result<()> {
         .as_table_mut()
         .context("`tables` is not a TOML table")?;
     tables.insert(name.to_owned(), toml::Value::try_from(table)?);
-    std::fs::create_dir_all(path.parent().expect("the report lives under site/data"))?;
+    std::fs::create_dir_all(repo_root().join("site").join("data").join("bench"))?;
     std::fs::write(&path, toml::to_string_pretty(&report)?)?;
     println!("updated {} [{name}]", path.display());
     Ok(())
@@ -436,6 +435,7 @@ fn thousands(value: f64) -> String {
 }
 
 /// Where the report lives: zola loads it relative to the site root.
+#[must_use]
 pub fn report_path() -> PathBuf {
     repo_root().join("site").join("data").join("bench").join("report.toml")
 }
@@ -450,24 +450,27 @@ fn binary_override() -> &'static std::sync::Mutex<Option<PathBuf>> {
 /// Point the peryx party at `path`, or clear the override with `None`. Set between the two runs of
 /// an A/B so each measures a different build through the same harness.
 pub fn set_peryx_binary(path: Option<PathBuf>) {
-    *binary_override().lock().expect("binary override lock is not poisoned") = path;
+    *binary_override()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
 }
 
 /// The peryx binary the harness launches: the A/B override when one is set, otherwise the release
 /// binary this checkout builds.
+#[must_use]
 pub fn peryx_binary() -> PathBuf {
     binary_override()
         .lock()
-        .expect("binary override lock is not poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
         .unwrap_or_else(|| repo_root().join("target").join("release").join("peryx"))
 }
 
 /// The repository checkout root.
+#[must_use]
 pub fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("the crate lives two levels under the repository root")
-        .to_path_buf()
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root
 }

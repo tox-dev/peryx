@@ -38,5 +38,5 @@ pub use topology::{
 pub use view::{
     RenderedDescription, UiArtifactRef, UiArtifactSource, UiAttestation, UiBlock, UiByteAvailability, UiFile,
     UiManifest, UiMember, UiMemberChunk, UiMeta, UiOperationStatus, UiProject, UiProjectStatus, UiProjectView,
-    UiProvenance, UiProvenanceSource, UiRelease, UiSubjectMatch,
+    UiProvenance, UiProvenanceSource, UiRelease, UiSubjectMatch, UiUploadSpec,
 };

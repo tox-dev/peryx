@@ -27,7 +27,7 @@ const PRE_AUTH_PATH: &str = "/_/login";
 /// Where a completed or cleared login lands the browser.
 const ROOT_PATH: &str = "/";
 
-/// `GET /_/login/{provider}` — begin an OIDC login: mint the authorization request and redirect the
+/// `GET /_/login/{provider}` - begin an OIDC login: mint the authorization request and redirect the
 /// browser to the provider, sealing the handoff into a single-use pre-authentication cookie.
 pub async fn login_start(State(state): State<Arc<AppState>>, Path(provider): Path<String>) -> Response {
     let Some(service) = state.oidc_login(&provider) else {
@@ -49,7 +49,7 @@ pub async fn login_start(State(state): State<Arc<AppState>>, Path(provider): Pat
     }
 }
 
-/// `GET /_/login/{provider}/callback` — complete an OIDC login: reopen the sealed handoff, validate the
+/// `GET /_/login/{provider}/callback` - complete an OIDC login: reopen the sealed handoff, validate the
 /// provider response, and on success seal the linked user into a session cookie.
 pub async fn login_callback(
     State(state): State<Arc<AppState>>,
@@ -88,7 +88,7 @@ pub async fn login_callback(
     }
 }
 
-/// `GET /_/session` — the read-only UI's login state.
+/// `GET /_/session` - the read-only UI's login state.
 ///
 /// Reports the signed-in user (or null) and the OIDC providers a visitor can sign in with. The session
 /// cookie is consulted only for identity here; it authorizes nothing that mutates state.
@@ -104,7 +104,7 @@ pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
 /// The signed-in user a request's session cookie identifies, or `None` when there is no valid session.
 ///
 /// This is the read/UI surface's principal: the web pages and the session route consult it, and it
-/// authorizes nothing that mutates state. Mutating requests never call it — they stay on
+/// authorizes nothing that mutates state. Mutating requests never call it - they stay on
 /// `Authorization`-header credentials.
 #[must_use]
 pub fn session_user(state: &AppState, headers: &HeaderMap) -> Option<ServerUser> {
@@ -114,7 +114,7 @@ pub fn session_user(state: &AppState, headers: &HeaderMap) -> Option<ServerUser>
     sealer.open_session(&value, now)
 }
 
-/// `POST /_/logout` — end the browser session by clearing its cookie.
+/// `POST /_/logout` - end the browser session by clearing its cookie.
 pub async fn logout() -> Response {
     redirect(ROOT_PATH, &[clear_cookie(SESSION_COOKIE, ROOT_PATH)])
 }

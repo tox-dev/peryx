@@ -16,7 +16,7 @@
 //! frontier-bounded [`compact`] that releases an artifact only once a required-replica-and-backup
 //! [`Frontier`] covers its operations and it has returned to the visible default. A still-trashed or
 //! still-revoked tombstone is never released, because it is what holds the artifact out of sight.
-//! Wiring the snapshot onto the journal and the served `PyPI`, OCI, and search projections is deferred
+//! Wiring the snapshot onto the journal and served ecosystem projections is deferred
 //! to the projection work.
 //!
 //! [`encode`]: VisibilityState::encode

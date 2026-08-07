@@ -35,7 +35,7 @@ pub enum Failover {
     /// The home is confirmed dead but no eligible datacenter is alive to take it, so authority holds and
     /// the old home's writes stay retained until a candidate recovers.
     NoCandidate,
-    /// The home is still within tolerance — alive, merely suspect, or never heard from — so authority
+    /// The home is still within tolerance - alive, merely suspect, or never heard from - so authority
     /// does not move. Suspicion alone never transfers a home.
     Hold,
 }

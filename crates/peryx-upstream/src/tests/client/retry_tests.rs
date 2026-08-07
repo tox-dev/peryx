@@ -59,26 +59,26 @@ fn test_retry_after_ignores_a_past_http_date() {
 async fn test_fetch_bytes_honors_retry_after_on_a_retryable_status() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
         .up_to_n_times(1)
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .and(path("/files/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .expect(1)
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let bytes = client
-        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .fetch_bytes(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test(start_paused = true)]
@@ -118,23 +118,23 @@ async fn test_sleep_before_retry_logs_a_redacted_url_and_status() {
 async fn test_status_retry_logs_a_redacted_url() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(query_param("token", "secret"))
         .respond_with(ResponseTemplate::new(408))
         .up_to_n_times(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(query_param("token", "secret"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .mount(&server)
         .await;
     let client = simple_client(&server);
     let (capture, guard) = capture_debug_events();
 
     client
-        .fetch_bytes(&format!("{}/files/pkg.whl?token=secret", server.uri()))
+        .fetch_bytes(&format!("{}/files/pkg.bin?token=secret", server.uri()))
         .await
         .unwrap();
 
@@ -144,7 +144,7 @@ async fn test_status_retry_logs_a_redacted_url() {
         event["fields"],
         serde_json::json!({
             "message": "upstream returned retryable status",
-            "url": format!("{}/files/pkg.whl", server.uri()),
+            "url": format!("{}/files/pkg.bin", server.uri()),
             "status": "408 Request Timeout",
             "delay_ms": "jitter",
         })
@@ -155,52 +155,52 @@ async fn test_status_retry_logs_a_redacted_url() {
 async fn test_fetch_bytes_retries_transient_statuses() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(ResponseTemplate::new(500))
         .up_to_n_times(2)
         .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header("accept-encoding", "identity"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wheelbytes".to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifactbytes".to_vec()))
         .expect(1)
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let bytes = client
-        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .fetch_bytes(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test]
 async fn test_fetch_bytes_retries_body_errors() {
-    let base = truncated_then_ok_server(b"wheelbytes", None);
+    let base = truncated_then_ok_server(b"artifactbytes", None);
     let client = UpstreamClient::new(&base).unwrap();
 
-    let bytes = client.fetch_bytes(&format!("{base}pkg.whl")).await.unwrap();
+    let bytes = client.fetch_bytes(&format!("{base}pkg.bin")).await.unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test]
 async fn test_fetch_bytes_limited_retries_body_errors() {
-    let base = truncated_then_ok_server(b"wheelbytes", None);
+    let base = truncated_then_ok_server(b"artifactbytes", None);
     let client = UpstreamClient::new(&base).unwrap();
 
-    let bytes = client.fetch_bytes_limited(&format!("{base}pkg.whl"), 32).await.unwrap();
+    let bytes = client.fetch_bytes_limited(&format!("{base}pkg.bin"), 32).await.unwrap();
 
-    assert_eq!(&bytes[..], b"wheelbytes");
+    assert_eq!(&bytes[..], b"artifactbytes");
 }
 
 #[tokio::test]
 async fn test_fetch_bytes_limited_reports_exhausted_body_errors() {
-    let body = b"wheelbytes";
+    let body = b"artifactbytes";
     let base = response_server(
         vec![(&body[..4], body.len() + 16); usize::try_from(MAX_RETRIES).unwrap() + 1],
         None,
@@ -208,7 +208,7 @@ async fn test_fetch_bytes_limited_reports_exhausted_body_errors() {
     let client = UpstreamClient::new(&base).unwrap();
 
     let err = client
-        .fetch_bytes_limited(&format!("{base}pkg.whl"), 32)
+        .fetch_bytes_limited(&format!("{base}pkg.bin"), 32)
         .await
         .unwrap_err();
 
@@ -221,7 +221,7 @@ async fn test_fetch_bytes_limited_rejects_chunked_body_over_limit() {
     let client = UpstreamClient::new(&base).unwrap();
 
     let err = client
-        .fetch_bytes_limited(&format!("{base}pkg.whl"), 9)
+        .fetch_bytes_limited(&format!("{base}pkg.bin"), 9)
         .await
         .unwrap_err();
 
@@ -295,7 +295,7 @@ fn chunked_server() -> String {
         let _ = socket.read(&mut buffer);
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n5\r\nwheel\r\n5\r\nbytes\r\n0\r\n\r\n",
+                b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n8\r\nartifact\r\n5\r\nbytes\r\n0\r\n\r\n",
             )
             .unwrap();
     });

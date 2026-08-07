@@ -7,9 +7,14 @@ license.workspace = true
 repository.workspace = true
 description = "The OCI/Docker registry driver for peryx: the distribution-spec /v2/ API over the content-addressed blob store."
 
+[features]
+default = []
+bench = ["dep:peryx-bench-core", "dep:tempfile", "dep:clap"]
+
 [dependencies]
 inventory.workspace = true
 peryx-core.workspace = true
+peryx-bench-core = { workspace = true, optional = true }
 peryx-plugin-registry.workspace = true
 peryx-driver.workspace = true
 peryx-ha.workspace = true
@@ -40,6 +45,8 @@ utoipa.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["sync", "fs", "io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
+tempfile = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
 peryx-events = { workspace = true, features = ["test-util"] }

@@ -49,7 +49,7 @@ availability-e2e = []
 sim-campaign = []
 # End-to-end tests that drive real pip/uv/twine against a spawned peryx binary. Off by default
 # (they need the clients and are not part of the coverage gate); CI runs them explicitly. `e2e` is
-# the fast, hermetic matrix (peryx proxies a local fixture index — no external network, no flake);
+# the fast, hermetic matrix (peryx proxies a local fixture index - no external network, no flake);
 # `e2e-live` adds smoke tests against the real pypi.org.
 e2e = []
 e2e-live = ["e2e"]
@@ -68,7 +68,6 @@ peryx-plugin-registry.workspace = true
 peryx-ecosystem-oci.workspace = true
 peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }
 peryx-ha.workspace = true
-peryx-ha-local.workspace = true
 async-trait.workspace = true
 openraft.workspace = true
 peryx-identity.workspace = true

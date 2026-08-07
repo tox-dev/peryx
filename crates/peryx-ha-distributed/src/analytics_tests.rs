@@ -6,7 +6,7 @@ use crate::{
 fn key(day: i64, version: &str, source: &str) -> AggregateKey {
     AggregateKey {
         day,
-        repository: "pypi".to_owned(),
+        repository: "alpha".to_owned(),
         project: "flask".to_owned(),
         version: version.to_owned(),
         source: source.to_owned(),
@@ -40,7 +40,7 @@ fn batch(interval: IntervalId, rows: &[(AggregateKey, u64, u64)]) -> AnalyticsBa
 #[test]
 fn test_apply_folds_additive_rows_into_accepted_totals() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     let outcome = state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -59,7 +59,7 @@ fn test_apply_folds_additive_rows_into_accepted_totals() {
 #[test]
 fn test_apply_sums_rows_across_distinct_intervals() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -79,7 +79,7 @@ fn test_apply_sums_rows_across_distinct_intervals() {
 #[test]
 fn test_total_sums_a_dimension_across_producers() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -99,7 +99,7 @@ fn test_total_sums_a_dimension_across_producers() {
 #[test]
 fn test_apply_rejects_a_duplicate_interval_without_changing_totals() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -121,7 +121,7 @@ fn test_apply_rejects_a_duplicate_interval_without_changing_totals() {
 
 #[test]
 fn test_reordered_delivery_converges_to_the_same_sum() {
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     let first = batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]);
     let second = batch(interval("east", 1, 2), &[(dimension.clone(), 3, 70)]);
 
@@ -139,7 +139,7 @@ fn test_reordered_delivery_converges_to_the_same_sum() {
 #[test]
 fn test_producer_restart_under_a_new_epoch_applies_as_a_distinct_interval() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -161,7 +161,7 @@ fn test_producer_restart_under_a_new_epoch_applies_as_a_distinct_interval() {
 #[test]
 fn test_producer_restart_replaying_the_same_interval_is_dropped() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     let same = batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]);
     state.apply(&same).unwrap();
 
@@ -180,7 +180,7 @@ fn test_producer_restart_replaying_the_same_interval_is_dropped() {
 #[test]
 fn test_apply_saturates_totals_at_u64_max() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(
             interval("east", 1, 1),
@@ -207,10 +207,10 @@ fn test_apply_rejects_a_batch_over_the_row_limit() {
         max_retained_intervals: 8,
     };
     let mut state = ApplyState::new(limits);
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     let wide = batch(
         interval("east", 1, 1),
-        &[(dimension.clone(), 1, 1), (key(20_001, "3.0", "pypi-org"), 1, 1)],
+        &[(dimension.clone(), 1, 1), (key(20_001, "3.0", "upstream"), 1, 1)],
     );
 
     let error = state.apply(&wide).unwrap_err();
@@ -237,7 +237,7 @@ fn test_apply_refuses_a_new_interval_when_the_replay_set_is_full() {
         max_retained_intervals: 1,
     };
     let mut state = ApplyState::new(limits);
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -270,7 +270,7 @@ fn test_retention_full_message_names_the_limit() {
 #[test]
 fn test_compact_releases_intervals_the_frontier_covers() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -307,7 +307,7 @@ fn test_compact_releases_intervals_the_frontier_covers() {
 #[test]
 fn test_compact_keeps_intervals_above_the_frontier() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 2), &[(dimension.clone(), 3, 70)]))
         .unwrap();
@@ -335,7 +335,7 @@ fn test_compact_against_an_empty_frontier_keeps_every_interval() {
     state
         .apply(&batch(
             interval("east", 1, 1),
-            &[(key(20_000, "3.0", "pypi-org"), 2, 50)],
+            &[(key(20_000, "3.0", "upstream"), 2, 50)],
         ))
         .unwrap();
 
@@ -350,7 +350,7 @@ fn test_frontier_acknowledge_keeps_the_highest_sequence() {
     state
         .apply(&batch(
             interval("east", 1, 3),
-            &[(key(20_000, "3.0", "pypi-org"), 1, 1)],
+            &[(key(20_000, "3.0", "upstream"), 1, 1)],
         ))
         .unwrap();
 
@@ -365,7 +365,7 @@ fn test_frontier_acknowledge_keeps_the_highest_sequence() {
 #[test]
 fn test_snapshot_round_trip_preserves_totals_and_replay_protection() {
     let mut state = ApplyState::new(ApplyLimits::default());
-    let dimension = key(20_000, "3.0", "pypi-org");
+    let dimension = key(20_000, "3.0", "upstream");
     state
         .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
         .unwrap();
@@ -431,7 +431,7 @@ fn test_default_apply_limits_match_the_shared_bound() {
 
 #[test]
 fn test_analytics_batch_round_trips_through_its_wire_form() {
-    let original = batch(interval("east", 1, 1), &[(key(20_000, "3.0", "pypi-org"), 2, 50)]);
+    let original = batch(interval("east", 1, 1), &[(key(20_000, "3.0", "upstream"), 2, 50)]);
 
     let encoded = serde_json::to_vec(&original).unwrap();
     let decoded: AnalyticsBatch = serde_json::from_slice(&encoded).unwrap();
@@ -554,14 +554,14 @@ fn test_receiver_compaction_releases_covered_keys_and_keeps_totals() {
 fn test_receiver_snapshot_round_trips_state_cursor_and_frontier() {
     let mut receiver = AnalyticsReceiver::new(DEFAULT_APPLY_LIMITS);
     receiver
-        .apply(&batch(interval("dc-a", 1, 4), &[(key(4, "1.0", "pypi"), 6, 60)]))
+        .apply(&batch(interval("dc-a", 1, 4), &[(key(4, "1.0", "alpha"), 6, 60)]))
         .unwrap();
     receiver.acknowledge(ProducerId("dc-a".to_owned()), AuthorityEpoch(1), 4);
 
     let restored = AnalyticsReceiver::restore(&receiver.encode(), DEFAULT_APPLY_LIMITS).unwrap();
 
     assert_eq!(
-        restored.total(&key(4, "1.0", "pypi")),
+        restored.total(&key(4, "1.0", "alpha")),
         AggregateDelta {
             downloads: 6,
             bytes: 60

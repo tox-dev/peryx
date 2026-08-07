@@ -42,7 +42,7 @@ fn minter(epoch: u64) -> VisibilityMinter<Counter> {
 
 #[test]
 fn test_mint_stamps_the_current_epoch_and_a_fresh_serial() {
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
     let op = minter(4).mint(art.clone(), Trash).unwrap();
     assert_eq!(
         op,
@@ -57,7 +57,7 @@ fn test_mint_stamps_the_current_epoch_and_a_fresh_serial() {
 #[test]
 fn test_successive_mints_draw_strictly_increasing_serials() {
     let mut minter = minter(1);
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
     let first = minter.mint(art.clone(), Trash).unwrap();
     let second = minter.mint(art, Revoke).unwrap();
     assert_eq!(first.order, OpOrder { epoch: 1, serial: 1 });
@@ -67,7 +67,7 @@ fn test_successive_mints_draw_strictly_increasing_serials() {
 #[test]
 fn test_an_equal_order_pair_of_different_actions_cannot_be_minted() {
     let mut minter = minter(1);
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
     let trash = minter.mint(art.clone(), Trash).unwrap();
     let restore = minter.mint(art, Restore).unwrap();
     assert_ne!(trash.order, restore.order);
@@ -80,7 +80,7 @@ fn test_every_minted_order_is_unique_across_artifacts_and_actions() {
     let mut orders = std::collections::BTreeSet::new();
     for (index, action) in actions.into_iter().enumerate() {
         let op = minter
-            .mint(artifact(&format!("root/pypi/pkg/{index}")), action)
+            .mint(artifact(&format!("root/alpha/pkg/{index}")), action)
             .unwrap();
         assert!(orders.insert(op.order), "order {:?} was minted twice", op.order);
     }
@@ -90,7 +90,7 @@ fn test_every_minted_order_is_unique_across_artifacts_and_actions() {
 #[test]
 fn test_minted_ops_converge_regardless_of_arrival_order() {
     let mut minter = minter(1);
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
     let ops = [
         minter.mint(art.clone(), Trash).unwrap(),
         minter.mint(art.clone(), Restore).unwrap(),
@@ -125,14 +125,14 @@ fn test_adopt_epoch_advances_the_stamped_epoch() {
     let mut minter = minter(1);
     minter.adopt_epoch(AuthorityEpoch(2)).unwrap();
     assert_eq!(minter.epoch(), AuthorityEpoch(2));
-    let op = minter.mint(artifact("root/pypi/flask/2.0.0"), Restore).unwrap();
+    let op = minter.mint(artifact("root/alpha/flask/2.0.0"), Restore).unwrap();
     assert_eq!(op.order.epoch, 2);
 }
 
 #[test]
 fn test_a_higher_epoch_mint_outranks_a_prior_epoch_op() {
     let mut minter = minter(1);
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
     let trashed = minter.mint(art.clone(), Trash).unwrap();
     minter.adopt_epoch(AuthorityEpoch(2)).unwrap();
     let restored = minter.mint(art.clone(), Restore).unwrap();
@@ -184,7 +184,7 @@ fn test_stale_epoch_is_debug() {
 fn test_mint_surfaces_a_serial_source_error() {
     let mut minter = VisibilityMinter::new(AuthorityEpoch(1), Failing);
     assert!(matches!(
-        minter.mint(artifact("root/pypi/flask/2.0.0"), Trash),
+        minter.mint(artifact("root/alpha/flask/2.0.0"), Trash),
         Err(Exhausted)
     ));
 }
@@ -198,7 +198,7 @@ fn test_minter_is_debug() {
 fn test_journal_serials_draw_strictly_increasing_serials_across_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
-    let art = artifact("root/pypi/flask/2.0.0");
+    let art = artifact("root/alpha/flask/2.0.0");
 
     let (trash, restore) = {
         let store = MetaStore::open(&path).unwrap();

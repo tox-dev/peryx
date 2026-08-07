@@ -1,5 +1,9 @@
 //! Publishing to a hosted index through the multipart upload API.
 
+use peryx_driver::serving::EcosystemDriver as _;
+use peryx_driver::serving::{
+    BlobReferenceDriver as _, CacheDriver as _, FsckDriver as _, ImportDriver as _, PolicyDriver as _,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 
@@ -73,41 +77,6 @@ async fn test_upload_durably_stages_one_ingress_intent_and_deduplicates_a_resend
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(h.state.meta.count_staged_intents().unwrap(), 1);
-}
-
-#[tokio::test]
-async fn test_dc_write_ack_reports_a_write_short_of_quorum_as_retry_safe() {
-    let h = dc_write_ack_harness().await;
-    let wheel = fixture_wheel();
-    let filename = "peryxpkg-1.0-py3-none-any.whl";
-    let fields = [
-        (":action", "file_upload"),
-        ("name", "peryxpkg"),
-        ("version", "1.0"),
-        ("filetype", "bdist_wheel"),
-    ];
-    let (content_type, body) = multipart_body(&fields, Some((filename, &wheel)));
-
-    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
-
-    // The local receipt cannot meet a two-member majority, so the write is accepted but reported
-    // retry-safe rather than durable.
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert!(
-        body.contains("retry-safe"),
-        "the response carries a retry-safe operation: {body}"
-    );
-    // The bytes are durably stored and the intent advanced even though its datacenter quorum is unproven.
-    assert_eq!(h.state.meta.list_upload_entries("hosted", "peryxpkg").unwrap().len(), 1);
-    assert_eq!(h.state.meta.count_staged_intents().unwrap(), 1);
-
-    // The operation is left pending, so a retry re-drives it: the store deduplicates the already-published
-    // file and the write stays retry-safe rather than replaying a false success or publishing twice.
-    let (content_type, body) = multipart_body(&fields, Some((filename, &wheel)));
-    let (status, body) = post_upload_response(&h.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert!(body.contains("retry-safe"));
-    assert_eq!(h.state.meta.list_upload_entries("hosted", "peryxpkg").unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1550,8 +1519,6 @@ async fn test_upload_wheel_gains_metadata_sibling() {
 
 #[tokio::test]
 async fn test_pypi_maintenance_scans_walk_real_records() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness().await;
     let meta = &h.state.serving.meta;
     let blobs = &h.state.serving.blobs;
@@ -1601,8 +1568,6 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
 
 #[tokio::test]
 async fn test_pypi_policy_dry_run_writes_a_denial() {
-    use peryx_driver::serving::EcosystemDriver as _;
-
     let h = harness_with_policies(
         true,
         true,
@@ -1804,7 +1769,6 @@ async fn test_trusted_token_uploads_with_supported_auth(#[case] basic_user: Opti
 #[tokio::test]
 async fn test_trusted_token_uploads_to_the_root_route() {
     use axum::extract::FromRequest as _;
-    use peryx_driver::serving::EcosystemDriver as _;
 
     let (_dir, state, signer) = trusted_publishing();
     let token = trusted_token(&signer, "peryxpkg");

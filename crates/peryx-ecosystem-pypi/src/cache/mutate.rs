@@ -144,7 +144,7 @@ pub async fn promote_release(
 
 /// The promotion precondition for one target filename, evaluated inside the write transaction: a
 /// free target is copied, an identical one left as it is, and a target holding different bytes is a
-/// conflict — so a concurrent upload to the target cannot be silently overwritten.
+/// conflict - so a concurrent upload to the target cannot be silently overwritten.
 fn promote_conflict(filename: &str, digest: &str, existing: Option<&[u8]>) -> Result<Guard, CacheError> {
     let Some(existing) = existing else {
         return Ok(Guard::Commit);

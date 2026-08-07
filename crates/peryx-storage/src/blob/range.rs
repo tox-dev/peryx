@@ -1,7 +1,7 @@
 //! Resolve an HTTP `Range` header against a stored blob of a known size.
 //!
 //! Every blob server leans on the same grammar: pulling one layer of a large image is a range request,
-//! and pip resumes an interrupted wheel download with one. [`parse_range`] maps a request's `Range`
+//! and clients use one to resume interrupted artifact downloads. [`parse_range`] maps a request's `Range`
 //! value and the blob's total size to one of three answers a handler acts on: serve the whole blob,
 //! serve one end-exclusive byte range, or reject as unsatisfiable.
 //!

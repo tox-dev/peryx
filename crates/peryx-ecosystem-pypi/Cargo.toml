@@ -9,15 +9,14 @@ description = "The PyPI ecosystem driver for peryx: names, versions, the simple 
 
 [features]
 # The serving layer (cache/stream/archive/discovery/upload/search/policy/HTTP driver) is on by
-# default. Turning it off (`--no-default-features`) leaves only the ecosystem format core — names,
-# versions, filenames, the Simple-API document model — with no HTTP/async/storage dependencies, so a
+# default. Turning it off (`--no-default-features`) leaves only the ecosystem format core - names,
+# versions, filenames, the Simple-API document model - with no HTTP/async/storage dependencies, so a
 # wasm or other light consumer can use the format types without pulling the server stack.
 default = ["serving"]
 serving = [
   "dep:peryx-driver",
   "dep:peryx-plugin-registry",
   "dep:peryx-ha",
-  "dep:peryx-ha-distributed",
   "dep:peryx-events",
   "dep:peryx-index",
   "dep:peryx-search",
@@ -61,10 +60,12 @@ serving = [
   "dep:html5ever",
   "dep:inventory",
 ]
+bench = ["serving", "dep:peryx-bench-core", "dep:hdrhistogram", "dep:clap"]
 
 [dependencies]
 # Format core (always compiled).
 peryx-core.workspace = true
+peryx-bench-core = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 pep440_rs.workspace = true
@@ -74,13 +75,14 @@ url.workspace = true
 percent-encoding.workspace = true
 sha2.workspace = true
 xml-rs = "0.8"
+hdrhistogram = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 # Serving layer (enabled by the `serving` feature).
 peryx-driver = { workspace = true, optional = true }
 peryx-plugin-registry = { workspace = true, optional = true }
 inventory = { workspace = true, optional = true }
 peryx-ha = { workspace = true, optional = true }
-peryx-ha-distributed = { workspace = true, optional = true }
 peryx-events = { workspace = true, optional = true }
 peryx-index = { workspace = true, optional = true }
 peryx-search = { workspace = true, optional = true }
@@ -142,11 +144,6 @@ stats_alloc.workspace = true
 
 [[bench]]
 name = "serve"
-harness = false
-required-features = ["serving"]
-
-[[bench]]
-name = "availability_ack"
 harness = false
 required-features = ["serving"]
 

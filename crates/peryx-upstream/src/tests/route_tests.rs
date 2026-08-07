@@ -11,7 +11,7 @@ fn upstream(name: &str) -> NamedUpstream {
 }
 
 fn router() -> UpstreamRouter {
-    UpstreamRouter::new(vec![upstream("internal"), upstream("mirror"), upstream("pypi")]).unwrap()
+    UpstreamRouter::new(vec![upstream("internal"), upstream("mirror"), upstream("alpha")]).unwrap()
 }
 
 fn names(router: &UpstreamRouter, project: &str) -> Vec<String> {
@@ -23,7 +23,7 @@ fn names(router: &UpstreamRouter, project: &str) -> Vec<String> {
 
 #[test]
 fn test_upstream_router_preserves_fallback_order() {
-    assert_eq!(names(&router(), "demo"), ["internal", "mirror", "pypi"]);
+    assert_eq!(names(&router(), "demo"), ["internal", "mirror", "alpha"]);
 }
 
 #[test]
@@ -35,14 +35,14 @@ fn test_upstream_router_disables_repository_fallback() {
 fn test_upstream_router_protects_one_project_from_fallback() {
     let router = router().protect("private").unwrap();
     assert_eq!(names(&router, "private"), ["internal"]);
-    assert_eq!(names(&router, "public"), ["internal", "mirror", "pypi"]);
+    assert_eq!(names(&router, "public"), ["internal", "mirror", "alpha"]);
 }
 
 #[test]
 fn test_upstream_router_pin_is_strict() {
     let router = router().pin("torch", "mirror").unwrap();
     assert_eq!(names(&router, "torch"), ["mirror"]);
-    assert_eq!(names(&router, "numpy"), ["internal", "mirror", "pypi"]);
+    assert_eq!(names(&router, "numpy"), ["internal", "mirror", "alpha"]);
 }
 
 #[test]
@@ -99,14 +99,14 @@ fn test_upstream_router_rejects_an_empty_source_name() {
 #[test]
 fn test_upstream_router_rejects_duplicate_source_names() {
     assert_eq!(
-        UpstreamRouter::new(vec![upstream("pypi"), upstream("pypi")]).unwrap_err(),
-        RouteError::DuplicateName("pypi".to_owned())
+        UpstreamRouter::new(vec![upstream("alpha"), upstream("alpha")]).unwrap_err(),
+        RouteError::DuplicateName("alpha".to_owned())
     );
 }
 
 #[test]
 fn test_upstream_router_rejects_an_empty_project_pin() {
-    assert_eq!(router().pin("", "pypi").unwrap_err(), RouteError::EmptyProject);
+    assert_eq!(router().pin("", "alpha").unwrap_err(), RouteError::EmptyProject);
 }
 
 #[test]
@@ -130,13 +130,13 @@ async fn test_artifact_client_falls_back_for_range_reads() {
     let origin = MockServer::start().await;
     let mirror = MockServer::start().await;
     Mock::given(method("HEAD"))
-        .and(path("/mirror/files/pkg.whl"))
+        .and(path("/mirror/files/pkg.bin"))
         .respond_with(ResponseTemplate::new(404))
         .expect(1)
         .mount(&mirror)
         .await;
     Mock::given(method("HEAD"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
@@ -146,14 +146,14 @@ async fn test_artifact_client_falls_back_for_range_reads() {
         .mount(&origin)
         .await;
     Mock::given(method("GET"))
-        .and(path("/mirror/files/pkg.whl"))
+        .and(path("/mirror/files/pkg.bin"))
         .and(header("range", "bytes=1-3"))
         .respond_with(ResponseTemplate::new(404))
         .expect(1)
         .mount(&mirror)
         .await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .and(header("range", "bytes=1-3"))
         .respond_with(
             ResponseTemplate::new(206)
@@ -169,7 +169,7 @@ async fn test_artifact_client_falls_back_for_range_reads() {
     )
     .with_artifact_mirror(UpstreamClient::new(&format!("{}/mirror/", mirror.uri())).unwrap(), true);
     let artifacts = source.artifacts();
-    let url = format!("{}/files/pkg.whl?signature=origin", origin.uri());
+    let url = format!("{}/files/pkg.bin?signature=origin", origin.uri());
 
     assert!(artifacts.may_support_ranges());
     assert_eq!(artifacts.head_file_for_range(&url).await.unwrap().len, 5);
@@ -183,7 +183,7 @@ async fn test_artifact_client_falls_back_for_range_reads() {
 async fn test_artifact_client_reads_ranges_from_mirror() {
     let mirror = MockServer::start().await;
     Mock::given(method("HEAD"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
@@ -193,7 +193,7 @@ async fn test_artifact_client_reads_ranges_from_mirror() {
         .mount(&mirror)
         .await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(
             ResponseTemplate::new(206)
                 .insert_header("content-range", "bytes 1-3/5")
@@ -208,7 +208,7 @@ async fn test_artifact_client_reads_ranges_from_mirror() {
 
     assert_eq!(
         artifacts
-            .head_file_for_range("https://origin.example/files/pkg.whl")
+            .head_file_for_range("https://origin.example/files/pkg.bin")
             .await
             .unwrap()
             .len,
@@ -216,7 +216,7 @@ async fn test_artifact_client_reads_ranges_from_mirror() {
     );
     assert_eq!(
         &artifacts
-            .fetch_range("https://origin.example/files/pkg.whl", 1, 3)
+            .fetch_range("https://origin.example/files/pkg.bin", 1, 3)
             .await
             .unwrap()[..],
         b"hee"
@@ -228,7 +228,7 @@ async fn test_artifact_client_does_not_fallback_range_reads_when_disabled() {
     let mirror = MockServer::start().await;
     for request_method in ["HEAD", "GET"] {
         Mock::given(method(request_method))
-            .and(path("/files/pkg.whl"))
+            .and(path("/files/pkg.bin"))
             .respond_with(ResponseTemplate::new(404))
             .expect(1)
             .mount(&mirror)
@@ -237,7 +237,7 @@ async fn test_artifact_client_does_not_fallback_range_reads_when_disabled() {
     let source = NamedUpstream::new("origin", UpstreamClient::new("https://origin.example/simple/").unwrap())
         .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
     let artifacts = source.artifacts();
-    let url = "https://origin.example/files/pkg.whl";
+    let url = "https://origin.example/files/pkg.bin";
 
     assert!(artifacts.head_file_for_range(url).await.is_err());
     assert!(artifacts.fetch_range(url, 1, 3).await.is_err());

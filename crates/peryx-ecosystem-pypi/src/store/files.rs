@@ -39,8 +39,8 @@ pub struct FileSource {
 /// Record where a blob digest can be fetched from: its upstream URL and the cached index it came from.
 ///
 /// The index name lets a fetch on a cache miss reuse that index's authentication. Recording the locator
-/// also registers the artifact's neutral placement — a proxied artifact whose bytes are not yet local —
-/// so a later package read resolves availability from the index without probing the content store. A
+/// also registers the artifact's neutral placement. For a proxied artifact whose bytes are not yet local,
+/// a later package read resolves availability from the index without probing the content store. A
 /// re-discovery keeps a cached artifact's local state.
 ///
 /// # Errors

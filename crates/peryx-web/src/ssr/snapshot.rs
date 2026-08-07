@@ -96,10 +96,17 @@ fn indexes(app: &AppState, administrator: bool, recent_limit: Option<usize>) -> 
                 .and_then(|summaries| summaries.get(&index.name))
                 .cloned()
                 .unwrap_or_default();
-            let endpoint = app.driver_for_name(index.ecosystem).map_or_else(
+            let driver = app.driver_for_name(index.ecosystem);
+            let endpoint = driver.as_ref().map_or_else(
                 || format!("/{}/", index.route),
                 |driver| driver.client_endpoint(&index.route),
             );
+            let upload = driver.and_then(|driver| {
+                driver
+                    .capabilities()
+                    .upload_ui
+                    .and_then(|driver| driver.upload_ui(&index.route, index.uploads))
+            });
             UiIndex {
                 name: index.name,
                 route: index.route,
@@ -108,6 +115,7 @@ fn indexes(app: &AppState, administrator: bool, recent_limit: Option<usize>) -> 
                 kind: index.kind.to_owned(),
                 layers: index.layers,
                 uploads: index.uploads,
+                upload,
                 upload_to: index.upload_to,
                 upstream: administrator
                     .then(|| {

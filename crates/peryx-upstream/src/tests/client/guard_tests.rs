@@ -63,7 +63,7 @@ fn test_check_url_allows_global_literal() {
 #[test]
 fn test_check_url_allows_domain_deferring_to_resolver() {
     guard("https://pub.example.com/", &[])
-        .check_url(&Url::parse("https://files.pythonhosted.org/pkg.whl").unwrap())
+        .check_url(&Url::parse("https://files.pythonhosted.org/pkg.bin").unwrap())
         .unwrap();
 }
 
@@ -83,13 +83,13 @@ fn test_check_url_blocks_non_global_literal(#[case] url: &str) {
 #[test]
 fn test_check_url_trusts_configured_base_host() {
     guard("http://10.0.0.1/simple/", &[])
-        .check_url(&Url::parse("http://10.0.0.1:8080/files/pkg.whl").unwrap())
+        .check_url(&Url::parse("http://10.0.0.1:8080/files/pkg.bin").unwrap())
         .unwrap();
 }
 
 #[rstest]
-#[case("http://10.0.0.5/pkg.whl")]
-#[case("http://[fd00::1]/pkg.whl")]
+#[case("http://10.0.0.5/pkg.bin")]
+#[case("http://[fd00::1]/pkg.bin")]
 fn test_check_url_trusts_allowlisted_private_host(#[case] url: &str) {
     guard("https://pub.example.com/", &["", "10.0.0.5", "[fd00::1]", "FILES.CORP"])
         .check_url(&Url::parse(url).unwrap())

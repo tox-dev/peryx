@@ -218,9 +218,17 @@ fn writer_node_with_remotes(
     remotes: Vec<Arc<dyn peryx_ha_distributed::RemoteFrontierSource + Send + Sync>>,
 ) -> (Arc<AppState>, Router) {
     let mut state = build_state(config).unwrap();
+    let acknowledger = peryx_ha_distributed::DistributedWriteAcknowledger::new(
+        state.availability_topology().clone(),
+        config.write_ack.policy,
+        Vec::new(),
+        remotes,
+        config.write_ack.deadline,
+        state.dc_durability().unwrap().clone(),
+    );
     Arc::get_mut(&mut state)
         .expect("the freshly built state is uniquely owned before the router clones it")
-        .set_remote_frontier_sources(remotes);
+        .set_write_acknowledger(Arc::new(acknowledger));
     let router = router_for(state.clone());
     (state, router)
 }

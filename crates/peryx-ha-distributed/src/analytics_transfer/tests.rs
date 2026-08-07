@@ -39,7 +39,7 @@ fn batch(day: i64, downloads: u64) -> AnalyticsBatch {
         rows: vec![AggregateRow {
             key: AggregateKey {
                 day,
-                repository: "pypi".to_owned(),
+                repository: "alpha".to_owned(),
                 project: "flask".to_owned(),
                 version: "1.0".to_owned(),
                 source: String::new(),

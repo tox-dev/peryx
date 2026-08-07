@@ -5,101 +5,7 @@
 //! registers it on the [`ServingState`](crate::state::ServingState); a process running no group registers
 //! nothing and the mutation path skips the claim.
 
-/// What a first-publish home claim resolved to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HomeClaim {
-    /// This publish assigned the authority's home to the local datacenter.
-    AssignedHere,
-    /// The authority already had a home before this publish; the first winner keeps it.
-    AlreadyHomed,
-}
-
-/// The committed result of moving an authority's home to a new datacenter.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransferOutcome {
-    /// The datacenter that held the home before the transfer.
-    pub from: String,
-    /// The datacenter the home moved to.
-    pub to: String,
-    /// The epoch the transfer minted, which fences the old home's stale-epoch writes.
-    pub epoch: u64,
-}
-
-/// A snapshot of the ownership consensus group this node observes, for the availability status resource.
-///
-/// It names voters by their consensus id and datacenter, never their peer address, so the status surface
-/// exposes membership without leaking the internal transport topology.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ClusterStatus {
-    /// The datacenter of the current leader, or `None` when this node knows of none.
-    pub leader: Option<String>,
-    /// The current leadership term, the group's monotonic authority epoch.
-    pub term: u64,
-    /// The datacenters this node's committed membership holds as voters.
-    pub voters: Vec<String>,
-}
-
-/// Why a home claim could not commit.
-#[derive(Debug, thiserror::Error)]
-pub enum OwnershipError {
-    /// This node is not the group leader, so it cannot commit the claim itself. Carries the leader's
-    /// address when the group knows one, for a caller that forwards the claim.
-    #[error("not the ownership leader{}", .leader.as_deref().map(|a| format!("; leader at {a}")).unwrap_or_default())]
-    NotLeader {
-        /// The current leader's advertised address, when known.
-        leader: Option<String>,
-    },
-    /// The group rejected or could not commit the claim for another reason.
-    #[error("ownership claim did not commit: {0}")]
-    Unavailable(String),
-}
-
-/// The ownership consensus group a writer submits home assignments to.
-#[async_trait::async_trait]
-pub trait OwnershipAuthority: Send + Sync {
-    /// Whether `authority` already has a committed home this node has applied.
-    ///
-    /// A cheap local read that lets a caller skip a redundant claim for an already-homed authority. It is
-    /// current on the leader and may lag on a follower, so a stale `false` costs one rejected claim, never
-    /// a wrong home.
-    async fn has_home(&self, authority: &str) -> bool;
-
-    /// Claim `authority`'s home for the local datacenter on its first publish, reporting whether this
-    /// call won it. Idempotent: a repeat publish, or a race another datacenter already won, reports
-    /// [`HomeClaim::AlreadyHomed`].
-    ///
-    /// # Errors
-    /// Returns [`OwnershipError`] when the claim cannot commit, for example when this node is not the
-    /// leader and cannot reach it.
-    async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError>;
-
-    /// A snapshot of the group this node observes — leader, term, and voter membership — for the
-    /// availability status resource. Read from local metrics, so it is current on the leader and may lag
-    /// on a follower.
-    fn cluster_status(&self) -> ClusterStatus;
-
-    /// The committed authority epoch for `authority`, or `0` when no committed command has homed it.
-    ///
-    /// The fence value a writer stamps onto the work it produces: a background job reads it at lease time
-    /// so a former holder's stale-epoch write is fenced out once the authority advances. A local read,
-    /// current on the leader and possibly behind on a follower.
-    async fn committed_epoch(&self, authority: &str) -> u64;
-
-    /// Whether work carrying `presented` under `authority` may still proceed against the committed epoch.
-    ///
-    /// Admits only the current committed epoch, so a stale epoch below it — a former holder's, after the
-    /// authority advanced — is fenced. An unassigned authority (epoch `0`) admits nothing.
-    async fn admit_epoch(&self, authority: &str, presented: u64) -> bool;
-
-    /// Move `authority`'s home to `new_home` on the control quorum, minting the next epoch that fences the
-    /// old home's stale-epoch writes. Reports the committed [`TransferOutcome`], or `None` when the
-    /// authority was unassigned or already homed there, so nothing moved.
-    ///
-    /// # Errors
-    /// [`OwnershipError::NotLeader`] when this node cannot commit — a control minority cannot transfer
-    /// authority — or [`OwnershipError::Unavailable`] when the commit otherwise fails.
-    async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError>;
-}
+pub use peryx_ha::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
 
 /// Claim `authority`'s home on its first publish, best effort, when this process runs a group.
 ///
@@ -150,7 +56,7 @@ pub(super) async fn admit_authority_epoch(
 ///
 /// A process with no group cannot commit a transfer, so it returns `Ok(None)` (nothing moved); a running
 /// group commits the fenced move and returns the [`TransferOutcome`], or the [`OwnershipError`] the
-/// commit failed with — a control minority surfaces as [`OwnershipError::NotLeader`].
+/// commit failed with - a control minority surfaces as [`OwnershipError::NotLeader`].
 ///
 /// # Errors
 /// The [`OwnershipError`] a running group's commit failed with.

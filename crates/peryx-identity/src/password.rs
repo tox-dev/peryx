@@ -6,8 +6,8 @@
 //! caller can re-enroll it under the same identity. The verifier is a secret: its [`Debug`] is redacted
 //! and it never surfaces in a serialized account view.
 //!
-//! Defaults follow the [OWASP Password Storage guidance] for Argon2id — 19 MiB of memory, two
-//! iterations, one lane — over the algorithm [RFC 9106] standardizes. A deployment that wants the
+//! Defaults follow the [OWASP Password Storage guidance] for Argon2id - 19 MiB of memory, two
+//! iterations, one lane - over the algorithm [RFC 9106] standardizes. A deployment that wants the
 //! RFC's higher-memory profile raises them through [`PasswordPolicy::new`].
 //!
 //! [OWASP Password Storage guidance]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html

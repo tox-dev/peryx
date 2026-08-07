@@ -66,7 +66,7 @@ fn test_reconcile_replays_a_standing_operation_under_the_new_epoch() {
             epoch: AuthorityEpoch(7),
             serial: 42,
             // The child keeps the parent's trace-id, so the replay stays on the trace the original
-            // authored — its audit identity — while advancing the span.
+            // authored - its audit identity - while advancing the span.
             traceparent: Some(CHILD.to_owned()),
         })
     );

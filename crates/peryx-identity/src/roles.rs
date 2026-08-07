@@ -8,8 +8,8 @@
 //!
 //! The model is deny-by-default after [Kubernetes authorization]: a decision starts denied and a grant
 //! must affirmatively cover both the [`Scope`] and the [`Resource`] to allow it. Roles are fixed after
-//! [NIST RBAC] — an operator grants a user one of four built-in roles rather than assembling scopes by
-//! hand — so the scope set of a role is a constant this module owns, not persisted state that could
+//! [NIST RBAC] - an operator grants a user one of four built-in roles rather than assembling scopes by
+//! hand - so the scope set of a role is a constant this module owns, not persisted state that could
 //! drift. Only the binding of a user to a role over a [`GrantScope`] is persisted.
 //!
 //! [Kubernetes authorization]: https://kubernetes.io/docs/reference/access-authn-authz/authorization/
@@ -71,7 +71,7 @@ impl RoleGrant {
     }
 
     /// Whether this binding confers any authority. A server reach always does; a repository reach does
-    /// only when the role carries a repository scope — so `Operator` over a repository, which reaches no
+    /// only when the role carries a repository scope - so `Operator` over a repository, which reaches no
     /// operator data, is inert and rejected before it is ever stored.
     #[must_use]
     pub fn is_effective(&self) -> bool {

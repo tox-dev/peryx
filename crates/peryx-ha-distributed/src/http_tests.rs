@@ -613,7 +613,7 @@ async fn test_http_primary_fetches_changes() {
         .meta
         .commit_driver_txn(|txn| {
             txn.remove("delete")?;
-            txn.put("pypi\0upload", b"record")?;
+            txn.put("alpha\0upload", b"record")?;
             txn.reference_blob(digest.as_str(), 8);
             Ok::<_, peryx_storage::meta::MetaError>(((), vec![b"event".to_vec()]))
         })
@@ -635,12 +635,12 @@ async fn test_http_primary_fetches_changes() {
     assert_eq!(
         page.changes[0].metadata,
         vec![
+            crate::MetadataMutation::Put {
+                key: "alpha\0upload".to_owned(),
+                value: b"record".to_vec(),
+            },
             crate::MetadataMutation::Delete {
                 key: "delete".to_owned(),
-            },
-            crate::MetadataMutation::Put {
-                key: "pypi\0upload".to_owned(),
-                value: b"record".to_vec(),
             },
         ]
     );

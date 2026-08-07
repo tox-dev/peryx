@@ -3,7 +3,7 @@
 //! A [`mockall`] mock [`redb::StorageBackend`] wraps an [`InMemoryBackend`] and consults a [`Fault`]
 //! countdown before each operation, so a chosen backend call fails deterministically. Reopening a
 //! store over the same backend with a zeroed page cache forces every read through the mock, so the
-//! read-path error arms fire too, not only writes.
+//! read-path error arms fire alongside write faults.
 //!
 //! Each store's fault tests open only the tables that store touches by passing an initializer to
 //! [`create`]; the counterpart [`reopen`] wraps the populated backend without reinitializing it.

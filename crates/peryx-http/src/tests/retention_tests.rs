@@ -9,7 +9,7 @@ use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::retention::encode_cursor;
-use peryx_driver::serving::EcosystemDriver;
+use peryx_driver::serving::{DriverCapabilities, EcosystemDriver, RetentionDriver};
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::users::UserService;
 use peryx_identity::{GrantScope, IndexAcl, PasswordPolicy, Role};
@@ -58,6 +58,15 @@ impl EcosystemDriver for StubDriver {
         serde_json::Value::Null
     }
 
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            retention: (!self.unsupported).then_some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+}
+
+impl RetentionDriver for StubDriver {
     fn plan_retention(
         &self,
         _meta: &MetaStore,
@@ -65,20 +74,17 @@ impl EcosystemDriver for StubDriver {
         policy: &peryx_policy::RetentionPolicy,
         _now: Option<i64>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-    ) -> Result<Option<RetentionSummary>, String> {
-        if self.unsupported {
-            return Ok(None);
-        }
+    ) -> Result<RetentionSummary, String> {
         for decision in &self.decisions {
             emit(decision.clone())?;
         }
         if let Some(reason) = &self.fail {
             return Err(reason.clone());
         }
-        Ok(Some(RetentionSummary {
+        Ok(RetentionSummary {
             policy_version: policy.version(),
             frontier: RetentionFrontier::default(),
-        }))
+        })
     }
 }
 
@@ -156,7 +162,7 @@ impl Fixture {
             60,
             vec![
                 hosted_index("hosted", Ecosystem::new("example")),
-                hosted_index("ocirepo", Ecosystem::new("other")),
+                hosted_index("beta-repo", Ecosystem::new("other")),
             ],
         );
         state.users = UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), 2);
@@ -342,7 +348,7 @@ async fn test_plan_rejects_a_repository_whose_ecosystem_has_no_driver() {
     })
     .await;
 
-    let (status, _) = fixture.plan(plan_body("ocirepo")).await;
+    let (status, _) = fixture.plan(plan_body("beta-repo")).await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

@@ -1,14 +1,12 @@
-//! The metadata workload: resolve a batch of PEP 658 siblings, cold then hot, over `rounds` restarts.
-
 use std::time::Instant;
 
 use anyhow::{Context as _, bail};
 
 use super::super::packages::METADATA_PROJECT;
 use super::{Rounds, median_or_dash_rate};
-use crate::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
-use crate::servers::Server;
-use crate::usage::{Cost, Usage};
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::servers::Server;
+use peryx_bench_core::usage::{Cost, Usage};
 
 /// The metadata workload: resolve a batch of PEP 658 siblings, cold then hot, over `rounds` restarts.
 ///

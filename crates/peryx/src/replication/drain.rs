@@ -6,8 +6,8 @@
 //! [`plan_drain`](peryx_ha_distributed::plan_drain), and finalizes each replayable intent into local
 //! metadata by advancing it to [`Admitted`](peryx_storage::meta::IntentPhase::Admitted).
 //!
-//! The pass is bounded, ordered, and resumable. Each finalize is idempotent — advancing an intent only
-//! moves it forward — so a re-run after an interruption resumes at the first intent still pending rather
+//! The pass is bounded, ordered, and resumable. Each finalize is idempotent - advancing an intent only
+//! moves it forward - so a re-run after an interruption resumes at the first intent still pending rather
 //! than re-finalizing settled ones. The job names its authority as its repository and persists a durable
 //! run, so the scheduler leases the authority's epoch as the run's fence: a drain whose authority
 //! transfers again mid-run wrote under a superseded epoch and its success is fenced out.

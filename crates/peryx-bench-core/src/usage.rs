@@ -26,6 +26,7 @@ pub struct Cost {
 
 impl Usage {
     /// Start sampling `pid`'s tree; `None` (the direct baseline) records nothing.
+    #[must_use]
     pub fn watch(pid: Option<u32>) -> Self {
         let peak_rss = Arc::new(AtomicU64::new(0));
         let cpu_millis = Arc::new(AtomicU64::new(0));
@@ -45,6 +46,7 @@ impl Usage {
     }
 
     /// Stop sampling and report the window's cost.
+    #[must_use]
     pub fn finish(mut self) -> Option<Cost> {
         let handle = self.handle.take()?;
         self.stop.store(1, Ordering::Relaxed);

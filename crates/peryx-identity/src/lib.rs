@@ -7,9 +7,9 @@
 //! instead of once per wire protocol.
 //!
 //! The model is neutral by construction. It knows a principal, an index ACL, a project name and an
-//! action, and nothing about how a client presented itself: an OCI scope string, a `PyPI` Basic header
+//! action, and nothing about how a client presented itself. Protocol credentials
 //! and a bearer token all reduce to those four before they reach [`authorize`]. A grant carries project
-//! globs (`team/*`), which match `PyPI` project names and OCI repository names alike.
+//! globs (`team/*`), which match ecosystem artifact names.
 //!
 //! [`Signer`] mints and verifies the audience-bound JWTs a token realm hands out. It lives here because
 //! the signing key is identity state, not protocol state: an ecosystem's token endpoint calls `mint`
@@ -17,7 +17,7 @@
 //!
 //! [`authorize_publish`] is the other way grants are approved: a CI job presents an OIDC identity token
 //! instead of a secret, and a configured [`TrustedPublisher`] turns its verified claims into the same
-//! grants `mint` signs — trusted publishing without a long-lived credential to rotate.
+//! grants `mint` signs - trusted publishing without a long-lived credential to rotate.
 //!
 //! [`grants_permit`] is the second access model, for persistent users rather than per-index tokens: a
 //! [`UserId`] holds one of the fixed [`Role`]s over a [`GrantScope`], and a decision asks whether that

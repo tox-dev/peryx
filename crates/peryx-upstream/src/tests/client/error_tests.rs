@@ -35,7 +35,7 @@ async fn test_fetch_bytes_reports_decode_errors() {
     let server = MockServer::start().await;
     mount_get(
         &server,
-        "/files/pkg.whl",
+        "/files/pkg.bin",
         ResponseTemplate::new(200)
             .insert_header("content-encoding", "gzip")
             .set_body_bytes(b"not gzip".to_vec()),
@@ -43,7 +43,7 @@ async fn test_fetch_bytes_reports_decode_errors() {
     .await;
     let client = simple_client(&server);
     let err = client
-        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .fetch_bytes(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap_err();
 
@@ -52,9 +52,9 @@ async fn test_fetch_bytes_reports_decode_errors() {
 
 #[tokio::test]
 async fn test_fetch_bytes_reports_request_failures() {
-    let client = UpstreamClient::new("https://pypi.org/simple/").unwrap();
+    let client = UpstreamClient::new("https://upstream.example/artifacts/").unwrap();
     let err = client
-        .fetch_bytes("http://peryx.nonexistent.invalid/pkg.whl")
+        .fetch_bytes("http://peryx.nonexistent.invalid/pkg.bin")
         .await
         .unwrap_err();
 
@@ -65,10 +65,10 @@ async fn test_fetch_bytes_reports_request_failures() {
 #[tokio::test]
 async fn test_fetch_bytes_rejects_error_status() {
     let server = MockServer::start().await;
-    mount_get(&server, "/files/pkg.whl", ResponseTemplate::new(500)).await;
+    mount_get(&server, "/files/pkg.bin", ResponseTemplate::new(500)).await;
     let client = simple_client(&server);
     let err = client
-        .fetch_bytes(&format!("{}/files/pkg.whl", server.uri()))
+        .fetch_bytes(&format!("{}/files/pkg.bin", server.uri()))
         .await
         .unwrap_err();
 
@@ -78,11 +78,11 @@ async fn test_fetch_bytes_rejects_error_status() {
 #[tokio::test]
 async fn test_fetch_bytes_checks_status() {
     let server = MockServer::start().await;
-    mount_get(&server, "/files/missing.whl", ResponseTemplate::new(404)).await;
+    mount_get(&server, "/files/missing.bin", ResponseTemplate::new(404)).await;
     let client = simple_client(&server);
 
     let err = client
-        .fetch_bytes(&format!("{}/files/missing.whl", server.uri()))
+        .fetch_bytes(&format!("{}/files/missing.bin", server.uri()))
         .await
         .unwrap_err();
 
@@ -92,11 +92,11 @@ async fn test_fetch_bytes_checks_status() {
 #[tokio::test]
 async fn test_stream_bytes_checks_status() {
     let server = MockServer::start().await;
-    mount_get(&server, "/files/missing.whl", ResponseTemplate::new(404)).await;
+    mount_get(&server, "/files/missing.bin", ResponseTemplate::new(404)).await;
     let client = simple_client(&server);
 
     let err = client
-        .stream_bytes(&format!("{}/files/missing.whl", server.uri()))
+        .stream_bytes(&format!("{}/files/missing.bin", server.uri()))
         .await
         .err()
         .unwrap();
@@ -106,10 +106,10 @@ async fn test_stream_bytes_checks_status() {
 
 #[tokio::test]
 async fn test_fetch_range_rejects_reversed_range() {
-    let client = UpstreamClient::new("https://pypi.org/simple/").unwrap();
+    let client = UpstreamClient::new("https://upstream.example/artifacts/").unwrap();
 
     let err = client
-        .fetch_range("https://example.invalid/pkg.whl", 3, 1)
+        .fetch_range("https://example.invalid/pkg.bin", 3, 1)
         .await
         .unwrap_err();
 
@@ -121,10 +121,10 @@ async fn test_fetch_range_rejects_reversed_range() {
 
 #[tokio::test]
 async fn test_fetch_range_rejects_overflowing_range() {
-    let client = UpstreamClient::new("https://pypi.org/simple/").unwrap();
+    let client = UpstreamClient::new("https://upstream.example/artifacts/").unwrap();
 
     let err = client
-        .fetch_range("https://example.invalid/pkg.whl", 0, u64::MAX)
+        .fetch_range("https://example.invalid/pkg.bin", 0, u64::MAX)
         .await
         .unwrap_err();
 
@@ -138,14 +138,14 @@ async fn test_fetch_range_rejects_overflowing_range() {
 async fn test_fetch_range_rejects_non_partial_success() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/files/pkg.whl"))
+        .and(path("/files/pkg.bin"))
         .respond_with(ResponseTemplate::new(204))
         .mount(&server)
         .await;
     let client = simple_client(&server);
 
     let err = client
-        .fetch_range(&format!("{}/files/pkg.whl", server.uri()), 1, 3)
+        .fetch_range(&format!("{}/files/pkg.bin", server.uri()), 1, 3)
         .await
         .unwrap_err();
 

@@ -12,17 +12,17 @@ use peryx_storage::meta::MetaStore;
 
 use crate::context::{IndexerCtx, SearchCtx};
 
-pub static OCI_WORDS: Lexicon = Lexicon {
-    server: "registry",
-    collection: "repository",
-    collections: "repositories",
-    search_noun: "image",
-    release: "tag",
-    releases: "tags",
-    artifact: "blob",
-    artifacts: "blobs",
-    get: "pull",
-    put: "push",
+pub static ALT_WORDS: Lexicon = Lexicon {
+    server: "service",
+    collection: "component",
+    collections: "components",
+    search_noun: "component",
+    release: "revision",
+    releases: "revisions",
+    artifact: "asset",
+    artifacts: "assets",
+    get: "fetch",
+    put: "publish",
 };
 
 /// The stores a search context borrows, kept alive for the length of a test.

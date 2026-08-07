@@ -228,7 +228,7 @@ fn test_list_keeps_nested_repository_reaches_separate() {
         .create_scoped_token(new_token("root", repo("root"), &TokenSecret::generate(), None))
         .unwrap();
     store
-        .create_scoped_token(new_token("nested", repo("root/pypi"), &TokenSecret::generate(), None))
+        .create_scoped_token(new_token("nested", repo("root/alpha"), &TokenSecret::generate(), None))
         .unwrap();
 
     let listed = store

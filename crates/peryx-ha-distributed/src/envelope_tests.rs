@@ -12,7 +12,7 @@ fn change() -> Change {
         serial: 7,
         event: b"upload-event-payload".to_vec(),
         metadata: vec![MetadataMutation::Put {
-            key: "pypi/simple/example".to_owned(),
+            key: "alpha/simple/example".to_owned(),
             value: b"secret-digest-map".to_vec(),
         }],
         blobs: vec![BlobReference {

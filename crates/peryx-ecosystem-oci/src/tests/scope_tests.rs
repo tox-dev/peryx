@@ -1,5 +1,5 @@
 //! By-digest manifest reads authorize against the requesting repository, not the global,
-//! content-addressed manifest store every index shares for dedup — the read half of the scoping #103
+//! content-addressed manifest store every index shares for dedup - the read half of the scoping #103
 //! gave DELETE. A digest cached under one repository is not readable under another it does not belong to.
 
 use axum::http::{Method, StatusCode};
@@ -45,8 +45,7 @@ async fn test_manifest_by_digest_is_scoped_to_the_pushing_repository() {
     assert_eq!(got, &body[..]);
 
     // Another index, and another repository on the same index, do not: the bytes are one dedup'd copy,
-    // yet neither repository holds it, so the read is manifest-unknown rather than a cross-repo leak —
-    // and HEAD leaks nothing a GET would not.
+    // yet neither repository holds it, so the read is manifest-unknown rather than a cross-repo leak -     // and HEAD leaks nothing a GET would not.
     for name in ["vault/app", "store/elsewhere"] {
         let (get, _, denied) = send(&app, Method::GET, &format!("/v2/{name}/manifests/{digest}")).await;
         assert_eq!(get, StatusCode::NOT_FOUND, "{name}");

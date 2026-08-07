@@ -409,9 +409,8 @@ async fn completeness_response(state: &AppState, headers: &HeaderMap, uri: &Uri)
     let Some(reader) = state.analytics_completeness() else {
         return Rejection::Unavailable.response();
     };
-    let report = match reader.assess(&state.meta, &expected_producers(state), &query) {
-        Ok(report) => report,
-        Err(_) => return Rejection::Unavailable.response(),
+    let Ok(report) = reader.assess(&state.meta, &expected_producers(state), &query) else {
+        return Rejection::Unavailable.response();
     };
     completeness_page(&report, &interval, request.offset, request.limit, scope.operator)
 }

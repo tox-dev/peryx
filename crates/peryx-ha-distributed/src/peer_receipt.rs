@@ -2,9 +2,9 @@
 //!
 //! A filesystem backend proves datacenter durability only when a quorum of independent nodes each hold
 //! the bytes ([`assess_byte_durability`](crate::assess_byte_durability)). The ingress node holds its own
-//! receipt the moment its write commits; this is the transport that gathers the rest — it asks each
+//! receipt the moment its write commits; this is the transport that gathers the rest - it asks each
 //! same-datacenter peer whether it durably holds the digest and folds every answer into the write's
-//! [`FilesystemAck`]. A peer that does not yet hold the bytes, or that a transport fault hides, simply
+//! [`FilesystemAck`]. A peer that does not yet hold the bytes, or that a transport fault hides,
 //! does not contribute: it never fails the write, because a missing receipt is absence of proof, not
 //! proof of absence.
 //!
@@ -47,7 +47,7 @@ impl From<PeerReceipt> for ReceiptAck {
 ///
 /// Returns the deadline the shared decision reads: [`Live`](Deadline::Live) once quorum is reached within
 /// the budget, [`Expired`](Deadline::Expired) once the budget is spent short of it. A short result is
-/// never a definite failure — a durable copy may land after the client stops waiting — so the caller maps
+/// never a definite failure - a durable copy may land after the client stops waiting - so the caller maps
 /// [`Expired`](Deadline::Expired) to a retry-safe [`Unknown`](crate::DcAck::Unknown), not an error.
 ///
 /// A quorum already met from the local receipt returns immediately without querying a peer. Each peer is

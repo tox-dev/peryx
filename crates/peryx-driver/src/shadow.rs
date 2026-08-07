@@ -85,8 +85,8 @@ pub struct ShadowPage {
 impl AppState {
     /// Replay one virtual repository's resolution of a project and page its shadowed candidates.
     ///
-    /// A repository the caller already authorized that resolves nothing — a non-virtual index, an
-    /// unknown project, or an ecosystem without a driver — yields an empty page rather than an error.
+    /// A repository the caller already authorized that resolves nothing - a non-virtual index, an
+    /// unknown project, or an ecosystem without a driver - yields an empty page rather than an error.
     ///
     /// # Errors
     /// Returns a validation error for a bad limit, cursor, or project, or a store error when the
@@ -94,7 +94,9 @@ impl AppState {
     pub fn query_shadowed(&self, query: &ShadowQuery) -> Result<ShadowPage, ShadowQueryError> {
         query.validate()?;
         let candidates = if let Some(position) = self.indexes.iter().position(|index| index.name == query.repository)
-            && let Some(driver) = self.driver_for(self.index_at(position).ecosystem)
+            && let Some(driver) = self
+                .driver_for(self.index_at(position).ecosystem)
+                .and_then(|driver| driver.capabilities().shadow)
         {
             driver
                 .shadowed_candidates(self.serving.as_ref(), position, &query.project)
@@ -130,7 +132,7 @@ mod tests {
 
     fn candidate(filename: &str, member: &str, selected: bool) -> ShadowCandidate {
         ShadowCandidate {
-            repository: "root/pypi".to_owned(),
+            repository: "root/alpha".to_owned(),
             project: "flask".to_owned(),
             member: member.to_owned(),
             source: if selected {
@@ -148,7 +150,7 @@ mod tests {
     fn query(limit: usize) -> ShadowQuery {
         ShadowQuery {
             limit,
-            ..ShadowQuery::new("root/pypi".to_owned(), "flask".to_owned())
+            ..ShadowQuery::new("root/alpha".to_owned(), "flask".to_owned())
         }
     }
 
@@ -205,9 +207,9 @@ mod tests {
     #[test]
     fn test_paginate_orders_by_filename_then_selection() {
         let candidates = vec![
-            candidate("flask-1.0.whl", "pypi", false),
-            candidate("flask-1.0.whl", "hosted", true),
-            candidate("flask-2.0.whl", "hosted", true),
+            candidate("flask-1.0.bin", "alpha", false),
+            candidate("flask-1.0.bin", "hosted", true),
+            candidate("flask-2.0.bin", "hosted", true),
         ];
 
         let page = paginate(candidates, &query(25));
@@ -221,9 +223,9 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("flask-1.0.whl", "hosted"),
-                ("flask-1.0.whl", "pypi"),
-                ("flask-2.0.whl", "hosted")
+                ("flask-1.0.bin", "hosted"),
+                ("flask-1.0.bin", "alpha"),
+                ("flask-2.0.bin", "hosted")
             ],
             "the selected candidate leads its filename group"
         );
@@ -232,9 +234,9 @@ mod tests {
     #[test]
     fn test_paginate_cursor_resumes_after_the_last_row_and_stays_stable() {
         let candidates = vec![
-            candidate("a.whl", "hosted", true),
-            candidate("b.whl", "hosted", true),
-            candidate("c.whl", "hosted", true),
+            candidate("a.bin", "hosted", true),
+            candidate("b.bin", "hosted", true),
+            candidate("c.bin", "hosted", true),
         ];
 
         let first = paginate(candidates.clone(), &query(2));
@@ -244,7 +246,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.filename.clone())
                 .collect::<Vec<_>>(),
-            vec!["a.whl", "b.whl"]
+            vec!["a.bin", "b.bin"]
         );
         let cursor = first.next_cursor.expect("a third row remains");
 
@@ -261,7 +263,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.filename.clone())
                 .collect::<Vec<_>>(),
-            vec!["c.whl"],
+            vec!["c.bin"],
             "the resumed page holds without skipping or duplicating a candidate"
         );
         assert_eq!(second.next_cursor, None);

@@ -534,7 +534,7 @@ fn peer_blob_delegates(
 ///
 /// A blob the policy places only on one of these reachable peer datacenters is deferred to cross-DC
 /// read-through instead of whole-pulled; the delegate keys are exactly those peers. A replica that has not
-/// resolved its own datacenter — no roster, or a node identity absent from it — resolves no peers and
+/// resolved its own datacenter - no roster, or a node identity absent from it - resolves no peers and
 /// whole-pulls every blob, the behavior before descriptors named where each blob lives.
 ///
 /// The peer addresses were validated building the metadata peer set just before this, so rebuilding a
@@ -616,8 +616,8 @@ fn log_replica_page(outcome: SyncOutcome) {
 /// Each ecosystem driver rebuilds its own affected views. When they all succeed the search view frontier
 /// advances to `outcome.serial`, so a read the gate held becomes visible only after the view it depends
 /// on caught up. When a driver reports a [`ViewBlock`](peryx_driver::state::ViewBlock) the frontier stays
-/// where it was — the read stays held — and the lazy full refresh a later search runs recovers it. The
-/// mutation-epoch bump keeps that recovery path armed for every ecosystem, the OCI views included. A page
+/// where it was - the read stays held - and the lazy full refresh a later search runs recovers it. The
+/// mutation-epoch bump keeps that recovery path armed for every ecosystem view. A page
 /// with no changes does nothing. This is synchronous and independent of the async sync loop, so a direct
 /// test covers it deterministically rather than riding on async scheduling.
 pub(crate) fn apply_replicated_page(app: &AppState, outcome: SyncOutcome, changed_keys: &[String]) {
@@ -783,8 +783,8 @@ impl ReplicaLoop {
 /// The join key for the single configured upstream, distinct from any roster member's node name.
 const UPSTREAM_SOURCE: &str = "upstream";
 
-/// Build the multi-peer metadata puller: every roster member that serves the change-feed — the writer
-/// and every other follower replica — minus this node, plus the configured `upstream`, each resuming at
+/// Build the multi-peer metadata puller: every roster member that serves the change-feed - the writer
+/// and every other follower replica - minus this node, plus the configured `upstream`, each resuming at
 /// the replica's durably applied `resume` serial. A deployment with no roster still pulls from its lone
 /// writer, so the set is never empty.
 ///

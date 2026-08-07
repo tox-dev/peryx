@@ -2,7 +2,7 @@
 //!
 //! When a public download misses the local content store but a peer data center holds a verified
 //! placement of the same digest, this fetches the bytes from that peer, on demand, and stages them
-//! locally so the request — and every later one — serves from disk. It is the serving counterpart to the
+//! locally so the request - and every later one - serves from disk. It is the serving counterpart to the
 //! background cross-DC copier: the copier fills the local store ahead of demand from the backlog, this
 //! fills it in response to a miss.
 //!
@@ -17,7 +17,7 @@
 //!
 //! # Trusted size, not a peer's word
 //! The total length a fetch reassembles against is read from the local verified placement record's own
-//! `size`, replicated metadata this node already trusts — never a peer's advertisement — so a lying peer
+//! `size`, replicated metadata this node already trusts - never a peer's advertisement - so a lying peer
 //! cannot inflate the reassembly buffer.
 //!
 //! # Verify before store
@@ -32,7 +32,7 @@
 //!
 //! # Incremental chunk-verified staging
 //! When the [`blob_chunk_digest`](peryx_storage::meta::MetaStore::blob_chunk_digest) catalog holds the
-//! digest's [`ChunkedDigest`] — recorded by a node that whole-verified the same content — a read-through
+//! digest's [`ChunkedDigest`] - recorded by a node that whole-verified the same content - a read-through
 //! streams the blob chunk by chunk instead of reassembling the whole in memory: it draws each chunk range,
 //! verifies it against its own recorded digest through [`pull_chunk_verified`], and stages it to disk
 //! before drawing the next. One chunk is held in memory at a time and each is written before the next is
@@ -69,8 +69,8 @@ pub type DcTransport = Arc<dyn BlobTransport + Send + Sync>;
 
 /// The tunable bounds a read-through runs under.
 ///
-/// `concurrency` and `per_fetch_bytes` shape the per-data-center transports the caller builds — the
-/// in-flight-stream ceiling and the byte cap each fetch streams under — while `chunk_bytes`,
+/// `concurrency` and `per_fetch_bytes` shape the per-data-center transports the caller builds - the
+/// in-flight-stream ceiling and the byte cap each fetch streams under - while `chunk_bytes`,
 /// `max_fanout`, `circuit`, and `policy` shape the fetch itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadThroughLimits {
@@ -116,7 +116,7 @@ enum StreamOutcome {
     /// A chunk could not be drawn from any open source; the pass carries the per-source failures so the
     /// caller can trip circuits and decide whether a retry could recover.
     ChunkUnavailable(ChunkUnavailable),
-    /// Every chunk verified against the catalog but the committed whole failed its digest — a colluding
+    /// Every chunk verified against the catalog but the committed whole failed its digest - a colluding
     /// catalog and source the safety net rejected. Nothing was left in the store.
     WholeMismatch,
 }
@@ -179,7 +179,7 @@ impl RemotePlacementReader {
     ///
     /// # Errors
     /// Returns [`ReadThroughError`] when the placement ledger cannot be read or the verified bytes cannot
-    /// be staged locally — a local fault the caller resolves through its upstream path, not a remote one.
+    /// be staged locally - a local fault the caller resolves through its upstream path, not a remote one.
     ///
     /// # Panics
     /// Never in practice: a blob [`Digest`] is always a 64-character lowercase-hex sha256, exactly what
@@ -211,7 +211,7 @@ impl RemotePlacementReader {
     /// [`plan_blob_fetch`] gives the canonical order (highest generation first, then a stable tie-break);
     /// this keeps the sources whose data center has a reachable transport, drops a data center already
     /// seen so one peer is tried once, and caps the list at the configured fan-out. The total length is
-    /// the selected source's own verified `size` — replicated metadata this node trusts. `None` when no
+    /// the selected source's own verified `size` - replicated metadata this node trusts. `None` when no
     /// verified remote placement has a reachable transport.
     fn select(&self, verified_remote: &[BlobPlacementRecord]) -> Option<(Vec<Source>, usize)> {
         let sizes: HashMap<&str, u64> = verified_remote
@@ -307,8 +307,8 @@ impl RemotePlacementReader {
     /// Each pass draws every chunk of `chunked` in order, verifying it against its own recorded digest
     /// before it is staged, so a bad chunk falls through to another source without the whole blob ever
     /// entering memory. A pass that exhausts a chunk over reachable transports backs off and retries from
-    /// a fresh stage; one that exhausts on non-transport failures — or whose whole-blob commit fails its
-    /// safety-net verify against a colluding catalog and source — is [`Unavailable`](ReadThroughOutcome).
+    /// a fresh stage; one that exhausts on non-transport failures - or whose whole-blob commit fails its
+    /// safety-net verify against a colluding catalog and source - is [`Unavailable`](ReadThroughOutcome).
     async fn fetch_streaming(
         &self,
         blobs: &BlobStorage,

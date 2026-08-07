@@ -4,7 +4,7 @@
 //! highest serial it has durably applied; [`group_readiness`] folds those observations and the selected
 //! [`DurabilityPolicy`] into whether the group can acknowledge a new write and the highest serial it can
 //! guarantee is durable. The fold is pure: frontiers are an input, never fetched, so the result is
-//! decided without any transport, clock, or storage — the acknowledgement decision that acts on it lives
+//! decided without any transport, clock, or storage - the acknowledgement decision that acts on it lives
 //! elsewhere.
 //!
 //! Two invariants shape the result. The writer is the sole source of serials and a replica applies only
@@ -35,7 +35,7 @@ pub struct MemberFrontier {
     pub member: String,
     pub role: MemberRole,
     /// The highest metadata serial this member has durably applied, or `None` when it is not currently
-    /// reporting a frontier — unreachable or never observed. A non-reporting member holds no serial, so
+    /// reporting a frontier - unreachable or never observed. A non-reporting member holds no serial, so
     /// it never counts toward durability, and a non-reporting writer leaves the group unready.
     pub applied: Option<u64>,
 }
@@ -57,7 +57,7 @@ pub enum ReadinessBlocker {
 pub struct GroupReadiness {
     /// `None` when the group can acknowledge a new write at the policy, otherwise why it cannot.
     pub blocked: Option<ReadinessBlocker>,
-    /// The highest serial the policy's required number of members have durably applied — the group's
+    /// The highest serial the policy's required number of members have durably applied - the group's
     /// guaranteed-durable frontier. Independent of [`blocked`](Self::blocked): a serial already held by
     /// enough members stays durable even when a lost writer stops new writes from being acknowledged.
     pub durable_frontier: u64,
@@ -78,7 +78,7 @@ impl GroupReadiness {
 /// [`MemberFrontier::applied`] `None`, so the policy's quorum is measured against the fixed group size.
 /// The group is ready when a writer is reporting and at least the policy's required number of members are
 /// reporting, so a single lagging or lost replica never blocks readiness while the rest still satisfy the
-/// policy. The durable frontier is the highest serial the required number of members have applied — the
+/// policy. The durable frontier is the highest serial the required number of members have applied - the
 /// minimum over the fastest such members, never dragged down to the slowest member overall.
 #[must_use]
 pub fn group_readiness(members: &[MemberFrontier], policy: DurabilityPolicy) -> GroupReadiness {

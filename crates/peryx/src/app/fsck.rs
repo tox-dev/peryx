@@ -9,11 +9,14 @@ use super::CacheStores;
 
 pub(super) fn fsck_cache(stores: &CacheStores, out: &mut dyn Write) -> anyhow::Result<()> {
     let mut problems = 0_u64;
-    for driver in crate::server::drivers().present() {
+    for serving in crate::server::drivers().present() {
+        let Some(driver) = serving.capabilities().fsck else {
+            continue;
+        };
         problems += driver
             .fsck_metadata(&stores.meta, &stores.blobs, out)
             .map_err(anyhow::Error::msg)
-            .context(format!("fsck {} metadata", driver.ecosystem().as_str()))?;
+            .context(format!("fsck {} metadata", serving.ecosystem().as_str()))?;
     }
     stores
         .blobs

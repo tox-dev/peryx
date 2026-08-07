@@ -833,8 +833,8 @@ fn test_local_file_yank_override_is_applied_like_the_buffered_path() {
 #[test]
 fn test_rejects_a_page_past_the_byte_limit() {
     let mut transformer = PageTransformer::new(plain_context());
-    // Whitespace is a valid JSON lead-in that copies straight through, so the byte guard — not a
-    // parse error — is what has to stop the oversized page. 65 MiB in 1 MiB pushes clears the 64 MiB
+    // Whitespace is a valid JSON lead-in that copies straight through, so the byte guard - not a
+    // parse error - is what has to stop the oversized page. 65 MiB in 1 MiB pushes clears the 64 MiB
     // cap; a bounded loop fails cleanly if the guard is dropped, where an unbounded one would hang.
     let chunk = vec![b' '; 1024 * 1024];
     let mut result = Ok(Vec::new());

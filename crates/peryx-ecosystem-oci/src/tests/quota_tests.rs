@@ -665,7 +665,7 @@ async fn test_manifest_re_push_by_digest_is_not_re_accounted() {
     );
 }
 
-/// `POST ?mount=<digest>&from=<source>` — publish a stored blob into `store/target` without a
+/// `POST ?mount=<digest>&from=<source>` - publish a stored blob into `store/target` without a
 /// transfer, returning the response status.
 async fn mount(app: &axum::Router, digest: &str, source: &str) -> StatusCode {
     send_body(

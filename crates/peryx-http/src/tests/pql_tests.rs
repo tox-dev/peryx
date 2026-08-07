@@ -74,7 +74,7 @@ fn seed_usage(metrics: &Metrics) {
             metrics.record(Event::Download {
                 route: route.to_owned(),
                 project: project.to_owned(),
-                filename: format!("{project}.whl"),
+                filename: format!("{project}.bin"),
                 version: None,
                 source: None,
                 bytes,
@@ -162,8 +162,8 @@ fn decision<'a>(repository: &'a str, project: &'a str, state: PolicyDecisionStat
         repository,
         project,
         version: Some("1.0"),
-        filename: Some("package-1.0.whl"),
-        source: Some("pypi"),
+        filename: Some("package-1.0.bin"),
+        source: Some("alpha"),
         action: PolicyAction::Serve,
         state,
         rule: (state == PolicyDecisionState::Deny).then_some("blocked-project"),
@@ -238,7 +238,7 @@ async fn test_query_operator_reads_across_repositories() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(projects(&document), ["alpha", "beta", "gamma"]);
-    assert_eq!(document["rows"][0]["source"], json!("pypi"));
+    assert_eq!(document["rows"][0]["source"], json!("alpha"));
     assert_eq!(document["rows"][0]["reason"], json!("project is blocked"));
 }
 
@@ -363,7 +363,7 @@ async fn test_query_replica_honors_classification_and_no_store() {
     .await;
     assert_eq!(operator_status, StatusCode::OK);
     assert_eq!(operator_headers[header::CACHE_CONTROL], "no-store");
-    assert_eq!(operator_document["rows"][0]["source"], json!("pypi"));
+    assert_eq!(operator_document["rows"][0]["source"], json!("alpha"));
 
     let (reader_status, reader_headers, reader_document) = post(
         &app,

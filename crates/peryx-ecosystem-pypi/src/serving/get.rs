@@ -32,7 +32,7 @@ use super::{Format, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_re
 use crate::attestation;
 
 /// On a replica, whether serving content at `last_serial` would expose metadata past the readable
-/// frontier — a serial a required derived view (the search or blob view) has not caught up to yet. A
+/// frontier - a serial a required derived view (the search or blob view) has not caught up to yet. A
 /// replica holds such a read and serves the older contiguous view (a surviving cached page) or a
 /// not-found instead, so a search that misses the new metadata and a page that shows it never disagree,
 /// and a listed file's blob is present before its page serves. The primary is never read-only, so its
@@ -488,7 +488,7 @@ const fn blob_headers(etag: &str) -> [(header::HeaderName, &str); 4] {
 /// Answer a file `HEAD` with the headers of the `GET` it stands for and no body.
 ///
 /// Nothing here opens the artifact or asks upstream for it, which is the point: a probe of an uncached
-/// wheel used to start the whole download — hashed, written, and paid for in bandwidth — for a client
+/// wheel used to start the whole download - hashed, written, and paid for in bandwidth - for a client
 /// that cannot receive a byte of it.
 ///
 /// A cached blob answers a `Range` the way the matching `GET` does. An uncached one has no seekable
@@ -564,8 +564,8 @@ async fn head_blob(
 ///
 /// The cached blob also carries the date the store wrote it, which is the one modification date peryx
 /// can stand behind: the digest fixes the bytes, so the only thing that can change under this URL is
-/// which side of the cache serves them. A blob still arriving from upstream has no such date — the
-/// write it would name has not happened — so it goes out with the tag alone, as it did before.
+/// which side of the cache serves them. A blob still arriving from upstream has no such date - the
+/// write it would name has not happened - so it goes out with the tag alone, as it did before.
 async fn serve_blob(
     state: &Arc<ServingState>,
     route: String,

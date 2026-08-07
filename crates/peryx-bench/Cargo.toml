@@ -5,13 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Comparative benchmark harness: peryx against direct PyPI and competing index servers."
+description = "Comparative benchmark CLI for peryx ecosystem implementations."
 publish = false
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 hdrhistogram.workspace = true
+peryx-bench-core.workspace = true
+peryx-ecosystem-pypi = { workspace = true, features = ["bench"] }
+peryx-ecosystem-oci = { workspace = true, features = ["bench"] }
 reqwest.workspace = true
 statrs.workspace = true
 rustls.workspace = true

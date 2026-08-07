@@ -96,7 +96,7 @@ async fn test_sync_commits_metadata_journal_and_cursor_without_fetching_bytes() 
         1,
         vec![change(
             1,
-            vec![put("pypi\0upload", b"record"), delete("pypi\0stale")],
+            vec![put("alpha\0upload", b"record"), delete("alpha\0stale")],
             vec![BlobReference {
                 sha256: digest.as_str().to_owned(),
                 size,
@@ -108,14 +108,17 @@ async fn test_sync_commits_metadata_journal_and_cursor_without_fetching_bytes() 
 
     assert_eq!(outcome.changes, 1);
     assert!(outcome.caught_up());
-    assert_eq!(changed_keys, vec!["pypi\0stale".to_owned(), "pypi\0upload".to_owned()]);
+    assert_eq!(
+        changed_keys,
+        vec!["alpha\0stale".to_owned(), "alpha\0upload".to_owned()]
+    );
     assert_eq!(referenced, vec![(digest.clone(), size)]);
     // Metadata (both the put and the delete), journal, and cursor are committed immediately.
     assert_eq!(
-        meta.get_driver_value("pypi\0upload").unwrap().as_deref(),
+        meta.get_driver_value("alpha\0upload").unwrap().as_deref(),
         Some(b"record".as_slice())
     );
-    assert!(meta.get_driver_value("pypi\0stale").unwrap().is_none());
+    assert!(meta.get_driver_value("alpha\0stale").unwrap().is_none());
     assert_eq!(meta.journal_after(0, 10).unwrap()[0].payload, b"event-1");
     assert_eq!(replica(&meta).state().unwrap().unwrap().serial, 1);
     // The referenced bytes are not present locally; the async blob plane pulls them later.

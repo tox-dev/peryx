@@ -1,7 +1,7 @@
 //! The blob-availability frontier: how far a replica's metadata is backed by blobs it can actually serve.
 //!
 //! A metadata change may reference content blobs, and a replica must not expose that metadata until the
-//! blobs behind it are present and serveable — otherwise a reader follows a fresh record to a byte range
+//! blobs behind it are present and serveable - otherwise a reader follows a fresh record to a byte range
 //! the replica cannot answer. This folds the placements a peer advertises and this replica's local
 //! presence into the highest serial through which every referenced blob is available, the blob analog of
 //! the [readable frontier](peryx-driver derived views) that gates on rebuilt derived views. The replica
@@ -15,8 +15,8 @@
 //! placement as [`Verified`](crate::protocol::PlacementAvailability::Verified). A blob still
 //! [`Pending`](crate::protocol::PlacementAvailability::Pending), one whose placement
 //! [`Failed`](crate::protocol::PlacementAvailability::Failed) or was
-//! [`Revoked`](crate::protocol::PlacementAvailability::Revoked), and one whose bytes are simply not here
-//! yet are all unavailable — the frontier fails closed and holds below the first serial that references
+//! [`Revoked`](crate::protocol::PlacementAvailability::Revoked), and one whose bytes are absent here
+//! yet are all unavailable - the frontier fails closed and holds below the first serial that references
 //! one, so a revoked or half-uploaded blob is never exposed behind fresh metadata.
 
 use crate::protocol::PlacementAvailability;
@@ -71,7 +71,7 @@ pub struct BlobAvailability {
 /// `authority` are past the metadata frontier and gate nothing, so they are ignored. `referenced` need not
 /// be sorted; the lowest unavailable serial wins regardless of order.
 ///
-/// An empty set — no change in range references a blob — imposes no blob constraint, so the frontier is
+/// An empty set - no change in range references a blob - imposes no blob constraint, so the frontier is
 /// the whole `authority` serial with no blocker. This is the defined floor for the unconstrained case, not
 /// a fail-open guess: with nothing to wait on, blobs hold back nothing.
 #[must_use]

@@ -7,8 +7,8 @@
 //! carries the serving state and a cancellation signal, and refuses overlapping or excess work rather
 //! than queueing it unbounded.
 //!
-//! The background maintenance the server runs on a timer — reclaim idle process resources, then
-//! revalidate stale cached pages — is expressed as one [`MaintenanceJob`] per installed ecosystem
+//! The background maintenance the server runs on a timer - reclaim idle process resources, then
+//! revalidate stale cached pages - is expressed as one [`MaintenanceJob`] per installed ecosystem
 //! driver, so independent ecosystems sweep concurrently while a single ecosystem never sweeps itself
 //! twice at once.
 
@@ -128,6 +128,21 @@ impl std::fmt::Display for JobFailure {
 
 impl std::error::Error for JobFailure {}
 
+impl From<peryx_ha::AvailabilityTaskReport> for JobReport {
+    fn from(report: peryx_ha::AvailabilityTaskReport) -> Self {
+        Self {
+            processed: report.processed,
+            changed: report.changed,
+        }
+    }
+}
+
+impl From<peryx_ha::AvailabilityTaskError> for JobFailure {
+    fn from(error: peryx_ha::AvailabilityTaskError) -> Self {
+        Self::new(error.code(), error.message())
+    }
+}
+
 /// What a running job sees: the serving state to work over, a cooperative cancellation signal, and the
 /// authority fence its writes carry.
 pub struct JobContext {
@@ -243,22 +258,28 @@ impl NodeJob for MaintenanceJob {
 
     async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
         let ecosystem = self.driver.ecosystem();
-        let reclaimed = self.driver.reclaim_idle(ctx.state().clone()).await;
-        if reclaimed > 0 {
-            tracing::info!(ecosystem = %ecosystem, reclaimed, "idle resources reclaimed");
+        if let Some(reclaimer) = self.driver.maintenance_capabilities().idle_reclaimer {
+            let reclaimed = reclaimer.reclaim_idle(ctx.state().clone()).await;
+            if reclaimed > 0 {
+                tracing::info!(ecosystem = %ecosystem, reclaimed, "idle resources reclaimed");
+            }
         }
         if ctx.is_cancelled() {
             return Ok(JobReport::default());
         }
-        let finalized = self.driver.finalize_admitted(ctx.state().clone()).await;
-        if finalized > 0 {
-            tracing::info!(ecosystem = %ecosystem, finalized, "admitted uploads finalized at home");
+        if let Some(finalizer) = self.driver.maintenance_capabilities().intent_finalizer {
+            let finalized = finalizer.finalize_admitted(ctx.state().clone()).await;
+            if finalized > 0 {
+                tracing::info!(ecosystem = %ecosystem, finalized, "admitted uploads finalized at home");
+            }
         }
         if ctx.is_cancelled() {
             return Ok(JobReport::default());
         }
-        let sweep = self
-            .driver
+        let Some(refresher) = self.driver.maintenance_capabilities().cache_refresher else {
+            return Ok(JobReport::default());
+        };
+        let sweep = refresher
             .refresh_stale(ctx.state().clone())
             .await
             .map_err(|message| JobFailure::new("cache_refresh", message))?;
@@ -323,8 +344,8 @@ pub const INGRESS_INTENT_RETENTION_SECS: i64 = 3600;
 /// A hosted write stages a durable ingress intent and claims an operation id before it mutates; a retry
 /// replays both instead of remutating. Left alone each row would live forever: the ingress-intent table
 /// would fill to its admission cap and refuse new uploads, and the operation-outcome ledger would keep
-/// every terminal result. This drains the settled rows of both — an [`Admitted`] or [`Expired`] intent
-/// past its retention, and a terminal operation past its own expiry — so the idempotency guarantees stay
+/// every terminal result. This drains the settled rows of both - an [`Admitted`] or [`Expired`] intent
+/// past its retention, and a terminal operation past its own expiry - so the idempotency guarantees stay
 /// bounded. A [`Pending`] intent is never dropped, since its write may still finalize.
 ///
 /// [`Admitted`]: peryx_storage::meta::IntentPhase::Admitted
@@ -489,24 +510,9 @@ impl Default for DcCopyParameters {
 /// The copy pulls verified bytes from a peer over the replication blob transport, a network dependency
 /// this neutral crate does not carry, so the binary implements the copier and registers it on the
 /// [`ServingState`], exactly as it registers the [`OwnershipAuthority`](crate::state::OwnershipAuthority).
-/// A process that registers none — single node, no roster, or an object-store backend — runs the job as a
+/// A process that registers none - single node, no roster, or an object-store backend - runs the job as a
 /// no-op.
-#[async_trait]
-pub trait CrossDcCopier: Send + Sync {
-    /// Run one bounded copy pass over `state`: fence the work to the ownership group's cluster term, drain
-    /// the copy backlog the local data center owes, and record each verified placement, at most
-    /// `params.concurrency` copies in flight. `cancelled` reports cooperative shutdown between units of
-    /// work.
-    ///
-    /// # Errors
-    /// Returns a user-visible message when the pass cannot complete.
-    async fn copy_pass(
-        &self,
-        state: &ServingState,
-        cancelled: &(dyn Fn() -> bool + Send + Sync),
-        params: DcCopyParameters,
-    ) -> Result<JobReport, JobFailure>;
-}
+pub use peryx_ha::CrossDcCopier;
 
 /// The node-wide job that runs one cross-data-center blob copy pass through the registered
 /// [`CrossDcCopier`].
@@ -528,11 +534,11 @@ impl NodeJob for DcCopyJob {
 
     async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
         match ctx.state().cross_dc_copier() {
-            Some(copier) => {
-                copier
-                    .copy_pass(ctx.state(), &|| ctx.is_cancelled(), self.parameters)
-                    .await
-            }
+            Some(copier) => copier
+                .copy_pass(&|| ctx.is_cancelled(), self.parameters.concurrency)
+                .await
+                .map(Into::into)
+                .map_err(Into::into),
             None => Ok(JobReport::default()),
         }
     }
@@ -576,27 +582,12 @@ impl Default for PlacementReconcileParameters {
 
 /// The placement reconciler a node registers to back its scheduled placement-reconciliation pass.
 ///
-/// Reconciliation compares the placement ledger against the replication policy — which data centers
-/// should hold each digest — read from configuration this neutral crate does not carry, so the binary
+/// Reconciliation compares the placement ledger against the replication policy - which data centers
+/// should hold each digest - read from configuration this neutral crate does not carry, so the binary
 /// implements the reconciler and registers it on the [`ServingState`], exactly as it registers the
-/// [`CrossDcCopier`]. A process that registers none — a single data center, or no membership — runs the
+/// [`CrossDcCopier`]. A process that registers none - a single data center, or no membership - runs the
 /// job as a no-op.
-#[async_trait]
-pub trait PlacementReconciler: Send + Sync {
-    /// Run one bounded reconciliation pass over `state`: fence the work to the ownership group's cluster
-    /// term, scan the placement ledger for divergence from the replication policy, and retire the local
-    /// data center's out-of-policy placements, skipping any digest a revocation or an in-flight
-    /// reclamation has withdrawn. `cancelled` reports cooperative shutdown between units of work.
-    ///
-    /// # Errors
-    /// Returns a user-visible message when the pass cannot complete.
-    async fn reconcile_pass(
-        &self,
-        state: &ServingState,
-        cancelled: &(dyn Fn() -> bool + Send + Sync),
-        params: PlacementReconcileParameters,
-    ) -> Result<JobReport, JobFailure>;
-}
+pub use peryx_ha::PlacementReconciler;
 
 /// The node-wide job that runs one placement-reconciliation pass through the registered
 /// [`PlacementReconciler`].
@@ -618,11 +609,11 @@ impl NodeJob for PlacementReconcileJob {
 
     async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
         match ctx.state().placement_reconciler() {
-            Some(reconciler) => {
-                reconciler
-                    .reconcile_pass(ctx.state(), &|| ctx.is_cancelled(), self.parameters)
-                    .await
-            }
+            Some(reconciler) => reconciler
+                .reconcile_pass(&|| ctx.is_cancelled(), self.parameters.batch)
+                .await
+                .map(Into::into)
+                .map_err(Into::into),
             None => Ok(JobReport::default()),
         }
     }
@@ -666,27 +657,11 @@ impl Default for ReclamationParameters {
 /// pass.
 ///
 /// Selecting a digest safe to reclaim reads the reference inventory across every ecosystem driver and the
-/// observed replication frontiers — dependencies this neutral crate does not carry — so the binary
+/// observed replication frontiers - dependencies this neutral crate does not carry - so the binary
 /// implements the selector and registers it on the [`ServingState`], exactly as it registers the
-/// [`CrossDcCopier`]. A process that registers none — single node, or no data-center membership — runs the
+/// [`CrossDcCopier`]. A process that registers none - single node, or no data-center membership - runs the
 /// job as a no-op. The pass records reclamation tombstones and never deletes bytes.
-#[async_trait]
-pub trait BlobReclaimer: Send + Sync {
-    /// Run one bounded selection pass over `state` under `fence`, the ownership group's cluster term: arm
-    /// a pending tombstone for each unreferenced, unservable digest at the current metadata frontier, and
-    /// mark ready any pending tombstone every replication plane has advanced past whose references have
-    /// not returned. Deletes no bytes. `cancelled` reports cooperative shutdown between units of work.
-    ///
-    /// # Errors
-    /// Returns a user-visible message when the pass cannot complete.
-    async fn reclaim_pass(
-        &self,
-        state: &ServingState,
-        cancelled: &(dyn Fn() -> bool + Send + Sync),
-        fence: u64,
-        params: ReclamationParameters,
-    ) -> Result<JobReport, JobFailure>;
-}
+pub use peryx_ha::BlobReclaimer;
 
 /// The cluster-singleton job that runs one blob-reclamation selection pass through the registered
 /// [`BlobReclaimer`].
@@ -715,16 +690,11 @@ impl NodeJob for ReclamationJob {
 
     async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
         match ctx.state().blob_reclaimer() {
-            Some(reclaimer) => {
-                reclaimer
-                    .reclaim_pass(
-                        ctx.state(),
-                        &|| ctx.is_cancelled(),
-                        ctx.authority_fence(),
-                        self.parameters,
-                    )
-                    .await
-            }
+            Some(reclaimer) => reclaimer
+                .reclaim_pass(&|| ctx.is_cancelled(), ctx.authority_fence(), self.parameters.batch)
+                .await
+                .map(Into::into)
+                .map_err(Into::into),
             None => Ok(JobReport::default()),
         }
     }
@@ -751,6 +721,7 @@ pub fn submit_maintenance(app: &AppState, scheduler: &JobScheduler) {
 /// not resolve against the runtime state.
 pub fn scheduled_job(app: &AppState, job: &ScheduledJob) -> Result<Arc<dyn NodeJob>, String> {
     app.drivers()
+        .filter_map(|driver| driver.capabilities().jobs)
         .find_map(|driver| driver.node_job(job))
         .unwrap_or_else(|| Err(format!("no installed ecosystem supports {}", job.as_str())))
 }

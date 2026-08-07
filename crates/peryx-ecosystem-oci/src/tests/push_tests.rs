@@ -1960,7 +1960,11 @@ async fn test_abandoned_upload_sessions_expire() {
     // Age past the TTL and run the background sweep, which reclaims the abandoned session.
     now.store(1000 + 3601, Ordering::Relaxed);
     state
-        .driver_for(crate::ECOSYSTEM)
+        .maintenance_drivers()
+        .next()
+        .unwrap()
+        .maintenance_capabilities()
+        .idle_reclaimer
         .unwrap()
         .reclaim_idle(state.serving.clone())
         .await;
@@ -2016,7 +2020,11 @@ async fn test_background_sweep_removes_an_abandoned_upload_file() {
 
     now.store(1000 + 3600, Ordering::Relaxed);
     let reclaimed = state
-        .driver_for(crate::ECOSYSTEM)
+        .maintenance_drivers()
+        .next()
+        .unwrap()
+        .maintenance_capabilities()
+        .idle_reclaimer
         .unwrap()
         .reclaim_idle(state.serving.clone())
         .await;
@@ -2093,7 +2101,11 @@ async fn test_active_upload_session_survives_eviction() {
 
     now.store(3000 + 3599, Ordering::Relaxed);
     let reclaimed = state
-        .driver_for(crate::ECOSYSTEM)
+        .maintenance_drivers()
+        .next()
+        .unwrap()
+        .maintenance_capabilities()
+        .idle_reclaimer
         .unwrap()
         .reclaim_idle(state.serving.clone())
         .await;
@@ -2144,7 +2156,11 @@ async fn test_upload_status_read_refreshes_the_session_ttl() {
 
     now.store(3000 + 3599, Ordering::Relaxed);
     let reclaimed = state
-        .driver_for(crate::ECOSYSTEM)
+        .maintenance_drivers()
+        .next()
+        .unwrap()
+        .maintenance_capabilities()
+        .idle_reclaimer
         .unwrap()
         .reclaim_idle(state.serving.clone())
         .await;

@@ -7,7 +7,7 @@ fn candidate(project: &str, version: &str, rank: u64) -> RetentionCandidate {
     RetentionCandidate {
         project: project.to_owned(),
         version: Some(version.to_owned()),
-        artifact: format!("{project}-{version}.whl"),
+        artifact: format!("{project}-{version}.bin"),
         digest: format!("sha256:{project}{version}"),
         class: RetentionClass::Hosted,
         visibility: RetentionVisibility::Active,
@@ -64,7 +64,7 @@ fn each_selector_reports_its_stable_rule_name() {
         (RetentionSelector::Age { older_than_seconds: 1 }, "age"),
         (
             RetentionSelector::Source {
-                name: "pypi".to_owned(),
+                name: "alpha".to_owned(),
             },
             "source",
         ),
@@ -108,9 +108,9 @@ fn keep_latest_protects_the_newest_versions_and_expires_the_rest() {
     assert_eq!(
         outcomes(&decisions),
         vec![
-            ("flask-3.0.whl", RetentionOutcome::Retain, Some("keep-latest")),
-            ("flask-2.0.whl", RetentionOutcome::Retain, Some("keep-latest")),
-            ("flask-1.0.whl", RetentionOutcome::Remove, Some("project-prefix")),
+            ("flask-3.0.bin", RetentionOutcome::Retain, Some("keep-latest")),
+            ("flask-2.0.bin", RetentionOutcome::Retain, Some("keep-latest")),
+            ("flask-1.0.bin", RetentionOutcome::Remove, Some("project-prefix")),
         ]
     );
 }
@@ -168,8 +168,8 @@ fn an_age_rule_expires_only_candidates_older_than_its_bound() {
     assert_eq!(
         outcomes(&decisions),
         vec![
-            ("flask-1.0.whl", RetentionOutcome::Remove, Some("age")),
-            ("flask-2.0.whl", RetentionOutcome::Retain, None),
+            ("flask-1.0.bin", RetentionOutcome::Remove, Some("age")),
+            ("flask-2.0.bin", RetentionOutcome::Retain, None),
         ]
     );
 }
@@ -215,8 +215,8 @@ fn a_source_rule_matches_the_named_routed_source() {
     assert_eq!(
         outcomes(&decisions),
         vec![
-            ("flask-1.0.whl", RetentionOutcome::Remove, Some("source")),
-            ("flask-2.0.whl", RetentionOutcome::Retain, None),
+            ("flask-1.0.bin", RetentionOutcome::Remove, Some("source")),
+            ("flask-2.0.bin", RetentionOutcome::Retain, None),
         ]
     );
 }
@@ -235,8 +235,8 @@ fn a_project_prefix_rule_matches_by_name() {
     assert_eq!(
         outcomes(&decisions),
         vec![
-            ("acme-tool-1.0.whl", RetentionOutcome::Remove, Some("project-prefix")),
-            ("flask-1.0.whl", RetentionOutcome::Retain, None),
+            ("acme-tool-1.0.bin", RetentionOutcome::Remove, Some("project-prefix")),
+            ("flask-1.0.bin", RetentionOutcome::Retain, None),
         ]
     );
 }
@@ -286,8 +286,8 @@ fn a_visibility_rule_matches_only_candidates_in_the_named_state() {
     assert_eq!(
         outcomes(&decisions),
         vec![
-            ("flask-1.0.whl", RetentionOutcome::Remove, Some("visibility")),
-            ("flask-2.0.whl", RetentionOutcome::Retain, None),
+            ("flask-1.0.bin", RetentionOutcome::Remove, Some("visibility")),
+            ("flask-2.0.bin", RetentionOutcome::Retain, None),
         ]
     );
 }
@@ -326,10 +326,10 @@ fn a_cached_keep_rule_protects_cached_candidates() {
 fn decisions_order_by_rank_then_artifact_then_digest() {
     let policy = RetentionPolicy::compile(&RetentionConfig::default());
     let mut tie_a = candidate("flask", "1.0", 0);
-    tie_a.artifact = "flask-1.0-py3.whl".to_owned();
+    tie_a.artifact = "flask-1.0-py3.bin".to_owned();
     tie_a.digest = "sha256:aaa".to_owned();
     let mut tie_b = candidate("flask", "1.0", 0);
-    tie_b.artifact = "flask-1.0-py3.whl".to_owned();
+    tie_b.artifact = "flask-1.0-py3.bin".to_owned();
     tie_b.digest = "sha256:bbb".to_owned();
 
     let decisions = policy.plan_project(None, vec![tie_b, candidate("flask", "2.0", 1), tie_a]);
@@ -401,7 +401,7 @@ fn equal_rules_compile_to_one_version_and_distinct_rules_diverge() {
         keep: vec![
             RetentionSelector::Age { older_than_seconds: 30 },
             RetentionSelector::Source {
-                name: "pypi".to_owned(),
+                name: "alpha".to_owned(),
             },
             RetentionSelector::ProjectPrefix {
                 prefix: "acme-".to_owned(),
@@ -461,7 +461,7 @@ fn a_config_deserializes_every_selector_from_json() {
         r#"{
             "keep": [
                 {"selector": "age", "older_than_seconds": 86400},
-                {"selector": "source", "name": "pypi"},
+                {"selector": "source", "name": "alpha"},
                 {"selector": "project-prefix", "prefix": "acme-"},
                 {"selector": "keep-latest", "count": 5},
                 {"selector": "cached"}
@@ -483,7 +483,7 @@ fn a_config_deserializes_every_selector_from_json() {
                     older_than_seconds: 86_400
                 },
                 RetentionSelector::Source {
-                    name: "pypi".to_owned()
+                    name: "alpha".to_owned()
                 },
                 RetentionSelector::ProjectPrefix {
                     prefix: "acme-".to_owned()

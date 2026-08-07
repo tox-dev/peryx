@@ -56,7 +56,7 @@ pub struct Config {
     /// The configured indexes: caches, hosted stores, and virtual indexes that compose them.
     pub indexes: Vec<IndexConfig>,
     /// How the server terminates TLS, or `None` for plain HTTP (the zero-config default, which
-    /// docker/podman accept over loopback). Serving it costs nothing until set.
+    /// clients accept over loopback). Serving it costs nothing until set.
     pub tls: Option<TlsConfig>,
     pub log: LogConfig,
     pub rate_limit: RateLimitConfig,
@@ -606,7 +606,7 @@ const MAX_SECRET_FILE_BYTES: u64 = 1 << 20;
 
 /// Where a secret's value comes from.
 ///
-/// A `*_file` sibling keeps the value out of the config file, so a mounted Docker or Kubernetes secret,
+/// A `*_file` sibling keeps the value out of the config file, so a mounted container secret,
 /// a systemd credential, or a Vault-rendered file can hold it; an `*_env` sibling reads it from an
 /// environment variable the process manager injects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -709,7 +709,7 @@ pub struct TokenConfig {
 pub struct IndexConfig {
     /// Identifier other indexes reference in their `layers`.
     pub name: String,
-    /// URL prefix the index is served under, for example `root/pypi`.
+    /// URL prefix the index is served under, for example `root/packages`.
     pub route: String,
     /// The package ecosystem this index serves. Immutable once created.
     pub ecosystem: Ecosystem,
@@ -723,7 +723,7 @@ pub struct IndexConfig {
     /// The `[policy]` keys the neutral engine did not claim, left raw for this index's ecosystem
     /// driver to compile into artifact rules. Empty when an operator set no ecosystem-specific policy.
     pub ecosystem_policy: Table,
-    /// The `[index.settings]` table: this index's ecosystem-specific settings (an OCI cache's
+    /// The `[index.settings]` table: settings compiled by this index's ecosystem adapter.
     /// `library_prefix`), left raw for the composition root to compile against its ecosystem. Empty
     /// when an operator set none.
     pub ecosystem_settings: Table,

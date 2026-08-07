@@ -5,14 +5,14 @@ use uuid::Uuid;
 const PREFIX: &str = "oci/upload-session/";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct UploadRecord {
+pub struct UploadRecord {
     pub offset: u64,
     pub index: String,
     pub name: String,
     pub updated_at_unix: i64,
 }
 
-pub(crate) trait UploadStore {
+pub trait UploadStore {
     fn begin_upload(&self, session: &str, index: &str, name: &str, now: i64) -> Result<(), MetaError>;
     fn advance_upload(&self, session: &str, offset: u64, now: i64) -> Result<bool, MetaError>;
     fn upload_record(&self, session: &str) -> Result<Option<UploadRecord>, MetaError>;

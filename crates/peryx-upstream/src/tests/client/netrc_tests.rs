@@ -106,7 +106,7 @@ fn test_netrc_matches_ipv4_but_not_schemes_without_known_ports() {
 #[test]
 fn test_netrc_returns_anonymous_for_urls_without_hosts() {
     let (_dir, netrc) = load("default login fallback password fallback-pass\n");
-    assert_eq!(netrc.auth_for_str("file:///tmp/pkg.whl").unwrap(), Auth::None);
+    assert_eq!(netrc.auth_for_str("file:///tmp/pkg.bin").unwrap(), Auth::None);
     assert!(netrc.auth_for_str("not a URL").is_err());
 }
 

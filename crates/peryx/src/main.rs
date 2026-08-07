@@ -15,7 +15,7 @@ use peryx::cli::{Cli, ConfigSnippetArgs};
 use peryx::config::{self, Config, LogConfig, LogFormat, LogSink};
 use peryx::{app, logging, operator};
 
-// Requests alternate small JSON pages with wheel-sized streams; mimalloc keeps the
+// Requests alternate small JSON pages with large artifact streams; mimalloc keeps the
 // allocation-heavy transform path off the system allocator's locks.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -254,21 +254,24 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
 /// Register the background availability services this node's scheduled jobs drive: the cross-datacenter
 /// blob copier and the filesystem placement reconciler both need the local content store, and the blob
 /// reclamation selector needs only the roster. Each returns `None` when this node does that work nowhere.
-fn register_availability_services(config: &Config, state: &peryx_driver::AppState) -> anyhow::Result<()> {
+fn register_availability_services(
+    config: &Config,
+    state: &std::sync::Arc<peryx_driver::AppState>,
+) -> anyhow::Result<()> {
     if let Some(store) = state.blobs.filesystem_store() {
         if let Some(copier) =
             peryx::availability::CrossDcBlobCopier::from_config(config, store.clone(), state.blobs.backend_id())?
         {
-            state.set_cross_dc_copier(std::sync::Arc::new(copier));
+            state.set_cross_dc_copier(copier.bind(state.serving.clone()));
         }
         if let Some(reconciler) =
             peryx::availability::FilesystemPlacementReconciler::from_config(config, store.clone())?
         {
-            state.set_placement_reconciler(std::sync::Arc::new(reconciler));
+            state.set_placement_reconciler(reconciler.bind(state.serving.clone()));
         }
     }
     if let Some(reclaimer) = peryx::availability::BlobReclamationSelector::from_config(config)? {
-        state.set_blob_reclaimer(std::sync::Arc::new(reclaimer));
+        state.set_blob_reclaimer(reclaimer.bind(state.serving.clone()));
     }
     Ok(())
 }

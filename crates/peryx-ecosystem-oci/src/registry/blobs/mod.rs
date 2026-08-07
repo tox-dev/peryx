@@ -501,7 +501,7 @@ pub(super) fn authority_moved() -> Response {
 }
 
 /// Release a still-open quota reservation, a no-op when the push was unmetered or the digest was already a
-/// member. Every abandoned finalize — a rejected epoch, a commit fault, a superseded authority — returns
+/// member. Every abandoned finalize - a rejected epoch, a commit fault, a superseded authority - returns
 /// the momentary bytes it reserved so a fenced or failed upload leaves no phantom accounting behind.
 pub(super) fn release_reservation(
     state: &ServingState,
@@ -581,7 +581,7 @@ fn blob_operation(index: &str, repo: &str, digest: &str) -> String {
 /// counterpart to [`commit_blob`].
 ///
 /// On success the session's durable record is closed. A rejected quota drops the stage and record. A
-/// commit fault — a digest mismatch, most likely — keeps both, so the client can retry the finalize
+/// commit fault - a digest mismatch, most likely - keeps both, so the client can retry the finalize
 /// with the right digest rather than re-upload every byte.
 #[allow(
     clippy::too_many_arguments,
@@ -817,4 +817,3 @@ mod tests {
         assert!(matches!(err, DownloadError::Blob(_)));
     }
 }
-use crate::upload_session::UploadStore as _;

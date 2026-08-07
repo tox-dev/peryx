@@ -17,7 +17,7 @@ use tower::ServiceExt as _;
 const ADMIN: &str = "administrator password";
 const RITA: &str = "repository admin password";
 const PAUL: &str = "publisher password";
-const REPO: &str = "root/pypi";
+const REPO: &str = "root/alpha";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StoreFault {

@@ -1,237 +1,17 @@
-//! The availability control plane: the administrator-driven membership and transfer commands, and the
-//! idempotency, concurrency, audit, and latency wrapping around them.
-//!
-//! The ownership consensus group changes only through committed Raft commands, never a direct store
-//! write. [`MembershipControl`] is that submission seam: the binary implements it over the running Raft
-//! node, and this plane wraps it so a control request is idempotent, bounded, and audited without the
-//! HTTP surface reaching the consensus internals.
-//!
-//! [`ControlPlane::execute`] is the whole path. A keyed request atomically claims its idempotency key
-//! under one lock before it executes, binding the key to a fingerprint of the command body: a concurrent
-//! retry on the same key waits on the in-flight command and replays its committed [`CommandReceipt`]
-//! rather than reaching a second submission, and a key reused for a different command is rejected instead
-//! of replaying the first command's receipt. A permit bounds the commands in flight, a bounded window
-//! retains recent receipts and latencies, and every attempt writes one audit line naming the actor,
-//! command, target, result, and committed identity — never the request body, so an address or token
-//! never reaches the log.
+//! Idempotency, admission, audit, and latency tracking for availability commands.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use peryx_ha::{CommandReceipt, ControlCommand, ControlError, MembershipControl};
+use serde::Serialize;
 use tokio::sync::{Semaphore, watch};
 
 use crate::state::Clock;
 
-/// The commands in flight a control plane admits at once. A membership change rewrites the consensus
-/// roster, so the surface serializes a small burst rather than letting an operator script fan out an
-/// unbounded set of concurrent rewrites at the leader.
 const MAX_CONCURRENT_COMMANDS: usize = 4;
 
-/// How many recent committed receipts and command latencies the plane retains. The receipts bound the
-/// idempotency window and the latencies bound the reported percentiles; both are recent-history only,
-/// never a growing ledger.
 const RETAINED: usize = 256;
-
-/// A membership or transfer command an administrator submits to the ownership consensus group.
-///
-/// The four membership variants rewrite the consensus roster through `OpenRaft`; the two authority
-/// variants move or fence an artifact home through a committed ownership command. Every variant commits
-/// through the Raft log, so no handler writes the ownership or membership store directly.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ControlCommand {
-    /// Add a datacenter as a non-voting learner that replicates the log without counting toward quorum.
-    AddLearner {
-        /// The datacenter identity to add, the stable name the roster keys the voter by.
-        datacenter: String,
-        /// The bare `host:port` the learner's peer RPCs dial.
-        address: String,
-    },
-    /// Promote an existing learner datacenter to a voter that counts toward quorum.
-    PromoteVoter {
-        /// The learner datacenter to promote.
-        datacenter: String,
-    },
-    /// Remove a voter datacenter from the consensus roster.
-    RemoveVoter {
-        /// The voter datacenter to remove.
-        datacenter: String,
-    },
-    /// Replace one voter with another in a single roster rewrite: add the incoming datacenter as a
-    /// learner and swap it in for the outgoing one.
-    ReplaceVoter {
-        /// The voter datacenter to remove.
-        remove: String,
-        /// The datacenter to add in its place.
-        datacenter: String,
-        /// The bare `host:port` the incoming datacenter's peer RPCs dial.
-        address: String,
-    },
-    /// Move an authority's home to a new datacenter, minting the next authority epoch.
-    TransferAuthority {
-        /// The authority to move, a project or repository home.
-        authority: String,
-        /// The datacenter to home it at.
-        new_home: String,
-    },
-    /// Mint the next epoch for an authority without moving its home, fencing every operation left under
-    /// the prior epoch. Cancels the outstanding work a superseded holder left behind.
-    AdvanceEpoch {
-        /// The authority to fence.
-        authority: String,
-    },
-}
-
-impl ControlCommand {
-    /// The stable audit name of this command's kind.
-    #[must_use]
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::AddLearner { .. } => "add_learner",
-            Self::PromoteVoter { .. } => "promote_voter",
-            Self::RemoveVoter { .. } => "remove_voter",
-            Self::ReplaceVoter { .. } => "replace_voter",
-            Self::TransferAuthority { .. } => "transfer_authority",
-            Self::AdvanceEpoch { .. } => "advance_epoch",
-        }
-    }
-
-    /// The command's target for the audit line: the datacenter a membership command names or the
-    /// authority a transfer command names. Never an address or credential, so the audit line carries no
-    /// request body.
-    #[must_use]
-    pub fn target(&self) -> &str {
-        match self {
-            Self::AddLearner { datacenter, .. }
-            | Self::PromoteVoter { datacenter }
-            | Self::RemoveVoter { datacenter }
-            | Self::ReplaceVoter { datacenter, .. } => datacenter,
-            Self::TransferAuthority { authority, .. } | Self::AdvanceEpoch { authority } => authority,
-        }
-    }
-
-    /// A canonical fingerprint of the command body, so an idempotency key is bound to the request that
-    /// claimed it. Two commands share a fingerprint exactly when they are equal, so a genuine retry of the
-    /// same request matches its claimed key while a key reused for a different command does not.
-    #[must_use]
-    fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-}
-
-/// The committed identity of a control command.
-///
-/// The term and index of the log entry that carried it, and what the group made of it. A client that
-/// retries an idempotent request reads back this same receipt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CommandReceipt {
-    /// The leadership term of the committed log entry.
-    pub term: u64,
-    /// The index of the committed log entry.
-    pub index: u64,
-    /// What the group made of the command.
-    pub outcome: CommandOutcome,
-    /// The voter roster, by datacenter name in sorted order, before the command committed. Empty for a
-    /// command that does not touch the voter roster, such as a transfer or epoch command.
-    pub old_voters: Vec<String>,
-    /// The voter roster after the command committed.
-    pub new_voters: Vec<String>,
-}
-
-/// What a committed control command changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CommandOutcome {
-    /// The command changed the roster or ownership state.
-    Committed,
-    /// The command committed but left the state unchanged, for example promoting a datacenter already a
-    /// voter. Idempotent by construction.
-    NoChange,
-}
-
-impl CommandOutcome {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Committed => "committed",
-            Self::NoChange => "no_change",
-        }
-    }
-}
-
-/// Why a control command did not return a receipt.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ControlError {
-    /// This node is not the consensus leader, so it cannot commit the command. Carries the leader's
-    /// address when the group knows one, for a caller that retries against it.
-    #[error("not the consensus leader{}", .leader.as_deref().map(|a| format!("; leader at {a}")).unwrap_or_default())]
-    NotLeader {
-        /// The current leader's peer address, when known.
-        leader: Option<String>,
-    },
-    /// The group could not commit the command for another reason, for example an unreachable quorum.
-    #[error("consensus command did not commit: {0}")]
-    Unavailable(String),
-    /// The command is invalid against the current state, for example transferring an unassigned authority
-    /// or to the home it already holds.
-    #[error("invalid command: {0}")]
-    Invalid(String),
-    /// The plane is already running its bounded set of concurrent commands.
-    #[error("too many concurrent availability commands in flight")]
-    Overloaded,
-    /// The idempotency key was already claimed for a different command. A retry must carry the same command
-    /// the key first ran, so a reused key never replays another request's receipt.
-    #[error("idempotency key already used for a different command")]
-    KeyReuse,
-}
-
-impl ControlError {
-    /// The stable audit name of this failure.
-    const fn kind(&self) -> &'static str {
-        match self {
-            Self::NotLeader { .. } => "not_leader",
-            Self::Unavailable(_) => "unavailable",
-            Self::Invalid(_) => "invalid",
-            Self::Overloaded => "overloaded",
-            Self::KeyReuse => "key_reuse",
-        }
-    }
-}
-
-/// The consensus submission seam an availability command commits through.
-///
-/// The binary implements it over the running Raft node; the control plane holds it behind this trait so
-/// the HTTP surface, its idempotency, and its audit never reach the consensus internals.
-#[async_trait::async_trait]
-pub trait MembershipControl: Send + Sync {
-    /// Submit `command` to the consensus log and return the receipt of the entry that carried it.
-    ///
-    /// # Errors
-    /// Returns [`ControlError`] when this node is not the leader, the command cannot commit, or the
-    /// command is invalid against the current state.
-    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError>;
-}
-
-/// The next voter roster a discrete membership command produces from the current one.
-///
-/// Pure set arithmetic so the binary's Raft-facing impl computes the target roster the same way every
-/// call: add the incoming voter id, drop the outgoing one, and the result is the membership to commit. A
-/// promotion of a datacenter already a voter, or a removal of one absent, yields the current roster
-/// unchanged, which commits as [`CommandOutcome::NoChange`].
-#[must_use]
-pub fn plan_voter_roster(current: &BTreeSet<u64>, add: Option<u64>, remove: Option<u64>) -> BTreeSet<u64> {
-    let mut roster = current.clone();
-    if let Some(id) = add {
-        roster.insert(id);
-    }
-    if let Some(id) = remove {
-        roster.remove(&id);
-    }
-    roster
-}
 
 /// One audited control attempt.
 ///
@@ -408,7 +188,7 @@ impl ControlPlane {
         let Some(key) = key else {
             return self.run(actor, &command).await;
         };
-        let fingerprint = command.fingerprint();
+        let fingerprint = fingerprint(&command);
         loop {
             match self.claim(key, fingerprint) {
                 Claim::Replay(receipt) => {
@@ -518,6 +298,13 @@ impl ControlPlane {
     }
 }
 
+fn fingerprint(command: &ControlCommand) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    command.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Push `item` onto `queue`, evicting from the front until it holds at most `cap`, so a recent-history
 /// window never grows past its bound.
 fn push_bounded<T>(queue: &mut VecDeque<T>, item: T, cap: usize) {
@@ -561,9 +348,11 @@ mod tests {
 
     use tokio::sync::Notify;
 
+    use peryx_ha::{CommandOutcome, plan_voter_roster};
+
     use super::{
-        AuditRecord, CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, KeyEntry, KeyState,
-        MembershipControl, evict_committed, percentile, plan_voter_roster,
+        AuditRecord, CommandReceipt, ControlCommand, ControlError, ControlPlane, KeyEntry, KeyState, MembershipControl,
+        evict_committed, percentile,
     };
     use crate::state::Clock;
     use std::collections::{BTreeSet, VecDeque};

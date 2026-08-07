@@ -8,7 +8,7 @@ use crate::{ChangelogEntry, ChangelogPage, ChangelogPageError};
 /// an origin others can replicate from. `serial` orders entries; the rest names what changed.
 ///
 /// The neutral serial counter lives in the store, so a `PyPI` publish builds this entry with a
-/// placeholder `serial` and lets [`commit_driver_txn`] allocate the authoritative one — see
+/// placeholder `serial` and lets [`commit_driver_txn`] allocate the authoritative one - see
 /// [`publish_file_if`](super::publish_file_if).
 ///
 /// [`MetaStore`]: peryx_storage::meta::MetaStore

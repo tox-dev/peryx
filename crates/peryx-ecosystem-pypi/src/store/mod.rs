@@ -514,7 +514,7 @@ pub trait PypiStore {
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
-    /// Publish a file — its sibling, record, project, and journal entry — only if `guard` accepts the
+    /// Publish a file - its sibling, record, project, and journal entry - only if `guard` accepts the
     /// filename's current record, checked inside the same write transaction. Returns whether it wrote.
     ///
     /// # Errors
@@ -537,7 +537,7 @@ pub trait PypiStore {
         record: &[u8],
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Promote a release onto `index` — its records, project, and journal entry — admitting each
+    /// Promote a release onto `index` - its records, project, and journal entry - admitting each
     /// `(filename, token, bytes)` only when `guard` accepts the target's current record inside the
     /// write transaction. Tokens in `blob_sizes` are recorded as blob references. Returns how many
     /// files were written.

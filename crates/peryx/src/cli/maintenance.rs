@@ -280,6 +280,6 @@ pub struct ImportDirArgs {
     /// Hosted index name or route.
     pub index: String,
 
-    /// Directory containing wheel or sdist files.
+    /// Directory containing artifacts accepted by the index's ecosystem.
     pub dir: PathBuf,
 }

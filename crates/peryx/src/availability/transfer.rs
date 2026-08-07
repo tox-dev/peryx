@@ -2,8 +2,8 @@
 //!
 //! [`TransferPlan`](peryx_ha_distributed::TransferPlan) is the pure decision core: it waits at
 //! `AwaitingCatchUp` until the target's applied frontier reaches the barrier, then stands `Ready` for a
-//! caller to commit. This module supplies the two things it reaches for from above — the target
-//! datacenter's applied frontier and the committed move — without pulling any I/O into the plan itself.
+//! caller to commit. This module supplies the two things it reaches for from above - the target
+//! datacenter's applied frontier and the committed move - without pulling any I/O into the plan itself.
 //!
 //! [`observe_target`] probes the target's frontier once and folds it into the plan, so a loop above can
 //! poll it toward `Ready`. [`commit_transfer`] takes a ready plan, commits the move through the ownership
@@ -193,8 +193,8 @@ struct Registered {
 ///
 /// A run registers its plan under the authority, drives it toward `Ready`, commits it, then clears the
 /// active flag while keeping the resolved plan. Retaining the plan lets a cancel that arrives after the
-/// commit resolve against the sealed record — [`AlreadyCommitted`](TransferCancelError::AlreadyCommitted)
-/// rather than a lost lookup — so the two operations never disagree on whether the move happened.
+/// commit resolve against the sealed record - [`AlreadyCommitted`](TransferCancelError::AlreadyCommitted)
+/// rather than a lost lookup - so the two operations never disagree on whether the move happened.
 pub struct TransferCoordinator {
     frontier: Arc<dyn FrontierSource>,
     poll: Duration,
@@ -273,7 +273,7 @@ impl TransferCoordinator {
     }
 
     /// Poll the target's frontier until the plan is ready, then commit it. A plan resolved out from under
-    /// the wait — a cancel that won the race — falls straight through to the commit, which refuses it.
+    /// the wait - a cancel that won the race - falls straight through to the commit, which refuses it.
     async fn drive(
         &self,
         plan: &tokio::sync::Mutex<TransferPlan>,

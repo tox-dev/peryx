@@ -258,8 +258,8 @@ pub fn promote_files_checked<E: From<MetaError>>(
 /// its entry. `mutate` sees each `(filename, record)` and returns [`UploadMutation::Keep`] to leave
 /// it, [`UploadMutation::Replace`] to rewrite it, or [`UploadMutation::Delete`] to remove it; an
 /// error aborts the whole transaction unchanged. Every rewritten or removed record records one
-/// `action` entry against its filename — `yank`, `unyank`, or `delete-file`, the mutation the caller
-/// knows it applied but the opaque record bytes cannot reveal — so a replica replays exactly the
+/// `action` entry against its filename - `yank`, `unyank`, or `delete-file`, the mutation the caller
+/// knows it applied but the opaque record bytes cannot reveal - so a replica replays exactly the
 /// files that changed. Returns how many records were rewritten or removed.
 ///
 /// # Errors

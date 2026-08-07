@@ -1,15 +1,12 @@
-//! The request workload: a swarm of resolvers fetching project pages against each warm server, over
-//! `rounds` restarts.
-
 use anyhow::bail;
 use hdrhistogram::Histogram;
 use tokio::time::{Duration, Instant as TokioInstant, sleep_until};
 
 use super::super::packages::TOP_PACKAGES;
 use super::Rounds;
-use crate::report::{Absent, Metric, baseline, cost_rows_per_request, publish, row, summarize, table};
-use crate::servers::Server;
-use crate::usage::{Cost, Usage};
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows_per_request, publish, row, summarize, table};
+use peryx_bench_core::servers::Server;
+use peryx_bench_core::usage::{Cost, Usage};
 
 /// The request workload: a swarm of resolvers fetching project pages against each warm server, over
 /// `rounds` restarts.

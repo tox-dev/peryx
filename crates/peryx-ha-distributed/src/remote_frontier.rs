@@ -2,10 +2,10 @@
 //!
 //! HA success requires one eligible remote datacenter to commit the exact metadata operation
 //! ([`assess_remote_metadata_durability`](crate::assess_remote_metadata_durability)). The ingress writer
-//! commits the operation to its own journal at once; this is the transport that gathers the rest — it
+//! commits the operation to its own journal at once; this is the transport that gathers the rest - it
 //! asks each eligible remote how far it has durably applied under which authority epoch and folds every
 //! answer against the operation. A remote that has not yet applied through the frontier, that a fault
-//! hides, or that reports a stale or advanced epoch simply does not contribute: it never fails the write,
+//! hides, or that reports a stale or advanced epoch does not contribute: it never fails the write,
 //! because a missing acknowledgement is absence of proof, not proof of absence.
 //!
 //! [`gather_remote_acks`] bounds the whole gather by the client's write deadline. Reaching remote
@@ -39,7 +39,7 @@ pub const DEFAULT_FRONTIER_POLL: Duration = Duration::from_millis(50);
 ///
 /// Returns the deadline the write reads: [`Live`](Deadline::Live) once an eligible remote holds the
 /// operation within the budget, [`Expired`](Deadline::Expired) once the budget is spent short of it. A
-/// short result is never a definite failure — a remote may commit after the client stops waiting — so the
+/// short result is never a definite failure - a remote may commit after the client stops waiting - so the
 /// caller maps [`Expired`](Deadline::Expired) to a retry-safe outcome, and a later retry resolves to
 /// success once the remote has applied.
 ///

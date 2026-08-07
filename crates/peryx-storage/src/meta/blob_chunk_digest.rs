@@ -1,7 +1,7 @@
 //! The per-digest chunked-digest catalog.
 //!
 //! A blob's whole-blob digest verifies it only once every byte is reassembled and hashed, so an
-//! incremental fetch of a large blob cannot trust — and cannot forward — a chunk until the whole arrives.
+//! incremental fetch of a large blob cannot trust - and cannot forward - a chunk until the whole arrives.
 //! This catalog records the [`ChunkedDigest`] of a blob when a node whole-verifies its bytes, keyed by the
 //! content digest, so a later incremental read-through verifies each chunk against its own recorded digest
 //! and stages it before the rest of the blob is drawn.

@@ -8,11 +8,11 @@
 //!
 //! Every arm is deterministic: requests run through the in-process router with [`ServiceExt::oneshot`],
 //! and replication advances one [`sync_cycle`](crate::replication::ReplicationRuntime::sync_cycle) at a
-//! time, so a "partition" is simply a cycle not run rather than a timed wait. No test sleeps, binds a
+//! time, so a "partition" is a cycle not run rather than a timed wait. No test sleeps, binds a
 //! fixed port, or reads a real clock.
 //!
-//! The revocation case follows the [NIST RBAC] model — a permission removed before an action is used
-//! denies it — and the replica cases follow [OWASP authorization guidance]: a follower fails closed on
+//! The revocation case follows the [NIST RBAC] model - a permission removed before an action is used
+//! denies it - and the replica cases follow [OWASP authorization guidance]: a follower fails closed on
 //! management state past its readable frontier and refuses every mutation.
 //!
 //! [NIST RBAC]: https://csrc.nist.gov/projects/role-based-access-control

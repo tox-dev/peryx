@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Manifests are content-addressed and immutable, so publishing one and retargeting a tag are
 /// distinct operations: repointing a tag changes no bytes but is a mutation a replica applies in
-/// order. Deletions are soft — a delete moves the reference into repository trash — so the trash and
+/// order. Deletions are soft - a delete moves the reference into repository trash - so the trash and
 /// restore transitions are the deletion vocabulary a replica replays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]

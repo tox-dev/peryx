@@ -1,5 +1,3 @@
-//! The workloads' package sets.
-
 /// The top of `PyPI`'s most-downloaded list, snapshotted so runs stay comparable over time; torch is
 /// included for one large wheel.
 pub const TOP_PACKAGES: &[&str] = &[

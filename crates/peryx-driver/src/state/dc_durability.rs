@@ -8,7 +8,7 @@
 //! The recorder is read-only over the decision: it takes an already-decided [`DcAck`] or
 //! [`ByteAckDecision`] as input and folds it into bounded counters, never recomputing durability. The
 //! only label is a closed `scope` vocabulary, and the quorum progress is carried as gauge values rather
-//! than labels, so the exposition holds a fixed series count whatever the write volume — no project,
+//! than labels, so the exposition holds a fixed series count whatever the write volume - no project,
 //! digest, or operation identity ever reaches a series.
 
 use std::fmt::Write as _;
@@ -88,6 +88,13 @@ impl DcDurabilityMetrics {
             state.quorum_remaining = remaining as u64;
             state.quorum_required = (acknowledged + remaining) as u64;
         });
+    }
+}
+
+impl peryx_ha::WriteAckObserver for DcDurabilityMetrics {
+    fn record(&self, outcome: DcAck, byte_decision: &ByteAckDecision) {
+        self.record(outcome);
+        self.record_quorum(byte_decision);
     }
 }
 

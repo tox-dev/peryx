@@ -9,17 +9,17 @@ use peryx_driver::serving::{CompiledEcosystemSettings, EcosystemCapability, Ecos
 use peryx_driver::{AppState, DriverSet};
 use utoipa::openapi::PathsBuilder;
 
-pub struct EcosystemRegistration {
+pub struct PluginRegistration {
     pub plugin: &'static dyn EcosystemPlugin,
     pub priority: u16,
 }
 
-inventory::collect!(EcosystemRegistration);
+inventory::collect!(PluginRegistration);
 
 fn plugins() -> &'static [&'static dyn EcosystemPlugin] {
     static PLUGINS: OnceLock<Vec<&'static dyn EcosystemPlugin>> = OnceLock::new();
     PLUGINS.get_or_init(|| {
-        let mut registrations = inventory::iter::<EcosystemRegistration>.into_iter().collect::<Vec<_>>();
+        let mut registrations = inventory::iter::<PluginRegistration>.into_iter().collect::<Vec<_>>();
         registrations.sort_unstable_by_key(|registration| registration.priority);
         let mut ecosystems = HashSet::new();
         let mut priorities = HashSet::new();
@@ -74,6 +74,22 @@ pub fn drivers() -> &'static DriverSet {
 pub fn install_drivers<S: std::hash::BuildHasher>(
     state: &mut AppState,
     settings: &HashMap<String, CompiledEcosystemSettings, S>,
+) -> Result<(), String> {
+    install(state, settings, false)
+}
+
+/// # Errors
+/// Returns an error when a plugin cannot install its distributed services.
+pub fn install_distributed_drivers<S: std::hash::BuildHasher>(
+    state: &mut AppState,
+    settings: &HashMap<String, CompiledEcosystemSettings, S>,
+) -> Result<(), String> {
+    install(state, settings, true)
+}
+
+fn install<S: std::hash::BuildHasher>(
+    state: &mut AppState,
+    settings: &HashMap<String, CompiledEcosystemSettings, S>,
     distributed: bool,
 ) -> Result<(), String> {
     for plugin in plugins() {
@@ -82,7 +98,11 @@ pub fn install_drivers<S: std::hash::BuildHasher>(
             .filter(|(_, settings)| settings.ecosystem() == plugin.ecosystem())
             .map(|(name, settings)| (name.as_str(), settings))
             .collect::<Vec<_>>();
-        plugin.install(state, &plugin_settings, distributed)?;
+        if distributed {
+            plugin.install_distributed(state, &plugin_settings)?;
+        } else {
+            plugin.install(state, &plugin_settings)?;
+        }
     }
     Ok(())
 }

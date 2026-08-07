@@ -218,7 +218,7 @@ async fn test_summary_reports_counters_limits_and_paginates() {
     assert_eq!(repositories.len(), 2);
     let private = &repositories[0];
     assert_eq!(private["repository"], "root/private");
-    assert_eq!(private["ecosystem"], "pypi");
+    assert_eq!(private["ecosystem"], "example");
     assert_eq!(private["accounted_bytes"]["committed"], 3000);
     assert_eq!(private["accounted_bytes"]["reserved"], 500);
     assert_eq!(private["accounted_bytes"]["limit"], 10_000);

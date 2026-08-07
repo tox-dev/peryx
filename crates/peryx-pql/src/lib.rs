@@ -2,7 +2,7 @@
 //! over peryx's typed domains.
 //!
 //! PQL is a single query surface over the operational state peryx already exposes through a patchwork
-//! of typed endpoints — usage, policy decisions, trash, retention, quota, revocations, and (later)
+//! of typed endpoints - usage, policy decisions, trash, retention, quota, revocations, and (later)
 //! per-ecosystem package metadata. It parses a textual query, validates and costs it against a static
 //! catalog, injects the caller's authorization scope structurally, and evaluates it over a
 //! [`DataSource`], returning typed rows.
@@ -10,7 +10,7 @@
 //! # Non-Turing-complete
 //!
 //! The language expresses selection, filtering, ordering, bounded pagination, one declared join, and
-//! a fixed set of aggregates — nothing else. There are no loops, no recursion, no user-defined
+//! a fixed set of aggregates - nothing else. There are no loops, no recursion, no user-defined
 //! functions, and no arithmetic beyond comparison. Evaluation is linear in the number of candidate
 //! rows and its cost is bounded before execution.
 //!

@@ -22,7 +22,12 @@ use peryx_core::path::{self, PathSafetyError};
 use peryx_driver::discovery::BaseUrl;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
-use peryx_driver::serving::{EcosystemDriver, MaintenanceDriver, RefreshSweep, ReplicatedApplyDriver};
+use peryx_driver::serving::{
+    ArchiveDriver, ArtifactPathDriver, BlobReferenceDriver, BrowseDriver, CacheDriver, CacheRefresher,
+    DriverCapabilities, EcosystemDriver, FsckDriver, ImportDriver, IndexSummaryDriver, IntentFinalizer, JobDriver,
+    MaintenanceCapabilities, MaintenanceDriver, MetricsDriver, NameDriver, PolicyDriver, ProjectPageDriver,
+    RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver, ShadowDriver, TrashDriver, UploadUiDriver,
+};
 use peryx_driver::state::{IndexDescription, SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
 use peryx_identity::{
@@ -230,19 +235,28 @@ impl EcosystemDriver for PypiServing {
         crate::ECOSYSTEM
     }
 
-    fn node_job(
-        &self,
-        job: &peryx_driver::jobs::ScheduledJob,
-    ) -> Option<Result<Arc<dyn peryx_driver::jobs::NodeJob>, String>> {
-        crate::catalog_job::catalog_job(job)
-    }
-
-    fn classify_service_post(&self, path: &str, headers: &HeaderMap) -> Option<RouteClass> {
-        is_changelog_path(path, headers).then_some(RouteClass::Listing)
-    }
-
-    async fn service_post(&self, state: Arc<ServingState>, request: Request) -> Response {
-        pypi_changelog(state, request).await
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            jobs: Some(self),
+            metrics: Some(self),
+            name: Some(self),
+            policy: Some(self),
+            blob_references: Some(self),
+            fsck: Some(self),
+            retention: Some(self),
+            cache: Some(self),
+            index_summary: Some(self),
+            trash: Some(self),
+            shadow: Some(self),
+            import: Some(self),
+            service: Some(self),
+            browse: Some(self),
+            project_page: Some(self),
+            upload_ui: Some(self),
+            archive: Some(self),
+            artifact_path: Some(self),
+            ..DriverCapabilities::default()
+        }
     }
 
     async fn get(
@@ -301,10 +315,48 @@ impl EcosystemDriver for PypiServing {
         .clone()
     }
 
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = String::with_capacity(route.len() + 9);
+        url.push('/');
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push_str("/simple/");
+        url
+    }
+}
+
+impl JobDriver for PypiServing {
+    fn node_job(
+        &self,
+        job: &peryx_driver::jobs::ScheduledJob,
+    ) -> Option<Result<Arc<dyn peryx_driver::jobs::NodeJob>, String>> {
+        crate::catalog_job::catalog_job(job)
+    }
+}
+
+#[async_trait]
+impl ServiceDriver for PypiServing {
+    fn classify_service_post(&self, path: &str, headers: &HeaderMap) -> Option<RouteClass> {
+        is_changelog_path(path, headers).then_some(RouteClass::Listing)
+    }
+
+    async fn service_post(&self, state: Arc<ServingState>, request: Request) -> Response {
+        pypi_changelog(state, request).await
+    }
+}
+
+impl MetricsDriver for PypiServing {
     fn metric_families(&self) -> &'static [MetricFamily] {
         PYPI_FAMILIES
     }
+}
 
+impl NameDriver for PypiServing {
+    fn normalize_name(&self, name: &str) -> String {
+        crate::normalize_name(name)
+    }
+}
+
+impl PolicyDriver for PypiServing {
     fn compile_policy(&self, policy: &toml::Table) -> Result<Vec<Arc<dyn peryx_policy::ArtifactRule>>, String> {
         if let Some(key) = policy
             .keys()
@@ -318,26 +370,6 @@ impl EcosystemDriver for PypiServing {
         crate::policy::compile_rules(&config).map_err(crate::error_message)
     }
 
-    fn normalize_name(&self, name: &str) -> String {
-        crate::normalize_name(name)
-    }
-
-    fn referenced_blob_digests(
-        &self,
-        meta: &peryx_storage::meta::MetaStore,
-    ) -> Result<std::collections::BTreeSet<String>, String> {
-        crate::admin::referenced_blob_digests(meta)
-    }
-
-    fn fsck_metadata(
-        &self,
-        meta: &peryx_storage::meta::MetaStore,
-        blobs: &peryx_storage::blob::BlobStorage,
-        out: &mut dyn std::io::Write,
-    ) -> Result<u64, String> {
-        crate::admin::fsck_metadata(meta, blobs, out)
-    }
-
     fn policy_dry_run(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -348,7 +380,29 @@ impl EcosystemDriver for PypiServing {
     ) -> Result<(), String> {
         crate::admin::policy_dry_run(meta, indexes, index_filter, project_filter, out)
     }
+}
 
+impl BlobReferenceDriver for PypiServing {
+    fn referenced_blob_digests(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        crate::admin::referenced_blob_digests(meta)
+    }
+}
+
+impl FsckDriver for PypiServing {
+    fn fsck_metadata(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        blobs: &peryx_storage::blob::BlobStorage,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        crate::admin::fsck_metadata(meta, blobs, out)
+    }
+}
+
+impl RetentionDriver for PypiServing {
     fn plan_retention(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -356,7 +410,7 @@ impl EcosystemDriver for PypiServing {
         policy: &peryx_policy::RetentionPolicy,
         now: Option<i64>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
-    ) -> Result<Option<peryx_policy::RetentionSummary>, String> {
+    ) -> Result<peryx_policy::RetentionSummary, String> {
         crate::retention::evaluate_retention(
             meta,
             index,
@@ -365,9 +419,10 @@ impl EcosystemDriver for PypiServing {
             crate::retention::RETENTION_PROJECT_BUDGET_BYTES,
             emit,
         )
-        .map(Some)
     }
+}
 
+impl CacheDriver for PypiServing {
     fn purge_project(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -376,36 +431,6 @@ impl EcosystemDriver for PypiServing {
         apply: bool,
     ) -> Result<peryx_driver::serving::PurgeReport, String> {
         crate::admin::purge_project(meta, index, project, apply)
-    }
-
-    fn summarize_indexes(
-        &self,
-        meta: &peryx_storage::meta::MetaStore,
-        index_names: &[String],
-        recent_limit: usize,
-    ) -> Result<std::collections::HashMap<String, peryx_driver::serving::IndexSummary>, String> {
-        crate::store::summarize_indexes(meta, index_names, recent_limit).map_err(crate::error_message)
-    }
-
-    fn trash_records(
-        &self,
-        meta: &peryx_storage::meta::MetaStore,
-        index_names: &[String],
-    ) -> Result<Vec<peryx_core::TrashRecord>, String> {
-        let mut records = Vec::new();
-        for index in index_names {
-            records.extend(crate::trash::trash_records(meta, index)?);
-        }
-        Ok(records)
-    }
-
-    fn shadowed_candidates(
-        &self,
-        state: &ServingState,
-        position: usize,
-        project: &str,
-    ) -> Result<Vec<peryx_core::ShadowCandidate>, String> {
-        cache::shadowed_candidates(state, position, project)
     }
 
     fn cache_pages(
@@ -419,7 +444,45 @@ impl EcosystemDriver for PypiServing {
     fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
         crate::admin::cache_record_counts(meta)
     }
+}
 
+impl IndexSummaryDriver for PypiServing {
+    fn summarize_indexes(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index_names: &[String],
+        recent_limit: usize,
+    ) -> Result<std::collections::HashMap<String, peryx_driver::serving::IndexSummary>, String> {
+        crate::store::summarize_indexes(meta, index_names, recent_limit).map_err(crate::error_message)
+    }
+}
+
+impl TrashDriver for PypiServing {
+    fn trash_records(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        index_names: &[String],
+    ) -> Result<Vec<peryx_core::TrashRecord>, String> {
+        let mut records = Vec::new();
+        for index in index_names {
+            records.extend(crate::trash::trash_records(meta, index)?);
+        }
+        Ok(records)
+    }
+}
+
+impl ShadowDriver for PypiServing {
+    fn shadowed_candidates(
+        &self,
+        state: &ServingState,
+        position: usize,
+        project: &str,
+    ) -> Result<Vec<peryx_core::ShadowCandidate>, String> {
+        cache::shadowed_candidates(state, position, project)
+    }
+}
+
+impl ImportDriver for PypiServing {
     fn import_dir(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -431,26 +494,12 @@ impl EcosystemDriver for PypiServing {
     ) -> Result<(), String> {
         crate::import::import_dir(meta, blobs, target_name, target_route, dir, out)
     }
+}
 
+#[async_trait]
+impl BrowseDriver for PypiServing {
     fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         web::project_names(state, position)
-    }
-
-    async fn project_page(
-        &self,
-        state: Arc<ServingState>,
-        position: usize,
-        project: String,
-    ) -> Result<Option<(peryx_core::UiProject, peryx_core::UiMeta)>, String> {
-        web::project_page(state, position, project).await
-    }
-
-    fn client_endpoint(&self, route: &str) -> String {
-        let mut url = String::with_capacity(route.len() + 9);
-        url.push('/');
-        peryx_core::url_encoding::push_path(&mut url, route);
-        url.push_str("/simple/");
-        url
     }
 
     async fn browse_project(
@@ -463,7 +512,22 @@ impl EcosystemDriver for PypiServing {
             .await?
             .map(|(project, meta)| peryx_core::UiProjectView::Files { project, meta }))
     }
+}
 
+#[async_trait]
+impl ProjectPageDriver for PypiServing {
+    async fn project_page(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        project: String,
+    ) -> Result<Option<(peryx_core::UiProject, peryx_core::UiMeta)>, String> {
+        web::project_page(state, position, project).await
+    }
+}
+
+#[async_trait]
+impl ArtifactPathDriver for PypiServing {
     async fn artifact_path_in_project(
         &self,
         state: Arc<ServingState>,
@@ -474,26 +538,92 @@ impl EcosystemDriver for PypiServing {
     ) -> Result<peryx_storage::blob::BlobLease, String> {
         web::artifact_path_in_project(state, position, project, digest_hex, filename).await
     }
+}
 
-    async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String> {
-        cache::refresh_stale_pages(&state)
-            .await
-            .map(|summary| RefreshSweep {
-                checked: summary.checked,
-                changed: summary.changed,
-            })
-            .map_err(|err| err.user_message())
-    }
-
-    async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64 {
-        finalize_sweep::finalize_admitted(&state).await
-    }
-
-    fn apply_replicated_changes(&self, state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
-        Self::apply_replicated_changes_impl(state, changed_keys)
+impl UploadUiDriver for PypiServing {
+    fn upload_ui(&self, route: &str, enabled: bool) -> Option<peryx_core::UiUploadSpec> {
+        enabled.then(|| peryx_core::UiUploadSpec {
+            endpoint: format!("/{}/", route.trim_matches('/')),
+            form_field: "content".to_owned(),
+            authorization_username: Some("__token__".to_owned()),
+            token_label: "Upload token".to_owned(),
+            file_label: "Distribution".to_owned(),
+            accept: ".whl,.tar.gz".to_owned(),
+            help: "Choose one wheel or .tar.gz source distribution. The index's configured size limit applies."
+                .to_owned(),
+            allowed_suffixes: vec![".whl".to_owned(), ".tar.gz".to_owned()],
+        })
     }
 }
 
+#[async_trait]
+impl ArchiveDriver for PypiServing {
+    async fn archive_members(
+        &self,
+        request: peryx_driver::serving::ArchiveRequest,
+    ) -> Result<Vec<peryx_core::UiMember>, String> {
+        let lease = web::artifact_path_in_project(
+            request.state,
+            request.position,
+            request.project,
+            request.digest,
+            request.filename.clone(),
+        )
+        .await?;
+        tokio::task::spawn_blocking(move || {
+            crate::archive::list_members_nested_path(&request.filename, lease.path(), &request.containers)
+        })
+        .await
+        .map_err(|err| format!("archive listing task failed: {err}"))?
+        .map(|members| {
+            members
+                .into_iter()
+                .map(|member| peryx_core::UiMember {
+                    path: member.path,
+                    size: member.size,
+                    kind: member.kind.as_str().to_owned(),
+                    previewable: member.previewable,
+                })
+                .collect()
+        })
+        .map_err(|err| err.to_string())
+    }
+
+    async fn archive_member_chunk(
+        &self,
+        request: peryx_driver::serving::ArchiveMemberRequest,
+    ) -> Result<peryx_core::UiMemberChunk, String> {
+        let lease = web::artifact_path_in_project(
+            request.archive.state,
+            request.archive.position,
+            request.archive.project,
+            request.archive.digest,
+            request.archive.filename.clone(),
+        )
+        .await?;
+        let selected = request.member.clone();
+        let chunk = tokio::task::spawn_blocking(move || {
+            crate::archive::read_text_member_chunk_nested_path(
+                &request.archive.filename,
+                lease.path(),
+                &request.archive.containers,
+                &selected,
+                request.offset,
+                crate::archive::DEFAULT_MEMBER_CHUNK,
+            )
+        })
+        .await
+        .map_err(|err| format!("archive member task failed: {err}"))?
+        .map_err(|err| err.to_string())?;
+        Ok(peryx_core::UiMemberChunk {
+            text: String::from_utf8(chunk.bytes)
+                .map_err(|err| format!("archive member {:?} is not UTF-8: {err}", request.member))?,
+            size: Some(chunk.size),
+            offset: chunk.offset,
+            next_offset: chunk.next_offset,
+        })
+    }
+}
 impl PypiServing {
     fn apply_replicated_changes_impl(state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
         let ctx = state.indexer_ctx();
@@ -529,14 +659,24 @@ impl MaintenanceDriver for PypiServing {
         crate::ECOSYSTEM
     }
 
-    async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
-        0
+    fn maintenance_capabilities(&self) -> MaintenanceCapabilities<'_> {
+        MaintenanceCapabilities {
+            intent_finalizer: Some(self),
+            cache_refresher: Some(self),
+            ..MaintenanceCapabilities::default()
+        }
     }
+}
 
+#[async_trait]
+impl IntentFinalizer for PypiServing {
     async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64 {
         finalize_sweep::finalize_admitted(&state).await
     }
+}
 
+#[async_trait]
+impl CacheRefresher for PypiServing {
     async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String> {
         cache::refresh_stale_pages(&state)
             .await

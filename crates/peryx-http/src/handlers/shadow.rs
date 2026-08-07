@@ -3,7 +3,7 @@
 //! One neutral query ([`AppState::query_shadowed`](peryx_driver::state::AppState::query_shadowed))
 //! replays a virtual repository's resolution of a project and returns the selected candidate for each
 //! filename plus every candidate a member shadowed. Repository authorization gates the whole response,
-//! so a caller who cannot read the repository learns nothing — not a member name, filename, or digest.
+//! so a caller who cannot read the repository learns nothing - not a member name, filename, or digest.
 //! The candidates carry no upstream URLs. Responses never enter a shared cache.
 
 use std::sync::Arc;

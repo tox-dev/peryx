@@ -2,7 +2,7 @@
 //!
 //! [`UpstreamClient`] is ecosystem-neutral HTTP: it sends conditional `GET`s and streams files, and
 //! knows nothing about PEP 503/691. This module is the seam where those neutral sends become
-//! Simple-API document fetches — the `Accept` negotiation, the content-type validation, and the
+//! Simple-API document fetches - the `Accept` negotiation, the content-type validation, and the
 //! `x-pypi-last-serial`/`Cache-Control` parsing that only the `PyPI` ecosystem cares about. Status is
 //! kept agnostic: `304` and `404` come back to the caller rather than raised, so the cache layer
 //! decides what to do.
@@ -82,7 +82,7 @@ impl SimpleHead {
     }
 }
 
-/// Fetch a project's index document, then the project list, then a file's bytes — the `PyPI` Simple
+/// Fetch a project's index document, then the project list, then a file's bytes - the `PyPI` Simple
 /// protocol layered over an [`UpstreamClient`] as an extension trait so call sites keep method syntax.
 pub trait SimpleClientExt {
     /// Fetch a project's simple page, optionally revalidating with `If-None-Match`.
@@ -239,8 +239,7 @@ fn fallback_result<T: SimpleStatus>(result: &Result<T, UpstreamError>) -> bool {
         Err(
             UpstreamError::Credential(_)
             | UpstreamError::Url(_)
-            | UpstreamError::MissingContentType { .. }
-            | UpstreamError::UnsupportedContentType { .. }
+            | UpstreamError::InvalidResponse { .. }
             | UpstreamError::ResponseTooLarge { .. }
             | UpstreamError::BlockedDestination { .. },
         ) => false,
@@ -352,7 +351,9 @@ fn simple_head(response: reqwest::Response) -> Result<SimpleHead, UpstreamError>
 
 fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result<(), UpstreamError> {
     let Some(content_type) = content_type else {
-        return Err(UpstreamError::MissingContentType { url: url.clone() });
+        return Err(UpstreamError::InvalidResponse {
+            reason: format!("missing Simple API Content-Type from {url}"),
+        });
     };
     let media_type = content_type
         .split_once(';')
@@ -365,9 +366,8 @@ fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result
     ) {
         return Ok(());
     }
-    Err(UpstreamError::UnsupportedContentType {
-        url: url.clone(),
-        content_type: content_type.to_owned(),
+    Err(UpstreamError::InvalidResponse {
+        reason: format!("unsupported Simple API Content-Type {content_type:?} from {url}"),
     })
 }
 

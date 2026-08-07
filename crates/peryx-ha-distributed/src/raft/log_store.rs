@@ -256,7 +256,7 @@ mod tests {
 
         let error = adapter.read_vote().await.unwrap_err();
 
-        // The serde decode failure itself rides along, not just our wrapper: "Store" is the subject
+        // The serde decode failure rides with our wrapper: "Store" is the subject
         // label on every error this adapter renders, so match the decoder's own message instead.
         assert!(error.to_string().contains("expected"), "{error}");
     }

@@ -17,8 +17,8 @@ use crate::url::browse_project_url;
 /// layer's contents, selected by query parameters.
 ///
 /// The dispatch is ecosystem-neutral: a `project` renders as whatever [`ProjectView`] gets back from
-/// the index's driver (a file listing or a reference list), and the `ref`/`layer` parameters — which
-/// only a registry's own URLs carry — select the manifest and layer views. No branch names a format.
+/// the index's driver (a file listing or a reference list), and the `ref`/`layer` parameters - which
+/// only a registry's own URLs carry - select the manifest and layer views. No branch names a format.
 #[component]
 pub fn Browse() -> impl IntoView {
     let query = use_query_map();

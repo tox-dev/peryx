@@ -117,7 +117,7 @@ fn test_a_none_node_registers_no_durability_metric() {
     let dir = tempfile::tempdir().unwrap();
     let config = config(&dir, None);
     let state = build_state(&config).unwrap();
-    let _replication = ReplicationRuntime::new(&config, &state).unwrap();
+    assert!(ReplicationRuntime::from_config(&config, &state).unwrap().is_none());
 
     let mut body = String::new();
     state.write_process_metrics(&mut body);
@@ -1175,12 +1175,9 @@ async fn test_disabled_runtime_mounts_no_routes_or_task() {
     let dir = tempfile::tempdir().unwrap();
     let config = config(&dir, None);
     let state = build_state(&config).unwrap();
-    let mut runtime = ReplicationRuntime::new(&config, &state).unwrap();
+    assert!(ReplicationRuntime::from_config(&config, &state).unwrap().is_none());
 
-    assert!(!runtime.is_replica());
-    assert_eq!(runtime.sync_cycle().await, None);
-    let router = runtime.mount(router_for(state));
-    assert!(runtime.start().is_none());
+    let router = router_for(state);
     let response = router
         .clone()
         .oneshot(

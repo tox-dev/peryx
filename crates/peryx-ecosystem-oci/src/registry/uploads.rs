@@ -7,7 +7,7 @@ use super::blobs::{
 use super::*;
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self};
-use crate::upload_session::{UploadRecord, UploadStore as _};
+use crate::upload_session::UploadRecord;
 use axum::body::Body;
 use axum::http::response::Builder;
 use axum::http::{HeaderMap, StatusCode, header};
