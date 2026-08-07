@@ -63,7 +63,7 @@ that cannot restore it refuses to start rather than serve a partial hidden set.
 Retention is bounded by frontier, never by wall-clock age. Compaction releases an artifact only once it has returned to
 the visible default _and_ a required-replica-and-backup frontier covers its operations, because the authority never
 resends an operation below a serial acknowledged everywhere. A still-trashed or still-revoked artifact is never released
-: its tombstone is the thing doing the hiding. An entry whose high-water sits in a later epoch is kept until every
+\: its tombstone is the thing doing the hiding. An entry whose high-water sits in a later epoch is kept until every
 earlier epoch has drained too, so a stale lower-epoch operation cannot resurrect an entry the compaction has forgotten.
 
 ## Failover

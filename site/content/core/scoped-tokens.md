@@ -16,8 +16,8 @@ discloses no usable credential.
 
 Creating a token validates its reach against the caller's own role grants. A server-wide token : one with no repository
 : requires administrator authority. A repository-scoped token requires the caller's authority for each requested action
-on that repository. So a repository manager can mint a token for their own repository but cannot mint a server-wide or
-cross-repository one; the request answers `404`, disclosing neither the repository nor the token.
+  on that repository. So a repository manager can mint a token for their own repository but cannot mint a server-wide or
+  cross-repository one; the request answers `404`, disclosing neither the repository nor the token.
 
 Listing, inspecting, rotating, and revoking a token require write authority over its reach: repository write for a
 repository token, administrator authority for a server token. A repository reader can mint a read-only token for its

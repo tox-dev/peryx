@@ -242,8 +242,7 @@ Supported policy implementations:
 ## `quota`
 
 Quota commands read the same config and `--data-dir` flags as `serve`, derive each repository's limits from its policy,
-and change no metadata. They report the same status as the
-[`/+quota` HTTP reads](@/core/quotas.md#status-api).
+and change no metadata. They report the same status as the [`/+quota` HTTP reads](@/core/quotas.md#status-api).
 
 ```shell
 peryx quota list
@@ -279,8 +278,7 @@ summary policy_version=42  repository=7  catalog=3  policy=2
 ```
 
 `retention export` streams the whole plan as JSON Lines, the identity first, matching the HTTP export. See
-[Retention plans](@/core/retention.md#cli-preview) for pagination, resumable export, and the
-side-effect-free contract.
+[Retention plans](@/core/retention.md#cli-preview) for pagination, resumable export, and the side-effect-free contract.
 
 ## `writer`
 

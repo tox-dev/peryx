@@ -180,9 +180,14 @@ compare the HMAC with the configured target secret and reject timestamps outside
 import hashlib
 import hmac
 
+
 def verify(secret: str, headers, body: bytes) -> bool:
-    message = f"{headers['x-peryx-timestamp']}.{headers['x-peryx-delivery']}.".encode() + body
-    expected = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    message = (
+        f"{headers['x-peryx-timestamp']}.{headers['x-peryx-delivery']}.".encode() + body
+    )
+    expected = (
+        "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    )
     return hmac.compare_digest(expected, headers["x-peryx-signature"])
 ```
 
