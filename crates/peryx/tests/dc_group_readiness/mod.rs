@@ -250,7 +250,7 @@ fn test_killing_the_writer_stops_writes_and_preserves_the_durable_frontier() {
     // dies can fail to land, so poll the publish until the replica answers its read-only refusal.
     let deadline = Instant::now() + CONVERGE;
     let (code, body) = loop {
-        if let Some(refusal @ (503, _)) = cluster.nodes()[replica].publish() {
+        if let Ok(refusal @ (503, _)) = cluster.nodes()[replica].publish() {
             break refusal;
         }
         assert!(
