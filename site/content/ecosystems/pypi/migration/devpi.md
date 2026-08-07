@@ -81,17 +81,17 @@ The request workload drives a swarm of resolvers reading full project pages:
 devpi's mirror state does not migrate and does not need to: peryx's cache refills on first use. Only your uploaded
 packages need a `twine upload` pass into the new hosted index. Map the commands and knobs across:
 
-| devpi                                        | peryx                                                                                                                            |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `devpi-init` then `devpi-server --port 3141` | `peryx serve` (no init step)                                                                                                     |
-| `http://host:3141/{user}/{index}/+simple/`   | `http://host:4433/{route}/simple/`                                                                                               |
-| `devpi index -c dev bases=root/pypi`         | a virtual index with `layers = ["dev-hosted", "pypi"]` in [TOML](@/core/configuration.md)                                        |
-| `devpi login` + `devpi upload`               | `twine upload --repository-url http://host:4433/{route}/ dist/*` (any username, the `[[index.access_token]]` secret as password) |
-| `devpi remove pkg==1.0`                      | `DELETE /{route}/{project}/{version}/` ([removal guide](@/ecosystems/pypi/guides/remove.md))                                     |
-| `volatile=False`                             | `volatile = false` on the hosted index                                                                                           |
-| `mirror_whitelist`                           | not needed: hosted names shadow the cached index by default ([why](@/core/indexes.md))                                           |
-| `acl_upload`                                 | one write-granting `[[index.access_token]]` per hosted index                                                                     |
-| devpi-web plugin                             | built in at `/`                                                                                                                  |
+| devpi                                        | peryx                                                            |
+| -------------------------------------------- | ---------------------------------------------------------------- |
+| `devpi-init` then `devpi-server --port 3141` | `peryx serve`                                                    |
+| `http://host:3141/{user}/{index}/+simple/`   | `http://host:4433/{route}/simple/`                               |
+| `devpi index -c dev bases=root/pypi`         | Virtual index with `layers = ["dev-hosted", "pypi"]`             |
+| `devpi login` and `devpi upload`             | `twine upload --repository-url http://host:4433/{route}/ dist/*` |
+| `devpi remove pkg==1.0`                      | `DELETE /{route}/{project}/{version}/`                           |
+| `volatile=False`                             | `volatile = false` on the hosted index                           |
+| `mirror_whitelist`                           | Hosted names shadow the cached index by default                  |
+| `acl_upload`                                 | One write token per hosted index                                 |
+| devpi-web plugin                             | Built in at `/`                                                  |
 
 ## Gotchas
 

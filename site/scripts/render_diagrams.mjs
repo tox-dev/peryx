@@ -30,11 +30,11 @@ const mmdc = existsSync(join(site, "node_modules", ".bin", "mmdc"))
 
 const BLOCK = /\{%\s*mermaid\(\)\s*%\}\s*([\s\S]*?)\s*\{%\s*end\s*%\}/g;
 
-// A diagram names a role — `class cache accent` — and the palette for that role lives here, once per
+// A diagram names a role (`class cache accent`), and its palette lives here once per
 // theme, rather than as a `classDef` line repeated in every diagram. One palette baked into the
 // source cannot suit both pages: a fill that reads on cream glares on the dark page. So each role is
 // a tinted chip of its hue on the page's own surface, with the hue itself only on the border and the
-// text — legible without the saturated block fills mermaid reaches for by default.
+// text legible without Mermaid's default saturated block fills.
 const ROLES = {
   light: {
     accent: "fill:#dbe6f5,stroke:#4a6f9f,color:#16304d",

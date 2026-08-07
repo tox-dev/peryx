@@ -17,14 +17,14 @@ One reconciliation pass runs two bounded scans over the placement ledger, in dig
 single pass reads the whole ledger:
 
 - **Integrity.** It re-verifies each of the local data center's verified placements against its stored bytes by
-  stream-hashing the file and comparing it to the digest it is addressed by. A copy whose bytes no longer match — rotted
-  on disk, or a verified record over a file that has vanished — demotes to a digest-mismatch failure, and its bad bytes
+  stream-hashing the file and comparing it to the digest it is addressed by. A copy whose bytes no longer match : rotted
+  on disk, or a verified record over a file that has vanished : demotes to a digest-mismatch failure, and its bad bytes
   are dropped. Detecting the rot is this pass's job; the repair copy is not. A demoted placement leaves the served set
   and the local data center now owes the digest, so the copy backlog the
-  [`dc-copy`](@/core/availability-authority-transfer.md) job drains schedules a fresh copy from a verified peer — one
+  [`dc-copy`](@/core/availability-authority-transfer.md) job drains schedules a fresh copy from a verified peer : one
   repair attempt, retried on the next pass if it fails.
 - **Policy.** It classifies each digest's placements against the target data centers and retires the verified copies
-  that sit outside the policy — a data center dropped from membership, say — by revoking them from serving. A target
+  that sit outside the policy : a data center dropped from membership, say : by revoking them from serving. A target
   data center that *lacks* a copy is that data center's own copy backlog to fill, not this pass's, so reconciliation
   schedules removals to converge and leaves the copies to the copier.
 
@@ -53,7 +53,7 @@ Reconciliation never resurrects content the fleet is withdrawing. Before it repa
 two records and passes over any digest they cover:
 
 - an **active [digest revocation](@/core/availability-contracts.md)**, which has retired the artifact from serving, and
-- an **in-flight reclamation tombstone** — one that is pending or ready — which the reclaimer is about to delete the
+- an **in-flight reclamation tombstone** : one that is pending or ready : which the reclaimer is about to delete the
   bytes for.
 
 Repairing either would re-copy bytes the fleet is removing and fight the reclaimer, so the pass skips them; the next

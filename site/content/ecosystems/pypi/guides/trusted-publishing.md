@@ -17,17 +17,21 @@ index to each project grant, so the same project name on another route remains i
 
 {{ trusted_publishing_config() }}
 
-Publisher IDs must be unique. `issuer`, `subject`, and each entry in `claims` must equal the identity value; `subject`
-and `projects` use peryx globs. Peryx checks rules in file order; the first complete match determines the publisher ID
-and grants. Keep the subject narrow and require stable numeric provider claims where they exist. Someone can delete and
-reclaim a repository name; the `repository_id` and `repository_owner_id` fields from GitHub, or the `project_id` and
-`namespace_id` fields from GitLab, survive that name-based ambiguity. On GitLab 18.4 or newer, prefer `job_project_id`
-and `job_namespace_id`; the older fields identify the source project in a merge request pipeline. GitHub documents its
-available fields in the [Actions OIDC claim reference](https://docs.github.com/en/actions/reference/security/oidc);
-GitLab lists its fields in the [CI ID token reference](https://docs.gitlab.com/ci/secrets/id_token_authentication/).
+`[auth].oidc_audience` sets the required external identity audience and defaults to `peryx`. Each
+`[[auth.trusted_publisher]]` requires `id`, `issuer`, `repository`, `subject`, and a non-empty `projects` list; `claims`
+is optional. Publisher IDs must be unique. `issuer`, `subject`, and each entry in `claims` must equal the identity
+value; `subject` and `projects` use peryx globs. Peryx checks rules in file order; the first complete match determines
+the publisher ID and grants. Keep the subject narrow and require stable numeric provider claims where they exist.
+Someone can delete and reclaim a repository name; the `repository_id` and `repository_owner_id` fields from GitHub, or
+the `project_id` and `namespace_id` fields from GitLab, survive that name-based ambiguity. On GitLab 18.4 or newer,
+prefer `job_project_id` and `job_namespace_id`; the older fields identify the source project in a merge request
+pipeline. GitHub documents its available fields in the
+[Actions OIDC claim reference](https://docs.github.com/en/actions/reference/security/oidc); GitLab lists its fields in
+the [CI ID token reference](https://docs.gitlab.com/ci/secrets/id_token_authentication/).
 
 Peryx mounts the exchange routes after an operator configures a publisher. Without a publisher it creates no OIDC client
-or replay state. Peryx contacts an issuer during an exchange request.
+or replay state. Peryx contacts an issuer during an exchange request. This CI exchange does not create a server user or
+browser session. Browser OIDC login uses a separate provider configuration and credential path.
 
 ## GitHub Actions
 

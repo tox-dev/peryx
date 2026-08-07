@@ -29,7 +29,7 @@ exercised alone with `gh workflow run publish-pypi.yml`, which builds every whee
 ## One-time setup
 
 - PyPI: create the `peryx` project and add a [trusted publisher](https://docs.pypi.org/trusted-publishers/) for
-  `tox-dev/peryx`, workflow `publish-pypi.yml`, environment `pypi`. No API token is stored anywhere.
+  `tox-dev/peryx`, workflow `publish-pypi.yml`, environment `pypi`. The pipeline stores no API token.
 - GitHub: create the `pypi` environment (Settings → Environments); restrict it to tag deployments if desired.
 
 ## Local dry runs

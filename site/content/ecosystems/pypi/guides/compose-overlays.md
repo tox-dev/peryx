@@ -4,9 +4,9 @@ description = "Serve several indexes under one URL, give each cached index its o
 weight = 4
 +++
 
-A virtual index lists other indexes as `layers` and serves them under one route. Resolution is first-match per filename:
-peryx walks the layers in order and keeps the first occurrence of each file, so a file in an earlier layer shadows the
-same filename in a later one. Versions union across layers.
+A virtual index lists other indexes as `layers` and serves them under one route. peryx walks the layers in order and
+keeps the first occurrence of each filename. A file in an earlier layer shadows the same filename in a later layer;
+versions form a union across layers.
 
 ## A private layer over each cached index
 
@@ -49,9 +49,9 @@ layers = ["team-hosted", "pypi"]
 Clients using `/team/dev/simple/` see the team's uploads in front of the corporate cached index; clients using
 `/oss/simple/` see the same uploads in front of pypi.org. One hosted store can back any number of virtual indexes.
 
-Choose routes as stable URL prefixes. Segments may contain ASCII letters, digits, `-`, `.`, `_`, and `~`; separate
-nested routes with `/`. Peryx validates routes once at startup so request routing can stay a fast prefix lookup, and it
-rejects routes that collide with built-in endpoints such as `browse`, `stats`, `+stats`, and `+status`.
+Choose stable URL prefixes for routes. Segments may contain ASCII letters, digits, `-`, `.`, `_`, and `~`; use `/` for
+nested routes. Peryx validates routes at startup and rejects collisions with built-in endpoints such as `browse`,
+`stats`, `+stats`, and `+status`.
 
 ## Chaining
 
@@ -73,9 +73,8 @@ index's first hosted layer; a virtual index of only cached indexes rejects uploa
 
 ## Failure behavior
 
-A layer that cannot answer (a down upstream with a cold cache) is skipped with a warning rather than failing the whole
-page, so your own packages stay installable during an upstream outage. A cached index with a warm cache serves its
-cached copy instead.
+If an upstream is down and its cache is cold, peryx skips that layer with a warning. Other layers remain available. A
+warm cached index serves its stored copy.
 
 ## Related
 

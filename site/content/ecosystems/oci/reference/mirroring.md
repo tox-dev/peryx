@@ -15,12 +15,12 @@ images = ["library/alpine:latest", "library/nginx:1.27"]
 `packages` remains an accepted alias for deployments created before the ecosystem-owned config split. New config should
 use `images`.
 
-Command-line `--image` values extend the configured list:
+Command-line overrides are TOML values interpreted by the OCI plugin:
 
 ```shell
-peryx mirror plan root/oci --image library/alpine:latest
-peryx mirror sync root/oci --image library/alpine:latest --image library/nginx:1.27
-peryx mirror verify root/oci --image library/alpine:latest
+peryx mirror plan root/oci --option 'images=["library/alpine:latest"]'
+peryx mirror sync root/oci --option 'images=["library/alpine:latest","library/nginx:1.27"]'
+peryx mirror verify root/oci --option 'images=["library/alpine:latest"]'
 ```
 
 At least one configured or command-line image is required. Repository rewriting follows the index's

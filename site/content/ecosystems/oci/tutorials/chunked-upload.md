@@ -186,7 +186,6 @@ MANIFEST = b'{"schemaVersion":2,"config":{}}'
 MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 SHA512 = "sha512:" + hashlib.sha512(MANIFEST).hexdigest()
 
-
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/v2/":
@@ -201,7 +200,6 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
-
 
 HTTPServer(("127.0.0.1", 5000), Handler).serve_forever()
 ```

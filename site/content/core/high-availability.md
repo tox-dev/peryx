@@ -109,12 +109,12 @@ advance a replica toward its primary.
 `GET /+replication/v1/ready` is the availability readiness probe. It answers `200 OK` when the node can serve at its
 frontier and `503 Service Unavailable` otherwise, naming every cause in `reasons`:
 
-- `blob_store` — the mounted blob store failed its reachability check, so the mount cannot answer package requests.
-- `frontier_lag` — a replica has not yet reached the primary's latest observed serial.
-- `sync_error` — a replica's last poll of its primary failed.
-- `incompatible_schema` — a replica's primary speaks an unsupported replication protocol version, which a later poll
+- `blob_store` : the mounted blob store failed its reachability check, so the mount cannot answer package requests.
+- `frontier_lag` : a replica has not yet reached the primary's latest observed serial.
+- `sync_error` : a replica's last poll of its primary failed.
+- `incompatible_schema` : a replica's primary speaks an unsupported replication protocol version, which a later poll
   cannot resolve without upgrading the primary.
-- `worker_unhealthy` — a background availability task panicked. The node keeps answering the reads it can still satisfy,
+- `worker_unhealthy` : a background availability task panicked. The node keeps answering the reads it can still satisfy,
   but readiness reports the fault until the process restarts.
 
 Both documents are filtered to the caller's class, like `/+status`. Any caller reads `mode`, `role`, `ready`, and
@@ -149,7 +149,7 @@ it as not reporting.
 
 The field carries four values. `ready` is whether the group can acknowledge a new write under its durability policy.
 `durable_frontier` is the highest serial the policy's required number of members have all applied, the serial the group
-guarantees is durable. `policy` names the quorum rule, `majority` — a strict majority of the configured members.
+guarantees is durable. `policy` names the quorum rule, `majority` : a strict majority of the configured members.
 `blocked` is `null` when the group is ready, otherwise the reason it is not: `writer_lost` when no writer is reporting,
 or `insufficient_members` with the `reporting` and `required` counts when a writer is present but too few members are.
 
@@ -261,13 +261,13 @@ Background jobs carry an authority fence so an old owner cannot mutate authorita
 state after ownership has moved. A job declares one of two ownership scopes, and the runner applies the matching fence
 before it runs the work and again before it counts the result.
 
-A **node-local** job — cache maintenance, a search rebuild, a per-repository sweep — runs on every node independently
+A **node-local** job : cache maintenance, a search rebuild, a per-repository sweep : runs on every node independently
 and takes no control-plane lease. A per-repository job is already fenced by its repository's authority epoch: the run
 leases the committed epoch when it starts and its success is rejected if the authority transferred while it ran, so a
 former home's late write loses to the new home's. A node-wide node-local job that names no repository holds the closed
 `0` sentinel and is never fenced, and it makes no control-plane call at all.
 
-A **cluster-singleton** job — one that must run on a single node cluster-wide — claims a durable control-plane lease on
+A **cluster-singleton** job : one that must run on a single node cluster-wide : claims a durable control-plane lease on
 its singleton key before it runs. The lease is minted under the ownership group's monotonic term: the run stamps that
 term as its fence, and a claim from a term below the recorded one is a superseded worker that is rejected without taking
 the lease. A partitioned former owner therefore mints a stale term and loses the claim, so its run never starts and is
@@ -283,8 +283,8 @@ admits.
 
 Fenced runs are visible through the ordinary `peryx_jobs_*` lifecycle counters: a fenced-before-start or superseded run
 increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held` or
-`authority_fenced` reason. Converting a node-local kind to a cluster singleton is a one-line change — return
-`LeaseScope::ClusterSingleton` with the singleton key from the job's `lease_scope` — after which the runner leases and
+`authority_fenced` reason. Converting a node-local kind to a cluster singleton is a one-line change : return
+`LeaseScope::ClusterSingleton` with the singleton key from the job's `lease_scope` : after which the runner leases and
 fences it with no further wiring.
 
 ## Manual promotion

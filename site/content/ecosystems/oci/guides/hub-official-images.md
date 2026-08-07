@@ -27,7 +27,7 @@ library_prefix = "auto" # the default; shown here for clarity
 ```
 
 `auto` prefixes a single-segment name with `library/` when the upstream host is Docker Hub, which is what this index
-proxies. Pull short names and fully qualified ones through the same route:
+proxies. Pull short names and names with a namespace through the same route:
 
 ```shell
 docker pull peryx.internal:4433/hub/ubuntu:24.04           # peryx asks Hub for library/ubuntu
@@ -43,7 +43,7 @@ names `peryx.internal:4433/hub/ubuntu:24.04` keeps naming it that.
 `peryx mirror` pulls through the same rule, so a short name works there as well and lands in the store under that name:
 
 ```shell
-peryx mirror sync --config peryx.toml --index hub --image ubuntu:24.04 --image nginx:1.27
+peryx mirror sync hub --config peryx.toml --option 'images=["ubuntu:24.04","nginx:1.27"]'
 ```
 
 Follow up with `peryx mirror verify` to confirm every manifest and blob is on disk before a run with the network off;
@@ -73,8 +73,8 @@ library_prefix = true
 ```
 
 **Set `false`** when the upstream is Docker Hub but you want the name passed through verbatim: an index that only ever
-serves fully qualified names, or a debugging session where you need to see exactly what a client asked for. With
-`false`, a pull of `hub/ubuntu` asks Hub for `ubuntu` and gets Hub's `401`.
+serves names with a namespace, or a debugging session where you need to see the client's exact request. With `false`, a
+pull of `hub/ubuntu` asks Hub for `ubuntu` and gets Hub's `401`.
 
 Registry-mirror mode needs neither. When the Docker daemon lists peryx under `registry-mirrors`, it resolves `ubuntu` to
 `library/ubuntu` before it calls the mirror, and a mirror index carries an empty route, so the full name arrives. See
@@ -83,9 +83,9 @@ Registry-mirror mode needs neither. When the Docker daemon lists peryx under `re
 ## If the pull still fails
 
 An upstream `401` surfaces as a `401` with the `UNAUTHORIZED` code and a message naming the upstream, rather than as a
-missing manifest. On a Hub proxy that means the repository name reaching Hub is not one it will serve anonymously: check
-that `library_prefix` is not `false`, and that a user repository is spelled with its namespace. On a private upstream it
-points at the index's credentials. See [Docker Hub names and upstream auth](@/ecosystems/oci/hub-names-and-auth.md).
+missing manifest. On a Hub proxy, the repository name reached Hub without anonymous access. Check that `library_prefix`
+is not `false`, and that a user repository is spelled with its namespace. On a private upstream it points at the index's
+credentials. See [Docker Hub names and upstream auth](@/ecosystems/oci/hub-names-and-auth.md).
 
 ## Related
 

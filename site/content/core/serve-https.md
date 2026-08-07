@@ -1,60 +1,46 @@
 +++
 title = "Serve HTTPS"
-description = "Turn on TLS with a certificate you provide, an automatic Let's Encrypt certificate, or a reverse proxy that terminates TLS."
+description = "Use a supplied certificate, ACME, or a trusted reverse proxy to serve HTTPS."
 weight = 12
 +++
 
-peryx serves plain HTTP by default. Use HTTPS whenever clients cross a host or network boundary. This guide turns on TLS
-and assumes a built peryx; see [Getting started](@/core/getting-started.md). Ecosystem client exceptions belong in their
-own transport guides, including [local OCI transport](@/ecosystems/oci/guides/local-transport.md).
+peryx serves HTTP until you configure TLS. Use HTTPS when a client crosses a host or network boundary. Start with a
+running server from [Getting started](@/core/getting-started.md).
 
-TLS is off until you configure it, and an unconfigured server keeps the exact plain-HTTP path, so turning it on costs
-nothing until you do. There are three approaches; pick one.
+## Supply a certificate
 
-## Bring your own certificate
-
-If you already have a certificate and key (from your organization's CA, `mkcert`, or a previous
-[Let's Encrypt](https://letsencrypt.org/) run), a `[tls]` table serves HTTPS from them:
+Configure a PEM certificate chain and private key under `[tls]`:
 
 ```toml
-# peryx.toml
 [tls]
-cert = "/etc/peryx/fullchain.pem" # PEM certificate chain
-key = "/etc/peryx/privkey.pem"    # PEM private key
+cert = "/etc/peryx/fullchain.pem"
+key = "/etc/peryx/privkey.pem"
 ```
 
-peryx negotiates HTTP/2 and answers on the same port. A client trusts the connection when the certificate's CA is in its
-trust store: a public CA is trusted everywhere; a private or `mkcert` CA must be installed into the client's trust store
-(`mkcert -install` does this for the local machine, and
-[Docker Desktop](https://www.docker.com/products/docker-desktop/) then trusts it too).
+peryx serves HTTP/2 on the configured port. The client must trust the certificate authority. Public certificate
+authorities work with standard trust stores; private authorities must be installed in each client environment.
 
-## Automatic certificates with ACME
+## Use ACME
 
-For a public deployment, an `[acme]` table obtains and renews a certificate from Let's Encrypt, so a client trusts it
-with no insecure flag and no manual certificate handling:
+An `[acme]` table obtains and renews a certificate:
 
 ```toml
 [acme]
-domains = ["registry.example.com"] # the names to certify; reachable on port 443
-contact = "admin@example.com"      # where expiry notices go
-cache-dir = "/var/lib/peryx/acme"  # persist issued certs across restarts (default "acme-cache")
-staging = false                    # true uses Let's Encrypt staging while testing
+domains = ["packages.example.com"]
+contact = "admin@example.com"
+cache-dir = "/var/lib/peryx/acme"
+staging = false
 ```
 
-For this to work the domain's DNS must point at the server and port 443 must be reachable from the internet, since the
-[ACME](https://datatracker.ietf.org/doc/html/rfc8555) challenge happens there. While testing, set `staging = true` to
-use Let's Encrypt's staging environment. It has higher rate limits and issues untrusted certificates, so a test run does
-not spend the production quota. The `[tls]` and `[acme]` tables are mutually exclusive.
+DNS must resolve each domain to the server, and the ACME challenge must reach port 443. Set `staging = true` while
+checking the deployment. The staging authority issues untrusted certificates and has a separate rate limit.
+
+`[tls]` and `[acme]` cannot appear together.
 
 ## Terminate TLS at a reverse proxy
 
-If a load balancer, ingress controller, or reverse proxy ([nginx](https://nginx.org/),
-[Caddy](https://caddyserver.com/), a cloud LB) already holds your certificate, leave both tables unset and let it
-terminate TLS, forwarding plain HTTP to peryx on a private network. A clustered deployment usually takes this shape, and
-it needs no peryx TLS config.
-
-Configure the proxy addresses that may supply the public origin and client IP. The nginx configuration below runs on the
-same host as peryx, replaces any forwarding fields sent by the caller, and writes the address nginx accepted:
+A load balancer or reverse proxy can hold the certificate and forward HTTP to peryx on a private network. The proxy must
+replace caller-supplied forwarding headers:
 
 ```nginx
 location / {
@@ -66,7 +52,7 @@ location / {
 }
 ```
 
-Configure that loopback peer in `peryx.toml`:
+Trust the proxy address in `peryx.toml`:
 
 ```toml
 [rate_limit]
@@ -74,21 +60,15 @@ enabled = true
 trusted_proxies = ["127.0.0.1/32"]
 ```
 
-For an internal proxy chain, the edge must overwrite the caller's forwarding fields and each later proxy must append its
-immediate peer. Add the internal proxy networks to `trusted_proxies`. Keep client networks out. Peryx walks the chain
-from the nearest proxy and uses the first address outside those networks. Keep peryx unreachable from outside the
-private network so clients cannot bypass the TLS proxy.
+For a proxy chain, each proxy must append its immediate peer after the edge replaces caller input. Add proxy networks to
+`trusted_proxies`, but keep client networks out. Prevent direct access to the peryx listener from outside the private
+network.
 
-## Point clients at HTTPS
+## Configure clients
 
-Once peryx serves HTTPS with a trusted certificate, drop the `http://` for `https://` and remove any insecure flag:
+Use the ecosystem guide for client URLs, certificate stores, and local-development exceptions:
 
-```shell
-pip install --index-url https://packages.example/root/pypi/simple/ requests
-docker pull packages.example/dockerhub/library/alpine:latest
-```
+- [Python package setup](@/ecosystems/pypi/tutorials/getting-started.md)
+- [OCI local transport](@/ecosystems/oci/guides/local-transport.md)
 
-## Related
-
-- Every TLS and ACME key: [configuration reference](@/core/configuration.md#tls)
-- Run peryx as a container registry: [run a container registry](@/ecosystems/oci/guides/container-registry.md)
+See the [configuration reference](@/core/configuration.md#tls) for each TLS and ACME setting.

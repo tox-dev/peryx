@@ -31,7 +31,7 @@ name = "primary"
 url = "https://registry.example.com"
 ```
 
-Pull as normal. peryx fetches the manifest, hashes the exact bytes under its own sha256, and serves them:
+Pull through the proxy. peryx fetches the manifest, hashes the exact bytes under its own sha256, and serves them:
 
 ```shell
 crane manifest --insecure 127.0.0.1:4433/reg/team/app:1.0
@@ -56,10 +56,10 @@ crane manifest --insecure 127.0.0.1:4433/reg/team/app@sha512:<hex>
 
 ### What still requires sha256
 
-The relaxation is scoped to reading a manifest through a proxy. Three things stay sha256 only:
+The broader digest support applies to manifest reads through a proxy. These operations require sha256:
 
 - **Blobs.** A blob pull, mount, or upload commit must use `sha256:`; any other algorithm answers `400 DIGEST_INVALID`
-  with `only sha256 blob digests are supported`. A client that pushes a blob under a non-sha256 digest is rejected.
+  with `only sha256 blob digests are supported`. Peryx rejects a blob pushed under a non-sha256 digest.
 - **A wrong sha256 advertisement.** If the upstream advertises a `sha256:` digest that does not hash the bytes it sent,
   that is a corrupting hop, and peryx returns `502` and caches nothing, unchanged.
 - **Offline mirror pins.** A [mirror](@/ecosystems/oci/guides/air-gapped.md) entry pinned by digest must be `sha256:`.
@@ -111,8 +111,8 @@ references it.
 
 ## Cancel an in-progress upload
 
-A container push is a series of blob uploads, and an upload can be left half-done: a client crashes mid-layer, or a
-chunk arrives out of order and peryx answers `416`. Both cleanups act on an
+A container push is a series of blob uploads. A client can crash mid-layer, or a chunk can arrive out of order and make
+peryx answer `416`. Both cleanups act on an
 [upload session](@/ecosystems/oci/reference/registry-behavior.md#upload-sessions), so both need the hosted index's
 access-token secret as the Basic-auth password (`-u _:<token>`).
 
@@ -170,7 +170,7 @@ curl -sS -i -u _:<token> -X PATCH \
 # 202 Accepted, Range: 0-<new-end>
 ```
 
-If you have lost track of how much landed, ask the session directly. `GET` on the session URL reports progress as
+If you have lost track of how much landed, query the session. `GET` on the session URL reports progress as
 `Range: 0-<end>` without changing anything, so you can read the offset before you resume:
 
 ```shell

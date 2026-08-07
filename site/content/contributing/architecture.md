@@ -1,63 +1,64 @@
 +++
 title = "Architecture for contributors"
-description = "Crate ownership, dependency direction, plugin contracts, and configuration-selected availability."
+description = "Crate ownership, dependency direction, plugin contracts, and availability startup."
 weight = 1
 +++
 
-peryx is organized around two extension seams: ecosystems and availability coordination. Both are selected from startup
-configuration in one binary. Shared crates define contracts; implementation crates depend on and implement them.
+Peryx ships one binary containing the PyPI, OCI, and distributed availability implementations. Startup configuration
+selects the indexes and sets `availability.mode` to `none`, `dc`, or `ha`.
 
 ## Crate map
 
-| Crate | Ownership | | --- | --- | | `peryx-core` | Stable IDs and neutral domain DTOs | | `peryx-core` |
-Shared ecosystem configuration DTOs | | `peryx-driver` | Plugin, serving, maintenance, mirror, and replicated-apply
-traits; process state | | `peryx-plugin-registry` | Composition of the implementations shipped in the binary | |
-`peryx-ecosystem-pypi` | Python package protocol and related policy, metadata, storage, UI data, mirroring, and snippets
-| | `peryx-ecosystem-oci` | Distribution protocol and related policy, metadata, storage, UI data, mirroring, and
-settings | | `peryx-ha` | Coordinator, membership, topology, lease, and diagnostics contracts | | `peryx-ha-local` |
-No-task local coordinator | | `peryx-ha-distributed` | Replication, membership, reconciliation, liveness, and
-distributed metrics | | `peryx-storage` | Persistence and blob primitives without protocol policy | | `peryx-http` |
-Protocol-neutral HTTP boundary and middleware | | `peryx` | CLI, configuration merge, and startup orchestration |
+| Crate                   | Responsibility                                    |
+| ----------------------- | ------------------------------------------------- |
+| `peryx-core`            | Ecosystem contracts, stable IDs, and neutral DTOs |
+| `peryx-driver`          | Shared process state and runtime orchestration    |
+| `peryx-plugin-registry` | Registration indexing and duplicate checks        |
+| `peryx-ecosystem-pypi`  | Python package protocol and policy                |
+| `peryx-ecosystem-oci`   | OCI distribution protocol and policy              |
+| `peryx-ha`              | Availability traits                               |
+| `peryx-ha-distributed`  | Distributed replication and coordination          |
+| `peryx-storage`         | Persistence and content-addressed blobs           |
+| `peryx-http`            | Shared HTTP middleware and dispatch               |
+| `peryx-bench-core`      | Benchmark measurement and reports                 |
+| `peryx`                 | Configuration, linking, and startup               |
 
-## Ecosystem startup
+## Implementation startup
 
-`peryx-plugin-registry` constructs one `EcosystemPlugin` object per shipped implementation. The binary uses those
-objects to validate ecosystem IDs, collect defaults, compile settings into opaque values, build the driver set, merge
-OpenAPI paths, and install runtime capabilities.
+Each ecosystem crate submits an `EcosystemPlugin` registration. `peryx-plugin-registry` indexes the registrations and
+rejects duplicate IDs or priorities. It implements no ecosystem behavior. The `peryx` binary links every implementation
+crate so all registrations reach the executable.
 
-Settings remain opaque after compilation. The plugin that compiled a value is the only code that downcasts it. Shared
-configuration can reject an invalid table but cannot inspect a protocol field.
+Shared configuration passes `[index.settings]` to the selected ecosystem implementation as TOML. That implementation
+validates the table and stores its compiled value behind an opaque type. Shared code cannot inspect that value.
 
-Optional behavior is explicit. Core asks whether a plugin supports a capability such as catalog synchronization or
-trusted publishing. It does not call default no-op hooks on a broad driver and does not compare IDs.
+Optional work has a capability trait. Callers skip the work when the selected implementation lacks that capability.
 
 ## Availability startup
 
-Configuration chooses the coordinator:
+`availability.mode` controls startup:
 
-- `none` installs the local coordinator and leaves distributed state unallocated.
-- `dc` and `ha` initialize the distributed coordinator and only their required workers, routes, and metrics.
+- `none` allocates no distributed state and starts no distributed task, timer, watcher, or transport.
+- `dc` and `ha` construct `peryx-ha-distributed` and start the configured distributed services.
 
-Do not add a Cargo feature or environment mode for this choice. Every release binary contains both implementations.
-Disabled behavior must be absent from the request path and task graph, not guarded by a boolean checked on each call.
+Do not add a Cargo feature or environment mode for this choice. Disabled availability must stay out of the request path
+and task graph.
 
 ## Dependency rules
 
-The dependency graph points inward:
+Dependencies point toward contracts. `peryx-core` owns ecosystem traits, and `peryx-ha` owns availability traits.
+`peryx-ecosystem-pypi`, `peryx-ecosystem-oci`, and `peryx-ha-distributed` implement them. The `peryx` binary composes
+these implementations.
 
-1. Foundation crates define neutral data and persistence primitives.
-1. `peryx-driver` and `peryx-ha` define extension traits.
-1. Ecosystem and coordinator crates implement those traits.
-1. Registry and binary crates compose implementations.
+A shared crate must not depend on `peryx-ecosystem-pypi` or `peryx-ecosystem-oci`. An HA crate must not parse ecosystem
+records. CI enforces the implementation dependency rule with `.github/scripts/check-ecosystem-boundaries`.
 
-No shared crate may depend on `peryx-ecosystem-pypi` or `peryx-ecosystem-oci`. No HA crate may parse ecosystem records.
-See [ecosystem boundaries](@/contributing/ecosystem-boundaries.md) for the review checklist.
+See [ecosystem boundaries](@/contributing/ecosystem-boundaries.md) for the ownership checklist.
 
 ## Tests
 
-Test behavior through public contracts. Protocol fixtures and wire assertions belong in the owning ecosystem crate.
-Shared-crate tests use neutral IDs and records. Application tests cover composition, configuration dispatch, and
-cross-cutting behavior without inspecting opaque plugin settings.
+Protocol fixtures and wire assertions belong to the owning ecosystem crate. Shared-crate tests use neutral IDs and
+records. Application tests cover configuration and composition through public APIs.
 
-Required gates are the workspace build, tests, clippy with warnings denied, dead-code and dead-public checks, 100% line
-and function coverage, frontend tests, and the documentation build.
+CI requires build, test, clippy, dead-code, dead-public, line-coverage, function-coverage, frontend, and documentation
+checks.

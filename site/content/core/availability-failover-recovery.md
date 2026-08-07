@@ -121,11 +121,11 @@ keeps serving the state it holds, bounded by its
 Inspect the gap rather than guess at it. On a `dc` or `ha` node, `GET /+replication/v1/ready` names why a replica is not
 current in `reasons`:
 
-- `frontier_lag` — the replica has not yet reached the writer's latest serial. Compare its `lag` against the writer's
+- `frontier_lag` : the replica has not yet reached the writer's latest serial. Compare its `lag` against the writer's
   write rate; a lag that never reaches zero is a stalled poll, not a slow one.
-- `sync_error` — the replica's last poll of the writer failed, the direct symptom of the partition.
-- `blob_store` — the mounted blob store failed its reachability check.
-- `incompatible_schema` — the writer speaks a replication protocol version the replica cannot apply; this one a later
+- `sync_error` : the replica's last poll of the writer failed, the direct symptom of the partition.
+- `blob_store` : the mounted blob store failed its reachability check.
+- `incompatible_schema` : the writer speaks a replication protocol version the replica cannot apply; this one a later
   poll cannot resolve without upgrading the writer.
 
 The `serial`, `lag`, and peer origin those responses carry are filtered to `operator:read` and `administration:read`, so
@@ -200,12 +200,12 @@ turns a contained outage into a visible one.
 
 ## Recovery objectives by failure class
 
-| Failure class | Data at risk (`none`) | Return to service | | ------------------- |
---------------------------------------------- | -------------------------------------------------------- | | Process
-loss | none acknowledged | restart against the same data directory | | Storage loss | everything after the last verified
-backup | restore into a fresh directory, then promote if a writer | | Network partition | none; reads stale but bounded
-by the frontier | heal the link; the replica advances its frontier | | Control-quorum loss | not applicable to `none` |
-`dc` and `ha` refuse the mutation; restore the domain |
+| Failure class       | Data at risk (`none`)                         | Return to service                                        |
+| ------------------- | --------------------------------------------- | -------------------------------------------------------- |
+| Process loss        | none acknowledged                             | restart against the same data directory                  |
+| Storage loss        | everything after the last verified backup     | restore into a fresh directory, then promote if a writer |
+| Network partition   | none; reads stale but bounded by the frontier | heal the link; the replica advances its frontier         |
+| Control-quorum loss | not applicable to `none`                      | `dc` and `ha` refuse the mutation; restore the domain    |
 
 The `dc` and `ha` columns of these bounds are the stronger
 [recovery objectives](@/core/availability-contracts.md#recovery-objectives) the contract states as a serial, not a

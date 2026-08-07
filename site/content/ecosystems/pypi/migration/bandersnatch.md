@@ -35,7 +35,7 @@ requirements-based sync removes the guessing when clients already install from l
 
 - Read-through mode has a warm-up: nothing is present until requested. For an air gap, run `peryx mirror sync` on a
   connected network and [carry the data directory across](@/ecosystems/pypi/guides/air-gapped.md).
-- `--mode all` walks the upstream root Simple index, but peryx does not implement PyPI's serial mirror protocol. If an
-  auditor requires that protocol, stay with bandersnatch.
+- `--option 'mode="all"'` walks the upstream root Simple index, but peryx does not implement PyPI's serial mirror
+  protocol. If an auditor requires that protocol, stay with bandersnatch.
 - Policy applies when peryx serves, mirrors, caches, or accepts an upload. Prefetch filters decide what
   `peryx mirror sync` brings in ahead of demand.

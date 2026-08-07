@@ -59,9 +59,9 @@ grants after the subject proves access to each private OCI index with an explici
 repository does not widen an existing catalog credential.
 
 The registry protocol is not the only path to stored data. Both server rendering and hydrated browse requests resolve
-the request credential before reaching an ecosystem driver. Search folds readable resource globs into its Tantivy query,
-so an inaccessible repository contributes neither a row nor a total. This shared boundary keeps private manifests and
-layers out of presentation routes beyond `/v2/`.
+the request credential before reaching the OCI implementation. Search folds readable resource globs into its Tantivy
+query, so an inaccessible repository contributes neither a row nor a total. This shared boundary keeps private manifests
+and layers out of presentation routes beyond `/v2/`.
 
 ## Why the challenge does not break anonymous pulls
 

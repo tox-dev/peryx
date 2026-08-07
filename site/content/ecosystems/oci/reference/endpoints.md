@@ -126,7 +126,7 @@ missing digest produces `404 BLOB_UNKNOWN`; a non-`sha256` digest produces `400 
 
 peryx removes this repository's link for `DELETE /v2/<name>/blobs/<digest>` and returns `202`. A missing link produces
 `404 BLOB_UNKNOWN`. peryx leaves the payload in the shared content store. `cache purge orphaned-blobs` removes it after
-each installed ecosystem driver reports no reference.
+each installed ecosystem implementation reports no reference.
 
 ### Layer contents
 
@@ -236,6 +236,130 @@ index; the username is ignored. A virtual index routes the write to its configur
 - `404 NAME_UNKNOWN`: `<name>` matches no OCI index route.
 
 `docker login` / `podman login` / `crane auth login` against peryx use Basic auth with the token as the password.
+
+## Rate limits
+
+OCI maps repository catalogs, tag lists, and referrer lists to `listing`. Manifest and blob reads, including `HEAD` and
+layer inspection, use `artifact`. Push, delete, restore, and upload-session routes use `upload`. Status and discovery
+routes use `admin`; OCI does not use the `metadata` class. This path-based mapping keeps the `HEAD` requests in a pull
+out of the smaller mutation budget.
+
+When a client exceeds a configured window, peryx returns `429 Too Many Requests` with `Retry-After` in seconds before
+the handler reads a request body, cache state, or upstream.
+
+## Search
+
+`GET /+search` searches readable entities across registered implementations. `GET /images/+search` restricts the query
+to an OCI route named `images`. OCI records use `image` as `type_label`; `display_name` and `normalized_name` contain
+the repository path.
+
+```json
+{
+  "query": "api",
+  "route": "images",
+  "type": "uploaded",
+  "availability": "local",
+  "page": 1,
+  "page_size": 25,
+  "total": 1,
+  "results": [
+    {
+      "display_name": "team/api",
+      "normalized_name": "team/api",
+      "route": "images",
+      "index": "images",
+      "ecosystem": "oci",
+      "type_label": "image",
+      "type": "uploaded",
+      "available": true
+    }
+  ]
+}
+```
+
+The `availability=local` filter keeps repositories with a manifest or blob stored on this instance. Run
+`peryx job reindex` after restoring metadata when the derived index needs a full rebuild. The
+[search API](@/core/search.md) defines matching, paging, and access rules.
+
+## Webhooks
+
+An OCI manifest push emits `upload`. Manifest and blob removal emit `delete`; restoring trashed manifest metadata emits
+`restore`. For a tagged manifest, `version` holds the tag. `file.filename` holds the manifest or blob digest.
+
+```json
+{
+  "event": "upload",
+  "created_at": 1750000000,
+  "index": "images",
+  "route": "images",
+  "hosted_index": "images",
+  "project": "team/api",
+  "version": "1.4.0",
+  "file": {
+    "filename": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  },
+  "count": 1,
+  "actor": "publisher",
+  "request_id": "req-42"
+}
+```
+
+The [webhook API](@/core/webhooks.md) defines signing, retries, and delivery identifiers.
+
+## Trash inspection
+
+`GET /+trash` lists deleted OCI metadata through the shared trash schema. An OCI record uses the repository path as
+`name`, a tag as `reference` when deletion targeted a tag, and the manifest digest as `digest`.
+
+```shell
+curl -u _:$UPLOAD_TOKEN \
+  'http://127.0.0.1:4433/+trash?repository=images&ecosystem=oci&state=restorable&limit=25'
+```
+
+Inspect one record by route, repository path, and tag:
+
+```shell
+curl -u admin:$PERYX_ADMIN_PASSWORD \
+  'http://127.0.0.1:4433/+trash/record?ecosystem=oci&repository=images&name=team/api&reference=1.4.0'
+```
+
+An untagged manifest deletion omits `reference` and uses `digest` to identify the record. The shared
+[`/admin/trash`](@/core/web-ui.md) page exposes the same filters.
+
+## Repository management
+
+The shared repository API accepts an OCI definition with the registered `oci` identifier:
+
+```shell
+curl -sS -u "$ADMIN" https://registry.example/+repositories \
+  -H 'content-type: application/json' \
+  -d '{"route":"images","display_name":"Team images","ecosystem":"oci","definition":{}}'
+```
+
+The response returns a stable repository ID and an `ETag`. Updates, disable, and enable operations send that value in
+`If-Match`; see the [repository management API](@/core/repositories.md) for conflict and authorization rules.
+
+## Prometheus metrics
+
+OCI serving series use `ecosystem="oci"` and the producing `role`. The implementation publishes these families:
+
+- All roles: `peryx_pages_served_total`, `peryx_artifacts_served_total`, `peryx_artifacts_served_bytes_total`, and
+  `peryx_artifacts_rejected_total`.
+- Cached: `peryx_upstream_refreshes_total`, `peryx_upstream_pages_changed_total`, `peryx_stale_pages_served_total`, and
+  `peryx_upstream_errors_total`.
+- Hosted: `peryx_artifacts_uploaded_total`, `peryx_oci_quota_admitted_total`, and `peryx_oci_quota_rejected_total`.
+
+Process-wide request and limiter families are `peryx_requests_total`, `peryx_rate_limit_allowed_total`,
+`peryx_rate_limit_denied_total`, `peryx_upstream_rate_limit_denied_total`, and `peryx_upstream_inflight_fetches`.
+
+Nodes may add scheduler, replica frontier, replica apply, availability worker, and datacenter durability families. Their
+names are `peryx_jobs_*`, `peryx_ha_distributed_*`, `peryx_availability_*`, and `peryx_dc_ack_*`. The
+[metric contract](@/core/metrics.md) defines their bounded labels and counting rules.
+
+Use `rate(peryx_artifacts_served_total{ecosystem="oci"}[5m])` for served artifacts and
+`rate(peryx_oci_quota_rejected_total[15m])` for quota rejections. Repository and image names stay out of labels; use
+`/+stats` for that detail.
 
 ## Error responses
 

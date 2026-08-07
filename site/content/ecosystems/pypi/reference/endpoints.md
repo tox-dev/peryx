@@ -110,7 +110,13 @@ for all indexes.
 `POST`, `PUT`, and `DELETE` accept a configured long-lived Basic credential. A token from the OIDC exchange instead uses
 the exact username `__token__` with the minted token as its password, or the raw Bearer scheme. Its grant includes the
 public repository route and project; a token for a virtual route cannot write through a sibling or its hosted layer's
-direct route. Promotion authenticates against the target route. Responses:
+direct route. Promotion authenticates against the target route. The write proceeds when the grant covers the normalized
+project and action.
+
+Simple API, legacy JSON, metadata, and artifact reads do not consult `anonymous_read` or read grants in this release.
+Server-rendered project pages, the browser, and search apply read ACLs.
+
+Responses:
 
 - `200`: accepted; removal responses state how many files changed.
 - `400`: malformed upload, bad promotion query, or unsafe path segment.
@@ -129,10 +135,33 @@ Configured webhooks run after a write commits. Peryx enqueues one delivery per m
 sends the JSON payload from a background task. Duplicate uploads with the same bytes and mutations that affect zero
 files do not enqueue webhook deliveries.
 
-Events emitted by the write endpoints are `upload`, `yank`, `unyank`, `delete`, and `restore`. Payloads contain `event`,
-`created_at`, `index`, `route`, `local_index`, `project`, `count`, and, when present, `version`, `file`, `actor`, and
-`request_id`. Upload payloads include `file.filename` and `file.sha256`. Payloads and delivery errors exclude
-`Authorization`, upload tokens, upstream credentials, webhook secrets, URL query strings, and response bodies.
+Events emitted by the write endpoints are `upload`, `yank`, `unyank`, `delete`, and `restore`. The event filter also
+accepts the reserved `promote`, `project-status`, and `management` names for management surfaces that use the webhook
+runtime. Payloads contain `event`, `created_at`, `index`, `route`, `hosted_index`, `project`, `count`, and, when
+present, `version`, `file`, `actor`, and `request_id`. Upload payloads include `file.filename` and `file.sha256`.
+Payloads and delivery errors exclude `Authorization`, upload tokens, upstream credentials, webhook secrets, URL query
+strings, and response bodies.
+
+An upload through the default virtual route produces this format-specific body:
+
+```json
+{
+  "event": "upload",
+  "created_at": 1750000000,
+  "index": "root/pypi",
+  "route": "root/pypi",
+  "hosted_index": "hosted",
+  "project": "example",
+  "version": "1.4.0",
+  "file": {
+    "filename": "example-1.4.0-py3-none-any.whl",
+    "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  },
+  "count": 1,
+  "actor": "ci-token",
+  "request_id": "req-42"
+}
+```
 
 Each request carries these headers:
 
@@ -146,6 +175,51 @@ Each request carries these headers:
 
 The signature input is `{timestamp}.{delivery}.{body}`, where `body` is the exact request body bytes. Consumers should
 compare the HMAC with the configured target secret and reject timestamps outside their replay window.
+
+```python
+import hashlib
+import hmac
+
+def verify(secret: str, headers, body: bytes) -> bool:
+    message = f"{headers['x-peryx-timestamp']}.{headers['x-peryx-delivery']}.".encode() + body
+    expected = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, headers["x-peryx-signature"])
+```
+
+## Search
+
+`GET /+search` searches readable projects across PyPI and other registered implementations. `GET /root/pypi/+search`
+restricts the same query to the default PyPI route. PyPI records use `package` as `type_label`, a normalized project
+name, and a summary from project metadata when one exists.
+
+```json
+{
+  "query": "flask",
+  "route": "root/pypi",
+  "type": "all",
+  "availability": "all",
+  "page": 1,
+  "page_size": 25,
+  "total": 1,
+  "results": [
+    {
+      "display_name": "Flask",
+      "normalized_name": "flask",
+      "route": "root/pypi",
+      "index": "pypi",
+      "ecosystem": "pypi",
+      "type_label": "package",
+      "type": "cached",
+      "available": true,
+      "summary": "A framework for web applications."
+    }
+  ]
+}
+```
+
+The `availability=local` filter keeps projects with at least one distribution stored on this instance. Run
+`peryx job reindex` after restoring metadata when the derived index needs a full rebuild. The shared parameter and
+access rules live in the [search API](@/core/search.md).
 
 Uploads accept wheels, `.tar.gz` sdists, and `.zip` sdists ([PEP 527](https://peps.python.org/pep-0527/)). The server
 validates the filename, form `name` and `version`, `filetype`, archive contents, and
@@ -177,13 +251,18 @@ Peryx writes a security log for each denial with `event = "rate_limit"`, the den
 It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class plus process-wide
 upstream concurrency totals. HTTP request counters stay at zero while the request limiter is disabled.
 
+PyPI maps project listings and detail pages to `listing`, `.metadata` siblings to `metadata`, artifact downloads and
+archive inspection to `artifact`, mutations to `upload`, and status or discovery routes to `admin`. A `HEAD` request
+uses the class of its resource.
+
 ## Status and usage
 
 `GET /+status` filters its fields to the caller's class and answers `private, no-cache`, so a shared cache never keeps a
 credentialed document:
 
-- Public (any caller): `version`, `role`, coarse `health`, and the basic index list — each index's `name`, `route`,
-  `ecosystem`, `kind`, `endpoint`, `layers`, and upload target — so the browser can navigate and pick an upload route.
+- Public (any caller): `version`, `role`, coarse `health`, and the basic index list. Each index includes its `name`,
+  `route`, `ecosystem`, `kind`, `endpoint`, `layers`, and upload target so the browser can navigate and pick an upload
+  route.
 - `operator:read`: `serial`, `requests`, `blob_storage`, the `by_ecosystem` rollup, and `metric_families`.
 - `administration:read`: each index's sanitized `upstream` (host, auth kind, cached status), `hosted` upload-token
   state, observed project counts, uploaded file counts, and capped recent uploads.
@@ -210,7 +289,7 @@ The counters are `pages`, `downloads`, `metadata`, `uploads`, `bytes`, `refreshe
 `upstream_errors` (failures with nothing cached), and `rejected` (downloads whose bytes failed digest verification and
 were not cached). Counters reset on restart; scrape `/metrics` for durable time series.
 
-## Metrics
+## Prometheus metrics
 
 `GET /metrics` exposes Prometheus counters and gauges:
 
@@ -231,6 +310,25 @@ and role are summed before rendering. Each family is scoped to the role that rep
 - Ecosystem families: `peryx_metadata_served_total` is PyPI's PEP 658/714 `.metadata` sibling counter. A rising value
   proves clients resolve through the metadata fast path instead of downloading artifacts.
   `peryx_provenance_served_total` is the PEP 740 provenance-object counter.
+- Hosted quota families: `peryx_pypi_quota_admitted_total` and `peryx_pypi_quota_rejected_total` count project quota
+  decisions.
+- Catalog families: `peryx_catalog_syncs_total`, `peryx_catalog_published_total`, `peryx_catalog_not_modified_total`,
+  `peryx_catalog_errors_total`, and `peryx_catalog_projects` describe root-catalog synchronization.
+
+Shared runtime families can appear beside the PyPI families:
+
+- Scheduler: `peryx_jobs_started_total`, `peryx_jobs_finished_total`, `peryx_jobs_rejected_total`, and
+  `peryx_jobs_running`.
+- Replica frontier: `peryx_ha_distributed_caught_up`, `peryx_ha_distributed_serial`,
+  `peryx_ha_distributed_changes_total`, `peryx_ha_distributed_blobs_total`, `peryx_ha_distributed_sync_errors_total`,
+  `peryx_ha_distributed_primary_serial`, and `peryx_ha_distributed_lag`.
+- Replica apply: `peryx_availability_sync_cycles_total`, `peryx_availability_sync_errors_total`,
+  `peryx_availability_pending_serials`, and `peryx_availability_apply_seconds`.
+- Availability worker: `peryx_availability_worker_threads`, `peryx_availability_worker_slots`,
+  `peryx_availability_worker_slots_active`, `peryx_availability_worker_rejected_total`, and
+  `peryx_availability_worker_panics_total`.
+- Datacenter durability: `peryx_dc_ack_durable_total`, `peryx_dc_ack_pending_total`, `peryx_dc_ack_unknown_total`,
+  `peryx_dc_ack_quorum_acknowledged`, `peryx_dc_ack_quorum_required`, and `peryx_dc_ack_quorum_remaining`.
 
 The label vocabulary is fixed by peryx: five request classes, two ecosystems, and three roles. Repository names, package
 names, user or actor identifiers, request paths, raw errors, credentials, tokens, and URLs never become metric names or
@@ -263,3 +361,17 @@ Replace an instance-wide download query such as `sum by (ecosystem, role) (rate(
 `rate(peryx_artifacts_served_total[5m])`. Replace `sum(rate(peryx_upstream_rate_limit_denied_total{index=~".+"}[5m]))`
 with `rate(peryx_upstream_rate_limit_denied_total[5m])`. There is no per-repository Prometheus replacement because that
 dimension was the source of unbounded cardinality and secret exposure; use `/+stats` for current per-repository totals.
+
+## Repository management
+
+The shared repository API accepts a PyPI definition with the registered `pypi` identifier. This request creates a
+managed route without inventing a neutral ecosystem name:
+
+```shell
+curl -sS -u "$ADMIN" https://packages.example/+repositories \
+  -H 'content-type: application/json' \
+  -d '{"route":"python/internal","display_name":"Internal Python packages","ecosystem":"pypi","definition":{}}'
+```
+
+The response returns a stable repository ID and an `ETag`. Updates, disable, and enable operations send that value in
+`If-Match`; see the [repository management API](@/core/repositories.md) for conflict and authorization rules.

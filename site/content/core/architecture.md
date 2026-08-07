@@ -1,64 +1,46 @@
 +++
 title = "Architecture"
-description = "How configuration selects ecosystem plugins and availability coordination without leaking either concern into shared services."
+description = "How one binary composes ecosystem implementations and selects availability behavior."
 weight = 1
 +++
 
-peryx ships one binary. That binary contains every supported ecosystem and both availability coordinators. Startup
-configuration decides which indexes and coordinator are active; there is no ecosystem or availability build variant.
+Peryx ships one binary containing the PyPI, OCI, and distributed availability implementations. Startup configuration
+selects the active indexes and sets `availability.mode` to `none`, `dc`, or `ha`.
 
-## Runtime composition
+## Ecosystems
 
-Startup resolves each configured ecosystem ID through `peryx-plugin-registry`. The registry contains plugin objects,
-not protocol behavior. Each plugin implements the shared `EcosystemPlugin` contract and supplies:
+`peryx-core` owns the ecosystem contracts, stable IDs, and neutral DTOs. Each ecosystem crate registers an
+`EcosystemPlugin` implementation. `peryx-ecosystem-pypi` and `peryx-ecosystem-oci` own all protocol and policy behavior,
+including settings, routes, storage encoding, maintenance, mirroring, and UI data.
 
-- its stable ID and default indexes;
-- settings validation and opaque compiled settings;
-- its serving, maintenance, replication-apply, mirror, and discovery capabilities;
-- installation into the process state.
+`peryx-plugin-registry` indexes registrations and contains no PyPI or OCI behavior. Unknown ecosystem IDs fail
+configuration validation. Capability absence skips the dependent work.
 
-The shared configuration and server code never parse an ecosystem's settings or compare an ecosystem ID to choose
-behavior. An unknown ID or unsupported capability fails during configuration validation.
+The HTTP layer authenticates and rate-limits requests before dispatch. Indexed protocols receive the resolved index.
+Absolute protocols receive requests under their declared prefixes. The selected ecosystem implementation owns protocol
+parsing and response construction.
 
-## Request path
-
-The HTTP boundary authenticates, rate-limits, and resolves the target index. It dispatches the request to that index's
-`EcosystemDriver`. Indexed protocols receive a resolved index; absolute protocols receive the request under the
-top-level prefixes they declared. The driver owns protocol parsing, status mapping, metadata, rendering, and storage
-encoding.
-
-All drivers use the same index roles:
-
-- A cached index fetches from configured upstreams and stores verified bytes.
-- A hosted index is authoritative for published content.
-- A virtual index resolves an ordered set of same-ecosystem members.
-
-See [the index model](@/core/indexes.md) for role semantics and the [ecosystem pages](@/ecosystems/_index.md) for wire
+See [indexes](@/core/indexes.md) for shared role semantics and [ecosystems](@/ecosystems/_index.md) for protocol
 behavior.
 
-## Shared storage
+## Storage
 
-`peryx-storage` owns persistence primitives, transactions, and the content-addressed blob store. It does not interpret
-ecosystem records. Drivers serialize their metadata under their own key namespaces and report referenced digests through
-capabilities. This keeps schema changes and protocol migrations inside the owning ecosystem crate while still
-deduplicating identical bytes across indexes.
+`peryx-storage` provides transactions, key-value records, archive decoding, and content-addressed blobs. It does not
+interpret ecosystem records. Ecosystem implementations own metadata encoding and report referenced digests through
+`peryx-core` contracts.
 
-## Availability selection
+## Availability
 
-The omitted `[availability]` table and `mode = "none"` select `peryx-ha-local`. The local coordinator starts no peer
-clients, listeners, timers, queues, watchers, or distributed metrics. Distributed state is allocated lazily only when
-`mode = "dc"` or `mode = "ha"` selects `peryx-ha-distributed`.
+Omitting `[availability]` or setting `mode = "none"` allocates no distributed state and starts no distributed task,
+timer, watcher, or transport.
 
-The shared HA contracts operate on neutral operations, authority keys, frontiers, placements, and topology snapshots. An
-ecosystem driver maps its mutations and replicated view updates onto those contracts. HA code never parses protocol
-records.
+`peryx-ha` owns the availability traits. `mode = "dc"` and `mode = "ha"` select the `peryx-ha-distributed`
+implementation. Its contracts use operations, authority keys, frontiers, placements, and topology snapshots. Ecosystem
+implementations map their mutations onto those contracts; HA code does not parse protocol records.
 
-## Dependency direction
+## Dependencies
 
-Shared crates depend on contracts and neutral state. Ecosystem crates depend inward on those crates and implement the
-contracts. Only `peryx-plugin-registry` links concrete implementations, and only the `peryx` binary invokes the
-registry during startup.
+Shared crates depend on contracts. Implementation crates depend on shared crates. The `peryx` binary links the PyPI,
+OCI, and distributed availability implementations into one executable.
 
-The boundary rules and dependency checks are documented in
-[ecosystem boundaries](@/contributing/ecosystem-boundaries.md). Availability internals are documented in
-[high availability](@/core/high-availability.md).
+See [ecosystem boundaries](@/contributing/ecosystem-boundaries.md) and [high availability](@/core/high-availability.md).

@@ -6,12 +6,11 @@ template = "section.html"
 weight = 20
 +++
 
-peryx lives at [github.com/tox-dev/peryx](https://github.com/tox-dev/peryx). Bug reports, feature discussions, and pull
-requests are welcome there.
+Report bugs, discuss features, and open pull requests at [github.com/tox-dev/peryx](https://github.com/tox-dev/peryx).
 
 ## Setting up
 
-Two installs bootstrap a working tree:
+Set up a working tree:
 
 ```shell
 rustup show          # picks the pinned toolchain from rust-toolchain.toml
@@ -19,12 +18,12 @@ mise install         # zola, uv, prek, cargo-nextest, cargo-llvm-cov, twine
 prek install         # fmt, clippy, and hygiene hooks on every commit
 ```
 
-[mise](https://mise.jdx.dev) pins the non-Rust tools, so nothing needs a system package manager;
+[mise](https://mise.jdx.dev) pins the non-Rust tools and removes the need for a system package manager;
 [prek](https://github.com/j178/prek) runs the hooks from `.pre-commit-config.yaml`.
 
 ## The gates
 
-CI holds each pull request to the same bar; run the gates locally before pushing:
+Run the CI gates before pushing:
 
 ```shell
 cargo fmt --all --check
@@ -39,8 +38,8 @@ Line and function coverage stay at 100%. CI reports region coverage without gati
 
 Run the suite with [nextest](https://nexte.st/), not `cargo test`. nextest gives each test its own process; `cargo test`
 runs a binary's tests as threads in one process. The web UI tests render Leptos pages, and Leptos drives a per-thread
-reactive graph through process-global arenas, so two page renders at once in one process deadlock on a lost wakeup —
-flaky under `cargo test`, impossible under nextest's isolation. The tests also cache the deterministic route table and
+reactive graph through process-global arenas, so two page renders at once in one process deadlock on a lost wakeup. This
+makes `cargo test` flaky, while nextest isolates the renders. The tests also cache the deterministic route table and
 serialize their own renders, so a stray `cargo test` no longer hangs; nextest stays the supported runner.
 
 On macOS hosts, nextest starts one test process at a time. Rust creates an output pipe before marking it close-on-exec
@@ -80,9 +79,9 @@ browser, so the Playwright suite and peryx's server-side render tests are its ga
 
 ## The documentation site
 
-The site you are reading is [Zola](https://www.getzola.org/) under `site/`, structured by the
-[Diátaxis](https://diataxis.fr/) framework: tutorials teach, guides solve one task, reference states facts, explanation
-gives reasons. Put new pages in the quadrant that matches their job.
+The [Zola](https://www.getzola.org/) site under `site/` follows the [Diátaxis](https://diataxis.fr/) framework:
+tutorials teach, guides solve one task, reference states facts, explanation gives reasons. Put new pages in the quadrant
+that matches their job.
 
 ```shell
 zola --root site serve   # live-reloading preview at 127.0.0.1:1111
@@ -93,16 +92,14 @@ on each pull request so a broken site blocks the merge.
 
 ## Gotchas
 
-Two dev-environment behaviors are non-obvious enough to have cost real debugging time.
-
 ### The SSR binary and the wasm bundle must come from one build
 
 `cargo leptos build` writes a matched pair: `target/debug/peryx` (the server that renders HTML) and
 `ui/pkg/peryx_web*.wasm` (the bundle that hydrates it). Both embed the same component tree, and hydration only works
 when they agree. Mix two builds and the server emits hydration markers the wasm does not expect;
 [Leptos](https://leptos.dev/) then panics in the browser (`tachys::hydration::failed_to_cast_marker_node`,
-`RuntimeError: unreachable`), never sets `body[data-hydrated]`, and every Playwright test times out at navigation with
-no hint as to why.
+`RuntimeError: unreachable`), leaves `body[data-hydrated]` unset, and causes each Playwright test to time out during
+navigation without reporting the cause.
 
 The Playwright harness (`tests/frontend/serve.mjs`) prefers `target/release/peryx` when it exists, and a plain
 `cargo build --release` rebuilds only the binary, leaving it paired with a stale debug wasm. After touching UI source,
@@ -114,11 +111,10 @@ the console. A hydration panic there points at a mismatched build pair, so rebui
 
 ### Off-by-default features need their own unit tests
 
-A subsystem that is disabled by default is an `Option<T>` that stays `None`, so it is absent from the request path
-rather than skipped on it (see the zero-overhead contract in the architecture docs). Integration tests that drive the
-default server therefore never reach its code. The rate limiter is the standard example: with it off, peryx omits the
-enforce layer entirely, so a driver method like `classify_route` runs only under a direct unit test. The 100% coverage
-gate will catch the omission, but it is faster to write the unit test up front than to chase the uncovered line.
+A subsystem disabled by default is an `Option<T>` that stays `None`, which removes it from the request path (see the
+zero-overhead contract in the architecture docs). Integration tests that drive the default server cannot reach its code.
+For example, disabling the rate limiter makes peryx omit the enforce layer, so only a direct unit test runs a driver
+method such as `classify_route`. Write that unit test before the 100% coverage gate reports the uncovered line.
 
 ## Conventions
 

@@ -1,6 +1,6 @@
 +++
 title = "Node liveness"
-description = "Track datacenter replica health from bounded heartbeats without ever changing the configured roster."
+description = "Track datacenter replica health from bounded heartbeats while leaving the configured roster unchanged."
 weight = 7
 +++
 
@@ -12,7 +12,7 @@ writer, or transfer authority; only a reviewed configuration edit changes member
 
 ## Heartbeats
 
-Each replica beacons its health to the group writer at the writer's bearer-authenticated replication endpoint:
+Each replica sends its health to the group writer at the writer's bearer-authenticated replication endpoint:
 
 ```http
 POST /+replication/v1/heartbeat
@@ -22,23 +22,21 @@ Content-Type: application/json
 {"node": "replica-a", "incarnation": 3, "sequence": 128}
 ```
 
-The writer accepts a beacon only from a configured member. `incarnation` rises when a node restarts and `sequence` rises
-with each beat, so the pair totally orders one node's beacons. The writer keeps the latest accepted beacon per member
-and drops any report that does not advance that position, which discards a replayed or reordered beacon. A report
-carrying no bearer credential, a wrong credential, an unconfigured node, or a body over 4 KiB is refused and cannot mark
-a node healthy. The tracked state is bounded by the roster size, one observation per member, and that body cap, so a
-looping or hostile reporter cannot grow it.
+The writer accepts a heartbeat only from a configured member. `incarnation` rises when a node restarts and `sequence`
+rises with each heartbeat, so the pair orders one node's reports. The writer keeps the latest accepted report per member
+and drops any report that does not advance that position. It rejects a report with no bearer credential, a wrong
+credential, an unconfigured node, or a body over 4 KiB. The roster size and body cap bound the tracked state.
 
 ## Suspicion
 
-The writer ages the most recent accepted beacon into one verdict per member:
+The writer ages the most recent accepted heartbeat into one verdict per member:
 
-| Verdict   | Meaning                                                   |
-| --------- | --------------------------------------------------------- |
-| `alive`   | A beacon arrived within the last 15 seconds.              |
-| `suspect` | The last beacon is between 15 and 45 seconds old.         |
-| `dead`    | The last beacon is older than 45 seconds.                 |
-| `unknown` | The member is configured but has sent no accepted beacon. |
+| Verdict   | Meaning                                                 |
+| --------- | ------------------------------------------------------- |
+| `alive`   | A heartbeat arrived within the last 15 seconds.         |
+| `suspect` | The last heartbeat is between 15 and 45 seconds old.    |
+| `dead`    | The last heartbeat is older than 45 seconds.            |
+| `unknown` | The member is configured but has no accepted heartbeat. |
 
 Suspicion is derived independently on each observer from the observations it holds, so an asymmetric partition can leave
 two writers holding different verdicts for the same replica while neither changes committed membership.

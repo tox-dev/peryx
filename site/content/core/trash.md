@@ -1,85 +1,61 @@
 +++
-title = "Trash inspection"
-description = "List and inspect soft-deleted PyPI and OCI artifacts and whether each can still be restored."
+title = "Trash API"
+description = "List soft-deleted repository records and report whether retention permits restoration."
 weight = 11
 +++
 
-Deleting a hosted artifact moves it to trash rather than erasing it. The PyPI soft-delete and the OCI manifest
-soft-delete both keep the content and record who deleted it, when, and why. This endpoint reads those records across
-every ecosystem through one query, so an operator can review what was removed and whether it can still come back. It
-does not delete, restore, or change retention; it only reads.
+Deleting a hosted artifact can move its repository metadata into trash. The trash API reads those records across
+registered ecosystem implementations. Delete, restore, and retention operations remain implementation-specific.
 
-Each record carries the ecosystem, repository, artifact name, reference, digest, deletion reason, deleting actor,
-deletion time, recovery deadline, and derived restorable state. A PyPI file's reference is its distribution filename; an
-OCI record's reference is its tag, absent for an untagged manifest deletion. One schema covers both ecosystems.
+## Record schema
 
-| Field             | Meaning                                                                      |
-| ----------------- | ---------------------------------------------------------------------------- |
-| `ecosystem`       | `pypi` or `oci`                                                              |
-| `repository`      | Configured repository the artifact was deleted from                          |
-| `name`            | PyPI project or OCI repository path                                          |
-| `reference`       | Distribution filename or OCI tag, absent for an untagged manifest            |
-| `digest`          | Content digest, when the ecosystem addresses the artifact by one             |
-| `reason`          | Operator's stated deletion reason, when the delete request supplied one      |
-| `actor`           | Identity that deleted it, shown only to callers the role filter admits       |
-| `deleted_at_unix` | UTC Unix timestamp of the deletion                                           |
-| `deadline_unix`   | When the recovery window closes and a retention sweep may reclaim the record |
-| `state`           | `restorable` or `expired`, derived at query time                             |
-| `restorable`      | Whether the content is still retained and the recovery window is open        |
+| Field             | Meaning                                                             |
+| ----------------- | ------------------------------------------------------------------- |
+| `ecosystem`       | Registered implementation identifier                                |
+| `repository`      | Route that owned the deleted record                                 |
+| `name`            | Ecosystem entity name                                               |
+| `reference`       | Optional release, tag, filename, or other implementation reference  |
+| `digest`          | Optional content digest                                             |
+| `reason`          | Optional deletion reason                                            |
+| `actor`           | Deleting identity when the caller may read it                       |
+| `deleted_at_unix` | UTC Unix timestamp of deletion                                      |
+| `deadline_unix`   | Time after which retention may reclaim the record                   |
+| `state`           | `restorable` or `expired`                                           |
+| `restorable`      | Whether retained content and the recovery window permit restoration |
 
-Restorability is derived, not stored. A record is `restorable` while its content is still retained and the current time
-is before `deadline_unix`; past the deadline, or once the content a restore needs is gone, it reads as `expired`. The
-window follows the deletion time plus a fixed recovery grace, so the API and the web view compute the same answer
-without a second store read. This mirrors soft-delete recovery windows in systems such as Azure Container Registry and
-cloud object stores, where a deleted item stays recoverable until a retention deadline computed from the delete time and
-the current policy.
+The service derives `state` and `restorable` at query time. A record expires when its recovery deadline passes or the
+content needed for restoration no longer exists. An expired record may remain visible for audit until a retention sweep
+reclaims it.
 
-List one repository with its upload token:
+## List records
 
-```console
-curl -u __token__:$TOKEN \
-  'http://127.0.0.1:4433/+trash?repository=hosted&ecosystem=pypi&state=restorable&limit=25'
-```
+`GET /+trash` accepts `repository`, `ecosystem`, `state`, `deadline_before`, `limit`, and `cursor`. Results use newest
+deletion first. `limit` accepts 1 through 100 and defaults to 25. A response returns `next_cursor` when another page
+exists.
 
-The endpoint accepts `repository`, `ecosystem`, `state`, and `deadline_before` filters. `deadline_before` keeps records
-whose recovery deadline is at or before a UTC Unix time, so an operator can surface entries about to expire. Results use
-newest-deletion-first order. Pass `next_cursor` as `cursor` for the next page. `limit` defaults to 25 and accepts 1
-through 100. The cursor is a stable identity key, so a page boundary holds even as another artifact enters trash between
-requests.
+## Inspect one record
 
-Inspect one record with `GET /+trash/record`, identifying it by `ecosystem`, `repository`, and `name`, plus `reference`
-and `digest` when they distinguish it:
+`GET /+trash/record` identifies a record with `ecosystem`, `repository`, and `name`. The implementation may require a
+`reference`, `digest`, or both to disambiguate records.
 
-```console
-curl -u admin:$PASSWORD \
-  'http://127.0.0.1:4433/+trash/record?ecosystem=oci&repository=images&name=app&reference=1.0'
-```
+## Authorization
 
-Authorization runs before the trash scan. A local administrator can omit `repository` to list every repository, or
-select one by its route. A repository reader or publisher must select a repository covered by their grant, and a
-repository upload token reaches only its own repository under the reserved `__token__` username. Callers without
-operator or repository access cannot enumerate trash. The `actor` field follows a role filter on top of that: an
-administrator sees it wherever they read, while a repository-scoped caller sees the record with the actor omitted. Peryx
-returns the same `404 Not Found` for a missing repository and one outside an authenticated user's reach.
+A local administrator can query all repositories. A repository reader or publisher must select a route covered by its
+grant. A repository token reaches its own route. The actor field requires administrator access even when a
+repository-scoped caller can read the rest of the record.
 
-Responses exclude credentials, authorization headers, and client addresses, and carry `Cache-Control: no-store` so an
-authenticated view never enters a shared cache. The read-only browser at `/admin/trash` exposes the same filters, cursor
-pagination, and role-filtered actor column.
+Authorization runs before the metadata scan. The service returns the same `404 Not Found` for an absent repository and
+one outside an authenticated caller's grants. Responses use `Cache-Control: no-store` and exclude credentials, client
+addresses, and authorization headers.
 
-## Troubleshooting
+## Web UI extension
 
-Send local passwords and repository tokens over HTTPS, except for a loopback-only server. Configure Peryx TLS or
-terminate TLS at a trusted reverse proxy before exposing this page.
+The shared `/admin/trash` page renders the neutral fields. Each ecosystem extension supplies names for `name` and
+`reference`, plus links to its restore and deletion documentation. The page keeps filters in the request, uses cursor
+pagination, and omits `actor` when the API omits it.
 
-| Result                      | Check                                                                                         |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| No rows                     | Remove filters, then confirm that an artifact has been soft-deleted in a reachable repository |
-| `400 Bad Request`           | Use a page size from 1 through 100, a known ecosystem and state, and a cursor from this query |
-| `401 Unauthorized`          | Use a local login, or use `__token__` with a repository token and select its repository       |
-| `403 Forbidden`             | Give the selected repository token a write grant; a read-only token cannot inspect trash      |
-| `404 Not Found`             | Check the repository route and the local user's grant; Peryx gives both failures one response |
-| `500 Internal Server Error` | Inspect the metadata store and server log for a trash query failure                           |
-| `503 Service Unavailable`   | Restore user, grant, or authentication storage before retrying                                |
+## Implementations
 
-An expired record stays visible for audit until a retention sweep reclaims it. Restoring content is a separate operation
-outside this inspection endpoint.
+- [PyPI removal and trash inspection](@/ecosystems/pypi/guides/remove.md#inspect-trash)
+- [OCI deletion and trash inspection](@/ecosystems/oci/reference/endpoints.md#trash-inspection)
+- [Retention policy](@/core/retention.md)

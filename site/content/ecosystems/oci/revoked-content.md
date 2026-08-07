@@ -8,6 +8,9 @@ An active [digest revocation](@/core/digest-revocations.md) blocks the matching 
 keeps revoked manifests and blobs in storage as incident evidence. The serving decision is server-wide, so another
 repository link or tag cannot make the same digest readable.
 
+The revocation API and CLI accept the canonical key `sha256:<64 lowercase hex>`. JSON records represent that digest as
+`{"sha256":"<hex>"}`. OCI manifest and blob routes use the same digest spelling.
+
 ## Pull and discovery behavior
 
 Peryx resolves a tag to its manifest digest before it reads stored bytes. A cached index asks its upstream for the tag

@@ -6,17 +6,16 @@ weight = 5
 logos = [ "logos/python.svg"]
 +++
 
-[simpleindex](https://github.com/uranusjr/simpleindex) routes simple-API requests by project-name pattern: a TOML file
-maps each pattern to a local directory of files or an HTTP 302 redirect toward another index. Doing nothing else is its
-design: no caching, no uploads, no storage.
+[simpleindex](https://github.com/uranusjr/simpleindex) routes simple-API requests by project-name pattern. A TOML file
+maps each pattern to a local directory of files or an HTTP 302 redirect toward another index. Its scope covers routing
+and local file serving.
 
 ## Why peryx
 
-If simpleindex covers your need, it is admirably small. The reasons people outgrow it map one-to-one onto what peryx
-adds: redirected clients still need (and wait on) the upstream, so a cache helps every machine behind one uplink; a
-directory of files needs a separate upload workflow, so [twine](https://twine.readthedocs.io/) support helps; and
-pattern routing protects against [dependency confusion](@/core/indexes.md) only as well as the patterns you remember to
-write, where a virtual index's hosted-first shadowing is the default for every name you publish.
+simpleindex suits route-only deployments. Redirected clients wait on the upstream, while peryx caches upstream responses
+for machines behind one uplink. peryx also accepts [twine](https://twine.readthedocs.io/) uploads. A virtual index
+applies hosted-first [dependency-confusion](@/core/indexes.md) protection to each published name without a route pattern
+for that project.
 
 ## The renames
 

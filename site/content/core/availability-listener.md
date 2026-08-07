@@ -131,7 +131,7 @@ Idempotency-Key: 5f0c-transfer-proj-west
 { "type": "transfer_authority", "authority": "proj", "new_home": "west" }
 ```
 
-A committed command answers `200 OK` with the committed identity — the log term and index, and whether the command
+A committed command answers `200 OK` with the committed identity : the log term and index, and whether the command
 changed the state:
 
 ```json
@@ -148,8 +148,8 @@ promoting a datacenter that is already a voter, so a repeat is safe.
 ### Idempotency
 
 A client stamps an `Idempotency-Key` header to make a command retry-safe. A repeat carrying a key that already committed
-reads back the first receipt without submitting a second command, so a client that retries across a leader change — a
-common outcome for a membership command — mints one command rather than two. The node retains a bounded window of recent
+reads back the first receipt without submitting a second command, so a client that retries across a leader change : a
+common outcome for a membership command : mints one command rather than two. The node retains a bounded window of recent
 keys; a key that ages out of the window is submitted again, so a key is a short-lived retry token, not a durable dedup
 ledger.
 
@@ -168,7 +168,7 @@ against it.
 ## Planned transfers
 
 The `transfer_authority` command above is the unconditional consensus move a failover commits. To move a *healthy* home
-on purpose — a drain, a rebalance, a migration — the listener also serves a planned-transfer surface at
+on purpose : a drain, a rebalance, a migration : the listener also serves a planned-transfer surface at
 `POST /availability/v1/transfers` and `DELETE /availability/v1/transfers/{authority}`, behind the same administration
 write scope. A planned transfer waits for the target to catch up before it commits and records who moved the authority
 and why. See [planned authority transfer](@/core/availability-planned-transfer.md) for the request shape, the catch-up
@@ -180,6 +180,6 @@ The listener bounds each request body so the command endpoint cannot be handed a
 and bounds the set of commands in flight so an operator script cannot fan out an unbounded burst of roster rewrites.
 Every authenticated request records an audit line naming the actor and the path. Every command records a second audit
 line naming the actor, the command kind, its datacenter or authority target, the result, and the committed term and
-index — never the request body, so an address or credential never reaches the log. A replayed command is audited as
+index : never the request body, so an address or credential never reaches the log. A replayed command is audited as
 `replayed` so a retry is distinguishable from a fresh command. Keep the listener behind a management-network boundary
 that bounds connection volume; the node applies its request-body, concurrency, and authorization gates on every call.

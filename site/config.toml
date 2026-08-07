@@ -1,6 +1,6 @@
 base_url = "https://peryx.readthedocs.io"
 title = "peryx"
-description = "peryx — one blazing-fast, open-source vault for a wide range of ecosystems. Fast as the falcon, sealed as the pyx."
+description = "peryx; one blazing-fast, open-source vault for a wide range of ecosystems. Fast as the falcon, sealed as the pyx."
 compile_sass = true
 build_search_index = false
 generate_feeds = false

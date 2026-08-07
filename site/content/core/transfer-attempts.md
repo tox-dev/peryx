@@ -9,7 +9,7 @@ records the work of getting it there: one current attempt per target placement, 
 progress checkpoint a restarted worker resumes from, and a classified terminal outcome. The transfer engine, the remote
 streaming endpoint, and the operator UI are separate; this page describes the durable state they build on.
 
-An attempt is keyed by the same four parts as its placement — digest, backend, data center, and location — plus a
+An attempt is keyed by the same four parts as its placement : digest, backend, data center, and location : plus a
 sequence number. A placement retains up to 32 attempts; a stage that would exceed the bound is refused rather than
 growing an unbounded history, and [compaction](#retention) trims the terminal ones a retention policy no longer needs.
 
@@ -18,12 +18,12 @@ growing an unbounded history, and [compaction](#retention) trims the terminal on
 An attempt moves through an evidence-based lifecycle. A staged temporary file is never counted as complete; only bytes
 that hash to the target digest at the exact object size are.
 
-- **In progress** — bytes are moving. The attempt carries the last *durable* checkpoint offset, which trails the live
+- **In progress** : bytes are moving. The attempt carries the last *durable* checkpoint offset, which trails the live
   byte position by at most the checkpoint budget.
-- **Failed** — the attempt ended without a serveable object, for a classified reason: the source was unavailable, the
+- **Failed** : the attempt ended without a serveable object, for a classified reason: the source was unavailable, the
   delivered bytes hashed to a different digest, or the backend refused the write. A source-unavailable failure is
   answered with a retry or a reselected source; a digest mismatch can never serve.
-- **Succeeded** — the transfer delivered the exact object size and its digest matched the target.
+- **Succeeded** : the transfer delivered the exact object size and its digest matched the target.
 
 Completing an attempt with an observed digest that does not match the target, or a byte size that does not match the
 expected one, records a digest-mismatch failure rather than a success. A failed attempt is retained as history and never
@@ -40,8 +40,8 @@ ownership and is rejected without changing the record.
 ## Progress checkpoints
 
 A high-frequency byte stream must not turn into one metadata write per chunk. A checkpoint therefore persists only when
-the offset has advanced past a configured budget — a minimum byte delta or a minimum interval since the last durable
-write — and is coalesced without a write in between. The offset that reaches the exact object size always persists, so a
+the offset has advanced past a configured budget : a minimum byte delta or a minimum interval since the last durable
+write : and is coalesced without a write in between. The offset that reaches the exact object size always persists, so a
 completed transfer's recorded progress is precise. An offset at or below the last durable one never regresses the
 checkpoint.
 
@@ -60,6 +60,6 @@ configured window.
 ## Metrics
 
 Transfer attempts aggregate into bounded per-label counts for a metrics exporter. Series are labeled by data center,
-backend, state, and — for failures — error class. The digest, location, sequence, and operation identity are excluded,
+backend, state, and : for failures : error class. The digest, location, sequence, and operation identity are excluded,
 so cardinality stays within the topology's backends and data centers times the fixed state and failure classes rather
 than growing one series per artifact or transfer.

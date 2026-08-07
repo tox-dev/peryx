@@ -4,9 +4,9 @@ description = "Gate an OCI index's reads behind authentication, issue repository
 weight = 4
 +++
 
-By default an OCI index reads anonymously and authenticates only writes. This guide gates reads too, issues tokens
-scoped to some repositories, and closes a whole server at once. Each section stands alone. The model is the neutral one
-under [authentication and access control](@/core/authentication.md); this page is the OCI recipe.
+By default, an OCI index allows anonymous reads and authenticates writes. This guide gates reads, issues tokens scoped
+to some repositories, and closes a whole server at once. Each section stands alone. The model is the neutral one under
+[authentication and access control](@/core/authentication.md); this page is the OCI recipe.
 
 ## Turn on the realm
 
@@ -19,9 +19,9 @@ stay open.
 signing_key_file = "/run/secrets/peryx-signing-key"
 ```
 
-Keep the key in a file, not inline: a mounted Docker or Kubernetes secret, a systemd credential, or a Vault-rendered
-file all fit `signing_key_file`. Check that the mounted file is not empty before starting peryx; an empty or
-whitespace-only key stops startup. The key signs every token; rotating it invalidates all outstanding tokens.
+Keep the key in a file instead of inline. `signing_key_file` accepts a mounted Docker or Kubernetes secret, a systemd
+credential, or a Vault-rendered file. Check the mounted file before starting peryx; an empty or whitespace-only key
+stops startup. The key signs each token; rotating it invalidates all outstanding tokens.
 
 ## Gate an index's reads
 
@@ -52,9 +52,9 @@ to browse a private index. Search omits inaccessible repositories before calcula
 
 ## Scope a token to some repositories
 
-`projects` is a list of globs. `*` matches any run of characters, `/` included, so `team/*` covers every repository
-under `team` however deeply nested, and a bare `*` covers the whole index. Grant only the verbs the credential needs
-under `actions` (`read`, `write`, `delete`).
+`projects` is a list of globs. `*` matches any run of characters, including `/`, so `team/*` covers repositories at any
+depth under `team`, and a bare `*` covers the whole index. Grant the verbs the credential needs under `actions` (`read`,
+`write`, `delete`).
 
 ```toml
 [[index.access_token]]

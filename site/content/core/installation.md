@@ -4,7 +4,8 @@ description = "The install channels, the platforms each covers, and how each one
 weight = 0
 +++
 
-Every channel ships the same single static binary; pick by how you manage tools.
+Each channel distributes the same peryx binary. That binary contains the PyPI, OCI, and distributed availability
+implementations; startup configuration selects their behavior.
 
 | Channel                    | Command                                                                                                    | Updates with              |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------- |

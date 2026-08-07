@@ -5,12 +5,12 @@ weight = 9
 +++
 
 Replacing an availability cluster's nodes one at a time, while it keeps serving, has two halves. One is the version
-contract that decides whether a target build may run at all — which versions two nodes negotiate, when a new command
+contract that decides whether a target build may run at all : which versions two nodes negotiate, when a new command
 becomes safe to issue, and the boundary a downgrade may not cross. That half is fixed on the
 [version compatibility](@/core/availability-version-compatibility.md) page and this page does not restate it. The other
 half is operational: even a version-clean target is unsafe to roll if draining the next node would drop quorum, leave
 too few members serving, or strand the group so far ahead of its replicas and backup that a failed step cannot be
-undone. This page fixes that half — the go decision before each drain, the order nodes are replaced in, and the recovery
+undone. This page fixes that half : the go decision before each drain, the order nodes are replaced in, and the recovery
 when a step fails. For the operator walkthrough that runs these steps against the live surfaces, see
 [upgrade and roll back an availability cluster](@/core/availability-upgrade-runbook.md).
 
@@ -29,8 +29,8 @@ as a version blocker before any operational rule is read.
 
 Four operational rules follow, each measured against an operator budget:
 
-- **Quorum.** The group must be able to acknowledge a new write at its durability policy right now — a writer reporting
-  and enough members with it — so the drain removes a node from a group that already holds quorum rather than one hoping
+- **Quorum.** The group must be able to acknowledge a new write at its durability policy right now : a writer reporting
+  and enough members with it : so the drain removes a node from a group that already holds quorum rather than one hoping
   to regain it.
 - **Capacity.** Draining one node must leave at least the budgeted number of members still serving, so the step keeps
   the headroom to serve reads and reach quorum while the node is gone rather than assuming the drain is instant.
@@ -41,15 +41,15 @@ Four operational rules follow, each measured against an operator budget:
 
 The writer is the sole source of serials and bounds every member, so its reported frontier anchors both lag checks. A
 node listed twice in the roster counts once, so a doubled node inflates neither the serving count nor the frontier. The
-verdict names every unmet rule — version rules in their own order, then quorum, capacity, replication lag, backup
-currency — in one fixed order, so it is deterministic and an operator sees every reason to wait at once rather than
+verdict names every unmet rule : version rules in their own order, then quorum, capacity, replication lag, backup
+currency : in one fixed order, so it is deterministic and an operator sees every reason to wait at once rather than
 fixing them one round-trip at a time.
 
 ## The order
 
 The roll replaces read replicas before the writer, each set in stable id order, and the writer last. Every replica step
-removes a node the group can lose without an authority handoff, so the one unavoidable handoff — moving the writer's
-home through a [planned transfer](@/core/availability-planned-transfer.md) — happens once, at the end, rather than
+removes a node the group can lose without an authority handoff, so the one unavoidable handoff : moving the writer's
+home through a [planned transfer](@/core/availability-planned-transfer.md) : happens once, at the end, rather than
 repeatedly through the roll. The order is taken over the configured roster, independent of what each member currently
 reports, so a member that is briefly not reporting keeps its place rather than being skipped or reordered.
 

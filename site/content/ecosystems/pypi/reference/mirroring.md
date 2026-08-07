@@ -21,20 +21,27 @@ max_file_size_bytes = 524288000
 metadata_only = false
 ```
 
-| Key | Values | Default | | --------------------- | ----------------------------------- | ---------- | | `mode` |
-`selected`, `all`, `metadata-only` | `selected` | | `packages` | Package selectors | `[]` | | `requirements` |
-Requirements or constraints files | `[]` | | `include_wheels` | Boolean | `true` | | `include_sdists` | Boolean | `true`
-| | `python_tags` | Wheel Python tags | `[]` | | `abi_tags` | Wheel ABI tags | `[]` | | `platform_tags` | Wheel platform
-tags | `[]` | | `max_file_size_bytes` | Positive integer | Unbounded | | `metadata_only` | Boolean | `false` |
+| Key                   | Values                             | Default    |
+| --------------------- | ---------------------------------- | ---------- |
+| `mode`                | `selected`, `all`, `metadata-only` | `selected` |
+| `packages`            | Package selectors                  | `[]`       |
+| `requirements`        | Requirements or constraints files  | `[]`       |
+| `include_wheels`      | Boolean                            | `true`     |
+| `include_sdists`      | Boolean                            | `true`     |
+| `python_tags`         | Wheel Python tags                  | `[]`       |
+| `abi_tags`            | Wheel ABI tags                     | `[]`       |
+| `platform_tags`       | Wheel platform tags                | `[]`       |
+| `max_file_size_bytes` | Positive integer                   | Unbounded  |
+| `metadata_only`       | Boolean                            | `false`    |
 
 `mode = "all"` reads the upstream Simple project list before visiting project pages. `mode = "metadata-only"` implies
 `metadata_only = true`. Artifact filters run after a project page is fetched.
 
 ```shell
-peryx mirror plan root/pypi --package "requests>=2,<3"
-peryx mirror sync root/pypi --requirements requirements.txt
-peryx mirror sync pypi --mode all --python-tag py3 --abi-tag none --platform-tag any
-peryx mirror verify pypi --mode all
+peryx mirror plan root/pypi --option 'packages=["requests>=2,<3"]'
+peryx mirror sync root/pypi --option 'requirements=["requirements.txt"]'
+peryx mirror sync pypi --option 'mode="all"' --option 'python_tags=["py3"]' --option 'abi_tags=["none"]' --option 'platform_tags=["any"]'
+peryx mirror verify pypi --option 'mode="all"'
 ```
 
 Use `--no-wheels`, `--no-sdists`, `--metadata-only`, or `--max-file-size-bytes` to narrow one run. Repeating a tag

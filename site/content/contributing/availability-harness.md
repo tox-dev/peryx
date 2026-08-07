@@ -9,14 +9,14 @@ what an operator would see over HTTP. It lives in `crates/peryx/tests/harness/` 
 in `crates/peryx/tests/availability.rs`. Both sit behind the `availability-e2e` feature, so the default `cargo test` and
 the coverage gate skip them; CI runs them in a dedicated job that installs `toxiproxy-server`.
 
-Run them locally with the binary on your `PATH`:
+Run them with the binary on your `PATH`:
 
 ```console
 $ brew install toxiproxy     # or download toxiproxy-server from the releases
 $ cargo test -p peryx --features availability-e2e --test availability
 ```
 
-## What it gives a test
+## Test API
 
 A test describes a group with a `Topology` and spawns it into a `Cluster`. `Topology::single()` is one stand-alone node;
 `Topology::dc(group, members)` and `Topology::ha(group, members)` build a datacenter roster from `MemberSpec`s,
@@ -29,24 +29,21 @@ killed when the `Cluster` drops, so a panicking test leaks nothing.
 socket, and the returned `Proxy` cuts (`partition`), restores (`heal`), or slows (`pause`) the link. This is how a test
 partitions two nodes without touching their processes.
 
-When an assertion fails, `Cluster::failure_report()` renders a per-node artifact: the topology snapshot, the status
-body, and the tail of each log, so a red run is diagnosable from what peryx saw.
+On an assertion failure, `Cluster::failure_report()` renders each node's topology snapshot, status body, and log tail.
 
-## What is not wired yet
+## Current limits
 
-The embedded ownership Raft node runs, but a multi-node consensus group cannot form yet: the inbound peer-RPC router is
-not mounted, so a bootstrap never reaches quorum, and there is no HTTP surface to submit an ownership write or read the
-current authority. The harness reflects this. `Topology::validate_config()` proves a generated `ha` or `dc` roster is
-configuration peryx accepts (through `peryx config check`, no server), which is the reachable assertion today. The
-`OwnershipControl` methods (`submit_ownership_write`, `leader`, `await_authority_transfer`) are defined but return
-`HarnessError::Unsupported`; the failover test tier fills them once the write and authority endpoints land
-([#540](https://github.com/tox-dev/peryx/issues/540)), and once the peer-RPC router is mounted the `ha` topologies will
-spawn a live cluster rather than only validate their config.
+The embedded ownership Raft node runs, but a multi-node consensus group cannot form yet. Peryx does not mount the
+inbound peer-RPC router, so bootstrap cannot reach quorum, and no HTTP endpoint accepts an ownership write or returns
+the current authority. `Topology::validate_config()` proves through `peryx config check` that peryx accepts a generated
+`ha` or `dc` roster without starting a server. The `OwnershipControl` methods (`submit_ownership_write`, `leader`,
+`await_authority_transfer`) return `HarnessError::Unsupported`. The failover test tier will implement them after the
+write and authority endpoints land ([#540](https://github.com/tox-dev/peryx/issues/540)). Mounting the peer-RPC router
+will let `ha` topologies spawn a live cluster instead of validating configuration alone.
 
 ## Extending it
 
 The downstream availability tests ([#558](https://github.com/tox-dev/peryx/issues/558),
-[#559](https://github.com/tox-dev/peryx/issues/559), and the cross-mode suites) add their own `tests/*.rs` files that
-`mod harness;` this module and drive clusters through the same API. Add a capability to the harness rather than to each
-test: a new observation goes on `Node`, a new fault on `Proxy`, and a new ownership control fills the `OwnershipControl`
-trait when its endpoint exists.
+[#559](https://github.com/tox-dev/peryx/issues/559), and the cross-mode suites) add `tests/*.rs` files that declare
+`mod harness;` and drive clusters through the same API. Put new observations on `Node` and new faults on `Proxy`. Add
+ownership controls to the `OwnershipControl` trait when the endpoint exists.

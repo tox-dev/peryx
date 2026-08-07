@@ -11,6 +11,27 @@ is rejected, and the error string a rejection returns. For why peryx works this 
 [what peryx accepts on upload](@/ecosystems/pypi/uploads.md); for the routes these apply to, see
 [HTTP endpoints](@/ecosystems/pypi/reference/endpoints.md).
 
+## Import a directory
+
+`peryx import-dir` loads local wheels and gzip-compressed source distributions into a hosted index:
+
+```shell
+peryx import-dir root/pypi ./dist --data-dir /var/lib/peryx
+peryx import-dir hosted ./dist --config peryx.toml
+```
+
+The index argument accepts a hosted name, a hosted route, or a virtual route with a hosted upload target. The command
+walks the directory tree and applies the upload checks on this page to `.whl` and `.tar.gz` files. It skips unsupported
+files and rejects invalid distributions.
+
+Output is tab-separated:
+
+```text
+status  filename  project  version  reason
+```
+
+Each row has an `imported`, `skipped`, or `rejected` status and a reason. A summary row reports the three counts.
+
 ## Durable ingress admission
 
 A PyPI client uploads to whichever datacenter it reaches. Before peryx stores an upload, the datacenter it arrived at
@@ -40,27 +61,27 @@ streamed bytes before admission records anything, so a checksum mismatch is reje
 no staged intent. See [the digest fields peryx verifies](#upload-digest-fields) below.
 
 **Same-datacenter durability.** Admission requires the configured blob backend to prove race-safe, integrity-checked
-writes — create-if-absent so a concurrent writer cannot silently clobber a staged artifact, and checksum validation so a
-corrupted write is rejected rather than acknowledged. A local filesystem proves both. An object store proves them only
-when its endpoint honors conditional writes and checksum validation; one that cannot is refused at admission rather than
-acknowledging an upload it cannot make durable.
+writes. Create-if-absent prevents a concurrent writer from clobbering a staged artifact, and checksum validation rejects
+corrupted writes. A local filesystem proves both. An object store proves them only when its endpoint honors conditional
+writes and checksum validation; one that cannot is refused at admission rather than acknowledging an upload it cannot
+make durable.
 
 **Retention limits and backpressure.** The retention buffer is bounded per authority, not globally: each authority
 stages up to a record ceiling and a byte ceiling, so one busy project cannot starve the ledger of every other while a
 home outage holds writes un-finalized. A new intent is refused once its authority holds its record ceiling, or once
-admitting it would cross its byte ceiling. Admission trips backpressure at a soft fraction of either ceiling — 80% — one
-shed signal ahead of the hard bound: an upload that crosses the soft threshold is still admitted, and the node logs the
-authority's retained records and bytes so an operator sees capacity pressure building before writes are refused. When an
-authority reaches a hard ceiling, a further upload is shed with `503` and a
+admitting it would cross its byte ceiling. Admission trips backpressure at 80% of either ceiling, one shed signal before
+the hard bound. The node admits an upload that crosses the soft threshold and logs the authority's retained records and
+bytes so an operator sees capacity pressure building before writes are refused. When an authority reaches a hard
+ceiling, a further upload is shed with `503` and a
 [`Retry-After`](https://www.rfc-editor.org/rfc/rfc9110.html#field.retry-after) so the client backs off and retries
 rather than losing the write; the buffer drains as the home finalizes the retained intents.
 
 **Order, retention, and expiry.** Every admission takes the next value of a durable, never-reused sequence, and the
-pending set is keyed by it, so a restart resumes the drain in the exact order writes were admitted — interleaved
-authorities preserved — rather than in key order. A pending intent is never reaped: its write may still finalize, so a
-stalled home sheds new load through admission rather than by dropping work in flight. A finalized intent, or one that
-expired without finalizing, is pruned once the retention window has passed since its last transition, which returns its
-slot to the authority's ceiling.
+pending set is keyed by it. After a restart, the node resumes the drain in admission order across interleaved
+authorities instead of key order. The node retains a pending intent because its write may still finalize, so a stalled
+home sheds new load through admission rather than by dropping work in flight. A finalized intent, or one that expired
+without finalizing, is pruned once the retention window has passed since its last transition, which returns its slot to
+the authority's ceiling.
 
 **Partition behavior.** Admission may retain bytes and intent state during a home outage, but it never publishes
 metadata or changes home authority: those run downstream once the home is reachable. A datacenter in a control-plane
@@ -258,7 +279,7 @@ signature, certificate, or transparency-log entry.
 
 | Situation                                             | Status | Rule                         |
 | ----------------------------------------------------- | ------ | ---------------------------- |
-| Every required predicate type is present              | passes | —                            |
+| Every required predicate type is present              | passes | none                         |
 | A required predicate type is missing (`enforce` mode) | `403`  | `required-attestation`       |
 | A required predicate type is missing (`audit` mode)   | passes | `required-attestation-audit` |
 

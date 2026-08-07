@@ -4,20 +4,20 @@ description = "The durability and failure guarantees of none, dc, and ha modes."
 weight = 7
 +++
 
-The same binary implements three availability contracts. Startup configuration selects one contract and initializes only
-its resources.
+The same binary implements three availability contracts. Startup configuration selects one and initializes its
+resources.
 
-| Mode | Acknowledgement | Failure domain | Runtime | | --- | --- | --- | --- | | `none` | Authoritative metadata and
-required bytes are durable on the local backend | One process and its storage | Local coordinator; no distributed
-resources | | `dc` | The configured same-datacenter durability requirement is satisfied | One node within the datacenter
-| Distributed coordinator with same-DC replication | | `ha` | The configured cross-datacenter durability requirement is
-satisfied | Loss of a covered datacenter | Distributed coordinator with cross-DC placement and quorum |
+| Mode   | Acknowledgement                                                            | Failure domain                 | Runtime                                                    |
+| ------ | -------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `none` | Authoritative metadata and required bytes are durable on the local backend | One process and its storage    | Local coordinator; no distributed resources                |
+| `dc`   | The configured same-datacenter durability requirement is satisfied         | One node within the datacenter | Distributed coordinator with same-DC replication           |
+| `ha`   | The configured cross-datacenter durability requirement is satisfied        | Loss of a covered datacenter   | Distributed coordinator with cross-DC placement and quorum |
 
 ## Mutation contract
 
-An authoritative mutation moves through admission, validation, durable commit, and acknowledgement. A success means the
-selected mode's metadata and byte-placement requirements are satisfied. If the requirement cannot be proved, the
-mutation is refused or remains retry-safe; peryx does not weaken the configured contract silently.
+An authoritative mutation moves through admission, validation, durable commit, and acknowledgement. A success confirms
+the selected mode's metadata and byte-placement requirements. If peryx cannot prove the requirement, it refuses the
+mutation or leaves it retry-safe without weakening the configured contract.
 
 Cache fills are reconstructible and do not wait for authoritative durability. They still verify content before local
 commit.
@@ -30,21 +30,20 @@ and leaves the client a retry-safe result instead.
 
 ## Fencing
 
-Every distributed authority has a monotonic epoch. The current owner may commit under that epoch. A former owner or
-stale background job is fenced before its result becomes authoritative. Retrying the same idempotent mutation against
-the current owner returns one result.
+Every distributed authority has a monotonic epoch. The current owner may commit under that epoch. The epoch fences a
+former owner or stale background job before its result becomes authoritative. Retrying the same idempotent mutation
+against the current owner returns one result.
 
 ## Read contract
 
-Metadata and bytes advance independently. A replica exposes mutable metadata only through its readable frontier and
+Metadata and bytes advance on separate paths. A replica exposes mutable metadata only through its readable frontier and
 serves bytes only when their digest verifies. A lagging replica may return unavailable or not found; it never pairs new
 metadata with an old derived view or returns the wrong bytes.
 
 ## The frontier bounds staleness {#the-frontier-bounds-staleness}
 
-A frontier is the highest serial a replica or derived view has fully applied. The readable frontier is the minimum of
-the required view frontiers. Lag is therefore measurable and bounded by serial distance rather than inferred from wall
-clock time.
+A frontier is the highest serial a replica or derived view has applied. The readable frontier is the minimum of the
+required view frontiers. Serial distance measures and bounds lag without relying on wall-clock time.
 
 ## Crash versus storage loss {#crash-versus-storage-loss}
 

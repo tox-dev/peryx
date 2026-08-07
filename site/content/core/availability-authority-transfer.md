@@ -4,50 +4,43 @@ description = "How a confirmed home failure moves an authority to a survivor und
 weight = 8
 +++
 
-An authority — a repository's write ownership — has one home datacenter, assigned on its first publish and held by the
-first winner. When that home fails for good, its authority has to move to a survivor and the writes it never finalized
-have to follow. This page is the mechanism: what threshold moves a home, how the target is chosen, what the move
-commits, and how the retained writes drain into the new home. It is the `ha` counterpart to the single-writer
-[failover and recovery](@/core/availability-failover-recovery.md) runbook, and it builds on
-[node liveness](@/core/availability-liveness.md) for the failure signal and the
+An authority, a repository's write ownership, has one home datacenter. The first publish assigns that home to its first
+winner. After a permanent home failure, the control quorum moves its authority and retained writes to a survivor. This
+page covers the failure threshold, target selection, committed move, and retained-write drain. It is the `ha`
+counterpart to the single-writer [failover and recovery](@/core/availability-failover-recovery.md) runbook, and it
+builds on [node liveness](@/core/availability-liveness.md) for the failure signal and the
 [availability contracts](@/core/availability-contracts.md) for the durability each step preserves.
 
 ## Suspicion never moves a home
 
 Liveness aging is a routing hint, not a decision. A home that misses heartbeats becomes
 [`Suspect`](@/core/availability-liveness.md) and then, past the dead-after threshold, `Dead`, but neither state moves
-its authority on its own: a suspicion is a delay, not a failure, and a home that recovers within tolerance keeps
-everything it owned. Only a home the tracker has confirmed `Dead` is a failover trigger, and even then the move is a
-proposal the control quorum commits through consensus before any write is touched. This is deliberate — moving a home is
-the one action that, done on a false positive, can split ownership, so it waits for a confirmed failure and a committed
-decision rather than a timeout.
+its authority. A suspicion indicates delay, and a home that recovers within tolerance keeps everything it owned. Only a
+home the tracker has confirmed `Dead` triggers failover. The control quorum then commits the proposal through consensus
+before touching any write. Moving a home on a false positive can split ownership, so the quorum waits for a confirmed
+failure and a committed decision.
 
-The wall-clock cost of a failover — its recovery-time objective — is therefore dominated not by the selection, which is
-a bounded in-memory choice, but by the dead-after threshold the tracker waits out before it will call a home dead, plus
-the one consensus round the control quorum takes to commit the move. Tune the failover RTO through the liveness
-thresholds, not by weakening the confirmation.
+The dead-after threshold and one control-quorum consensus round dominate the failover recovery time. Target selection
+uses a bounded in-memory pass. Tune the failover RTO through the liveness thresholds while retaining confirmation.
 
 ## Choosing the target
 
 Given a confirmed-dead home, the failover policy picks the datacenter to move it to from the candidates the roster
 offers, each carrying the liveness the tracker holds for it. The choice is a single bounded pass:
 
-- Only an `Alive` candidate is eligible. A candidate that is itself suspect, dead, or never heard from cannot receive a
-  home, so a failover never moves an authority onto a datacenter that is already in doubt.
+- Only an `Alive` candidate is eligible. A suspect, dead, or unknown candidate cannot receive a home.
 - The first eligible candidate in the caller's order wins. The caller orders the candidates, so the outcome is
   deterministic rather than dependent on map iteration.
 - The pass weighs at most a bounded number of candidates, so a long roster cannot stall one decision.
 
-When no candidate is alive, the policy holds: authority stays put and the old home's writes stay retained until a
-candidate recovers, rather than move a home onto a datacenter that cannot serve it.
+Without a live candidate, the authority stays put and the old home's writes remain retained until a candidate recovers.
 
 ## Committing the move
 
 The chosen move commits on the control quorum, which mints the authority's next epoch. That new epoch is the fence: any
-write the old home had in flight under the previous epoch is now stale and is rejected, so a former home that comes back
-cannot finalize a write against an authority it no longer owns. A datacenter that is in a control-plane minority cannot
-commit the move at all — it forwards to the leader rather than transfer authority locally — so a partition cannot
-produce two homes.
+write the old home had in flight under the previous epoch is stale, and the new epoch rejects it. A former home that
+returns cannot finalize a write against an authority it no longer owns. A datacenter in a control-plane minority cannot
+commit the move. It forwards to the leader, so a partition cannot produce two homes.
 
 {% mermaid() %}
 flowchart TB
@@ -67,20 +60,18 @@ a write, the ingress datacenter that received it retains it as an intent (see th
 [availability contracts](@/core/availability-contracts.md)). When the home moves, those intents have to be finalized at
 the new home. That is the drain, run with [`peryx job drain`](@/core/cli.md#job-drain):
 
-- **Ordered.** It finalizes the retained intents in the stable order they were admitted, held by a durable never-reused
-  sequence that survives a restart, so the drain is deterministic and two operators running it reach the same result.
-- **Resumable.** Each finalize only advances an intent, never re-applies it, so a drain interrupted partway resumes at
-  the first intent still pending rather than double-finalizing the ones already settled. Re-running a completed drain is
-  a no-op.
+- **Ordered.** It finalizes retained intents in admission order, held by a durable never-reused sequence that survives a
+  restart, so the drain is deterministic and two operators running it reach the same result.
+- **Resumable.** Each finalize advances an intent without reapplying it. An interrupted drain resumes at the first
+  pending intent, and rerunning a completed drain is a no-op.
 - **Bounded.** It finalizes in batches, so a large backlog drains in bounded transactions rather than one unbounded
   scan.
-- **Fence-protected.** The run leases the authority's committed epoch. If the authority transfers again while the drain
-  runs, the run wrote under a now-superseded epoch, so its success is fenced out and it fails with `authority_fenced`
-  rather than finalize under an authority it no longer holds. Re-run the drain at the current home.
+- **Fence-protected.** The run leases the authority's committed epoch. If the authority transfers during the drain, the
+  fence rejects the run's success under the superseded epoch with `authority_fenced`. Rerun the drain at the current
+  home.
 
-Every retained operation reaches exactly one outcome — finalized at the new home, or retired because a newer write
-already superseded it — so a home loss at the transfer boundary yields one home and one settled outcome per operation,
-never a double-write and never a dropped one.
+Each retained operation reaches one outcome: the new home finalizes it, or a newer write supersedes it. A home loss at
+the transfer boundary leaves one home and one settled outcome per operation, without a double-write or dropped write.
 
 ## Reconciling old-epoch operations
 
@@ -88,45 +79,41 @@ A transfer mints a higher epoch, and the [authority fence](@/core/availability-c
 applying more work under the epoch it lost. The operations it durably recorded before the transfer still sit in its log,
 though, and each needs one terminal disposition so the two homes never disagree about what the authority did.
 
-Reconciliation classifies every such operation deterministically from its committed record, its epoch, and the current
-metadata, into exactly one of four outcomes. An operation whose effect the committed state already carries is **already
-applied** and reconciles to a no-op. A durable operation a newer operation has since overwritten is **superseded** and
-dropped. An operation that never reached a durable commit **failed** with nothing to apply. A durable operation that
-still stands is **replayable**: the new home re-issues it under the current epoch. The precedence is fixed, so the
-outcome is single-valued and independent of evaluation order: a never-committed operation fails ahead of everything, and
-an already-applied one is a no-op even when a later operation also superseded it, because idempotency has already
-settled its effect.
+Reconciliation classifies each operation from its committed record, epoch, and current metadata into one of four
+outcomes. An operation whose effect exists in committed state is **already applied** and becomes a no-op. A newer
+operation can overwrite a durable operation, making it **superseded**. An operation that did not reach durable commit
+**failed** with nothing to apply. A durable operation that remains current is **replayable**, and the new home reissues
+it under the current epoch. Fixed precedence makes the outcome independent of evaluation order. A never-committed
+operation fails first, while an applied operation remains a no-op even if a later operation superseded it because
+idempotency settled its effect.
 
-A replay re-issues the operation under the new epoch while keeping its original source and serial, so it stays
-idempotent, and continues the W3C trace the original authored rather than starting a disconnected one, so its audit
-identity carries across the transfer. A replay that reaches an authority already past that serial is a no-op under the
-same idempotency, so a retried or duplicated reconciliation never double-applies.
+A replay reissues the operation under the new epoch while retaining its original source and serial for idempotency. It
+continues the original W3C trace, preserving the audit identity across the transfer. A replay that reaches an authority
+past that serial is a no-op, so a retried or duplicated reconciliation does not apply twice.
 
-A reconciled record is retained until both the required-replica frontier and the operator audit-retention frontier have
-passed its serial, then released. Holding it until every required replica has applied the outcome keeps a lagging
-replica from re-litigating the operation after a restore, and holding it through the audit window keeps the operation
-answerable to an operator query; releasing it once both frontiers cover it bounds the retained backlog.
+The system retains a reconciled record until the required-replica and operator audit-retention frontiers pass its
+serial. Required replicas can then apply the outcome after a restore, and operators can query it during the audit
+window. Releasing records after both frontiers cover them bounds the backlog.
 
-The backlog is durable, so the drain is restart-safe: a home that stops mid-reconciliation resumes from the operations
-still pending and settles each exactly once, and a re-scan of an already-settled operation never resets it. The drain
-and the prune run in bounded batches, so the reconciliation scan and the retained backlog stay within their limits; the
-pending backlog depth and the drain throughput are the signals to alert on, since a backlog that stops draining means
-the new home is not settling what the old home left behind.
+The durable backlog makes the drain restart-safe. A home that stops during reconciliation resumes from pending
+operations, and rescanning a settled operation does not reset it. The drain and prune use bounded batches. Alert on
+pending backlog depth and drain throughput; a backlog that stops draining means the new home is not settling the old
+home's operations.
 
 ## Operator recovery
 
 For a confirmed permanent home loss in an `ha` deployment:
 
-1. Confirm the home is genuinely gone, not merely suspect — the transfer only proceeds on a `Dead` home, and promoting
-   on a false positive is the outcome the confirmation exists to prevent.
+1. Confirm that the home is gone rather than suspect. The transfer proceeds only for a `Dead` home, preventing promotion
+   on a false positive.
 1. Let the control quorum commit the transfer to the selected survivor; a minority cannot, so ensure the quorum is
    reachable.
 1. Run `peryx job drain --authority <name>` at the new home to finalize the retained intents. Read the run back with
    `peryx job show` to confirm it succeeded; a run that reports `authority_fenced` raced a further transfer, so re-run
    it at the current home.
 
-Data at risk: nothing acknowledged. A retained intent is durable at its ingress datacenter, so it survives the home loss
-and the drain finalizes it; an unacknowledged in-flight write that never became an intent is the caller's to retry.
+Data at risk: nothing acknowledged. The ingress datacenter stores each retained intent, so it survives the home loss and
+the drain finalizes it. The caller must retry an unacknowledged in-flight write that did not become an intent.
 
 ## Related
 

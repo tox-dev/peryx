@@ -1,24 +1,19 @@
 +++
 title = "Getting started"
-description = "Install peryx, start it with no configuration, then continue with the ecosystem you serve: PyPI or OCI."
+description = "Install peryx, start its default server, and continue with an ecosystem tutorial."
 weight = 1
 +++
 
-This page gets a peryx binary running on your machine. It is the same first two steps whatever you serve (install the
-binary, start the server), so it lives here in Core. Once peryx is listening, pick the ecosystem you use and its
-getting-started tutorial carries on from there: caching an upstream, installing or pulling, and publishing your own.
+Install the peryx binary and start the server before configuring an ecosystem client. The ecosystem tutorials cover
+client URLs, protocol operations, and publishing.
 
-## Prerequisites
+## Install peryx
 
-Two things: a peryx binary, and a client for the ecosystem you serve: an installer like `pip` or `uv` for Python
-packages, or a container client like `docker` or `podman` for images. The ecosystem tutorial names the exact client.
-
-Install peryx through whichever channel fits; [installation](@/core/installation.md) lists them all:
+[Installation](@/core/installation.md) describes each supported channel.
 
 {% tabs(names="installer, uv, pip, from source") %}
 
 ```shell
-# standalone binary, no Python involved
 curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh | sh
 ```
 
@@ -37,7 +32,6 @@ pip install peryx
 %%%
 
 ```shell
-# needs a Rust toolchain (https://rustup.rs); rust-toolchain.toml pins the version
 git clone https://github.com/tox-dev/peryx.git
 cd peryx
 cargo build --release
@@ -45,34 +39,30 @@ cargo build --release
 
 {% end %}
 
-## Start peryx
+The source install requires the Rust toolchain pinned by `rust-toolchain.toml`.
 
-peryx needs no configuration to start. Run it and it listens on `127.0.0.1:4433` with a default topology: a cached proxy
-of an upstream, a private hosted store, and a virtual index combining them:
+## Start the server
+
+The default configuration listens on `127.0.0.1:4433` and creates cached, hosted, and virtual repository roles.
 
 ```shell
-peryx serve            # ./target/release/peryx serve when built from source
+peryx serve
 ```
 
-Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for the web dashboard: the configured indexes, their
-[roles](@/core/indexes.md), and live request counters. Leave the server running.
+Use `./target/release/peryx serve` after a source build.
 
-## Continue with your ecosystem
+Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) to inspect configured repositories and request counters. Keep the
+process running while following an ecosystem tutorial.
 
-peryx is up. From here the steps depend on what you serve: the client, the wire protocol, and how you publish differ by
-ecosystem. Follow the tutorial for yours:
+## Configure an ecosystem
 
-- [**PyPI**: Python packages](@/ecosystems/pypi/tutorials/getting-started.md): cache [pypi.org](https://pypi.org/),
-  install with [pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/), publish a private package, then yank
-  and delete it.
-- [**OCI**: container images](@/ecosystems/oci/tutorials/getting-started.md): cache
-  [Docker Hub](https://hub.docker.com/), pull an image, build and push one of your own, then verify it round-trips.
+- [Python package tutorial](@/ecosystems/pypi/tutorials/getting-started.md)
+- [OCI tutorial](@/ecosystems/oci/tutorials/getting-started.md)
 
-Each starts from a running peryx and takes about ten minutes.
+These tutorials define the client, repository URL, publication flow, and protocol checks for their ecosystem.
 
-## Where next
+## Next steps
 
-- [The index model](@/core/indexes.md): cached, hosted, and virtual indexes, and how a virtual index resolves.
-- [Issue your first access token](@/ecosystems/pypi/tutorials/access-token.md): scope a token and publish a package.
-- [Configuration reference](@/core/configuration.md): every TOML key.
-- [Ecosystems](@/ecosystems/_index.md): the per-ecosystem "Set Me Up" hubs.
+- [Repository roles](@/core/indexes.md)
+- [Configuration](@/core/configuration.md)
+- [Ecosystem documentation](@/ecosystems/_index.md)

@@ -1,19 +1,18 @@
 +++
 title = "Serve images air-gapped"
-description = "Run peryx as a container registry on a network with no path to Docker Hub: pre-seed a cache, then run offline or carry the data directory across the gap."
+description = "Run peryx as a container registry with no path to Docker Hub by pre-seeding a cache or carrying the data directory across the gap."
 weight = 6
 +++
 
-A network with no route to [Docker Hub](https://hub.docker.com/) can still pull public images through peryx, as long as
-the images land in peryx's content-addressed blob store before the gap closes. Two topologies cover the common cases: a
-cache pinned offline, or a data directory carried across. Images your team pushes directly to a hosted store need no
-upstream at all.
+A network with no route to [Docker Hub](https://hub.docker.com/) can pull public images through peryx after the images
+land in peryx's content-addressed blob store. Pin a pre-seeded cache offline or carry its data directory across the gap.
+Images your team pushes to a hosted store need no upstream.
 
 ## Pre-seed the cache on a connected machine
 
-On a machine that can still reach Docker Hub, run peryx with a cached proxy and mirror every image the air-gapped side
-will need. `peryx mirror sync` pulls each image's manifest and every blob it names (following a manifest list into its
-per-platform manifests), running the upstream bearer-token handshake and verifying each blob against its digest:
+On a machine that can reach Docker Hub, run peryx with a cached proxy and mirror all images the air-gapped side needs.
+`peryx mirror sync` pulls each image's manifest and all named blobs (following a manifest list into its per-platform
+manifests), running the upstream bearer-token handshake and verifying each blob against its digest:
 
 ```toml
 # peryx.toml on the connected machine
@@ -33,19 +32,17 @@ url = "https://registry-1.docker.io"
 
 ```shell
 peryx mirror sync dockerhub \
-  --image library/alpine:latest \
-  --image library/nginx:1.27 \
-  --image library/python:3.13-slim
+  --option 'images=["library/alpine:latest","library/nginx:1.27","library/python:3.13-slim"]'
 ```
 
-Every manifest, config blob, and layer blob now sits under `./peryx-data`, deduplicated by digest. Re-run the command
-whenever the image set changes; `peryx mirror verify dockerhub --image …` checks that the store still holds a complete
-image. A running server is not required; the command reads the config and writes the data directory directly.
+The command stores each manifest, config blob, and layer blob under `./peryx-data`, deduplicated by digest. Re-run it
+when the image set changes; `peryx mirror verify dockerhub --option 'images=[…]'` checks that the store contains a
+complete image. The command does not require a running server. It reads the config and writes the data directory.
 
 ## Approach one: pin the cache offline
 
-Set `offline = true` on the cached index and peryx never reaches upstream. Everything already in the blob store serves
-from disk; a pull of something that was not pre-seeded returns an error rather than a network fetch:
+Set `offline = true` on the cached index to block upstream requests. peryx serves cached content from disk and returns
+an error for content that was not pre-seeded:
 
 ```toml
 # peryx.toml on the air-gapped machine
@@ -64,13 +61,13 @@ name = "primary"
 url = "https://registry-1.docker.io"
 ```
 
-This fits a machine that was connected during the pre-seed and later lost its route: same data directory, one flag
-flipped. Clients pull through the `dockerhub` route exactly as before.
+Use this configuration on a machine that had network access during the pre-seed. Keep the data directory, set the flag,
+and continue pulling through the `dockerhub` route.
 
 ## Approach two: carry the data directory across the gap
 
-When the air-gapped machine was never connected, move the store to it. Pre-seed on the connected machine as above, then
-carry `./peryx-data` (the blob store and its metadata) across the gap and run peryx there. A backup keeps the copy
+For an air-gapped machine with no prior network access, move the store to it. Pre-seed on the connected machine, carry
+`./peryx-data` (the blob store and its metadata) across the gap, and run peryx there. Use a backup to keep the copy
 consistent:
 
 ```shell
@@ -83,13 +80,13 @@ peryx restore ./peryx-backup --data-dir ./peryx-data
 peryx serve --config peryx.toml
 ```
 
-The air-gapped machine's config declares the same cached index with `offline = true`, so a pull of a pre-seeded image
-serves from the carried-over store and a cold miss returns an error instead of reaching for a network that is not there.
+The air-gapped machine's config declares the same cached index with `offline = true`. Peryx serves a pre-seeded image
+from the copied store and returns an error for a cold miss without attempting a network request.
 
 ## Hosted images need no upstream
 
-An image your team builds and pushes to a hosted index never involves Docker Hub, so it works air-gapped with no
-pre-seed at all. Declare a hosted store alongside the cache:
+An image your team builds and pushes to a hosted index does not involve Docker Hub, so it works air-gapped without a
+pre-seed. Declare a hosted store alongside the cache:
 
 ```toml
 [[index]] # hosted: your own images, push needs the token
@@ -104,7 +101,7 @@ secret = "team-secret"
 actions = ["write", "delete"]
 ```
 
-Push and pull it directly on the air-gapped side:
+Push and pull it on the air-gapped side:
 
 ```shell
 docker login 127.0.0.1:4433 -u _ -p team-secret
@@ -117,7 +114,7 @@ docker pull 127.0.0.1:4433/team/my-app:1.0
 upstream ones under one route, front both with a virtual index; see
 [build a team registry](@/ecosystems/oci/tutorials/team-registry.md).
 
-## What to check
+## Checks
 
 - `curl -u admin:"$ADMIN_PASSWORD" http://<host>:4433/+status | jq '.indexes[].upstream?.offline'` shows which cached
   indexes run offline; the index topology needs an administrator credential.

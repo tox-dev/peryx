@@ -23,8 +23,8 @@ Roles are independent of wire protocol. See [the index model](@/core/indexes.md)
 ## Shadowing {#shadowing}
 
 **Shadowing** is virtual-index precedence. When more than one member can serve the same logical item, the earlier
-authoritative member wins and lower-precedence candidates remain hidden. Ecosystem drivers define candidate identity;
-the virtual-index engine applies the ordering.
+authoritative member wins and lower-precedence candidates remain hidden. Ecosystem implementations define candidate
+identity; the virtual-index engine applies the ordering.
 
 ## Ecosystem {#ecosystem}
 
@@ -36,18 +36,18 @@ records.
 
 ## Ecosystem contract {#ecosystem-contract}
 
-The traits and neutral DTOs shared code exposes to ecosystem implementations. They cover plugin registration, serving,
+The traits and neutral DTOs that `peryx-core` exposes to ecosystem implementations. They cover registration, serving,
 maintenance, mirroring, settings compilation, replicated updates, and discovery without defining protocol behavior.
 
-## Ecosystem registry {#ecosystem-registry}
+## Plugin registry {#plugin-registry}
 
-The composition crate that links every implementation shipped in the binary. It resolves IDs and dispatches through
-`EcosystemPlugin`; it does not parse protocol data.
+The neutral index of registrations submitted by implementation crates. It resolves IDs and rejects duplicates. The
+registry implements no ecosystem behavior; the binary links the implementations.
 
 ## Capability {#capability}
 
-An optional behavior a plugin implements explicitly. Core queries capabilities before enabling dependent configuration
-or jobs. A missing capability is rejected during configuration rather than becoming a runtime no-op.
+An optional behavior an ecosystem implementation exposes through a `peryx-core` contract. Callers query capabilities
+before starting dependent work and skip that work when the capability is absent.
 
 ## Upstream {#upstream}
 
@@ -74,18 +74,18 @@ the lowest required frontier.
 Evidence that a node or datacenter holds verified bytes for a digest. Metadata replication and byte placement advance
 independently and are reported separately.
 
-## Local coordinator {#local-coordinator}
+## Disabled availability {#disabled-availability}
 
-The coordinator selected by omitted availability configuration or `mode = "none"`. It has no peers, topology watcher,
-distributed listener, timer, queue, worker, or distributed metric.
+The state selected by omitted availability configuration or `mode = "none"`. Peryx allocates no distributed state and
+starts no distributed task, timer, watcher, or transport.
 
 ## Distributed coordinator {#distributed-coordinator}
 
-The coordinator selected by `mode = "dc"` or `mode = "ha"`. It owns membership, replication, reconciliation, liveness,
-leases, and distributed diagnostics.
+The `peryx-ha-distributed` implementation selected by `mode = "dc"` or `mode = "ha"`. It provides membership,
+replication, reconciliation, liveness, leases, and distributed diagnostics through traits owned by `peryx-ha`.
 
 ## Related
 
 - [Ecosystem boundaries](@/contributing/ecosystem-boundaries.md)
 - [High availability](@/core/high-availability.md)
-- [Capabilities](@/core/capabilities.md)
+- [Capabilities](@/ecosystems/capabilities.md)

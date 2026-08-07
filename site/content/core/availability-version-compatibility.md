@@ -29,7 +29,7 @@ The matrix below reads a local node advertising protocol `2..=4` against peers a
 | `1..=2`             | `2`     | `2`                 | interoperate at the floor     |
 | `3..=5`             | `3..=4` | `4`                 | interoperate at the ceiling   |
 | `2..=4`             | `2..=4` | `4`                 | identical builds, newest wins |
-| `5..=6`             | none    | —                   | incompatible on protocol      |
+| `5..=6`             | none    | :                   | incompatible on protocol      |
 
 The state-machine dimension negotiates by the same rule. An operator upgrades safely by keeping each new build's range
 overlapping the range of every node still in the cluster, one hop at a time, so no negotiation ever falls through.
@@ -49,7 +49,7 @@ A receiver fails closed on anything it cannot safely interpret. An operation kin
 discriminant and a flag for whether a receiver must understand it: a known discriminant always applies, and an unknown
 one applies only when the sender marked it ignorable. An unknown **required** kind is rejected rather than skipped,
 because applying the surrounding log while dropping a required operation would diverge the receiver's state. Wire
-discriminants are stable across versions for exactly this reason — a discriminant never means one thing to one build and
+discriminants are stable across versions for exactly this reason : a discriminant never means one thing to one build and
 another to the next.
 
 Version skips follow the same fail-closed rule. Nodes move one negotiated version at a time; a jump past a version no
@@ -65,7 +65,7 @@ rollback below the floor would strand every node that already took a post-migrat
 Before a rolling upgrade commits a new operating version, a preflight decides whether the target clears the version
 rules. Every committed voter must already run the target on both dimensions, so a command at the new version never
 reaches a member that cannot apply it, and the target state machine must sit at or above the irreversible-migration
-floor. A preflight names each rule the target fails — an unsupported target, a rollback below the floor, or both — in a
+floor. A preflight names each rule the target fails : an unsupported target, a rollback below the floor, or both : in a
 fixed order, so the verdict is deterministic and an operator sees every reason to wait at once. The operational side of
-the same go decision — quorum, replication lag, and backup currency — comes from the datacenter group's readiness, not
+the same go decision : quorum, replication lag, and backup currency : comes from the datacenter group's readiness, not
 from the version rules this page fixes.

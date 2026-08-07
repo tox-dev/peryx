@@ -5,8 +5,8 @@ weight = 3
 +++
 
 A cached OCI index reads through to an upstream registry. When that upstream is private, peryx needs credentials to run
-its bearer-token handshake; give them on the index and clients pull locally, presenting only peryx's own auth (or none).
-This isolates the upstream secret in one process instead of on every developer's machine.
+its bearer-token handshake. Put the credentials on the index so clients pull through peryx and present peryx's own auth,
+or none. This keeps the upstream secret in one process instead of on each developer's machine.
 
 ## The index
 
@@ -31,7 +31,8 @@ peryx supports three credential fields on the `[[index.upstream]]` source:
 
 - `username` and `password`: Basic-auth credentials peryx presents when the upstream's `WWW-Authenticate` challenge asks
   for them.
-- `token`: a bearer token, used directly. It takes precedence over `username`/`password` when both are set.
+- `token`: a bearer token that peryx sends as supplied. It takes precedence over `username`/`password` when both are
+  set.
 
 Which you set depends on the upstream:
 
@@ -49,13 +50,14 @@ Which you set depends on the upstream:
 The credential fields hold literal strings, so a token in `peryx.toml` is a secret at rest. Restrict the file
 (`chmod 600 peryx.toml`) and keep it out of version control. To avoid a plaintext token on disk, render the config from
 a template at deploy time, injecting the value from a `PERYX`-scoped environment variable or a secret manager. See
-[configuration](@/core/configuration.md) for the precedence tiers and how the file is loaded.
+[configuration](@/core/configuration.md) for the precedence tiers and file-loading rules.
 
 ## Pull
 
 Assume peryx runs at `127.0.0.1:4433`. [Docker](https://docs.docker.com/) and [Podman](https://podman.io/) trust a
-loopback registry over plain HTTP with no setup, so on the same host a pull just works; `crane` and `podman` reaching it
-take an insecure flag. Over the network, serve [TLS](@/core/serve-https.md) so clients need no flag at all.
+loopback registry over plain HTTP with no setup, so a pull on the same host needs no client configuration; `crane` and
+`podman` reaching it take an insecure flag. Over the network, serve [TLS](@/core/serve-https.md) so clients need no flag
+at all.
 
 Pull through peryx's route prefix; the upstream repository name follows it:
 
@@ -80,8 +82,8 @@ crane pull --insecure 127.0.0.1:4433/ghcr/<owner>/<image>:latest image.tar
 {% end %}
 
 peryx authenticates to the private upstream with the index's credentials, verifies each manifest and blob digest, stores
-them, and serves them back. Clients never see the upstream secret; later pulls come from disk. Concurrent pulls of one
-uncached layer share a single upstream fetch.
+them, and serves them back. Clients do not receive the upstream secret; later pulls come from disk. Concurrent pulls of
+one uncached layer share a single upstream fetch.
 
 ## When the upstream refuses
 
