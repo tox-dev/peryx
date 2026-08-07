@@ -226,7 +226,7 @@ mod tests {
         Index {
             name: name.to_owned(),
             route: name.to_owned(),
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             kind,
             policy: Policy::default(),
             acl,

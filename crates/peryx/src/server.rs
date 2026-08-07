@@ -9,21 +9,21 @@ use std::time::Duration;
 
 use anyhow::{Context as _, bail, ensure};
 use axum::Router;
-use peryx_ecosystem_registry as ecosystem_registry;
-use peryx_core::{Ecosystem, path};
+use peryx_core::path;
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, DriverSet, Index, IndexKind};
+use peryx_ecosystem_registry as ecosystem_registry;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
+use peryx_ha_distributed::{
+    FrontierReply, HttpReceiptSource, HttpRemoteFrontierSource, MetadataFrontierProvider, ReceiptSource,
+    RemoteFrontierSource, frontier_router, receipt_router,
+};
 use peryx_http::router;
 use peryx_identity::{
     Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
     OidcProviderSettings, SessionSealer, Signer,
 };
 use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
-use peryx_replication::{
-    FrontierReply, HttpReceiptSource, HttpRemoteFrontierSource, MetadataFrontierProvider, ReceiptSource,
-    RemoteFrontierSource, frontier_router, receipt_router,
-};
 use peryx_storage::blob::{BlobStorage, S3Config};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use peryx_upstream::{
@@ -41,11 +41,10 @@ use crate::config::{
 /// as the search view, so its readable frontier holds at the slower of the metadata and blob views;
 /// every other role gates on the search view alone.
 fn required_views(config: &Config) -> Arc<[&'static str]> {
-    match config.availability.replication() {
-        Some(ReplicationConfig::Replica { .. }) => {
-            Arc::from([peryx_driver::state::SEARCH_VIEW, peryx_replication::BLOB_VIEW])
-        }
-        _ => Arc::from([peryx_driver::state::SEARCH_VIEW]),
+    if config.availability.is_replica_mode() {
+        Arc::from([peryx_driver::state::SEARCH_VIEW, peryx_ha_distributed::BLOB_VIEW])
+    } else {
+        Arc::from([peryx_driver::state::SEARCH_VIEW])
     }
 }
 
@@ -108,10 +107,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
-    let configured_replica = matches!(
-        config.availability.replication(),
-        Some(ReplicationConfig::Replica { .. })
-    );
+    let configured_replica = config.availability.is_replica_mode();
     let read_only = config.read_only || configured_replica;
     if read_only {
         let active = meta.writer_identity().context("read metadata store writer identity")?;
@@ -156,7 +152,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     if !read_only {
         crate::config::reconcile_configured_repositories(&meta, &configs);
     }
-    let oci_settings = build_index_settings(&configs)?;
+    let ecosystem_settings = build_index_settings(&configs)?;
     let webhooks = build_webhooks(&configs)?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
@@ -177,7 +173,12 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         },
     )
     .context(format!("open search index {}", search_path.display()))?;
-    ecosystem_registry::install_drivers(&mut state, &oci_settings, config.availability.replication().is_some());
+    ecosystem_registry::install_drivers(
+        &mut state,
+        &ecosystem_settings,
+        config.availability.is_distributed_mode(),
+    )
+    .map_err(anyhow::Error::msg)?;
     state.set_ldap_logins(ldap_logins(&config.auth.ldap_providers, &state.meta)?);
     let oidc_logins = oidc_logins(&config.auth.oidc_providers, &state.meta)?;
     state.set_oidc_logins(oidc_logins);
@@ -189,7 +190,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
             bail!("token realm signing key must not be empty");
         }
         state.set_session_sealer(SessionSealer::new(key.as_bytes()));
-        let signer = Signer::new(key.as_bytes(), ecosystem_registry::TOKEN_SERVICE);
+        let signer = Signer::new(key.as_bytes(), peryx_identity::TOKEN_AUDIENCE);
         if let Some(runtime) = trusted_publishing(config, signer.clone())? {
             state.set_trusted_publishing(runtime);
         }
@@ -210,9 +211,10 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
 /// the topology snapshot's self-role aligned with the replication and control surfaces, which read the
 /// same configured role.
 const fn availability_role(config: &Config) -> peryx_core::NodeRole {
-    match config.availability.replication() {
-        Some(ReplicationConfig::Replica { .. }) => peryx_core::NodeRole::Replica,
-        Some(ReplicationConfig::Primary { .. }) | None => peryx_core::NodeRole::Writer,
+    if config.availability.is_replica_mode() {
+        peryx_core::NodeRole::Replica
+    } else {
+        peryx_core::NodeRole::Writer
     }
 }
 
@@ -224,11 +226,15 @@ const fn availability_role(config: &Config) -> peryx_core::NodeRole {
 /// Install the resolved availability posture on the state: the authority role, the topology snapshot the
 /// process serves, and the write-ack quorum and deadline hosted writes are acknowledged against.
 fn configure_availability(state: &mut AppState, config: &Config, read_only: bool) -> anyhow::Result<()> {
+    if matches!(config.availability, AvailabilityConfig::None) {
+        return Ok(());
+    }
     state.set_availability_role(availability_role(config));
     state.set_availability_topology(availability_topology(config, read_only));
     state.set_write_ack(config.write_ack.policy, config.write_ack.deadline);
     state.set_receipt_sources(receipt_sources(config)?);
     state.set_remote_frontier_sources(remote_frontier_sources(config)?);
+    state.set_analytics_completeness(Arc::new(peryx_ha_distributed::DistributedAnalyticsCompleteness));
     Ok(())
 }
 
@@ -751,23 +757,14 @@ fn build_indexes_with_providers(
 /// one of its indexes is configuration that would otherwise be silently ignored.
 pub(crate) fn build_index_settings(
     configs: &[IndexConfig],
-) -> anyhow::Result<HashMap<String, ecosystem_registry::OciIndexSettings>> {
+) -> anyhow::Result<HashMap<String, peryx_driver::serving::CompiledEcosystemSettings>> {
     let mut settings = HashMap::new();
     for index in configs {
-        match index.ecosystem {
-            Ecosystem::Oci => {
-                let compiled = ecosystem_registry::compile_oci_index_settings(&index.name, &index.ecosystem_settings)
-                    .map_err(|reason| anyhow::anyhow!("compile settings for {}: {reason}", index.name))?;
-                settings.insert(index.name.clone(), compiled);
-            }
-            Ecosystem::Pypi => {
-                if let Some(key) = index.ecosystem_settings.keys().next() {
-                    bail!(
-                        "compile settings for {}: unknown field `{key}` in `[index.settings]`",
-                        index.name
-                    );
-                }
-            }
+        if let Some(compiled) =
+            ecosystem_registry::compile_index_settings(index.ecosystem, &index.name, &index.ecosystem_settings)
+                .map_err(anyhow::Error::msg)?
+        {
+            settings.insert(index.name.clone(), compiled);
         }
     }
     Ok(settings)

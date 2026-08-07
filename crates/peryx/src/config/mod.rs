@@ -22,9 +22,9 @@ pub use model::{
     BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig, LogConfig, LogFormat, LogSink,
-    OidcProviderConfig, PrefetchConfig, PrefetchMode, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig,
-    TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig,
-    WebhookSecret, WriteAckConfig,
+    OidcProviderConfig, PrefetchConfig, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig,
+    TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
+    WriteAckConfig,
 };
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,

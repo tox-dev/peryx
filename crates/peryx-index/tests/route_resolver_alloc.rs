@@ -16,7 +16,7 @@ fn test_route_resolver_lookup_allocates_nothing() {
     let routes = RouteResolver::new(&[Index {
         name: "pypi".to_owned(),
         route: "root/pypi".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl::default(),

@@ -14,10 +14,10 @@ use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_ha_distributed::AckDecision;
 use peryx_identity::Action;
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
-use peryx_replication::AckDecision;
 use peryx_storage::meta::{IntentPhase, OperationClaim, OperationResult, OperationState};
 
 use crate::cache::{self, CacheError};
@@ -326,22 +326,32 @@ async fn admit_and_store(
         acknowledge::MetadataDimension::Remote {
             sources: remote_sources,
             authority: &authority,
-            operation: peryx_replication::MetadataOperation {
+            operation: peryx_ha_distributed::MetadataOperation {
                 epoch: state.committed_authority_epoch(&authority).await,
                 frontier: state.meta.current_serial().unwrap_or(u64::MAX),
             },
         }
     };
-    let outcome = acknowledge::resolve_dc_ack(
-        ack,
-        metadata,
-        &digest,
-        state.receipt_sources(),
-        state.write_ack_deadline(),
-        &state.dc_durability,
-    )
-    .await;
-    let response = acknowledge::ack_response(outcome, &intent.operation);
+    let response = if let Some(metrics) = state.dc_durability() {
+        acknowledge::ack_response(
+            acknowledge::resolve_dc_ack(
+                ack,
+                metadata,
+                &digest,
+                state.receipt_sources(),
+                state.write_ack_deadline(),
+                metrics,
+            )
+            .await,
+            &intent.operation,
+        )
+    } else {
+        acknowledge::AckResponse {
+            status: StatusCode::OK,
+            body: b"upload accepted".to_vec(),
+            finalize: true,
+        }
+    };
     if response.finalize {
         // A finalize fault leaves the operation pending, which a retry re-drives and re-finalizes over the
         // idempotent store, so the terminal result is recorded then rather than failing this proven write.

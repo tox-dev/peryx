@@ -15,7 +15,8 @@ description = "The PyPI ecosystem driver for peryx: names, versions, the simple 
 default = ["serving"]
 serving = [
   "dep:peryx-driver",
-  "dep:peryx-replication",
+  "dep:peryx-ha",
+  "dep:peryx-ha-distributed",
   "dep:peryx-events",
   "dep:peryx-index",
   "dep:peryx-search",
@@ -55,12 +56,15 @@ serving = [
   "dep:tempfile",
   "dep:time",
   "dep:toml",
+  "dep:anyhow",
   "dep:html5ever",
 ]
 
 [dependencies]
+clap.workspace = true
 # Format core (always compiled).
 peryx-core.workspace = true
+peryx-ecosystem-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pep440_rs.workspace = true
@@ -73,7 +77,8 @@ xml-rs = "0.8"
 
 # Serving layer (enabled by the `serving` feature).
 peryx-driver = { workspace = true, optional = true }
-peryx-replication = { workspace = true, optional = true }
+peryx-ha = { workspace = true, optional = true }
+peryx-ha-distributed = { workspace = true, optional = true }
 peryx-events = { workspace = true, optional = true }
 peryx-index = { workspace = true, optional = true }
 peryx-search = { workspace = true, optional = true }
@@ -113,12 +118,13 @@ flate2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
 html5ever = { workspace = true, optional = true }
 
 [dev-dependencies]
 peryx-events = { workspace = true, features = ["test-util"] }
 peryx-http.workspace = true
-peryx-replication.workspace = true
+peryx-ha-distributed.workspace = true
 httpdate.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 pub use peryx_core::TrashInfo;
-use peryx_core::{Ecosystem, TrashRecord};
+use peryx_core::TrashRecord;
 use peryx_storage::meta::{ArtifactOrigin, ArtifactSource, DriverTxn, MetaError, MetaStore};
 use serde::{Deserialize, Serialize};
 
@@ -393,7 +393,7 @@ fn trash_record(
 ) -> Result<TrashRecord, MetaError> {
     let retained = meta.get_driver_value(&manifest_key(&digest))?.is_some();
     Ok(TrashRecord {
-        ecosystem: Ecosystem::Oci,
+        ecosystem: crate::ECOSYSTEM,
         repository: index.to_owned(),
         name: repo.to_owned(),
         reference,
@@ -1055,7 +1055,7 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         let record = &records[0];
-        assert_eq!(record.ecosystem, Ecosystem::Oci);
+        assert_eq!(record.ecosystem, crate::ECOSYSTEM);
         assert_eq!(record.repository, "hub");
         assert_eq!(record.name, "library/nginx");
         assert_eq!(record.reference.as_deref(), Some("latest"));

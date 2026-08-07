@@ -5,7 +5,6 @@ use axum::body::to_bytes;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::state::ServingState;
 use peryx_identity::{Action, Denial, authorize_all};
 use peryx_index::IndexKind;
@@ -58,7 +57,7 @@ fn authorize(state: &ServingState, headers: &HeaderMap) -> Result<(), Response> 
     for index in state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Pypi && matches!(index.kind, IndexKind::Hosted { .. }))
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM && matches!(index.kind, IndexKind::Hosted { .. }))
     {
         let identity = index.acl.identify(authorization, now);
         match authorize_all(&identity.principal, &index.acl, Action::Read) {

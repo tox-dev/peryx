@@ -115,7 +115,7 @@ fn index() -> Index {
         // A route deliberately distinct from the name: PQL scopes by the stable repository name, so
         // `repository == "private"` must resolve regardless of the URL route.
         route: "private-route".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl {
@@ -139,7 +139,7 @@ fn locked_index() -> Index {
     Index {
         name: "locked".to_owned(),
         route: "locked-route".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl {

@@ -2,8 +2,8 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use peryx_driver::read_through::DEFAULT_READ_THROUGH_LIMITS;
-use peryx_replication::ReconnectPolicy;
+use peryx_ha_distributed::ReconnectPolicy;
+use peryx_ha_distributed::read_through::DEFAULT_READ_THROUGH_LIMITS;
 
 use super::toml_config;
 use crate::config::{self, Config, ConfigError};

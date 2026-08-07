@@ -242,7 +242,7 @@ async fn test_legacy_json_unavailable_upstream_is_bad_gateway() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,

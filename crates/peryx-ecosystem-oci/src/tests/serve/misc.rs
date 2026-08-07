@@ -125,7 +125,7 @@ async fn test_catalog_lists_oci_repositories_with_pagination() {
     let pypi = peryx_index::Index {
         name: "py".to_owned(),
         route: "py".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::new("other"),
         kind: peryx_index::IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
         acl: peryx_identity::IndexAcl::default(),

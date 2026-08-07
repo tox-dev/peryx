@@ -3,7 +3,7 @@
 use std::str::FromStr as _;
 
 use axum::http::{Method, StatusCode, header};
-use peryx_core::{Ecosystem, UiProjectView};
+use peryx_core::UiProjectView;
 use peryx_driver::AppState;
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
 use rstest::rstest;
@@ -447,7 +447,7 @@ async fn test_proxy_tag_filter_resolves_and_caches_targets() {
         );
     }
 
-    let driver = state.driver_for(Ecosystem::Oci).unwrap().clone();
+    let driver = state.driver_for(crate::ECOSYSTEM).unwrap().clone();
     let view = driver
         .browse_project(state.serving.clone(), 0, "app".to_owned())
         .await

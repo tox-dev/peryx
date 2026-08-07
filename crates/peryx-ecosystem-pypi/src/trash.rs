@@ -5,7 +5,7 @@
 //! rows and shapes them into neutral [`TrashRecord`]s. The scan touches only upload metadata, never a
 //! blob or a policy run, so it stays bounded to the index it inspects.
 
-use peryx_core::{Ecosystem, TrashRecord};
+use peryx_core::TrashRecord;
 use peryx_storage::meta::MetaStore;
 
 use crate::error_message;
@@ -29,7 +29,7 @@ pub fn trash_records(meta: &MetaStore, index: &str) -> Result<Vec<TrashRecord>, 
             serde_json::from_slice(bytes).map_err(|err| format!("corrupt upload record {key}: {err}"))?;
         if let Some(trash) = uploaded.trashed {
             records.push(TrashRecord {
-                ecosystem: Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 repository: index.to_owned(),
                 name: project.to_owned(),
                 reference: Some(uploaded.file.filename),
@@ -50,7 +50,6 @@ pub fn trash_records(meta: &MetaStore, index: &str) -> Result<Vec<TrashRecord>, 
 mod tests {
     use std::collections::BTreeMap;
 
-    use peryx_core::Ecosystem;
     use peryx_storage::meta::MetaStore;
 
     use super::trash_records;
@@ -104,7 +103,7 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         let record = &records[0];
-        assert_eq!(record.ecosystem, Ecosystem::Pypi);
+        assert_eq!(record.ecosystem, crate::ECOSYSTEM);
         assert_eq!(record.repository, "hosted");
         assert_eq!(record.name, "flask");
         assert_eq!(record.reference.as_deref(), Some("flask-1.0.whl"));

@@ -22,9 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use peryx_core::Role;
-use peryx_replication::{
-    AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AuthorityEpoch, IntervalId, ProducerId,
-};
+use peryx_ha::{AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AuthorityEpoch, IntervalId, ProducerId};
 use peryx_storage::meta::AnalyticsHandle;
 
 /// Unix seconds, the shape every peryx clock reports, so the aggregator can date a download's UTC
@@ -1410,7 +1408,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
-    use peryx_replication::{
+    use peryx_ha_distributed::{
         AggregateDelta, AggregateKey, ApplyLimits, ApplyOutcome, ApplyState, AuthorityEpoch, IntervalId, ProducerId,
     };
     use peryx_storage::meta::{AnalyticsHandle, MetaStore};

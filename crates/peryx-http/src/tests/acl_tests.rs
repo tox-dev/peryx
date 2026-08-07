@@ -24,7 +24,7 @@ fn acl_app() -> (tempfile::TempDir, axum::Router) {
     let index = Index {
         name: "hosted".to_owned(),
         route: "hosted".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
         acl: IndexAcl {

@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
-use peryx_core::{Ecosystem, UiProjectView};
+use peryx_core::UiProjectView;
 use peryx_driver::serving::EcosystemDriver;
 use peryx_driver::state::ServingState;
 
@@ -64,7 +64,7 @@ async fn put_manifest(app: &axum::Router, reference: &str, media_type: &str, bod
 }
 
 fn oci_driver(state: &Arc<peryx_driver::AppState>) -> (Arc<dyn EcosystemDriver>, Arc<ServingState>) {
-    let driver = state.driver_for(Ecosystem::Oci).unwrap().clone();
+    let driver = state.driver_for(crate::ECOSYSTEM).unwrap().clone();
     (driver, state.serving.clone())
 }
 
@@ -373,7 +373,7 @@ async fn test_project_names_of_a_virtual_index_walks_its_members() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let driver = state.driver_for(Ecosystem::Oci).unwrap().clone();
+    let driver = state.driver_for(crate::ECOSYSTEM).unwrap().clone();
     // The virtual index `reg` is the third configured index; its repositories union its members'.
     let names = driver.project_names(&state.serving, 2).unwrap();
     assert_eq!(names, vec!["team/app".to_owned()]);

@@ -4,7 +4,7 @@ use std::time::Duration;
 use peryx_driver::state::{
     CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, MembershipControl,
 };
-use peryx_replication::{AuthorityKey, DatacenterId, TransferPhase, TransferPlan, TransferRequest};
+use peryx_ha_distributed::{AuthorityKey, DatacenterId, TransferPhase, TransferPlan, TransferRequest};
 use peryx_storage::meta::MetaStore;
 use tokio::sync::Notify;
 
@@ -203,7 +203,7 @@ async fn test_commit_transfer_refuses_a_plan_that_has_not_reached_the_barrier() 
     // A plan still awaiting catch-up never reaches consensus, so no move commits.
     assert!(matches!(
         error,
-        TransferDriveError::Plan(peryx_replication::TransferError::BarrierNotMet)
+        TransferDriveError::Plan(peryx_ha_distributed::TransferError::BarrierNotMet)
     ));
     assert!(scripted.submissions.lock().unwrap().is_empty());
 }
@@ -222,7 +222,7 @@ async fn test_commit_transfer_refuses_a_cancelled_plan_without_committing() {
 
     assert!(matches!(
         error,
-        TransferDriveError::Plan(peryx_replication::TransferError::Cancelled)
+        TransferDriveError::Plan(peryx_ha_distributed::TransferError::Cancelled)
     ));
     assert!(scripted.submissions.lock().unwrap().is_empty());
 }

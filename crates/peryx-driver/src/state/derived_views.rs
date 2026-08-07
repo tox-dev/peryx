@@ -9,7 +9,7 @@
 //! and names the view holding it back.
 //!
 //! This module computes the frontier and the replica loop exports it as
-//! `peryx_replication_readable_serial`. Each ecosystem enforces it on the serving path: a `PyPI` page
+//! `peryx_ha_distributed_readable_serial`. Each ecosystem enforces it on the serving path: a `PyPI` page
 //! and an `OCI` tag response are held until every required view reflects the serial they carry, whether
 //! served from a hosted index directly or surfaced through a virtual index that layers one.
 //!

@@ -232,7 +232,7 @@ async fn test_file_path_offline_mirror_miss_is_unavailable() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),

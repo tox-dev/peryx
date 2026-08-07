@@ -19,11 +19,10 @@ use peryx_core::NodeRole;
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::state::AppState;
 use peryx_events::metrics::UsageInterval;
-use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
-use peryx_replication::{
-    AnalyticsReceiver, Completeness, CompletenessQuery, CompletenessReport, DEFAULT_APPLY_LIMITS, DayBucket,
-    ExpectedProducer, ProducerId, ProducerReport, assess_completeness,
+use peryx_ha::{
+    Completeness, CompletenessQuery, CompletenessReport, DayBucket, ExpectedProducer, ProducerId, ProducerReport,
 };
+use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
 
@@ -400,10 +399,6 @@ async fn completeness_response(state: &AppState, headers: &HeaderMap, uri: &Uri)
         Ok(scope) => scope,
         Err(rejection) => return rejection.response(),
     };
-    let receiver = match load_receiver(state) {
-        Ok(receiver) => receiver,
-        Err(rejection) => return rejection.response(),
-    };
     let interval = state.metrics.resolve_usage_interval(request.from, request.to);
     let query = CompletenessQuery {
         from_day: interval.from_day,
@@ -411,7 +406,13 @@ async fn completeness_response(state: &AppState, headers: &HeaderMap, uri: &Uri)
         today: state.metrics.current_day(),
         repository: scope.repository.clone(),
     };
-    let report = assess_completeness(&receiver, &expected_producers(state), &query);
+    let Some(reader) = state.analytics_completeness() else {
+        return Rejection::Unavailable.response();
+    };
+    let report = match reader.assess(&state.meta, &expected_producers(state), &query) {
+        Ok(report) => report,
+        Err(_) => return Rejection::Unavailable.response(),
+    };
     completeness_page(&report, &interval, request.offset, request.limit, scope.operator)
 }
 
@@ -485,17 +486,6 @@ fn expected_producers(state: &AppState) -> Vec<ExpectedProducer> {
             dc: member.dc.clone(),
         })
         .collect()
-}
-
-/// Read the converged analytics receiver off the durable store, or an empty one before the first pull.
-/// A persisted snapshot this build cannot restore is a server-side fault, reported as unavailable rather
-/// than silently answered against zero totals.
-fn load_receiver(state: &AppState) -> Result<AnalyticsReceiver, Rejection> {
-    match state.meta.analytics().load_apply() {
-        Ok(Some(bytes)) => AnalyticsReceiver::restore(&bytes, DEFAULT_APPLY_LIMITS).map_err(|_| Rejection::Unavailable),
-        Ok(None) => Ok(AnalyticsReceiver::new(DEFAULT_APPLY_LIMITS)),
-        Err(_) => Err(Rejection::Unavailable),
-    }
 }
 
 /// Slice the day buckets at the cursor offset and build the response envelope. The verdict, interval,

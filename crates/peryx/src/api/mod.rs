@@ -8,12 +8,12 @@ mod service;
 mod shadow;
 mod trash;
 
+use peryx_ecosystem_registry as ecosystem_registry;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
     ComponentsBuilder, ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, PathsBuilder,
     ServerBuilder,
 };
-use peryx_ecosystem_registry as ecosystem_registry;
 
 /// The document as pretty JSON, shared by the HTTP endpoint and the `peryx openapi` subcommand.
 ///

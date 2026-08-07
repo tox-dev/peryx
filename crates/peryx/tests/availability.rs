@@ -228,7 +228,7 @@ fn test_dc_replica_metrics_exposes_the_replication_series() {
 
     assert_eq!(code, 200);
     assert!(
-        body.contains("peryx_replication_"),
+        body.contains("peryx_ha_distributed_"),
         "a dc replica exports the replication series: {body}"
     );
 }
@@ -250,7 +250,7 @@ fn test_ha_replica_metrics_exposes_the_replication_series() {
 
     assert_eq!(code, 200);
     assert!(
-        body.contains("peryx_replication_"),
+        body.contains("peryx_ha_distributed_"),
         "an ha replica exports the replication series: {body}"
     );
 }
@@ -272,7 +272,7 @@ fn await_sync_error(node: &Node) {
             node.is_ready(),
             "the replica keeps serving read-only through the metadata outage"
         );
-        if metric(node, "peryx_replication_sync_errors_total ") > 0 {
+        if metric(node, "peryx_ha_distributed_sync_errors_total ") > 0 {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -283,7 +283,7 @@ fn await_sync_error(node: &Node) {
 fn await_caught_up(node: &Node) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if metric(node, "peryx_replication_caught_up ") == 1 {
+        if metric(node, "peryx_ha_distributed_caught_up ") == 1 {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));

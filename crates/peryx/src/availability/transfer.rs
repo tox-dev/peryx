@@ -1,6 +1,6 @@
 //! Driving a fenced authority transfer from a plan to a sealed, persisted audit.
 //!
-//! [`TransferPlan`](peryx_replication::TransferPlan) is the pure decision core: it waits at
+//! [`TransferPlan`](peryx_ha_distributed::TransferPlan) is the pure decision core: it waits at
 //! `AwaitingCatchUp` until the target's applied frontier reaches the barrier, then stands `Ready` for a
 //! caller to commit. This module supplies the two things it reaches for from above — the target
 //! datacenter's applied frontier and the committed move — without pulling any I/O into the plan itself.
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peryx_driver::state::{ControlCommand, ControlError, ControlPlane, OwnershipAuthority};
-use peryx_replication::{
+use peryx_ha_distributed::{
     AuthorityEpoch, BatchRequest, DEFAULT_TRANSFER_LIMITS, HttpPeerTransport, PeerTransport, TransferAudit,
     TransferError, TransferPhase, TransferPlan, TransferRequest,
 };

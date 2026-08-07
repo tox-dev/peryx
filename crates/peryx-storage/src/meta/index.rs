@@ -45,6 +45,75 @@ impl MetaStore {
         Ok(removed)
     }
 
+    /// Atomically transform one driver-owned value and return a caller-defined result.
+    ///
+    /// # Errors
+    /// Returns a store error if the read, transformation, or write fails.
+    pub fn update_driver_value<R>(
+        &self,
+        key: &str,
+        update: impl FnOnce(Option<&[u8]>) -> Result<(Option<Vec<u8>>, R), MetaError>,
+    ) -> Result<R, MetaError> {
+        let txn = self.db.begin_write()?;
+        let result;
+        {
+            let mut table = txn.open_table(DRIVER_KV)?;
+            let current = table.get(key)?;
+            let (next, updated) = update(current.as_ref().map(redb::AccessGuard::value))?;
+            drop(current);
+            match next {
+                Some(value) => {
+                    table.insert(key, value.as_slice())?;
+                }
+                None => {
+                    table.remove(key)?;
+                }
+            }
+            result = updated;
+        }
+        txn.commit()?;
+        Ok(result)
+    }
+
+    /// Remove up to `limit` driver-owned values under `prefix` when `remove` accepts them.
+    ///
+    /// # Errors
+    /// Returns a store error if scanning, classification, or deletion fails.
+    pub fn remove_driver_values_if(
+        &self,
+        prefix: &str,
+        limit: usize,
+        mut remove: impl FnMut(&[u8]) -> Result<bool, MetaError>,
+    ) -> Result<Vec<String>, MetaError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let txn = self.db.begin_write()?;
+        let removed;
+        {
+            let mut table = txn.open_table(DRIVER_KV)?;
+            let mut keys = Vec::new();
+            for entry in table.range(prefix..)? {
+                let (key, value) = entry?;
+                if !key.value().starts_with(prefix) {
+                    break;
+                }
+                if remove(value.value())? {
+                    keys.push(key.value().to_owned());
+                    if keys.len() == limit {
+                        break;
+                    }
+                }
+            }
+            for key in &keys {
+                table.remove(key.as_str())?;
+            }
+            removed = keys;
+        }
+        txn.commit()?;
+        Ok(removed)
+    }
+
     /// Collect every driver-owned key that starts with `prefix`, in key order.
     ///
     /// # Errors
@@ -205,32 +274,6 @@ impl MetaStore {
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
         self.commit_driver_txn_at(None, None, true, |_, _| Ok(()), body)
-    }
-
-    /// Commit driver rows and close the finalizing upload `session` in the same transaction, so an
-    /// unmetered upload cannot land membership while leaving the client's recovery handle dangling. A
-    /// `None` session commits the rows alone.
-    ///
-    /// # Errors
-    /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
-    /// read, write, or commit.
-    pub fn commit_driver_txn_closing_upload<T, E: From<MetaError>>(
-        &self,
-        session: Option<&str>,
-        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E> {
-        self.commit_driver_txn_at(
-            None,
-            None,
-            true,
-            move |txn, _| {
-                if let Some(session) = session {
-                    super::upload_session::close_upload_in_txn(txn, session)?;
-                }
-                Ok(())
-            },
-            body,
-        )
     }
 
     /// Commit driver rows and publish the catalog generation that produced their policy inputs in
@@ -423,6 +466,14 @@ impl DriverTxn<'_> {
     pub fn put_local(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
         self.table.insert(key, value)?;
         Ok(())
+    }
+
+    /// Remove process-local driver state without adding a replicated mutation.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn remove_local(&mut self, key: &str) -> Result<bool, MetaError> {
+        Ok(self.table.remove(key)?.is_some())
     }
 
     /// Record content bytes that replicas need before committing this transaction.

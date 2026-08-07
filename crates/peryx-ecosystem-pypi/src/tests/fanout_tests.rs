@@ -455,9 +455,11 @@ async fn test_tail_errors_when_the_pump_vanishes_without_a_verdict() {
 fn install_remote_placement(state: &Arc<AppState>, digest: &Digest, content: &Bytes) {
     use std::collections::HashMap;
 
-    use peryx_driver::read_through::{DEFAULT_READ_THROUGH_LIMITS, DcTransport, MonotonicClock, RemotePlacementReader};
+    use peryx_ha_distributed::read_through::{
+        DEFAULT_READ_THROUGH_LIMITS, DcTransport, MonotonicClock, RemotePlacementReader,
+    };
+    use peryx_ha_distributed::{LoopbackBlobSource, TransferLimits};
     use peryx_identity::ArtifactDigest;
-    use peryx_replication::{LoopbackBlobSource, TransferLimits};
     use peryx_storage::meta::{BackendId, BackendLocation, BlobPlacementKey, BlobPlacementTransition, DataCenterId};
 
     let artifact = ArtifactDigest::from_sha256(digest.as_str()).unwrap();

@@ -1,7 +1,7 @@
 //! Prometheus observability for the datacenter durability acknowledgement decision.
 //!
 //! A client write in `dc` or `ha` mode resolves to a [`DcAck`] outcome from the shared decision
-//! ([`decide_dc_ack`](peryx_replication::decide_dc_ack)): durable for the backend scope, pending while
+//! ([`decide_dc_ack`](peryx_ha_distributed::decide_dc_ack)): durable for the backend scope, pending while
 //! the deadline is live, or unknown once it expires. This records those outcomes and the quorum progress
 //! behind the byte dimension so an operator sees per-write datacenter durability state at `/metrics`.
 //!
@@ -14,7 +14,7 @@
 use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
 
-use peryx_replication::{ByteAckDecision, DcAck};
+use peryx_ha::{ByteAckDecision, DcAck};
 use peryx_storage::blob::BlobDurability;
 
 use crate::state::PrometheusSource;

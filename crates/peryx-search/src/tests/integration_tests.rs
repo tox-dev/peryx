@@ -36,7 +36,7 @@ fn test_add_indexer_composes_both_ecosystems_with_localized_labels() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let mut lexicons = LexiconRegistry::default();
-    lexicons.register(Ecosystem::Oci, &OCI_WORDS);
+    lexicons.register(Ecosystem::new("other"), &OCI_WORDS);
     let mut search = PackageSearch::in_memory();
     search.add_indexer(Arc::new(OneDoc {
         name: "pyalpha",
@@ -77,7 +77,7 @@ fn test_search_rebuilds_after_epoch_bump() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let mut lexicons = LexiconRegistry::default();
-    lexicons.register(Ecosystem::Oci, &OCI_WORDS);
+    lexicons.register(Ecosystem::new("other"), &OCI_WORDS);
     let mut search = PackageSearch::in_memory();
     let params = SearchParams::default();
     let before = search.search(&stores.ctx(&lexicons), params.clone()).unwrap().total;

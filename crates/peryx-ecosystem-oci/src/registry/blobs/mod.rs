@@ -7,7 +7,7 @@ mod contents;
 use contents::{layer_contents_response, layer_query_member};
 use peryx_driver::conditional::applicable_range;
 use peryx_driver::range::unsatisfiable_range;
-use peryx_driver::read_through::fill_from_remote_placement;
+use peryx_ha::fill_from_remote_placement;
 
 use super::uploads::created;
 use super::*;
@@ -559,7 +559,7 @@ pub(super) async fn commit_blob(
             crate::quota::commit_blob_membership(&state.meta, &index.name, repo, digest, reservation, None, journal)?;
             state.record_home_placement(storage.as_str(), bytes, fence);
             state.finalize_admitted_write(&operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::OciPush, fence);
+            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(blob_created(name, digest))
         }
         Err(err) => {
@@ -634,7 +634,7 @@ pub(super) async fn commit_staged_upload(
             committed?;
             state.record_home_placement(storage.as_str(), bytes, fence);
             state.finalize_admitted_write(&operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::OciPush, fence);
+            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(blob_created(name, digest))
         }
         Err(err) => {
@@ -817,3 +817,4 @@ mod tests {
         assert!(matches!(err, DownloadError::Blob(_)));
     }
 }
+use crate::upload_session::UploadStore as _;

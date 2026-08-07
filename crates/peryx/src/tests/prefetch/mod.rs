@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY;
-use peryx_ecosystem_pypi::to_json;
+use peryx_ecosystem_registry::pypi::to_json;
 use peryx_policy::PolicyConfig;
 use wiremock::MockServer;
 
@@ -22,7 +22,7 @@ pub(super) fn mirror_config(data_dir: &Path, upstream: &str) -> Config {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: peryx_ecosystem_registry::PYPI,
             anonymous_read: None,
             tokens: Vec::new(),
             kind: IndexKind::Cached {
@@ -47,7 +47,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 ecosystem_policy: toml::Table::new(),
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: peryx_ecosystem_registry::PYPI,
                 anonymous_read: None,
                 tokens: Vec::new(),
                 kind: IndexKind::Hosted { volatile: true },
@@ -59,7 +59,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 ecosystem_policy: toml::Table::new(),
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: peryx_ecosystem_registry::PYPI,
                 anonymous_read: None,
                 tokens: Vec::new(),
                 kind: IndexKind::Cached {
@@ -76,7 +76,7 @@ pub(super) fn overlay_config(data_dir: &Path, upstream: &str) -> Config {
                 ecosystem_policy: toml::Table::new(),
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: peryx_ecosystem_registry::PYPI,
                 anonymous_read: None,
                 tokens: Vec::new(),
                 kind: IndexKind::Virtual {
@@ -107,17 +107,13 @@ pub(super) fn command_options(data_dir: &Path, packages: Vec<String>) -> Prefetc
             log_file: None,
         },
         index: "pypi".to_owned(),
-        packages,
-        requirements: Vec::new(),
-        mode: None,
-        metadata_only: false,
-        no_wheels: false,
-        no_sdists: false,
-        python_tags: Vec::new(),
-        abi_tags: Vec::new(),
-        platform_tags: Vec::new(),
-        max_file_size_bytes: None,
-        images: Vec::new(),
+        ecosystem: peryx_ecosystem_registry::MirrorOptions {
+            pypi: peryx_ecosystem_registry::pypi::MirrorOptions {
+                packages,
+                ..Default::default()
+            },
+            oci: peryx_ecosystem_registry::oci::MirrorOptions::default(),
+        },
     }
 }
 

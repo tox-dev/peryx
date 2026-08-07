@@ -65,7 +65,7 @@ impl NodeJob for CatalogSyncJob {
                     format!("unknown repository {:?}", self.parameters.repository),
                 )
             })?;
-        if index.ecosystem != peryx_core::Ecosystem::Pypi {
+        if index.ecosystem != crate::ECOSYSTEM {
             return Err(JobFailure::new(
                 "unsupported_repository",
                 format!("repository {:?} is not a PyPI repository", index.name),
@@ -343,7 +343,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "bounded",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         assert!(matches!(
@@ -392,7 +392,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "progress",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         assert_eq!(
@@ -445,7 +445,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "revalidation",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
 
@@ -482,7 +482,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "coalesced",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
 
@@ -523,7 +523,7 @@ mod tests {
         let selected_client = UpstreamClient::new(&format!("{}/simple/", selected.uri())).unwrap();
         let (_dir, mut app) = app(vec![index(
             "selected",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached {
                 client: primary_client.clone(),
                 offline: false,
@@ -566,7 +566,7 @@ mod tests {
         let fallback_client = UpstreamClient::new(&format!("{}/simple/", fallback.uri())).unwrap();
         let (_dir, mut app) = app(vec![index(
             "routed",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached {
                 client: primary_client.clone(),
                 offline: false,
@@ -599,7 +599,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "scheduled",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
@@ -648,7 +648,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "cancel-project",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
@@ -706,7 +706,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "cancel-root",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         let scheduler = Arc::new(JobScheduler::new(app.serving.clone(), JobLimits::node_local()));
@@ -744,7 +744,7 @@ mod tests {
             let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
             let (_dir, app) = app(vec![index(
                 "status",
-                peryx_core::Ecosystem::Pypi,
+                crate::ECOSYSTEM,
                 IndexKind::Cached { client, offline: false },
             )]);
             assert!(
@@ -768,7 +768,7 @@ mod tests {
         let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
         let (_dir, app) = app(vec![index(
             "timeout",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         let mut parameters = parameters("timeout", 1, 1);
@@ -786,7 +786,7 @@ mod tests {
         let client = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
         let (_dir, transport_app) = app(vec![index(
             "transport",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         assert_eq!(
@@ -810,7 +810,7 @@ mod tests {
             let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
             let (_dir, app) = app(vec![index(
                 "root-category",
-                peryx_core::Ecosystem::Pypi,
+                crate::ECOSYSTEM,
                 IndexKind::Cached { client, offline: false },
             )]);
 
@@ -845,7 +845,7 @@ mod tests {
             let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
             let (_dir, app) = app(vec![index(
                 "project-category",
-                peryx_core::Ecosystem::Pypi,
+                crate::ECOSYSTEM,
                 IndexKind::Cached { client, offline: false },
             )]);
 
@@ -866,7 +866,7 @@ mod tests {
             (
                 vec![index(
                     "oci",
-                    peryx_core::Ecosystem::Oci,
+                    peryx_core::Ecosystem::new("other"),
                     IndexKind::Cached {
                         client: client.clone(),
                         offline: false,
@@ -876,18 +876,14 @@ mod tests {
                 "not a PyPI repository",
             ),
             (
-                vec![index(
-                    "hosted",
-                    peryx_core::Ecosystem::Pypi,
-                    IndexKind::Hosted { volatile: false },
-                )],
+                vec![index("hosted", crate::ECOSYSTEM, IndexKind::Hosted { volatile: false })],
                 parameters("hosted", 1, 1),
                 "not an online cached repository",
             ),
             (
                 vec![index(
                     "offline",
-                    peryx_core::Ecosystem::Pypi,
+                    crate::ECOSYSTEM,
                     IndexKind::Cached {
                         client: client.clone(),
                         offline: true,
@@ -904,7 +900,7 @@ mod tests {
 
         let (_dir, legacy_app) = app(vec![index(
             "legacy",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         let mut legacy_parameters = parameters("legacy", 1, 1);
@@ -919,7 +915,7 @@ mod tests {
         let client = UpstreamClient::new("https://example.invalid/simple/").unwrap();
         let (_dir, mut routed_app) = self::app(vec![index(
             "source",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached {
                 client: client.clone(),
                 offline: false,
@@ -941,7 +937,7 @@ mod tests {
         let client = UpstreamClient::new("https://example.invalid/simple/").unwrap();
         let (_dir, mut app) = self::app(vec![index(
             "read-only",
-            peryx_core::Ecosystem::Pypi,
+            crate::ECOSYSTEM,
             IndexKind::Cached { client, offline: false },
         )]);
         Arc::get_mut(&mut app).unwrap().read_only = true;

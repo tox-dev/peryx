@@ -392,7 +392,7 @@ async fn test_mirror_detail_upstream_unreachable_is_bad_gateway() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: upstream,
             offline: false,
@@ -432,7 +432,7 @@ async fn test_mirror_detail_stale_on_upstream_error() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: upstream,
             offline: false,
@@ -462,7 +462,7 @@ async fn test_offline_mirror_cold_project_miss_is_unavailable() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: upstream,
             offline: true,
@@ -508,7 +508,7 @@ async fn test_offline_mirror_serves_stale_cached_page() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: upstream,
             offline: true,

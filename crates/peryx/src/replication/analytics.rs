@@ -1,7 +1,7 @@
 //! Runtime wiring for analytics replication: the producer endpoint a replica pulls, and the receiver
 //! worker that folds pulled batches into a durable apply state.
 //!
-//! The data layer lives in `peryx-replication`/`peryx-events` (the [`AnalyticsReceiver`] fold, the
+//! The data layer lives in `peryx-ha-distributed`/`peryx-events` (the [`AnalyticsReceiver`] fold, the
 //! `export_sealed_day_batches` producer, the pull transport). This is only the runtime glue: a producer
 //! serves its sealed daily batches on `+replication/v1/analytics`, and a replica runs a background worker
 //! that pulls from its upstream, applies each batch once, and persists the converged state off the
@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use peryx_events::metrics::Metrics;
-use peryx_replication::{
+use peryx_ha_distributed::{
     AnalyticsReceiver, AuthorityEpoch, DEFAULT_APPLY_LIMITS, HttpAnalyticsSource, ProducerId, TransferLimits, pull,
 };
 use peryx_storage::meta::AnalyticsHandle;

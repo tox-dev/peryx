@@ -5,6 +5,8 @@
 //! second trait. A driver held in the registry on [`AppState`] is dispatched once per request, so
 //! adding an ecosystem is a new driver rather than a change to the router.
 
+use std::any::Any;
+use std::io::Write;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,16 +14,155 @@ use axum::extract::{Multipart, Request};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use peryx_core::{Ecosystem, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject, UiProjectView};
+use peryx_ecosystem_contract::DefaultIndex;
 
-use crate::state::ServingState;
+use crate::state::{ServingState, ViewBlock};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcosystemCapability {
+    CatalogSync,
+    TrustedPublishing,
+}
+
+pub struct CompiledEcosystemSettings {
+    ecosystem: Ecosystem,
+    value: Box<dyn Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for CompiledEcosystemSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompiledEcosystemSettings")
+            .field("ecosystem", &self.ecosystem)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CompiledEcosystemSettings {
+    #[must_use]
+    pub fn new<T: Send + Sync + 'static>(ecosystem: Ecosystem, value: T) -> Self {
+        Self {
+            ecosystem,
+            value: Box::new(value),
+        }
+    }
+
+    #[must_use]
+    pub const fn ecosystem(&self) -> Ecosystem {
+        self.ecosystem
+    }
+
+    #[must_use]
+    pub fn value<T: 'static>(&self) -> Option<&T> {
+        self.value.downcast_ref()
+    }
+}
+
+pub trait EcosystemPlugin: Send + Sync {
+    fn ecosystem(&self) -> Ecosystem;
+
+    fn default_indexes(&self) -> &'static [DefaultIndex];
+
+    fn driver(&self) -> Arc<dyn EcosystemDriver>;
+
+    /// # Errors
+    ///
+    /// Returns an error when the plugin rejects its index settings.
+    fn compile_index_settings(
+        &self,
+        name: &str,
+        settings: &toml::Table,
+    ) -> Result<Option<CompiledEcosystemSettings>, String>;
+
+    /// # Errors
+    ///
+    /// Returns an error when the plugin cannot install its runtime services.
+    fn install(
+        &self,
+        state: &mut crate::AppState,
+        settings: &[(&str, &CompiledEcosystemSettings)],
+        distributed: bool,
+    ) -> Result<(), String>;
+
+    fn supports(&self, _capability: EcosystemCapability) -> bool {
+        false
+    }
+
+    fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
+        paths
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when `format` is unsupported or snippet generation fails.
+    fn snippet_text(
+        &self,
+        _base: &crate::discovery::BaseUrl,
+        _route: &str,
+        _uploads: bool,
+        format: &str,
+    ) -> Result<Option<String>, String> {
+        Err(format!(
+            "ecosystem {} does not provide client snippet {format:?}",
+            self.ecosystem()
+        ))
+    }
+}
+
+/// Maintenance capabilities a driver owns.
+#[async_trait]
+pub trait MaintenanceDriver: Send + Sync {
+    /// The ecosystem this driver serves.
+    fn ecosystem(&self) -> Ecosystem;
+
+    /// Drop expired process-local resources once per maintenance sweep.
+    async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize;
+
+    /// Finalize this ecosystem's admitted intents once per maintenance sweep.
+    async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64;
+
+    /// Revalidate stale cached pages once per maintenance sweep.
+    async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String>;
+}
+
+/// Replicated-view rebuild capability for replica followers.
+pub trait ReplicatedApplyDriver: Send + Sync {
+    /// Rebuild this driver's views for changed keys after a replicated page applies.
+    ///
+    /// # Errors
+    /// Returns the derived view that could not apply the changes.
+    fn apply_replicated_changes(&self, state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorAction {
+    Plan,
+    Sync,
+    Verify,
+}
+
+pub struct MirrorRequest<'a> {
+    pub action: MirrorAction,
+    pub index: &'a str,
+    pub settings: &'a toml::Table,
+    pub configured: &'a toml::Table,
+    pub overrides: &'a toml::Table,
+}
+
+#[async_trait]
+pub trait MirrorDriver: Send + Sync {
+    async fn mirror(
+        &self,
+        state: Arc<crate::AppState>,
+        request: MirrorRequest<'_>,
+        output: &mut (dyn Write + Send),
+    ) -> Result<(), String>;
+}
 
 /// Where an ecosystem's wire protocol mounts in the URL space.
 ///
-/// Most ecosystems are reached through peryx's own per-index route (`{route}/simple/…` for `PyPI`);
-/// they are [`Indexed`](Self::Indexed), and the neutral router resolves the index and calls the
-/// per-method handlers. `OCI`'s distribution spec instead owns a fixed top-level prefix (`/v2/`) and
-/// resolves the index itself from the path, so it is [`Absolute`](Self::Absolute) and serves the whole
-/// request. The router and rate limiter read this to reach a driver without naming any ecosystem.
+/// Indexed protocols are resolved before dispatch. Absolute protocols own declared top-level prefixes
+/// and resolve their indexes from the request path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteMount {
     /// Reached through peryx's per-index route prefix; the router pre-resolves the index.
@@ -41,8 +182,7 @@ pub struct RefreshSweep {
 /// What a per-project cache purge planned or removed.
 ///
 /// The driver owns the category names, so the neutral maintenance command tabulates them without
-/// knowing which records a format keeps: `PyPI` reports its index pages and file rows, another
-/// ecosystem whatever it stores.
+/// knowing which records a format keeps.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PurgeReport {
     /// The project name in the ecosystem's own normalized form.
@@ -53,9 +193,7 @@ pub struct PurgeReport {
 
 /// One index's activity counts for the neutral status page and dashboard.
 ///
-/// The field names are generic: a "project" is whatever unit an ecosystem stores (a `PyPI` project,
-/// an `OCI` repository), an "upload" a hosted addition. A driver fills what it tracks; the default is
-/// empty, so an ecosystem without a hosted count simply reports zero.
+/// A driver maps its vocabulary onto these neutral counters. Missing counters remain zero.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IndexSummary {
     pub project_count: u64,
@@ -106,7 +244,7 @@ pub trait EcosystemDriver: Send + Sync {
         None
     }
 
-    /// Where this ecosystem's wire protocol mounts. Indexed by default (`PyPI`'s Simple API).
+    /// Where this ecosystem's wire protocol mounts.
     fn mount(&self) -> RouteMount {
         RouteMount::Indexed
     }
@@ -155,10 +293,8 @@ pub trait EcosystemDriver: Send + Sync {
         )
     }
 
-    /// Fold a project key into the form this ecosystem matches against, so the neutral policy engine
-    /// keys an operator's allow/block list the same way it keys an incoming request. `PyPI` applies
-    /// `PEP 503` normalization; the default leaves a name untouched, which suits a format like `OCI`
-    /// whose repository names are case-sensitive.
+    /// Fold a project key into the form this ecosystem matches against, so policy configuration and
+    /// requests use the same identity. The default preserves the name.
     fn normalize_name(&self, name: &str) -> String {
         name.to_owned()
     }

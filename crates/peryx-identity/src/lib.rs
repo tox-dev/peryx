@@ -68,6 +68,8 @@ pub use token::{Signer, TokenError, VerifiedToken};
 pub use trusted_publisher::{PublishClaims, PublishDenial, TrustedPublisher, authorize_publish};
 pub use user::{ServerUser, UserId, UserLifecycleChange, UserLifecycleEvent, UserName, UserNameError, UserState};
 
+pub const TOKEN_AUDIENCE: &str = "peryx";
+
 /// The user and password carried by an HTTP Basic `Authorization` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicCredentials {

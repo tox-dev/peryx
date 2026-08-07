@@ -231,12 +231,12 @@ fn test_reclamation_schedule_resolves_without_job_fields() {
 #[case::oci(
     "corp",
     "[[index]]\nname = \"corp\"\necosystem = \"oci\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://registry.example/\"\n",
-    "needs an online PyPI repository"
+    "needs an online repository with catalog support"
 )]
 #[case::offline(
     "corp",
     "[[index]]\nname = \"corp\"\noffline = true\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://pypi.org/simple/\"\n",
-    "needs an online PyPI repository"
+    "needs an online repository with catalog support"
 )]
 #[case::unknown_source(
     "corp",

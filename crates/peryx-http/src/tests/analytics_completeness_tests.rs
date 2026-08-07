@@ -10,12 +10,10 @@ use peryx_driver::authz::AuthorizationService;
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::users::UserService;
 use peryx_events::metrics::{Clock, Metrics};
+use peryx_ha::{AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AuthorityEpoch, IntervalId, ProducerId};
+use peryx_ha_distributed::{AnalyticsReceiver, DEFAULT_APPLY_LIMITS, DistributedAnalyticsCompleteness};
 use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role};
 use peryx_policy::Policy;
-use peryx_replication::{
-    AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsReceiver, AuthorityEpoch,
-    DEFAULT_APPLY_LIMITS, IntervalId, ProducerId,
-};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use serde_json::Value;
@@ -146,6 +144,7 @@ async fn app(members: Vec<TopologyMember>, snapshot: Snapshot<'_>) -> (tempfile:
         members,
         ..TopologyConfig::default()
     });
+    state.set_analytics_completeness(Arc::new(DistributedAnalyticsCompleteness));
     (dir, Arc::new(state))
 }
 
@@ -166,7 +165,7 @@ fn index(route: &str, tokens: Vec<NamedToken>) -> Index {
     Index {
         name: route.to_owned(),
         route: route.to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl {

@@ -254,15 +254,15 @@ fn test_trusted_publisher_accepts_a_writable_virtual_repository() {
 )]
 #[case::wrong_repository(
     "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"missing\"\nsubject = \"*\"\nprojects = [\"app\"]\n",
-    "trusted publisher release: repository must name a writable PyPI index"
+    "trusted publisher release: repository must name a writable index with trusted publishing support"
 )]
 #[case::wrong_ecosystem(
     "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"images\"\nsubject = \"*\"\nprojects = [\"app\"]\n[[index]]\nname = \"images\"\necosystem = \"oci\"\nhosted = true\n",
-    "trusted publisher release: repository must name a writable PyPI index"
+    "trusted publisher release: repository must name a writable index with trusted publishing support"
 )]
 #[case::read_only_repository(
     "[auth]\nsigning_key = \"key\"\n[[auth.trusted_publisher]]\nid = \"release\"\nissuer = \"https://issuer.example\"\nrepository = \"cache\"\nsubject = \"*\"\nprojects = [\"app\"]\n[[index]]\nname = \"cache\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://pypi.org/simple/\"\n",
-    "trusted publisher release: repository must name a writable PyPI index"
+    "trusted publisher release: repository must name a writable index with trusted publishing support"
 )]
 fn test_trusted_publisher_relationship_is_rejected(#[case] text: &str, #[case] expected: &str) {
     let config = toml_config(text);

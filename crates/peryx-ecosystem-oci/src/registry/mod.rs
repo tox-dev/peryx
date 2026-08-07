@@ -29,7 +29,7 @@ use futures_util::StreamExt as _;
 use parking_lot::RwLock;
 use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
-use peryx_driver::serving::{EcosystemDriver, RouteMount};
+use peryx_driver::serving::{EcosystemDriver, MaintenanceDriver, RefreshSweep, RouteMount};
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
@@ -248,7 +248,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
 #[async_trait]
 impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRegistryWithHasher<S> {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
-        peryx_core::Ecosystem::Oci
+        crate::ECOSYSTEM
     }
 
     fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
@@ -422,6 +422,33 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
             let _ = state.blobs.discard_upload(session).await;
         }
         expired.len()
+    }
+}
+
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> MaintenanceDriver for OciRegistryWithHasher<S> {
+    fn ecosystem(&self) -> Ecosystem {
+        crate::ECOSYSTEM
+    }
+
+    async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
+        let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
+        let expired = state
+            .meta
+            .reclaim_uploads(cutoff, UPLOAD_RECLAIM_BATCH)
+            .unwrap_or_default();
+        for session in &expired {
+            let _ = state.blobs.discard_upload(session).await;
+        }
+        expired.len()
+    }
+
+    async fn finalize_admitted(&self, _state: Arc<ServingState>) -> u64 {
+        0
+    }
+
+    async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
+        Ok(RefreshSweep::default())
     }
 }
 
@@ -810,7 +837,7 @@ fn flight_gate(state: &ServingState, key: &str) -> peryx_index::serving::FlightG
 fn resolve<'a, 'b>(indexes: &'a [Index], name: &'b str) -> Option<(&'a Index, &'b str)> {
     let mut best: Option<(&'a Index, &'b str)> = None;
     for index in indexes {
-        if index.ecosystem != Ecosystem::Oci {
+        if index.ecosystem != crate::ECOSYSTEM {
             continue;
         }
         let repo = if index.route.is_empty() {
@@ -1017,3 +1044,4 @@ mod tests {
         assert!(message.contains("502"), "{message}");
     }
 }
+use crate::upload_session::UploadStore as _;

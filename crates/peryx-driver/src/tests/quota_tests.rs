@@ -9,8 +9,8 @@ use crate::quota::{QuotaMeter, RepositoryLimits, repository_quota};
 fn index(policy: Policy) -> Index {
     Index {
         name: "hosted".to_owned(),
-        route: "root/pypi".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        route: "root/example".to_owned(),
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy,
         acl: IndexAcl {
@@ -52,8 +52,8 @@ fn quota_repository_quota_pairs_counters_with_configured_limits() {
         })),
         &usage,
     );
-    assert_eq!(status.repository, "root/pypi");
-    assert_eq!(status.ecosystem, "pypi");
+    assert_eq!(status.repository, "root/example");
+    assert_eq!(status.ecosystem, "example");
     assert_eq!(
         status.limits,
         RepositoryLimits {

@@ -6,9 +6,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use peryx_driver::AppState;
-use peryx_ecosystem_pypi::store::PypiStore as _;
-use peryx_ecosystem_pypi::upload::{TrashInfo, Uploaded};
-use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
+use peryx_ecosystem_registry::pypi::store::PypiStore as _;
+use peryx_ecosystem_registry::pypi::upload::{TrashInfo, Uploaded};
+use peryx_ecosystem_registry::pypi::{CoreMetadata, File, Provenance, Yanked};
 use peryx_identity::{GrantScope, Role};
 use peryx_storage::blob::Digest;
 use tower::ServiceExt as _;
@@ -23,8 +23,8 @@ fn config(dir: &tempfile::TempDir) -> Config {
     Config {
         data_dir: dir.path().to_path_buf(),
         indexes: vec![
-            hosted("hosted", peryx_core::Ecosystem::Pypi),
-            hosted("images", peryx_core::Ecosystem::Oci),
+            hosted("hosted", peryx_ecosystem_registry::PYPI),
+            hosted("images", peryx_ecosystem_registry::OCI),
         ],
         ..Config::default()
     }

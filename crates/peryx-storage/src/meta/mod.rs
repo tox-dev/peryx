@@ -39,7 +39,6 @@ mod role_grant;
 mod scoped_token;
 mod transfer_attempt;
 mod transfer_audit;
-mod upload_session;
 mod user;
 mod visibility;
 mod webhook;
@@ -119,7 +118,6 @@ pub use transfer_attempt::{
     TransferPlan,
 };
 pub use transfer_audit::TransferAudit;
-pub use upload_session::UploadRecord;
 pub use user::UserStoreError;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
@@ -187,9 +185,6 @@ const BLOB_CHUNK_DIGEST: TableDefinition<&str, &[u8]> = TableDefinition::new("bl
 /// The durable transfer attempts populating blob placements: one current attempt and a bounded retry
 /// history per `(digest, backend, data center, location)`, keyed by placement then attempt sequence.
 const TRANSFER_ATTEMPT: TableDefinition<&str, &[u8]> = TableDefinition::new("transfer_attempt");
-/// In-progress chunked blob upload sessions, keyed by session id so a restart resumes an upload from its
-/// last staged offset.
-const UPLOAD_SESSION: TableDefinition<&str, &[u8]> = TableDefinition::new("upload_session");
 const RECLAMATION_TOMBSTONE: TableDefinition<&str, &[u8]> = TableDefinition::new("reclamation_tombstone");
 const BLOB_RECLAIM_GUARD: TableDefinition<&str, i64> = TableDefinition::new("blob_reclaim_guard");
 const REPOSITORY: TableDefinition<&str, &[u8]> = TableDefinition::new("repository");
@@ -329,7 +324,6 @@ impl MetaStore {
             txn.open_table(BLOB_PLACEMENT)?;
             txn.open_table(BLOB_CHUNK_DIGEST)?;
             txn.open_table(TRANSFER_ATTEMPT)?;
-            txn.open_table(UPLOAD_SESSION)?;
             txn.open_table(RECLAMATION_TOMBSTONE)?;
             txn.open_table(BLOB_RECLAIM_GUARD)?;
             txn.open_table(OPERATION_OUTCOME)?;

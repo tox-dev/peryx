@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::routing::get;
 use axum::{Json, Router};
 use peryx_events::metrics::{Clock, Event, Metrics};
-use peryx_replication::{
+use peryx_ha_distributed::{
     AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsReceiver, AuthorityEpoch,
     DEFAULT_APPLY_LIMITS, HttpAnalyticsSource, IntervalId, ProducerId, TransferLimits,
 };

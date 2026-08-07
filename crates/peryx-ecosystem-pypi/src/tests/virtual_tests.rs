@@ -58,7 +58,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -69,7 +69,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: crate::tests::writer_acl("s3cret".to_owned()),
@@ -77,7 +77,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
         Index {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![0, 1],
                 upload: Some(1),
@@ -178,7 +178,7 @@ fn two_cached_indexes(archived: UpstreamClient, quarantined: UpstreamClient, lay
     let cached = |name: &str, client: UpstreamClient| Index {
         name: name.to_owned(),
         route: name.to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached { client, offline: false },
         policy: active_policy(),
         acl: IndexAcl::default(),
@@ -189,7 +189,7 @@ fn two_cached_indexes(archived: UpstreamClient, quarantined: UpstreamClient, lay
         Index {
             name: "root/pypi".to_owned(),
             route: "root/pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual { layers, upload: None },
             policy: Policy::default(),
             acl: IndexAcl::default(),

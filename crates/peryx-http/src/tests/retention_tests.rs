@@ -43,7 +43,7 @@ struct StubDriver {
 #[async_trait]
 impl EcosystemDriver for StubDriver {
     fn ecosystem(&self) -> Ecosystem {
-        Ecosystem::Pypi
+        Ecosystem::new("example")
     }
 
     fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
@@ -155,8 +155,8 @@ impl Fixture {
             blobs,
             60,
             vec![
-                hosted_index("hosted", Ecosystem::Pypi),
-                hosted_index("ocirepo", Ecosystem::Oci),
+                hosted_index("hosted", Ecosystem::new("example")),
+                hosted_index("ocirepo", Ecosystem::new("other")),
             ],
         );
         state.users = UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), 2);

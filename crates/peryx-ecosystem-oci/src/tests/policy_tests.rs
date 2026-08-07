@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_http::router;
 use peryx_index::{Index, IndexKind};
@@ -38,7 +37,7 @@ fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
         vec![Index {
             name: "store".to_owned(),
             route: "store".to_owned(),
-            ecosystem: Ecosystem::Oci,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy,
             acl: crate::tests::writer_acl(TOKEN.to_owned()),
@@ -218,7 +217,7 @@ fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, ax
         vec![Index {
             name: "store".to_owned(),
             route: "store".to_owned(),
-            ecosystem: Ecosystem::Oci,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy,
             acl: crate::tests::writer_acl(TOKEN.to_owned()),

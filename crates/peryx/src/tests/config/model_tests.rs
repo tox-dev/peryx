@@ -94,7 +94,7 @@ fn test_default_config() {
     assert!(matches!(&c.indexes[0].kind, IndexKind::Cached { .. }));
     assert!(matches!(&c.indexes[1].kind, IndexKind::Hosted { .. }));
     assert!(matches!(&c.indexes[2].kind, IndexKind::Virtual { upload: Some(target), .. } if target == "hosted"));
-    assert_eq!(c.indexes[3].ecosystem, peryx_core::Ecosystem::Oci);
+    assert_eq!(c.indexes[3].ecosystem, peryx_ecosystem_registry::OCI);
     assert!(matches!(&c.indexes[3].kind, IndexKind::Cached { .. }));
     assert!(matches!(&c.indexes[4].kind, IndexKind::Hosted { .. }));
     assert!(matches!(&c.indexes[5].kind, IndexKind::Virtual { upload: Some(target), .. } if target == "images"));

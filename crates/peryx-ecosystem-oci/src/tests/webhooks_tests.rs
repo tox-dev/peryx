@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
@@ -40,7 +39,7 @@ fn hosted_with_webhook(dir: &tempfile::TempDir, events: &[&str]) -> (Arc<AppStat
         vec![Index {
             name: "store".to_owned(),
             route: "store".to_owned(),
-            ecosystem: Ecosystem::Oci,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: crate::tests::writer_acl(TOKEN.to_owned()),

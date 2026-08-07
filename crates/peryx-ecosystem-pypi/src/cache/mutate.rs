@@ -60,7 +60,7 @@ pub async fn store_upload(
     for (digest, size) in &published.placements {
         state.record_home_placement(digest.as_str(), *size, fence);
     }
-    state.record_operation_trace(peryx_driver::state::OperationKind::Upload, fence);
+    state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
     if published.stored {
         state.invalidate_project(&project);
     }
@@ -454,7 +454,11 @@ fn yank_uploads(
     yanked: &Yanked,
     submitted_at_unix: i64,
 ) -> Result<usize, CacheError> {
-    let action = if matches!(yanked, Yanked::No) { "unyank" } else { "yank" };
+    let action = if matches!(yanked, Yanked::No) {
+        "unyank"
+    } else {
+        "withdraw"
+    };
     state
         .meta
         .mutate_uploads(name, normalized, action, submitted_at_unix, |_filename, bytes| {

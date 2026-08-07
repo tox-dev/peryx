@@ -21,8 +21,6 @@ use tower::ServiceExt as _;
 use wiremock::matchers::{header as match_header, header_regex, method, path};
 use wiremock::{Match, Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
 
-use peryx_ecosystem_oci::LibraryPrefix;
-
 use crate::config::{
     AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig,
     DcMember, DcMembership, DcRole, IndexConfig, IndexKind, LdapBindConfig, LdapProviderConfig, LogSink,
@@ -90,7 +88,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_ecosystem_registry::PYPI,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Cached {
@@ -110,7 +108,7 @@ fn hosted(name: &str) -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_ecosystem_registry::PYPI,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Hosted { volatile: true },
@@ -125,7 +123,7 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_ecosystem_registry::PYPI,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Virtual {
@@ -1253,7 +1251,7 @@ fn bad_upstream_config(dir: &tempfile::TempDir) -> Config {
 
 fn bad_settings_config(dir: &tempfile::TempDir) -> Config {
     let mut index = hosted("images");
-    index.ecosystem = peryx_core::Ecosystem::Oci;
+    index.ecosystem = peryx_ecosystem_registry::OCI;
     index
         .ecosystem_settings
         .insert("bogus".to_owned(), toml::Value::from("x"));
@@ -1550,6 +1548,38 @@ fn test_build_state_installs_trusted_publishing_for_a_resolved_route() {
 }
 
 #[test]
+fn test_build_state_rejects_a_trusted_publisher_with_an_unknown_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![hosted("private")],
+        auth: AuthConfig {
+            signing_key: Some(SecretSource::Literal("super-secret".to_owned())),
+            oidc_audience: "packages.example".to_owned(),
+            trusted_publishers: vec![TrustedPublisherConfig {
+                id: "release".to_owned(),
+                issuer: "https://issuer.example".to_owned(),
+                repository: "missing".to_owned(),
+                subject: "repo:org/app:*".to_owned(),
+                projects: vec!["app".to_owned()],
+                claims: std::collections::BTreeMap::new(),
+            }],
+            ..AuthConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let Err(error) = build_state(&config) else {
+        panic!("expected an unknown-repository rejection");
+    };
+
+    assert_eq!(
+        error.chain().map(ToString::to_string).collect::<Vec<_>>().join(": "),
+        "validate configuration: trusted publisher release: repository must name a writable index with trusted publishing support"
+    );
+}
+
+#[test]
 fn test_build_state_reports_an_unreadable_signing_key_file() {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
@@ -1737,60 +1767,13 @@ fn test_build_indexes_rejects(#[case] indexes: fn() -> Vec<IndexConfig>, #[case]
     }
 }
 
-#[rstest]
-#[case::absent(None, LibraryPrefix::Auto)]
-#[case::auto(Some("auto".into()), LibraryPrefix::Auto)]
-#[case::always(Some(true.into()), LibraryPrefix::Always)]
-#[case::never(Some(false.into()), LibraryPrefix::Never)]
-fn test_build_index_settings_compiles_an_oci_library_prefix(
-    #[case] value: Option<toml::Value>,
-    #[case] expected: LibraryPrefix,
-) {
-    let mut index = IndexConfig {
-        ecosystem: peryx_core::Ecosystem::Oci,
-        ..cached("hub", "https://registry-1.docker.io/")
-    };
-    if let Some(value) = value {
-        index.ecosystem_settings.insert("library_prefix".to_owned(), value);
-    }
-    let settings = build_index_settings(&[index]).unwrap();
-    assert_eq!(settings["hub"].library_prefix, expected);
-}
-
-#[rstest]
-#[case::invalid_oci_value(
-    peryx_core::Ecosystem::Oci,
-    "library_prefix",
-    "always".into(),
-    &["compile settings for hub", "must be true, false, or \"auto\""][..]
-)]
-#[case::unknown_oci_key(
-    peryx_core::Ecosystem::Oci,
-    "libary_prefix",
-    true.into(),
-    &["compile settings for hub", "unknown field `libary_prefix`"][..]
-)]
-#[case::settings_on_an_ecosystem_without_any(
-    peryx_core::Ecosystem::Pypi,
-    "library_prefix",
-    "auto".into(),
-    &["compile settings for hub", "unknown field `library_prefix`"][..]
-)]
-fn test_build_index_settings_rejects(
-    #[case] ecosystem: peryx_core::Ecosystem,
-    #[case] key: &str,
-    #[case] value: toml::Value,
-    #[case] expected: &[&str],
-) {
-    let mut index = IndexConfig {
-        ecosystem,
-        ..cached("hub", "https://registry-1.docker.io/")
-    };
-    index.ecosystem_settings.insert(key.to_owned(), value);
+#[test]
+fn test_build_index_settings_surfaces_plugin_errors() {
+    let mut index = cached("cache", "https://packages.example/");
+    index.ecosystem_settings.insert("unknown".to_owned(), true.into());
     let message = build_index_settings(&[index]).unwrap_err().to_string();
-    for substr in expected {
-        assert!(message.contains(substr), "{message}");
-    }
+    assert!(message.contains("compile settings for cache"), "{message}");
+    assert!(message.contains("unknown field `unknown`"), "{message}");
 }
 
 #[test]

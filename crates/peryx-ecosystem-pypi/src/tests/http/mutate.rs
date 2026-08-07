@@ -49,7 +49,7 @@ async fn test_yank_and_unyank_and_delete() {
             .collect::<Vec<_>>(),
         [
             ("add-file", 1000),
-            ("yank", 2000),
+            ("withdraw", 2000),
             ("unyank", 3000),
             ("delete-file", 4000),
         ]

@@ -699,7 +699,7 @@ mod tests {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: IndexAcl::default(),
@@ -710,7 +710,7 @@ mod tests {
         Index {
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: IndexAcl::default(),

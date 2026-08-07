@@ -153,7 +153,7 @@ mod tests {
 
     fn record() -> TrashRecord {
         TrashRecord {
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             repository: "hosted".to_owned(),
             name: "flask".to_owned(),
             reference: Some("flask-1.0.whl".to_owned()),

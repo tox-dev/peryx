@@ -16,6 +16,8 @@ use peryx_storage::meta::{
     QuotaReservationRecord,
 };
 
+use crate::upload_session::UploadStore as _;
+
 use crate::error::{ErrorCode, error_response};
 use crate::name::Reference;
 use crate::registry::ServeError;

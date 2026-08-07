@@ -51,7 +51,7 @@ impl Harness {
             vec![Index {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Hosted { volatile: true },
                 policy: Policy::default(),
                 acl: crate::tests::writer_acl("s3cret".to_owned()),

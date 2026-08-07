@@ -384,7 +384,7 @@ mod tests {
     #[async_trait]
     impl EcosystemDriver for StubDriver {
         fn ecosystem(&self) -> Ecosystem {
-            Ecosystem::Pypi
+            Ecosystem::new("example")
         }
 
         fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
@@ -445,7 +445,7 @@ mod tests {
     fn test_stub_driver_answers_the_required_trait_surface() {
         let driver = StubDriver::default();
 
-        assert_eq!(driver.ecosystem(), Ecosystem::Pypi);
+        assert_eq!(driver.ecosystem(), Ecosystem::new("example"));
         assert!(matches!(
             driver.classify_route("/x"),
             crate::rate_limit::RouteClass::Listing
@@ -460,7 +460,7 @@ mod tests {
     #[async_trait]
     impl EcosystemDriver for DefaultDriver {
         fn ecosystem(&self) -> Ecosystem {
-            Ecosystem::Pypi
+            Ecosystem::new("example")
         }
 
         fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
@@ -480,7 +480,7 @@ mod tests {
     fn test_plan_falls_back_to_the_default_when_a_driver_omits_retention() {
         let (_dir, meta) = store();
         let driver = DefaultDriver;
-        assert_eq!(driver.ecosystem(), Ecosystem::Pypi);
+        assert_eq!(driver.ecosystem(), Ecosystem::new("example"));
         assert!(matches!(
             driver.classify_route("/x"),
             crate::rate_limit::RouteClass::Listing

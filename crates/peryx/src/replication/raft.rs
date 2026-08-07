@@ -22,10 +22,10 @@ use peryx_driver::state::{
     ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, HomeClaim, MembershipControl,
     OwnershipAuthority, OwnershipError, TransferOutcome, plan_voter_roster,
 };
-use peryx_replication::raft::log_store::RaftLogStoreAdapter;
-use peryx_replication::raft::network::PeerRaftNetworkFactory;
-use peryx_replication::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
-use peryx_replication::{
+use peryx_ha_distributed::raft::log_store::RaftLogStoreAdapter;
+use peryx_ha_distributed::raft::network::PeerRaftNetworkFactory;
+use peryx_ha_distributed::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
+use peryx_ha_distributed::{
     Admission, AssignmentCause, AuthorityEpoch, AuthorityKey, DatacenterId, OwnershipCommand, OwnershipEffect,
     Rejection,
 };

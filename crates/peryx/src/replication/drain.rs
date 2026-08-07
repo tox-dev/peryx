@@ -3,7 +3,7 @@
 //! When a home fails and the control quorum transfers its authority, the ingress DCs still hold the
 //! writes the old home never finalized as retained intents. This job drains them at the new home: it
 //! reads the still-pending intents in stable key order, plans the pass through the pure
-//! [`plan_drain`](peryx_replication::plan_drain), and finalizes each replayable intent into local
+//! [`plan_drain`](peryx_ha_distributed::plan_drain), and finalizes each replayable intent into local
 //! metadata by advancing it to [`Admitted`](peryx_storage::meta::IntentPhase::Admitted).
 //!
 //! The pass is bounded, ordered, and resumable. Each finalize is idempotent — advancing an intent only
@@ -19,7 +19,7 @@ use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
 use peryx_driver::jobs::{JobContext, JobFailure, JobReport, NodeJob};
-use peryx_replication::{DrainIntent, OldEpochOp, plan_drain};
+use peryx_ha_distributed::{DrainIntent, OldEpochOp, plan_drain};
 use peryx_storage::meta::{IntentPhase, IntentTransition, JobKind, MetaError, MetaStore};
 
 const AUTHORITY_DRAIN: &str = "authority_drain";

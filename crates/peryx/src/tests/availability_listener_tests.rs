@@ -13,8 +13,8 @@ use peryx_driver::state::{
     AppState, CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, MembershipControl,
 };
 use peryx_driver::users::UserService;
+use peryx_ha_distributed::{ChangePage, PROTOCOL_VERSION};
 use peryx_identity::{GrantScope, PasswordPolicy, Role};
-use peryx_replication::{ChangePage, PROTOCOL_VERSION};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use serde_json::{Value, json};

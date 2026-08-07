@@ -225,7 +225,7 @@ mod tests {
 
     fn record(repository: &str, name: &str, deleted_at_unix: i64, retained: bool) -> TrashRecord {
         TrashRecord {
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             repository: repository.to_owned(),
             name: name.to_owned(),
             reference: Some(format!("{name}.whl")),
@@ -360,7 +360,7 @@ mod tests {
             record("hosted", "keep", 1_000, true),
             record("other", "wrong-repo", 1_000, true),
             TrashRecord {
-                ecosystem: Ecosystem::Oci,
+                ecosystem: Ecosystem::new("other"),
                 ..record("hosted", "wrong-eco", 1_000, true)
             },
             record("hosted", "expired", 1_000, false),
@@ -370,7 +370,7 @@ mod tests {
             records.clone(),
             &TrashQuery {
                 repository: Some("hosted".to_owned()),
-                ecosystem: Some(Ecosystem::Pypi),
+                ecosystem: Some(Ecosystem::new("example")),
                 state: Some(TrashState::Restorable),
                 ..query(25)
             },
@@ -400,7 +400,7 @@ mod tests {
     fn test_trash_ref_matches_only_the_named_record() {
         let record = record("hosted", "flask", 1_000, true);
         let reference = TrashRef {
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             repository: "hosted".to_owned(),
             name: "flask".to_owned(),
             reference: Some("flask.whl".to_owned()),

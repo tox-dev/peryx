@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use rstest::rstest;
 
 use super::toml_config;
-use crate::config::{self, IndexKind, PrefetchMode};
+use crate::config::{self, IndexKind};
 
 #[test]
 fn test_writer_identity_from_toml() {
@@ -54,16 +54,23 @@ max_file_size_bytes = 1048576
         panic!("expected cached index");
     };
     assert!(*offline);
-    assert_eq!(prefetch.mode, PrefetchMode::MetadataOnly);
-    assert_eq!(prefetch.packages, vec!["requests>=2,<3".to_owned()]);
-    assert_eq!(prefetch.requirements, vec![PathBuf::from("requirements.txt")]);
-    assert!(!prefetch.include_wheels);
-    assert!(prefetch.include_sdists);
-    assert_eq!(prefetch.python_tags, vec!["py3".to_owned()]);
-    assert_eq!(prefetch.abi_tags, vec!["none".to_owned()]);
-    assert_eq!(prefetch.platform_tags, vec!["any".to_owned()]);
-    assert_eq!(prefetch.max_file_size_bytes, Some(1_048_576));
-    assert!(prefetch.metadata_only);
+    assert_eq!(
+        prefetch.options,
+        toml::from_str(
+            r#"
+mode = "metadata-only"
+packages = ["requests>=2,<3"]
+requirements = ["requirements.txt"]
+include_wheels = false
+include_sdists = true
+python_tags = ["py3"]
+abi_tags = ["none"]
+platform_tags = ["any"]
+max_file_size_bytes = 1048576
+"#,
+        )
+        .unwrap()
+    );
 }
 
 #[rstest]

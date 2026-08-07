@@ -1463,7 +1463,7 @@ async fn test_upload_storage_failure_is_server_error() {
         route: "hosted".to_owned(),
         policy: Policy::default(),
         acl: crate::tests::writer_acl("s3cret".to_owned()),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
     }];
     let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
@@ -1509,7 +1509,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -1522,7 +1522,7 @@ async fn test_upload_target_resolving_to_non_local_is_not_found() {
             route: "ov".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: Some(0),
@@ -1662,7 +1662,7 @@ fn scoped(glob: &str) -> (tempfile::TempDir, Arc<AppState>) {
                 expires_at: None,
             }],
         },
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
     }];
     (dir, crate::tests::wired(AppState::new(meta, blobs, 60, indexes)))
@@ -1716,7 +1716,7 @@ fn state_with_trusted_publishing(enabled: bool) -> (tempfile::TempDir, Arc<AppSt
                 route: "hosted".to_owned(),
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Hosted { volatile: true },
             },
             Index {
@@ -1724,7 +1724,7 @@ fn state_with_trusted_publishing(enabled: bool) -> (tempfile::TempDir, Arc<AppSt
                 route: "release".to_owned(),
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: Some(0),
@@ -1735,7 +1735,7 @@ fn state_with_trusted_publishing(enabled: bool) -> (tempfile::TempDir, Arc<AppSt
                 route: String::new(),
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Hosted { volatile: true },
             },
         ],

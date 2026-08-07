@@ -19,7 +19,7 @@ const GENERAL_SERIES: &str = "peryx_pages_served_total";
 
 /// The metric family a replica exports once it replicates. A `none` node runs no replication and so
 /// exports none of it, which is how `none` is told apart from an enabled mode on the scrape alone.
-const AVAILABILITY_SERIES: &str = "peryx_replication_";
+const AVAILABILITY_SERIES: &str = "peryx_ha_distributed_";
 
 /// The datacenter durability outcome family a `dc` or `ha` node exports. A `none` node runs no such
 /// decision, so it exports none of it.

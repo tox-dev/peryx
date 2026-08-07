@@ -21,7 +21,6 @@ pub mod openapi;
 pub mod quota;
 pub mod range;
 pub mod rate_limit;
-pub mod read_through;
 pub mod retention;
 pub mod revocations;
 pub mod serving;

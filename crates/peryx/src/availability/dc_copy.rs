@@ -30,7 +30,7 @@ use futures_util::StreamExt as _;
 
 use peryx_driver::jobs::{CrossDcCopier, DcCopyParameters, JobFailure, JobReport};
 use peryx_driver::state::{Clock, ServingState};
-use peryx_replication::{
+use peryx_ha_distributed::{
     BlobTransport, CopyError, HttpBlobTransport, TransferLimits, TransportError, copy_blob_to_target,
 };
 use peryx_storage::blob::{BlobStore, Digest};

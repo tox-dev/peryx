@@ -1,0 +1,15 @@
+[package]
+name = "peryx-ha-local"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Zero-state single-process availability implementation for peryx."
+
+[dependencies]
+peryx-core.workspace = true
+peryx-ha.workspace = true
+
+[lints]
+workspace = true

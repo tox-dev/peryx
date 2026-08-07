@@ -594,7 +594,7 @@ async fn harness_with_acl(rate_limit: RateLimitConfig, upstream_concurrency: usi
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap(),
                 offline: false,
@@ -692,7 +692,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached {
                     client: upstream,
                     offline: false,
@@ -703,7 +703,7 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
             Index {
                 name: "root".to_owned(),
                 route: "root".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -754,7 +754,7 @@ fn test_state_with_rate_limits_sets_limiter_and_upstream_cap() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,

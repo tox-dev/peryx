@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_registry::pypi::store::PypiStore as _;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;

@@ -11,7 +11,7 @@
 //!
 //! Deriving the facts from the committed operation record and the current metadata, and turning a
 //! settled outcome into a replay, live above this store in the reconciler and its
-//! [`classify`](../../../peryx_replication/fn.classify.html) core.
+//! [`classify`](../../../peryx_ha_distributed/fn.classify.html) core.
 
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};

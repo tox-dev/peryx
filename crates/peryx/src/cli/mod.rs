@@ -13,7 +13,7 @@ mod snippet;
 use std::path::PathBuf;
 
 use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 pub use cache::{
     CacheCommand, CacheListArgs, CachePurgeCommand, CachePurgeOrphanedBlobsArgs, CachePurgeProjectArgs,
@@ -32,7 +32,7 @@ pub use maintenance::{
 pub use mirror::{PrefetchCommand, PrefetchOptions, PrefetchPlanArgs, PrefetchSyncArgs, PrefetchVerifyArgs};
 pub use quota::{QuotaCommand, QuotaInspectArgs, QuotaListArgs};
 pub use retention::{RetentionCommand, RetentionDryRunArgs, RetentionExportArgs};
-pub use snippet::{ConfigSnippetArgs, SnippetFormat};
+pub use snippet::ConfigSnippetArgs;
 
 use crate::config::{
     LogFormat, LogSink, PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig,
@@ -119,23 +119,6 @@ pub enum Command {
     #[cfg(feature = "self-update")]
     #[command(subcommand, name = "self")]
     SelfManage(SelfCommand),
-}
-
-/// The ecosystem a command targets. One variant today; the axis is reserved so `OCI`, npm, and more
-/// slot in without reshaping the CLI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "lowercase")]
-pub enum EcosystemArg {
-    Pypi,
-}
-
-impl EcosystemArg {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pypi => "pypi",
-        }
-    }
 }
 
 /// Configuration flags shared by the commands that read the runtime configuration.

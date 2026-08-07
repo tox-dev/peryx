@@ -11,10 +11,10 @@ use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use peryx_driver::IndexKind as RuntimeIndexKind;
 use peryx_driver::state::AppState;
-use peryx_identity::{Action, GrantScope, Role};
-use peryx_replication::{
+use peryx_ha_distributed::{
     BLOB_VIEW, ChangePage, DEFAULT_RECONNECT_POLICY, ReconnectPolicy, SyncOutcome, TransportError, primary_router,
 };
+use peryx_identity::{Action, GrantScope, Role};
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
@@ -476,7 +476,7 @@ async fn test_a_replica_cycle_records_an_apply_failure_when_the_store_refuses_th
     let router = runtime.mount(router_for(state.clone()));
     let (_, body) = get(&router, "/metrics").await;
     let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("peryx_replication_sync_errors_total 1\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_sync_errors_total 1\n"), "{body}");
 }
 
 #[tokio::test]
@@ -572,7 +572,7 @@ fn test_apply_replicated_page_holds_the_frontier_when_a_view_rebuild_fails() {
     let state = build_state(&config).unwrap();
     // A corrupt upload record for flask makes deriving its search document fail, so the driver reports a
     // blocked view rather than rebuilding it.
-    peryx_ecosystem_pypi::store::put_upload(
+    peryx_ecosystem_registry::pypi::store::put_upload(
         &state.meta,
         "hosted",
         "flask",
@@ -720,8 +720,8 @@ async fn test_dual_replica_reports_blob_fetch_counts_to_operators() {
     // pull without waiting for the readable frontier to lag.
     let (_, body) = get(&router, "/metrics").await;
     let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("peryx_replication_blobs_fetched_total 1\n"), "{body}");
-    assert!(body.contains("peryx_replication_blobs_pending 0\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_blobs_fetched_total 1\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_blobs_pending 0\n"), "{body}");
 }
 
 #[tokio::test]
@@ -1013,7 +1013,7 @@ async fn test_replica_readiness_reports_a_sync_error() {
     );
     let (_, body) = get(&router, "/metrics").await;
     let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("peryx_replication_sync_errors_total 1\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_sync_errors_total 1\n"), "{body}");
     assert!(
         body.contains("peryx_availability_sync_errors_total{class=\"transport\"} 1\n"),
         "{body}"
@@ -1075,7 +1075,7 @@ async fn test_replica_readiness_recovers_and_reports_serials_to_operators() {
     );
     let (_, body) = get(&router, "/metrics").await;
     let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("peryx_replication_lag 1\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_lag 1\n"), "{body}");
     assert!(body.contains("peryx_availability_pending_serials 1\n"), "{body}");
     assert!(body.contains("peryx_availability_sync_cycles_total 1\n"), "{body}");
     assert!(body.contains("peryx_availability_apply_seconds_count 1\n"), "{body}");
@@ -1093,11 +1093,11 @@ async fn test_replica_readiness_recovers_and_reports_serials_to_operators() {
     );
     let (_, body) = get(&router, "/metrics").await;
     let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("peryx_replication_lag 0\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_lag 0\n"), "{body}");
     // Caught up to the primary at serial 3, and readability reaches it: applying each page rebuilt the
     // affected derived views and advanced the search view frontier before the serial became visible, so
     // no read waits on a later search to refresh the index.
-    assert!(body.contains("peryx_replication_readable_serial 3\n"), "{body}");
+    assert!(body.contains("peryx_ha_distributed_readable_serial 3\n"), "{body}");
     assert!(body.contains("peryx_availability_pending_serials 0\n"), "{body}");
     assert!(body.contains("peryx_availability_sync_cycles_total 2\n"), "{body}");
 }
@@ -1195,7 +1195,7 @@ async fn test_disabled_runtime_mounts_no_routes_or_task() {
     assert_eq!(get(&router, "/+replication/v1/ready").await.0, StatusCode::NOT_FOUND);
     let (_, body) = get(&router, "/metrics").await;
     let metrics = String::from_utf8(body).unwrap();
-    assert!(!metrics.contains("peryx_replication_"), "{metrics}");
+    assert!(!metrics.contains("peryx_ha_distributed_"), "{metrics}");
     assert!(!metrics.contains("peryx_availability_worker_"), "{metrics}");
 }
 

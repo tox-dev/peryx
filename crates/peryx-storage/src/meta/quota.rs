@@ -307,40 +307,6 @@ impl MetaStore {
         )
     }
 
-    /// Commit driver metadata, its reserved quota allocation, and close the finalizing upload
-    /// `session`, all in one transaction, so a metered upload cannot land membership and charge quota
-    /// while leaving the client's recovery handle dangling. A `None` session commits the rows and the
-    /// reservation alone.
-    ///
-    /// # Errors
-    /// Returns the body's error, [`QuotaError::ReservationUnavailable`], or a store error. Peryx
-    /// rolls back driver, quota, and session rows when any step fails.
-    pub fn commit_driver_txn_with_quota_closing_upload<T, E>(
-        &self,
-        id: Uuid,
-        session: Option<&str>,
-        body: impl FnOnce(&mut super::DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E>
-    where
-        E: From<MetaError> + From<QuotaError>,
-    {
-        self.commit_driver_txn_at(
-            None,
-            None,
-            true,
-            move |txn, _| {
-                if !commit_reservation(txn, id)? {
-                    return Err(QuotaError::ReservationUnavailable { id }.into());
-                }
-                if let Some(session) = session {
-                    super::upload_session::close_upload_in_txn(txn, session)?;
-                }
-                Ok(())
-            },
-            body,
-        )
-    }
-
     /// Commit or release a quota reservation in the same transaction as driver metadata, according
     /// to the value returned by `body`.
     ///

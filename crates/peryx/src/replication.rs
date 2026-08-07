@@ -19,20 +19,22 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use peryx_driver::read_through::{DEFAULT_READ_THROUGH_LIMITS, DcTransport, ReadThroughLimits, RemotePlacementReader};
 use peryx_driver::state::SEARCH_VIEW;
 use peryx_driver::{AppState, PrometheusSource};
-use peryx_http::handlers::status_authorization;
-use peryx_http::response_security::{
-    ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
+use peryx_ha_distributed::read_through::{
+    DEFAULT_READ_THROUGH_LIMITS, DcTransport, ReadThroughLimits, RemotePlacementReader,
 };
-use peryx_replication::{
+use peryx_ha_distributed::{
     BeaconSender, BlobPlaneReport, BlobSources, CapacityLimited, ChangePage, DEFAULT_BEACON_INTERVAL,
     DEFAULT_DEAD_AFTER, DEFAULT_RECONNECT_POLICY, DEFAULT_SET_LIMITS, DEFAULT_SUSPECT_AFTER, DEFAULT_TRANSFER_LIMITS,
     DurabilityPolicy, HttpBlobTransport, HttpPeerTransport, LivenessTracker, MemberFrontier, MemberRole,
     PROTOCOL_VERSION, PeerSet, ReconnectPolicy, Replica, Retry, SetLimits, SyncError, SyncOutcome, TransferLimits,
     TransportError, advance_blob_frontier, follower_router, group_readiness, liveness_router, primary_router,
     pull_outstanding, pull_round,
+};
+use peryx_http::handlers::status_authorization;
+use peryx_http::response_security::{
+    ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
 };
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{DataCenterId, MetaStore};
@@ -185,42 +187,42 @@ impl PrometheusSource for ReplicaMonitor {
         let caught_up = u8::from(matches!(observation.status, ReplicaHealthStatus::CaughtUp));
         let _ = write!(
             body,
-            "# HELP peryx_replication_caught_up Whether the replica has reached the latest observed primary serial.\n\
-             # TYPE peryx_replication_caught_up gauge\n\
-             peryx_replication_caught_up {caught_up}\n\
-             # HELP peryx_replication_serial Last serial committed by the replica.\n\
-             # TYPE peryx_replication_serial gauge\n\
-             peryx_replication_serial {}\n\
-             # HELP peryx_replication_changes_total Metadata changes committed by the replica.\n\
-             # TYPE peryx_replication_changes_total counter\n\
-             peryx_replication_changes_total {}\n\
-             # HELP peryx_replication_sync_errors_total Replica synchronization failures.\n\
-             # TYPE peryx_replication_sync_errors_total counter\n\
-             peryx_replication_sync_errors_total {}\n",
+            "# HELP peryx_ha_distributed_caught_up Whether the replica has reached the latest observed primary serial.\n\
+             # TYPE peryx_ha_distributed_caught_up gauge\n\
+             peryx_ha_distributed_caught_up {caught_up}\n\
+             # HELP peryx_ha_distributed_serial Last serial committed by the replica.\n\
+             # TYPE peryx_ha_distributed_serial gauge\n\
+             peryx_ha_distributed_serial {}\n\
+             # HELP peryx_ha_distributed_changes_total Metadata changes committed by the replica.\n\
+             # TYPE peryx_ha_distributed_changes_total counter\n\
+             peryx_ha_distributed_changes_total {}\n\
+             # HELP peryx_ha_distributed_sync_errors_total Replica synchronization failures.\n\
+             # TYPE peryx_ha_distributed_sync_errors_total counter\n\
+             peryx_ha_distributed_sync_errors_total {}\n",
             observation.serial, observation.changes, observation.errors
         );
         let _ = write!(
             body,
-            "# HELP peryx_replication_readable_serial Highest serial every required derived view has applied.\n\
-             # TYPE peryx_replication_readable_serial gauge\n\
-             peryx_replication_readable_serial {}\n\
-             # HELP peryx_replication_blobs_fetched_total Blobs the dual-plane blob fetch committed.\n\
-             # TYPE peryx_replication_blobs_fetched_total counter\n\
-             peryx_replication_blobs_fetched_total {}\n\
-             # HELP peryx_replication_blobs_pending Blobs the last blob-plane pass left outstanding.\n\
-             # TYPE peryx_replication_blobs_pending gauge\n\
-             peryx_replication_blobs_pending {}\n",
+            "# HELP peryx_ha_distributed_readable_serial Highest serial every required derived view has applied.\n\
+             # TYPE peryx_ha_distributed_readable_serial gauge\n\
+             peryx_ha_distributed_readable_serial {}\n\
+             # HELP peryx_ha_distributed_blobs_fetched_total Blobs the dual-plane blob fetch committed.\n\
+             # TYPE peryx_ha_distributed_blobs_fetched_total counter\n\
+             peryx_ha_distributed_blobs_fetched_total {}\n\
+             # HELP peryx_ha_distributed_blobs_pending Blobs the last blob-plane pass left outstanding.\n\
+             # TYPE peryx_ha_distributed_blobs_pending gauge\n\
+             peryx_ha_distributed_blobs_pending {}\n",
             observation.readable_serial, observation.blobs_fetched, observation.blobs_pending
         );
         if let Some(primary_serial) = observation.primary_serial {
             let _ = write!(
                 body,
-                "# HELP peryx_replication_primary_serial Latest serial reported by the primary.\n\
-                 # TYPE peryx_replication_primary_serial gauge\n\
-                 peryx_replication_primary_serial {primary_serial}\n\
-                 # HELP peryx_replication_lag Serial distance between the primary and replica.\n\
-                 # TYPE peryx_replication_lag gauge\n\
-                 peryx_replication_lag {}\n",
+                "# HELP peryx_ha_distributed_primary_serial Latest serial reported by the primary.\n\
+                 # TYPE peryx_ha_distributed_primary_serial gauge\n\
+                 peryx_ha_distributed_primary_serial {primary_serial}\n\
+                 # HELP peryx_ha_distributed_lag Serial distance between the primary and replica.\n\
+                 # TYPE peryx_ha_distributed_lag gauge\n\
+                 peryx_ha_distributed_lag {}\n",
                 primary_serial.saturating_sub(observation.serial)
             );
         }
@@ -626,7 +628,7 @@ pub(crate) fn apply_replicated_page(app: &AppState, outcome: SyncOutcome, change
     app.bump_search_epoch();
     let state = app.serving.as_ref();
     let mut blocked = None;
-    for driver in app.drivers() {
+    for driver in app.replicated_apply_drivers() {
         if let Err(block) = driver.apply_replicated_changes(state, changed_keys) {
             blocked = Some(block);
         }
@@ -977,7 +979,7 @@ fn merge_analytics_endpoint(
     Ok(router.merge(analytics::analytics_router(
         token.to_owned(),
         state.serving.metrics.clone(),
-        peryx_replication::ProducerId(identity.clone()),
+        peryx_ha_distributed::ProducerId(identity.clone()),
         epoch,
     )))
 }
@@ -1083,7 +1085,10 @@ impl ReplicationRuntime {
         // A `dc` or `ha` node resolves each write to a datacenter durability decision, so it exposes the
         // outcome counters; single-node `none` runs no such decision and registers nothing.
         if availability.is_some() {
-            state.register_prometheus(state.serving.dc_durability.clone());
+            state.serving.configure_distributed();
+            if let Some(metrics) = state.serving.dc_durability() {
+                state.register_prometheus(metrics.clone());
+            }
         }
         Ok(Self {
             primary,
@@ -1107,8 +1112,9 @@ impl ReplicationRuntime {
         match &self.consensus {
             Some(plan) => {
                 let node = plan.ignite().await?;
-                let peer_router = peryx_replication::raft::network::raft_rpc_router(plan.token(), node.rpc_handler())
-                    .context("build the raft peer rpc router")?;
+                let peer_router =
+                    peryx_ha_distributed::raft::network::raft_rpc_router(plan.token(), node.rpc_handler())
+                        .context("build the raft peer rpc router")?;
                 let group = Arc::new(raft::OwnershipGroup::new(node, plan.home()));
                 Ok(Some(Consensus {
                     authority: group.clone(),
@@ -1174,7 +1180,7 @@ mod tests {
     use std::sync::Arc;
 
     use peryx_driver::PrometheusSource;
-    use peryx_replication::BlobPlaneReport;
+    use peryx_ha_distributed::BlobPlaneReport;
 
     use super::{ReplicaMonitor, WorkerShared, worker_reason};
 
@@ -1195,15 +1201,15 @@ mod tests {
 
         let mut body = String::new();
         monitor.write_metrics(&mut body);
-        assert!(body.contains("peryx_replication_blobs_fetched_total 2\n"), "{body}");
-        assert!(body.contains("peryx_replication_blobs_pending 3\n"), "{body}");
+        assert!(body.contains("peryx_ha_distributed_blobs_fetched_total 2\n"), "{body}");
+        assert!(body.contains("peryx_ha_distributed_blobs_pending 3\n"), "{body}");
 
         // The fetched counter accumulates across passes while the pending gauge takes the latest value.
         monitor.record_blobs(BlobPlaneReport { fetched: 1, pending: 0 });
         let mut body = String::new();
         monitor.write_metrics(&mut body);
-        assert!(body.contains("peryx_replication_blobs_fetched_total 3\n"), "{body}");
-        assert!(body.contains("peryx_replication_blobs_pending 0\n"), "{body}");
+        assert!(body.contains("peryx_ha_distributed_blobs_fetched_total 3\n"), "{body}");
+        assert!(body.contains("peryx_ha_distributed_blobs_pending 0\n"), "{body}");
     }
 
     fn member(node: &str, address: &str, role: crate::config::DcRole) -> crate::config::DcMember {

@@ -110,7 +110,7 @@ async fn test_none_mode_registers_no_availability_metrics(#[case] build: fn(&tem
         .mount(router_for(state));
 
     let body = metrics_body(&router).await;
-    assert!(!body.contains("peryx_replication_"), "{body}");
+    assert!(!body.contains("peryx_ha_distributed_"), "{body}");
     assert!(!body.contains("peryx_availability_"), "{body}");
     assert!(
         body.contains("peryx_requests_total"),

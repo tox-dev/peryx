@@ -21,7 +21,7 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_core::Ecosystem::Oci,
+            ecosystem: peryx_ecosystem_registry::OCI,
             anonymous_read: None,
             tokens: Vec::new(),
             kind: IndexKind::Cached {
@@ -38,7 +38,7 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
 fn oci_options(data_dir: &Path, images: Vec<String>) -> PrefetchOptions {
     let mut options = command_options(data_dir, Vec::new());
     options.index = "oci".to_owned();
-    options.images = images;
+    options.ecosystem.oci.images = images;
     options
 }
 
@@ -103,7 +103,10 @@ async fn test_oci_mirror_plan_uses_configured_images() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = oci_config(dir.path(), "http://127.0.0.1:1/");
     if let IndexKind::Cached { prefetch, .. } = &mut config.indexes[0].kind {
-        prefetch.packages = vec!["library/app:1.0".to_owned()];
+        prefetch.options.insert(
+            "packages".to_owned(),
+            toml::Value::Array(vec![toml::Value::String("library/app:1.0".to_owned())]),
+        );
     }
     // The configured package list seeds the plan, and `--image` adds a one-off on top.
     let plan = PrefetchCommand::Plan(PrefetchPlanArgs {

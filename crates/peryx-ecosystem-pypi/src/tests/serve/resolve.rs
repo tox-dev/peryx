@@ -87,7 +87,7 @@ async fn test_refresh_stale_pages_skips_offline_mirrors() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -121,7 +121,7 @@ async fn test_offline_metadata_fetches_are_unavailable() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -152,7 +152,7 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -182,7 +182,7 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: true },
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
@@ -190,7 +190,7 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
             Index {
                 name: "root/pypi".to_owned(),
                 route: "root/pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -213,7 +213,7 @@ async fn test_offline_mirror_resolves_cached_page() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -301,7 +301,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
             Index {
                 name: "a".to_owned(),
                 route: "a".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached {
                     client: client.clone(),
                     offline: false,
@@ -312,7 +312,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
             Index {
                 name: "b".to_owned(),
                 route: "b".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
@@ -322,7 +322,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
                 route: "both".to_owned(),
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0, 1],
                     upload: None,
@@ -348,7 +348,7 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
             Index {
                 name: "a".to_owned(),
                 route: "a".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
@@ -358,7 +358,7 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
                 route: "inner".to_owned(),
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -369,7 +369,7 @@ async fn test_overlay_nesting_an_overlay_serves_buffered() {
                 route: "outer".to_owned(),
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![1],
                     upload: None,
@@ -391,7 +391,7 @@ async fn test_overlay_without_a_mirror_serves_buffered() {
                 route: "hosted".to_owned(),
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Hosted { volatile: true },
             },
             Index {
@@ -399,7 +399,7 @@ async fn test_overlay_without_a_mirror_serves_buffered() {
                 route: "only".to_owned(),
                 policy: peryx_policy::Policy::default(),
                 acl: IndexAcl::default(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: Some(0),
@@ -507,7 +507,7 @@ async fn test_oci_index_rejects_pypi_protocol_dispatch() {
         vec![Index {
             name: "oci".to_owned(),
             route: "oci".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::new("other"),
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: crate::tests::writer_acl("s3cret".to_owned()),
@@ -778,7 +778,7 @@ async fn test_project_page_reports_an_unreachable_upstream() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),

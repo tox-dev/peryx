@@ -57,7 +57,7 @@ fn indexes(count: usize) -> Vec<Index> {
         .map(|position| Index {
             name: format!("repository-{position}"),
             route: format!("tenant-{position}/pypi"),
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: IndexAcl::default(),

@@ -11,6 +11,59 @@ use std::sync::Arc;
 
 use peryx_core::{Ecosystem, EcosystemInstaller, Lexicon};
 use peryx_driver::AppState;
+use peryx_driver::serving::{
+    CompiledEcosystemSettings, EcosystemDriver, EcosystemPlugin, MirrorAction, MirrorDriver, MirrorRequest,
+};
+
+/// Stable identity of the OCI distribution ecosystem.
+pub const ECOSYSTEM: Ecosystem = Ecosystem::new("oci");
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
+#[group(id = "oci_mirror_options")]
+pub struct MirrorOptions {
+    /// Add an image reference such as `library/alpine:latest`.
+    #[arg(long = "image")]
+    pub images: Vec<String>,
+}
+
+impl MirrorOptions {
+    #[must_use]
+    pub fn overrides(&self) -> toml::Table {
+        toml::Table::from_iter([(
+            "images".to_owned(),
+            toml::Value::Array(self.images.iter().cloned().map(toml::Value::String).collect()),
+        )])
+    }
+}
+
+pub const DEFAULT_INDEXES: &[peryx_ecosystem_contract::DefaultIndex] = &[
+    peryx_ecosystem_contract::DefaultIndex {
+        name: "dockerhub",
+        route: "dockerhub",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_ecosystem_contract::DefaultIndexKind::Cached {
+            upstream: "https://registry-1.docker.io",
+        },
+    },
+    peryx_ecosystem_contract::DefaultIndex {
+        name: "images",
+        route: "images",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_ecosystem_contract::DefaultIndexKind::Hosted,
+    },
+    peryx_ecosystem_contract::DefaultIndex {
+        name: "root/oci",
+        route: "root/oci",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_ecosystem_contract::DefaultIndexKind::Virtual {
+            layers: &["images", "dockerhub"],
+            upload: "images",
+        },
+    },
+];
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OciPlugin;
 
 /// The container ecosystem's user-facing words for peryx's neutral concepts.
 pub const OCI_LEXICON: Lexicon = Lexicon {
@@ -27,7 +80,7 @@ pub const OCI_LEXICON: Lexicon = Lexicon {
 };
 
 /// The audience named by this registry's Bearer challenges and tokens.
-pub const TOKEN_SERVICE: &str = "peryx";
+pub const TOKEN_SERVICE: &str = peryx_identity::TOKEN_AUDIENCE;
 
 mod discovery;
 mod error;
@@ -73,18 +126,149 @@ impl OciInstaller {
 
 impl EcosystemInstaller<AppState> for OciInstaller {
     fn register_driver(&self, state: &mut AppState) {
-        if !state.indexes.iter().any(|index| index.ecosystem == Ecosystem::Oci) {
+        if !state.indexes.iter().any(|index| index.ecosystem == ECOSYSTEM) {
             return;
         }
-        state.register_ecosystem(
-            Arc::new(OciRegistry::new(
-                self.settings.iter().map(|(name, settings)| (name.clone(), *settings)),
-                self.journal_outbox,
-            )),
-            Arc::new(OciIndexer),
-        );
-        state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
+        let driver = Arc::new(OciRegistry::new(
+            self.settings.iter().map(|(name, settings)| (name.clone(), *settings)),
+            self.journal_outbox,
+        ));
+        state.register_ecosystem(driver.clone(), Arc::new(OciIndexer));
+        state.register_maintenance_driver(ECOSYSTEM, driver.clone());
+        state.register_mirror_driver(ECOSYSTEM, driver);
+        state.register_lexicon(ECOSYSTEM, &OCI_LEXICON);
     }
+}
+
+impl EcosystemPlugin for OciPlugin {
+    fn ecosystem(&self) -> Ecosystem {
+        ECOSYSTEM
+    }
+
+    fn default_indexes(&self) -> &'static [peryx_ecosystem_contract::DefaultIndex] {
+        DEFAULT_INDEXES
+    }
+
+    fn driver(&self) -> Arc<dyn EcosystemDriver> {
+        Arc::new(OciRegistry::default())
+    }
+
+    fn compile_index_settings(
+        &self,
+        name: &str,
+        settings: &toml::Table,
+    ) -> Result<Option<CompiledEcosystemSettings>, String> {
+        IndexSettings::compile(settings)
+            .map(|settings| Some(CompiledEcosystemSettings::new(ECOSYSTEM, settings)))
+            .map_err(|reason| format!("compile settings for {name}: {reason}"))
+    }
+
+    fn install(
+        &self,
+        state: &mut AppState,
+        settings: &[(&str, &CompiledEcosystemSettings)],
+        distributed: bool,
+    ) -> Result<(), String> {
+        let settings = settings
+            .iter()
+            .map(|(name, settings)| {
+                settings
+                    .value::<IndexSettings>()
+                    .copied()
+                    .map(|settings| ((*name).to_owned(), settings))
+                    .ok_or_else(|| format!("compiled settings for {name} have the wrong type"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        OciInstaller::new(settings, distributed).install(state);
+        Ok(())
+    }
+
+    fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
+        openapi::openapi_paths(paths)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegistryWithHasher<S> {
+    async fn mirror(
+        &self,
+        state: Arc<AppState>,
+        request: MirrorRequest<'_>,
+        output: &mut (dyn std::io::Write + Send),
+    ) -> Result<(), String> {
+        let index = state
+            .indexes
+            .iter()
+            .find(|index| index.name == request.index || index.route == request.index)
+            .ok_or_else(|| format!("unknown OCI index {:?}", request.index))?;
+        let mut images = table_strings(request.configured, "images")?;
+        if images.is_empty() {
+            images = table_strings(request.configured, "packages")?;
+        }
+        images.extend(table_strings(request.overrides, "images")?);
+        if images.is_empty() {
+            return Err(
+                "mirroring an OCI index needs at least one image (--image or [index.prefetch] packages)".to_owned(),
+            );
+        }
+        output
+            .write_all(b"kind\tindex\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n")
+            .map_err(|error| error.to_string())?;
+        if request.action == MirrorAction::Plan {
+            for image in &images {
+                writeln!(output, "manifest\t{}\t{image}\t{image}\t\t\t0\tselected\t", index.name)
+                    .map_err(|error| error.to_string())?;
+            }
+            writeln!(
+                output,
+                "summary\t{}\t\timages\t\t\t{}\timages\t",
+                index.name,
+                images.len()
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        let settings = IndexSettings::compile(request.settings)?;
+        let mode = match request.action {
+            MirrorAction::Sync => MirrorMode::Sync,
+            MirrorAction::Verify => MirrorMode::Verify,
+            MirrorAction::Plan => unreachable!(),
+        };
+        let rows = mirror(&state.serving, index, settings, &images, mode)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut errors = 0_u64;
+        for row in rows {
+            errors += u64::from(row.status == "error");
+            writeln!(
+                output,
+                "{}\t{}\t{}\t{}\t{}\t\t{}\t{}\t{}",
+                row.kind, row.repo, row.reference, row.reference, row.digest, row.bytes, row.status, row.reason
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if errors == 0 {
+            Ok(())
+        } else {
+            Err(format!("mirror found {errors} error(s)"))
+        }
+    }
+}
+
+fn table_strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
+    table.get(key).map_or(Ok(Vec::new()), |value| {
+        value
+            .as_array()
+            .ok_or_else(|| format!("{key} must be an array"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("{key} entries must be strings"))
+            })
+            .collect()
+    })
 }
 
 /// Wire the OCI registry driver into a freshly built [`AppState`], with each OCI index's compiled
@@ -103,3 +287,4 @@ pub fn install(
 ) {
     OciInstaller::new(settings, journal_outbox).install(state);
 }
+mod upload_session;

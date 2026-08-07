@@ -101,14 +101,14 @@ mod tests {
     #[test]
     fn test_registry_falls_back_to_the_neutral_lexicon() {
         let registry = LexiconRegistry::default();
-        assert_eq!(registry.get(Ecosystem::Oci).server, "index");
+        assert_eq!(registry.get(Ecosystem::new("other")).server, "index");
     }
 
     #[test]
     fn test_registry_returns_the_registered_lexicon() {
         let mut registry = LexiconRegistry::default();
-        registry.register(Ecosystem::Oci, &DOCKER);
-        assert_eq!(registry.get(Ecosystem::Oci).collection, "repository");
-        assert_eq!(registry.get(Ecosystem::Pypi).collection, "project");
+        registry.register(Ecosystem::new("other"), &DOCKER);
+        assert_eq!(registry.get(Ecosystem::new("other")).collection, "repository");
+        assert_eq!(registry.get(Ecosystem::new("example")).collection, "project");
     }
 }

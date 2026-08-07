@@ -156,7 +156,7 @@ pub(super) fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: UpstreamClient::new("https://example.test/simple/").unwrap(),
                 offline: false,
@@ -169,7 +169,7 @@ pub(super) fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,
@@ -188,7 +188,7 @@ pub(super) fn two_cached_virtual_state(layers: Vec<usize>) -> (tempfile::TempDir
     let cached = |name: &str| Index {
         name: name.to_owned(),
         route: name.to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: UpstreamClient::new("https://example.test/simple/").unwrap(),
             offline: false,
@@ -204,7 +204,7 @@ pub(super) fn two_cached_virtual_state(layers: Vec<usize>) -> (tempfile::TempDir
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual { layers, upload: None },
         },
     ];

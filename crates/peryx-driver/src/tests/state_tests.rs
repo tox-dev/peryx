@@ -126,7 +126,7 @@ fn route_index(name: &str, route: &str, kind: IndexKind) -> Index {
     Index {
         name: name.to_owned(),
         route: route.to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind,
         policy: Policy::default(),
         acl: IndexAcl::default(),
@@ -228,13 +228,10 @@ fn test_write_ack_defaults_to_local_and_takes_the_installed_quorum() {
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::new(meta, blobs, 60, Vec::new());
-    assert_eq!(state.write_ack_policy(), peryx_replication::DurabilityPolicy::Local);
+    assert_eq!(state.write_ack_policy(), peryx_ha::DurabilityPolicy::Local);
     assert_eq!(state.write_ack_deadline(), std::time::Duration::from_secs(5));
 
-    state.set_write_ack(
-        peryx_replication::DurabilityPolicy::Majority,
-        std::time::Duration::from_secs(30),
-    );
-    assert_eq!(state.write_ack_policy(), peryx_replication::DurabilityPolicy::Majority);
+    state.set_write_ack(peryx_ha::DurabilityPolicy::Majority, std::time::Duration::from_secs(30));
+    assert_eq!(state.write_ack_policy(), peryx_ha::DurabilityPolicy::Majority);
     assert_eq!(state.write_ack_deadline(), std::time::Duration::from_secs(30));
 }

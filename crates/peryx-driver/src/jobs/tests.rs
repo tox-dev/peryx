@@ -21,7 +21,7 @@ use super::{
     PlacementReconcileJob, PlacementReconcileParameters, PlacementReconciler, ReclamationJob, ReclamationParameters,
     Schedule, ScheduledJob, SearchRebuildJob, run_schedules, scheduled_job, submit_maintenance,
 };
-use crate::serving::{EcosystemDriver, RefreshSweep};
+use crate::serving::{EcosystemDriver, MaintenanceDriver, RefreshSweep};
 use crate::state::{AppState, Clock, ServingState};
 use peryx_search::{IndexerCtx, PackageDocument, PackageIndexer, PackageSource, SearchError};
 
@@ -207,7 +207,7 @@ struct StubDriver {
 impl StubDriver {
     fn new(reclaim: usize, refresh: Result<RefreshSweep, String>) -> Self {
         Self {
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             reclaim,
             refresh,
             scheduled: None,
@@ -256,6 +256,31 @@ impl EcosystemDriver for StubDriver {
     async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
         self.reclaim_calls.fetch_add(1, Ordering::SeqCst);
         self.reclaim
+    }
+
+    async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
+        self.refresh_calls.fetch_add(1, Ordering::SeqCst);
+        self.refresh_started.notify_one();
+        if let Some(hold) = &self.hold {
+            hold.notified().await;
+        }
+        self.refresh.clone()
+    }
+}
+
+#[async_trait]
+impl MaintenanceDriver for StubDriver {
+    fn ecosystem(&self) -> Ecosystem {
+        self.ecosystem
+    }
+
+    async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
+        self.reclaim_calls.fetch_add(1, Ordering::SeqCst);
+        self.reclaim
+    }
+
+    async fn finalize_admitted(&self, _state: Arc<ServingState>) -> u64 {
+        0
     }
 
     async fn refresh_stale(&self, _state: Arc<ServingState>) -> Result<RefreshSweep, String> {
@@ -930,7 +955,7 @@ async fn test_maintenance_reclaims_then_refreshes_and_reports_the_sweep() {
     );
     assert_eq!(reclaim_calls.load(Ordering::SeqCst), 1);
     assert_eq!(job.kind(), CACHE_MAINTENANCE);
-    assert_eq!(job.scope(), "pypi");
+    assert_eq!(job.scope(), "example");
     assert_eq!(job.persist_as(), Some(JobKind::CacheRefresh));
 }
 
@@ -987,7 +1012,8 @@ async fn test_submit_maintenance_runs_one_job_per_driver_and_records_it() {
     let mut state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock);
     let driver = Arc::new(StubDriver::new(1, Ok(RefreshSweep { checked: 2, changed: 1 })));
     let refresh_started = driver.refresh_started.clone();
-    state.register_ecosystem(driver, Arc::new(peryx_search::EmptyIndexer));
+    state.register_ecosystem(driver.clone(), Arc::new(peryx_search::EmptyIndexer));
+    state.register_maintenance_driver(Ecosystem::new("example"), driver);
     let scheduler = JobScheduler::new(state.serving.clone(), JobLimits::node_local());
     submit_maintenance(&state, &scheduler);
     refresh_started.notified().await;
@@ -995,7 +1021,7 @@ async fn test_submit_maintenance_runs_one_job_per_driver_and_records_it() {
     let runs = job_runs(&state.serving.meta);
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].kind, JobKind::CacheRefresh);
-    assert_eq!(runs[0].scope, "pypi");
+    assert_eq!(runs[0].scope, "example");
     assert_eq!(runs[0].state, JobState::Succeeded);
     assert_eq!(runs[0].items_processed, 2);
     assert_eq!(runs[0].items_changed, 1);
@@ -1032,7 +1058,7 @@ struct NoScheduledJobsDriver;
 #[async_trait]
 impl EcosystemDriver for NoScheduledJobsDriver {
     fn ecosystem(&self) -> Ecosystem {
-        Ecosystem::Pypi
+        Ecosystem::new("example")
     }
 
     fn classify_route(&self, _path: &str) -> crate::rate_limit::RouteClass {
@@ -1156,7 +1182,8 @@ fn scheduled_app(driver: Arc<StubDriver>) -> (tempfile::TempDir, Arc<AppState>) 
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let clock: Clock = Arc::new(|| 1_000);
     let mut state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock);
-    state.register_ecosystem(driver, Arc::new(peryx_search::EmptyIndexer));
+    state.register_ecosystem(driver.clone(), Arc::new(peryx_search::EmptyIndexer));
+    state.register_maintenance_driver(Ecosystem::new("example"), driver);
     (dir, Arc::new(state))
 }
 
@@ -1640,6 +1667,7 @@ async fn test_a_schedule_fires_its_job_when_the_interval_elapses() {
     tokio::spawn(
         run_schedules(app, scheduler.clone(), cache_schedule(60), cancel.clone()).with_subscriber(test_subscriber()),
     );
+    tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_mins(1)).await;
     refresh_started.notified().await;
@@ -1663,6 +1691,7 @@ async fn test_a_schedule_fires_again_on_each_interval() {
         cache_schedule(60),
         cancel.clone(),
     ));
+    tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_mins(1)).await;
     refresh_started.notified().await;
@@ -1688,6 +1717,7 @@ async fn test_a_schedule_that_wakes_late_does_not_replay_missed_runs() {
         cache_schedule(60),
         cancel.clone(),
     ));
+    tokio::task::yield_now().await;
 
     // Jump past three intervals in one step: the misfire policy collapses the missed runs into a
     // single fire rather than replaying a backlog.
@@ -1721,6 +1751,7 @@ async fn test_a_tick_overlapping_a_running_job_is_skipped() {
         cache_schedule(60),
         cancel.clone(),
     ));
+    tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_mins(1)).await;
     refresh_started.notified().await;

@@ -165,27 +165,27 @@ fn test_listener_rejects_unsafe_or_malformed_tables(#[case] text: &str, #[case] 
 #[test]
 fn test_write_ack_defaults_to_local_durability_under_none() {
     let write_ack = Config::default().write_ack;
-    assert_eq!(write_ack.policy, peryx_replication::DurabilityPolicy::Local);
+    assert_eq!(write_ack.policy, peryx_ha_distributed::DurabilityPolicy::Local);
     assert_eq!(write_ack.deadline, Duration::from_secs(5));
 
     let explicit = toml_config("[availability]\nmode = \"none\"\n").write_ack;
-    assert_eq!(explicit.policy, peryx_replication::DurabilityPolicy::Local);
+    assert_eq!(explicit.policy, peryx_ha_distributed::DurabilityPolicy::Local);
 }
 
 #[test]
 fn test_write_ack_defaults_to_a_majority_quorum_under_dc() {
     let write_ack = toml_config(DC_PRIMARY).write_ack;
-    assert_eq!(write_ack.policy, peryx_replication::DurabilityPolicy::Majority);
+    assert_eq!(write_ack.policy, peryx_ha_distributed::DurabilityPolicy::Majority);
     assert_eq!(write_ack.deadline, Duration::from_secs(5));
 }
 
 #[rstest]
-#[case::local("local", peryx_replication::DurabilityPolicy::Local)]
-#[case::majority("majority", peryx_replication::DurabilityPolicy::Majority)]
-#[case::everywhere("everywhere", peryx_replication::DurabilityPolicy::Everywhere)]
+#[case::local("local", peryx_ha_distributed::DurabilityPolicy::Local)]
+#[case::majority("majority", peryx_ha_distributed::DurabilityPolicy::Majority)]
+#[case::everywhere("everywhere", peryx_ha_distributed::DurabilityPolicy::Everywhere)]
 fn test_write_ack_resolves_the_configured_quorum(
     #[case] policy: &str,
-    #[case] expected: peryx_replication::DurabilityPolicy,
+    #[case] expected: peryx_ha_distributed::DurabilityPolicy,
 ) {
     let text = format!("{DC_PRIMARY}[availability.write_ack]\npolicy = \"{policy}\"\ndeadline-secs = 30\n");
     let write_ack = toml_config(&text).write_ack;

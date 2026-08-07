@@ -70,7 +70,7 @@ async fn test_longest_prefix_wins() {
             route: "a".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
         },
         Index {
@@ -78,7 +78,7 @@ async fn test_longest_prefix_wins() {
             route: "a/b".to_owned(),
             policy: Policy::default(),
             acl: crate::tests::writer_acl("s3cret".to_owned()),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
         },
     ];

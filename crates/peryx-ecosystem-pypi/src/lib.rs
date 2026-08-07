@@ -7,6 +7,131 @@ use std::sync::Arc;
 
 use peryx_core::{Ecosystem, EcosystemInstaller, Lexicon};
 use peryx_driver::AppState;
+use peryx_driver::serving::{CompiledEcosystemSettings, EcosystemCapability, EcosystemDriver, EcosystemPlugin};
+
+/// Stable identity of the Python package ecosystem.
+pub const ECOSYSTEM: Ecosystem = Ecosystem::new("pypi");
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
+#[group(id = "pypi_mirror_options")]
+pub struct MirrorOptions {
+    /// Add a package selector such as `requests>=2,<3`.
+    #[arg(long = "package", short = 'p')]
+    pub packages: Vec<String>,
+
+    /// Read package selectors from a requirements or constraints file.
+    #[arg(long = "requirements", short = 'r')]
+    pub requirements: Vec<std::path::PathBuf>,
+
+    /// Override the configured selection mode.
+    #[arg(long, value_enum)]
+    pub mode: Option<MirrorMode>,
+
+    /// Fetch Simple pages and metadata, but skip artifacts.
+    #[arg(long)]
+    pub metadata_only: bool,
+
+    /// Exclude wheel artifacts.
+    #[arg(long)]
+    pub no_wheels: bool,
+
+    /// Exclude source distributions.
+    #[arg(long)]
+    pub no_sdists: bool,
+
+    /// Keep only wheels with this Python tag.
+    #[arg(long = "python-tag")]
+    pub python_tags: Vec<String>,
+
+    /// Keep only wheels with this ABI tag.
+    #[arg(long = "abi-tag")]
+    pub abi_tags: Vec<String>,
+
+    /// Keep only wheels with this platform tag.
+    #[arg(long = "platform-tag")]
+    pub platform_tags: Vec<String>,
+
+    /// Skip files larger than this many bytes when size metadata is available.
+    #[arg(long)]
+    pub max_file_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MirrorMode {
+    All,
+    Selected,
+    MetadataOnly,
+}
+
+impl MirrorOptions {
+    #[must_use]
+    pub fn overrides(&self) -> toml::Table {
+        let mut options = toml::Table::from_iter([
+            ("packages".to_owned(), strings(&self.packages)),
+            (
+                "requirements".to_owned(),
+                toml::Value::Array(
+                    self.requirements
+                        .iter()
+                        .map(|path| toml::Value::String(path.display().to_string()))
+                        .collect(),
+                ),
+            ),
+            ("metadata_only".to_owned(), toml::Value::Boolean(self.metadata_only)),
+            ("no_wheels".to_owned(), toml::Value::Boolean(self.no_wheels)),
+            ("no_sdists".to_owned(), toml::Value::Boolean(self.no_sdists)),
+            ("python_tags".to_owned(), strings(&self.python_tags)),
+            ("abi_tags".to_owned(), strings(&self.abi_tags)),
+            ("platform_tags".to_owned(), strings(&self.platform_tags)),
+        ]);
+        if let Some(mode) = self.mode {
+            options.insert(
+                "mode".to_owned(),
+                toml::Value::String(format!("{mode:?}").to_ascii_lowercase()),
+            );
+        }
+        if let Some(maximum) = self.max_file_size_bytes {
+            options.insert(
+                "max_file_size_bytes".to_owned(),
+                toml::Value::String(maximum.to_string()),
+            );
+        }
+        options
+    }
+}
+
+fn strings(values: &[String]) -> toml::Value {
+    toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect())
+}
+
+pub const DEFAULT_INDEXES: &[peryx_ecosystem_contract::DefaultIndex] = &[
+    peryx_ecosystem_contract::DefaultIndex {
+        name: "pypi",
+        route: "pypi",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_ecosystem_contract::DefaultIndexKind::Cached {
+            upstream: "https://pypi.org/simple/",
+        },
+    },
+    peryx_ecosystem_contract::DefaultIndex {
+        name: "hosted",
+        route: "hosted",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_ecosystem_contract::DefaultIndexKind::Hosted,
+    },
+    peryx_ecosystem_contract::DefaultIndex {
+        name: "root/pypi",
+        route: "root/pypi",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_ecosystem_contract::DefaultIndexKind::Virtual {
+            layers: &["hosted", "pypi"],
+            upload: "hosted",
+        },
+    },
+];
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PypiPlugin;
 
 #[cfg(feature = "serving")]
 mod admin;
@@ -37,6 +162,8 @@ mod legacy_json;
 #[cfg(feature = "serving")]
 mod license;
 mod metadata;
+#[cfg(feature = "serving")]
+mod mirror;
 mod name;
 #[cfg(feature = "serving")]
 pub mod openapi;
@@ -123,10 +250,78 @@ pub fn install(state: &mut peryx_driver::AppState) {
 #[cfg(feature = "serving")]
 impl EcosystemInstaller<AppState> for PypiServing {
     fn register_driver(&self, state: &mut AppState) {
-        state.register_ecosystem(Arc::new(*self), Arc::new(PypiIndexer));
+        let driver = Arc::new(*self);
+        state.register_ecosystem(driver.clone(), Arc::new(PypiIndexer));
+        state.register_maintenance_driver(ECOSYSTEM, driver.clone());
+        state.register_replicated_apply_driver(ECOSYSTEM, driver);
+        state.register_mirror_driver(ECOSYSTEM, Arc::new(Self));
         // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
         // lexicon is the neutral one; a future divergence would give this crate its own constant.
-        state.register_lexicon(Ecosystem::Pypi, &Lexicon::NEUTRAL);
+        state.register_lexicon(ECOSYSTEM, &Lexicon::NEUTRAL);
+    }
+}
+
+#[cfg(feature = "serving")]
+impl EcosystemPlugin for PypiPlugin {
+    fn ecosystem(&self) -> Ecosystem {
+        ECOSYSTEM
+    }
+
+    fn default_indexes(&self) -> &'static [peryx_ecosystem_contract::DefaultIndex] {
+        DEFAULT_INDEXES
+    }
+
+    fn driver(&self) -> Arc<dyn EcosystemDriver> {
+        Arc::new(PypiServing)
+    }
+
+    fn compile_index_settings(
+        &self,
+        name: &str,
+        settings: &toml::Table,
+    ) -> Result<Option<CompiledEcosystemSettings>, String> {
+        settings.keys().next().map_or(Ok(None), |key| {
+            Err(format!(
+                "compile settings for {name}: unknown field `{key}` in `[index.settings]`"
+            ))
+        })
+    }
+
+    fn install(
+        &self,
+        state: &mut AppState,
+        _settings: &[(&str, &CompiledEcosystemSettings)],
+        _distributed: bool,
+    ) -> Result<(), String> {
+        PypiServing.install(state);
+        Ok(())
+    }
+
+    fn supports(&self, capability: EcosystemCapability) -> bool {
+        matches!(
+            capability,
+            EcosystemCapability::CatalogSync | EcosystemCapability::TrustedPublishing
+        )
+    }
+
+    fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
+        openapi::openapi_paths(paths)
+    }
+
+    fn snippet_text(
+        &self,
+        base: &peryx_driver::discovery::BaseUrl,
+        route: &str,
+        uploads: bool,
+        format: &str,
+    ) -> Result<Option<String>, String> {
+        let kind = match format {
+            "pip.conf" => discovery::SnippetKind::PipConf,
+            "uv.toml" => discovery::SnippetKind::UvToml,
+            ".pypirc" => discovery::SnippetKind::Pypirc,
+            _ => return Err(format!("unknown snippet format {format:?}")),
+        };
+        Ok(discovery::snippet_text(base, route, uploads, kind))
     }
 }
 

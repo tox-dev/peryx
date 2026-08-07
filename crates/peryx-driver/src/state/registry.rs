@@ -28,6 +28,33 @@ impl AppState {
         self.lexicons.register(ecosystem, lexicon);
     }
 
+    /// Register a maintenance capability for one ecosystem.
+    pub fn register_maintenance_driver(
+        &mut self,
+        ecosystem: Ecosystem,
+        driver: Arc<dyn crate::serving::MaintenanceDriver>,
+    ) {
+        self.maintenance_drivers.insert(ecosystem, driver);
+    }
+
+    /// Register a replicated-view apply capability for one ecosystem.
+    pub fn register_replicated_apply_driver(
+        &mut self,
+        ecosystem: Ecosystem,
+        driver: Arc<dyn crate::serving::ReplicatedApplyDriver>,
+    ) {
+        self.replicated_apply_drivers.insert(ecosystem, driver);
+    }
+
+    pub fn register_mirror_driver(&mut self, ecosystem: Ecosystem, driver: Arc<dyn crate::serving::MirrorDriver>) {
+        self.mirror_drivers.insert(ecosystem, driver);
+    }
+
+    #[must_use]
+    pub fn mirror_driver_for(&self, ecosystem: Ecosystem) -> Option<&Arc<dyn crate::serving::MirrorDriver>> {
+        self.mirror_drivers.get(&ecosystem)
+    }
+
     /// Keep invalidation state in [`PackageSearch`](peryx_search::PackageSearch); borrow only indexer
     /// data and vocabularies for each request.
     #[must_use]
@@ -46,19 +73,19 @@ impl AppState {
         driver: Arc<dyn crate::serving::EcosystemDriver>,
         indexer: Arc<dyn peryx_search::PackageIndexer>,
     ) {
-        let slot = driver.ecosystem().slot();
+        let ecosystem = driver.ecosystem();
         if let crate::serving::RouteMount::Absolute(prefixes) = driver.mount() {
             self.absolute_prefixes
-                .extend(prefixes.iter().map(|&prefix| (prefix, slot)));
+                .extend(prefixes.iter().map(|&prefix| (prefix, ecosystem)));
         }
-        self.drivers[slot] = Some(driver);
+        self.drivers.insert(ecosystem, driver);
         self.serving_mut().search.add_indexer(indexer);
     }
 
     /// The driver serving `ecosystem`, or `None` when none is installed for it.
     #[must_use]
     pub fn driver_for(&self, ecosystem: Ecosystem) -> Option<&Arc<dyn crate::serving::EcosystemDriver>> {
-        self.drivers[ecosystem.slot()].as_ref()
+        self.drivers.get(&ecosystem)
     }
 
     /// Per-index activity (project/upload counts and recent uploads) for the status page and
@@ -86,14 +113,24 @@ impl AppState {
 
     /// Every installed driver, in ecosystem declaration order.
     pub fn drivers(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::EcosystemDriver>> {
-        self.drivers.iter().flatten()
+        self.drivers.values()
+    }
+
+    /// Maintenance-capable drivers, in ecosystem declaration order.
+    pub fn maintenance_drivers(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::MaintenanceDriver>> {
+        self.maintenance_drivers.values()
+    }
+
+    /// Replication-view drivers, in ecosystem declaration order.
+    pub fn replicated_apply_drivers(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::ReplicatedApplyDriver>> {
+        self.replicated_apply_drivers.values()
     }
 
     /// Whether any ecosystem driver at all has been wired in. A process with none serves `503` rather
     /// than quietly answering nothing.
     #[must_use]
     pub fn has_any_driver(&self) -> bool {
-        self.drivers.iter().any(Option::is_some)
+        !self.drivers.is_empty()
     }
 
     /// Unique access to the serving state during build, before any handler holds a clone. Installing
@@ -107,18 +144,18 @@ impl AppState {
     /// no such prefix and the per-index router handles it.
     #[must_use]
     pub fn absolute_driver_for_path(&self, path: &str) -> Option<&Arc<dyn crate::serving::EcosystemDriver>> {
-        let slot = self
+        let ecosystem = self
             .absolute_prefixes
             .iter()
-            .find_map(|&(prefix, slot)| path.starts_with(prefix).then_some(slot))?;
-        self.drivers[slot].as_ref()
+            .find_map(|&(prefix, ecosystem)| path.starts_with(prefix).then_some(ecosystem))?;
+        self.drivers.get(&ecosystem)
     }
 
     /// The absolute top-level prefixes each with its driver, for the router to mount catch-alls under.
     pub fn absolute_mounts(&self) -> impl Iterator<Item = (&'static str, &Arc<dyn crate::serving::EcosystemDriver>)> {
         self.absolute_prefixes
             .iter()
-            .filter_map(|&(prefix, slot)| Some((prefix, self.drivers[slot].as_ref()?)))
+            .filter_map(|&(prefix, ecosystem)| Some((prefix, self.drivers.get(&ecosystem)?)))
     }
 
     /// The driver serving the ecosystem named `ecosystem`, so `/+api` renders that index's setup.
@@ -156,38 +193,35 @@ impl AppState {
     /// Install the fixed availability topology the binary resolved from configuration, so the topology
     /// snapshot endpoint reports the group without reading configuration at request time.
     pub fn set_availability_topology(&mut self, topology: peryx_core::TopologyConfig) {
-        self.serving_mut().availability_topology = topology;
+        self.serving_mut().enable_distributed().topology = topology;
     }
 
     /// Install the resolved hosted-write acknowledgement quorum and client deadline.
-    pub fn set_write_ack(&mut self, policy: peryx_replication::DurabilityPolicy, deadline: std::time::Duration) {
-        let serving = self.serving_mut();
-        serving.write_ack_policy = policy;
-        serving.write_ack_deadline = deadline;
+    pub fn set_write_ack(&mut self, policy: peryx_ha::DurabilityPolicy, deadline: std::time::Duration) {
+        let availability = self.serving_mut().enable_distributed();
+        availability.write_ack_policy = policy;
+        availability.write_ack_deadline = deadline;
     }
 
     /// Install the same-datacenter peers a filesystem write gathers placement receipts from, so a
     /// multi-node-DC quorum resolves from real evidence rather than the local receipt alone.
-    pub fn set_receipt_sources(
-        &mut self,
-        sources: Vec<std::sync::Arc<dyn peryx_replication::ReceiptSource + Send + Sync>>,
-    ) {
-        self.serving_mut().receipt_sources = sources;
+    pub fn set_receipt_sources(&mut self, sources: Vec<std::sync::Arc<dyn peryx_ha::ReceiptSource + Send + Sync>>) {
+        self.serving_mut().enable_distributed().receipt_sources = sources;
     }
 
     /// Install the eligible remote datacenters an `ha` write gathers metadata acknowledgements from, so
     /// its metadata dimension resolves from a remote commit rather than the local journal alone.
     pub fn set_remote_frontier_sources(
         &mut self,
-        sources: Vec<std::sync::Arc<dyn peryx_replication::RemoteFrontierSource + Send + Sync>>,
+        sources: Vec<std::sync::Arc<dyn peryx_ha::RemoteFrontierSource + Send + Sync>>,
     ) {
-        self.serving_mut().remote_frontier_sources = sources;
+        self.serving_mut().enable_distributed().remote_frontier_sources = sources;
     }
 
     /// Install the authority role the binary resolved from the configured replication role, so the
     /// topology snapshot reports a configured primary as the writer even when it serves read-only.
     pub fn set_availability_role(&mut self, role: peryx_core::NodeRole) {
-        self.serving_mut().availability_role = role;
+        self.serving_mut().enable_distributed().role = role;
     }
 
     /// Install named LDAP login services after their secrets and trust files resolve at startup.

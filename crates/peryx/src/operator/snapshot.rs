@@ -1,7 +1,7 @@
 //! Config snapshot serialization for backup manifests.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ipnet::IpNet;
 use peryx_core::Ecosystem;
@@ -17,8 +17,7 @@ use toml::{Table, Value};
 use crate::config::{
     AcmeConfig, AuthConfig, AvailabilityConfig, Config, CredentialFailureMode, CredentialRefreshConfig, IndexConfig,
     IndexKind, JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig, LogConfig, LogFormat, LogSink,
-    OidcProviderConfig, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig, TokenConfig,
-    WebhookConfig, WebhookSecret,
+    OidcProviderConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
 };
 
 #[derive(Serialize)]
@@ -104,7 +103,7 @@ enum SnapshotIndexKind<'a> {
         pins: &'a std::collections::BTreeMap<String, String>,
         upstream_concurrency: usize,
         offline: bool,
-        prefetch: SnapshotPrefetch<'a>,
+        prefetch: &'a Table,
     },
     Hosted {
         hosted: bool,
@@ -165,21 +164,6 @@ struct SnapshotCredentialExec<'a> {
     timeout_secs: u64,
     environment: &'a [String],
     failure: &'static str,
-}
-
-#[derive(Serialize)]
-struct SnapshotPrefetch<'a> {
-    mode: &'static str,
-    packages: &'a [String],
-    requirements: &'a [PathBuf],
-    include_wheels: bool,
-    include_sdists: bool,
-    python_tags: &'a [String],
-    abi_tags: &'a [String],
-    platform_tags: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_file_size_bytes: Option<u64>,
-    metadata_only: bool,
 }
 
 #[derive(Serialize)]
@@ -658,7 +642,7 @@ fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {
             pins: &routing.pins,
             upstream_concurrency: *upstream_concurrency,
             offline: *offline,
-            prefetch: snapshot_prefetch(prefetch),
+            prefetch: &prefetch.options,
         },
         IndexKind::Hosted { volatile } => SnapshotIndexKind::Hosted {
             hosted: true,
@@ -724,33 +708,6 @@ const fn snapshot_credential_refresh(refresh: CredentialRefreshConfig) -> Snapsh
             CredentialFailureMode::Fail => "fail",
             CredentialFailureMode::Anonymous => "anonymous",
         },
-    }
-}
-
-fn snapshot_prefetch(prefetch: &PrefetchConfig) -> SnapshotPrefetch<'_> {
-    let PrefetchConfig {
-        mode,
-        packages,
-        requirements,
-        include_wheels,
-        include_sdists,
-        python_tags,
-        abi_tags,
-        platform_tags,
-        max_file_size_bytes,
-        metadata_only,
-    } = prefetch;
-    SnapshotPrefetch {
-        mode: prefetch_mode(*mode),
-        packages,
-        requirements,
-        include_wheels: *include_wheels,
-        include_sdists: *include_sdists,
-        python_tags,
-        abi_tags,
-        platform_tags,
-        max_file_size_bytes: *max_file_size_bytes,
-        metadata_only: *metadata_only,
     }
 }
 
@@ -909,14 +866,6 @@ fn secret_parts(source: Option<&SecretSource>) -> (Option<&str>, Option<&Path>, 
         Some(SecretSource::File(path)) => (None, Some(path), None),
         Some(SecretSource::Env(var)) => (None, None, Some(var)),
         None => (None, None, None),
-    }
-}
-
-const fn prefetch_mode(mode: PrefetchMode) -> &'static str {
-    match mode {
-        PrefetchMode::All => "all",
-        PrefetchMode::Selected => "selected",
-        PrefetchMode::MetadataOnly => "metadata-only",
     }
 }
 

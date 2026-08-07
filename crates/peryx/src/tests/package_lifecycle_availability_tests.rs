@@ -76,9 +76,9 @@ fn hosted(name: &str, ecosystem: Ecosystem) -> IndexConfig {
 /// hosted `OCI` store.
 fn lifecycle_indexes() -> Vec<IndexConfig> {
     vec![
-        hosted("staging", Ecosystem::Pypi),
-        hosted("prod", Ecosystem::Pypi),
-        hosted("images", Ecosystem::Oci),
+        hosted("staging", peryx_ecosystem_registry::PYPI),
+        hosted("prod", peryx_ecosystem_registry::PYPI),
+        hosted("images", peryx_ecosystem_registry::OCI),
     ]
 }
 
@@ -215,7 +215,7 @@ fn writer_node(config: &Config) -> (Arc<AppState>, Router) {
 /// which is still uniquely owned before the router clones it.
 fn writer_node_with_remotes(
     config: &Config,
-    remotes: Vec<Arc<dyn peryx_replication::RemoteFrontierSource + Send + Sync>>,
+    remotes: Vec<Arc<dyn peryx_ha_distributed::RemoteFrontierSource + Send + Sync>>,
 ) -> (Arc<AppState>, Router) {
     let mut state = build_state(config).unwrap();
     Arc::get_mut(&mut state)
@@ -442,7 +442,7 @@ async fn test_ha_publish_waits_on_a_covering_remote_metadata_frontier() {
     let dir = tempfile::tempdir().unwrap();
     // With no ownership group, the committed authority epoch is 0; a frontier at the ceiling covers any
     // serial the store commits, so this remote holds every operation the write can produce.
-    let remote = peryx_replication::LoopbackRemoteFrontierSource::reporting("west-1", 0, u64::MAX);
+    let remote = peryx_ha_distributed::LoopbackRemoteFrontierSource::reporting("west-1", 0, u64::MAX);
     let (_state, router) = writer_node_with_remotes(&ha_writer_config(&dir), vec![Arc::new(remote)]);
 
     assert_eq!(

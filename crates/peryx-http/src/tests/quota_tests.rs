@@ -126,7 +126,7 @@ fn indexes() -> Vec<Index> {
         Index {
             name: "private".to_owned(),
             route: "root/private".to_owned(),
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             kind: IndexKind::Hosted { volatile: false },
             policy: limited_policy(),
             acl: IndexAcl {
@@ -146,7 +146,7 @@ fn unlimited(name: &str, route: &str) -> Index {
     Index {
         name: name.to_owned(),
         route: route.to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl {

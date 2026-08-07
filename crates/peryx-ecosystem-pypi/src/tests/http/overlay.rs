@@ -43,7 +43,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -56,7 +56,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             route: "hosted".to_owned(),
             policy: Policy::default(),
             acl: crate::tests::writer_acl("s3cret".to_owned()),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
         },
         Index {
@@ -64,7 +64,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![1, 0],
                 upload: Some(1),
@@ -105,7 +105,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -118,7 +118,7 @@ async fn test_overlay_without_upload_layer_serves_merged_page() {
             route: "ov".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,

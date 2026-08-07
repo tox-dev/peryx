@@ -7,10 +7,10 @@ use peryx_driver::state::{
     CommandOutcome, ControlCommand, ControlError, HomeClaim, MembershipControl as _, OwnershipAuthority as _,
     OwnershipError, TransferOutcome,
 };
-use peryx_replication::DatacenterId;
-use peryx_replication::raft::log_store::RaftLogStoreAdapter;
-use peryx_replication::raft::network::PeerRaftNetworkFactory;
-use peryx_replication::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
+use peryx_ha_distributed::DatacenterId;
+use peryx_ha_distributed::raft::log_store::RaftLogStoreAdapter;
+use peryx_ha_distributed::raft::network::PeerRaftNetworkFactory;
+use peryx_ha_distributed::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
 use peryx_storage::raft::RaftLogStore;
 use tempfile::TempDir;
 

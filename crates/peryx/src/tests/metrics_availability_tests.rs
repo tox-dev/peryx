@@ -49,7 +49,7 @@ const GENERAL_SERIES: &str = "peryx_requests_total";
 /// The datacenter durability series a `dc`/`ha` node exports and a `none` node does not.
 const DURABILITY_SERIES: &str = "peryx_dc_ack_durable_total";
 /// The replica sync series only a read replica exports.
-const REPLICATION_SERIES: &str = "peryx_replication_serial";
+const REPLICATION_SERIES: &str = "peryx_ha_distributed_serial";
 /// The availability worker series only a read replica exports.
 const AVAILABILITY_SERIES: &str = "peryx_availability_worker_slots";
 

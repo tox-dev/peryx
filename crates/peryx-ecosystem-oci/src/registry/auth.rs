@@ -10,7 +10,6 @@
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{
@@ -49,7 +48,7 @@ fn restricts(state: &ServingState) -> bool {
     state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Oci)
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
         .any(|index| !index.acl.anonymous_read || !index.acl.tokens.is_empty())
 }
 
@@ -115,7 +114,7 @@ fn named_requester<'a>(state: &'a ServingState, header: &'a str) -> Option<Token
     state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Oci)
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
         .find_map(|index| match index.acl.identify(Some(header), now).principal {
             Principal::Named { subject } => Some(TokenRequester {
                 principal: Principal::Named { subject },
@@ -280,7 +279,7 @@ pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Re
 }
 
 fn authorize_catalog_requester(state: &ServingState, requester: &TokenRequester<'_>) -> Result<(), Denial> {
-    for index in state.indexes.iter().filter(|index| index.ecosystem == Ecosystem::Oci) {
+    for index in state.indexes.iter().filter(|index| index.ecosystem == crate::ECOSYSTEM) {
         if index.acl.anonymous_read {
             continue;
         }

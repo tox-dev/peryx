@@ -2,7 +2,7 @@
 
 use clap::{Args, Subcommand};
 
-use super::{EcosystemArg, RuntimeArgs};
+use super::RuntimeArgs;
 
 /// Inspect the configured indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -30,8 +30,8 @@ pub struct IndexListArgs {
     pub runtime: RuntimeArgs,
 
     /// Show only indexes of this ecosystem.
-    #[arg(long, value_enum)]
-    pub ecosystem: Option<EcosystemArg>,
+    #[arg(long)]
+    pub ecosystem: Option<String>,
 }
 
 /// Options for `peryx index show`.

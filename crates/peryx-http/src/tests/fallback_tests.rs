@@ -43,7 +43,7 @@ fn pypi_index(route: &str) -> peryx_driver::state::Index {
     peryx_driver::state::Index {
         name: route.to_owned(),
         route: route.to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::new("example"),
         kind: peryx_driver::state::IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
         acl: IndexAcl::default(),
@@ -171,7 +171,7 @@ async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
     let index = Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
         acl: IndexAcl::default(),
@@ -189,7 +189,7 @@ async fn test_unwired_discovery_renders_a_minimal_entry_per_index() {
     let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let entry = &document["indexes"][0];
     assert_eq!(entry["route"], "pypi");
-    assert_eq!(entry["ecosystem"], "pypi");
+    assert_eq!(entry["ecosystem"], "example");
     assert_eq!(entry["urls"], serde_json::Value::Null);
 }
 
@@ -259,7 +259,11 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
 fn test_a_driver_publishes_no_metric_families_by_default() {
     use peryx_driver::serving::EcosystemDriver as _;
 
-    assert!(StubServing(peryx_core::Ecosystem::Pypi).metric_families().is_empty());
+    assert!(
+        StubServing(peryx_core::Ecosystem::new("example"))
+            .metric_families()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -268,7 +272,11 @@ fn test_a_driver_resolves_no_rate_limit_principal_by_default() {
 
     let (_dir, state) = unwired_state();
     assert_eq!(
-        StubServing(peryx_core::Ecosystem::Pypi).rate_limit_principal(&state, None, &axum::http::HeaderMap::new()),
+        StubServing(peryx_core::Ecosystem::new("example")).rate_limit_principal(
+            &state,
+            None,
+            &axum::http::HeaderMap::new()
+        ),
         peryx_identity::Principal::Anonymous
     );
 }
@@ -279,7 +287,7 @@ async fn test_a_driver_sweeps_nothing_by_default() {
 
     let (_dir, state) = unwired_state();
     assert_eq!(
-        StubServing(peryx_core::Ecosystem::Pypi)
+        StubServing(peryx_core::Ecosystem::new("example"))
             .refresh_stale(state.serving.clone())
             .await
             .unwrap(),
@@ -293,7 +301,7 @@ async fn test_a_driver_reclaims_no_idle_resources_by_default() {
 
     let (_dir, state) = unwired_state();
     assert_eq!(
-        StubServing(peryx_core::Ecosystem::Pypi)
+        StubServing(peryx_core::Ecosystem::new("example"))
             .reclaim_idle(state.serving.clone())
             .await,
         0
@@ -304,8 +312,11 @@ async fn test_a_driver_reclaims_no_idle_resources_by_default() {
 fn test_an_unwired_state_holds_no_driver_for_any_ecosystem() {
     let (_dir, state) = unwired_state();
     assert!(!state.has_any_driver());
-    for ecosystem in peryx_core::Ecosystem::ALL {
-        assert!(state.driver_for(*ecosystem).is_none(), "{ecosystem} was wired in");
+    for ecosystem in [
+        peryx_core::Ecosystem::new("example"),
+        peryx_core::Ecosystem::new("other"),
+    ] {
+        assert!(state.driver_for(ecosystem).is_none(), "{ecosystem} was wired in");
     }
 }
 
@@ -316,7 +327,7 @@ async fn test_post_without_multipart_content_type_is_bad_request() {
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::new(meta, blobs, 60, vec![pypi_index("pypi")]);
     state.register_ecosystem(
-        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::Pypi)),
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::new("example"))),
         std::sync::Arc::new(peryx_search::EmptyIndexer),
     );
 
@@ -339,21 +350,21 @@ async fn test_two_route_mounted_ecosystems_each_serve_their_own_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
-    let mut oci = pypi_index("images");
-    oci.ecosystem = peryx_core::Ecosystem::Oci;
-    let mut state = AppState::new(meta, blobs, 60, vec![pypi_index("pypi"), oci]);
+    let mut other = pypi_index("images");
+    other.ecosystem = peryx_core::Ecosystem::new("other");
+    let mut state = AppState::new(meta, blobs, 60, vec![pypi_index("pypi"), other]);
     // Registering a second driver must not displace the first: each keeps its own slot.
     state.register_ecosystem(
-        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::Pypi)),
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::new("example"))),
         std::sync::Arc::new(peryx_search::EmptyIndexer),
     );
     state.register_ecosystem(
-        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::Oci)),
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::new("other"))),
         std::sync::Arc::new(peryx_search::EmptyIndexer),
     );
     let app = crate::router(std::sync::Arc::new(state));
 
-    for (route, expected) in [("pypi", "pypi"), ("images", "oci")] {
+    for (route, expected) in [("pypi", "example"), ("images", "other")] {
         let response = app
             .clone()
             .oneshot(
@@ -378,7 +389,7 @@ struct BareDriver;
 #[async_trait::async_trait]
 impl peryx_driver::serving::EcosystemDriver for BareDriver {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
-        peryx_core::Ecosystem::Pypi
+        peryx_core::Ecosystem::new("example")
     }
 
     fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {

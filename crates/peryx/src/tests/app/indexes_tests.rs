@@ -1,9 +1,8 @@
-use peryx_ecosystem_pypi::discovery::SnippetKind;
 use rstest::rstest;
 
 use super::*;
 use crate::app::{self, init_data_dir};
-use crate::cli::{EcosystemArg, IndexCommand, IndexListArgs, IndexShowArgs};
+use crate::cli::{IndexCommand, IndexListArgs, IndexShowArgs};
 use crate::config::SecretSource;
 
 #[test]
@@ -60,7 +59,7 @@ fn test_init_logs_both_branches_when_subscriber_enabled() {
     });
 }
 
-fn index_list_command(ecosystem: Option<EcosystemArg>) -> IndexCommand {
+fn index_list_command(ecosystem: Option<String>) -> IndexCommand {
     IndexCommand::List(IndexListArgs {
         runtime: RuntimeArgs::default(),
         ecosystem,
@@ -83,7 +82,7 @@ fn test_index_list_filters_by_ecosystem() {
     let mut out = Vec::new();
     app::index(
         &Config::default(),
-        &index_list_command(Some(EcosystemArg::Pypi)),
+        &index_list_command(Some("pypi".to_owned())),
         &mut out,
     )
     .unwrap();
@@ -173,7 +172,7 @@ fn test_config_snippet_renders_pip_conf() {
         &Config::default(),
         "root/pypi",
         "https://packages.example/cache",
-        peryx_ecosystem_pypi::discovery::SnippetKind::PipConf,
+        "pip.conf",
     )
     .unwrap();
     assert_eq!(
@@ -189,13 +188,7 @@ fn test_config_snippet_redacts_upload_token() {
         .tokens
         .push(crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned())));
 
-    let text = app::config_snippet(
-        &config,
-        "root/pypi",
-        "https://packages.example",
-        peryx_ecosystem_pypi::discovery::SnippetKind::Pypirc,
-    )
-    .unwrap();
+    let text = app::config_snippet(&config, "root/pypi", "https://packages.example", ".pypirc").unwrap();
 
     assert_eq!(
         text,
@@ -210,13 +203,7 @@ fn test_config_snippet_renders_uv_toml_with_upload_url() {
         .tokens
         .push(crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned())));
 
-    let text = app::config_snippet(
-        &config,
-        "root/pypi",
-        "https://packages.example",
-        peryx_ecosystem_pypi::discovery::SnippetKind::UvToml,
-    )
-    .unwrap();
+    let text = app::config_snippet(&config, "root/pypi", "https://packages.example", "uv.toml").unwrap();
 
     assert_eq!(
         text,
@@ -225,16 +212,16 @@ fn test_config_snippet_renders_uv_toml_with_upload_url() {
 }
 
 #[rstest]
-#[case::pypirc_for_read_only_index("pypi", "https://packages.example", SnippetKind::Pypirc, "does not accept uploads")]
-#[case::invalid_base_url("root/pypi", "not a url", SnippetKind::PipConf, "base URL")]
-#[case::unknown_index_route("missing", "https://packages.example", SnippetKind::PipConf, "unknown index route")]
+#[case::pypirc_for_read_only_index("pypi", "https://packages.example", ".pypirc", "does not accept uploads")]
+#[case::invalid_base_url("root/pypi", "not a url", "pip.conf", "base URL")]
+#[case::unknown_index_route("missing", "https://packages.example", "pip.conf", "unknown index route")]
 fn test_config_snippet_rejects(
     #[case] route: &str,
     #[case] base_url: &str,
-    #[case] kind: SnippetKind,
+    #[case] format: &str,
     #[case] expected: &str,
 ) {
-    let err = app::config_snippet(&Config::default(), route, base_url, kind).unwrap_err();
+    let err = app::config_snippet(&Config::default(), route, base_url, format).unwrap_err();
     assert!(err.to_string().contains(expected));
 }
 
@@ -242,12 +229,6 @@ fn test_config_snippet_rejects(
 fn test_config_snippet_rejects_invalid_index_configuration() {
     let mut config = Config::default();
     config.indexes[1].route = config.indexes[0].route.clone();
-    let err = app::config_snippet(
-        &config,
-        "root/pypi",
-        "https://packages.example",
-        peryx_ecosystem_pypi::discovery::SnippetKind::PipConf,
-    )
-    .unwrap_err();
+    let err = app::config_snippet(&config, "root/pypi", "https://packages.example", "pip.conf").unwrap_err();
     assert!(err.to_string().contains("duplicate index route"));
 }

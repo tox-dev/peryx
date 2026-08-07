@@ -131,7 +131,7 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,

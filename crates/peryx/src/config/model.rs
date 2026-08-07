@@ -10,11 +10,11 @@ use std::time::Duration;
 use peryx_core::Ecosystem;
 use peryx_driver::jobs::{MAINTENANCE_INTERVAL, Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
-use peryx_driver::read_through::ReadThroughLimits;
+use peryx_ha_distributed::DurabilityPolicy;
+use peryx_ha_distributed::read_through::ReadThroughLimits;
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_identity::{Action, ExternalGroupGrant, Glob, Grant, IndexAcl, NamedToken, ProviderId};
 use peryx_policy::PolicyConfig;
-use peryx_replication::DurabilityPolicy;
 use peryx_storage::blob::{DurabilityCapabilities, DurabilityRequirement};
 use peryx_upstream::ExecCredentialConfig;
 use serde::Deserialize;
@@ -230,6 +230,30 @@ impl AvailabilityMode {
             Self::Dc | Self::Ha => DurabilityRequirement::REPLICATED,
         }
     }
+
+    /// `true` only for the explicit single-node mode.
+    #[must_use]
+    pub const fn is_single_node(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// `true` for `dc` and `ha`, the two replicated modes.
+    #[must_use]
+    pub const fn is_distributed(self) -> bool {
+        matches!(self, Self::Dc | Self::Ha)
+    }
+
+    /// `true` only under `dc`.
+    #[must_use]
+    pub const fn is_dc(self) -> bool {
+        matches!(self, Self::Dc)
+    }
+
+    /// `true` only under `ha`.
+    #[must_use]
+    pub const fn is_ha(self) -> bool {
+        matches!(self, Self::Ha)
+    }
 }
 
 /// The resolved `[availability]` table: the selected mode and its topology.
@@ -252,6 +276,48 @@ impl AvailabilityConfig {
             Self::Dc(_) => AvailabilityMode::Dc,
             Self::Ha(_) => AvailabilityMode::Ha,
         }
+    }
+
+    /// Whether mode is explicitly `none`.
+    #[must_use]
+    pub const fn is_single_node_mode(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Whether mode enables a replica role.
+    #[must_use]
+    pub const fn has_replication_role(&self) -> bool {
+        !self.is_single_node_mode()
+    }
+
+    /// Whether mode is `dc`.
+    #[must_use]
+    pub const fn is_dc_mode(&self) -> bool {
+        matches!(self, Self::Dc(_))
+    }
+
+    /// Whether mode is `ha`.
+    #[must_use]
+    pub const fn is_ha_mode(&self) -> bool {
+        matches!(self, Self::Ha(_))
+    }
+
+    /// Whether mode is `dc` or `ha`.
+    #[must_use]
+    pub const fn is_distributed_mode(&self) -> bool {
+        self.mode().is_distributed()
+    }
+
+    /// Whether this node is configured as the configured primary.
+    #[must_use]
+    pub const fn is_primary_mode(&self) -> bool {
+        matches!(self.replication(), Some(ReplicationConfig::Primary { .. }))
+    }
+
+    /// Whether this node is configured as the configured replica.
+    #[must_use]
+    pub const fn is_replica_mode(&self) -> bool {
+        matches!(self.replication(), Some(ReplicationConfig::Replica { .. }))
     }
 
     /// The replication role a `dc` or `ha` node drives, or `None` under single-node `none`.
@@ -384,15 +450,17 @@ impl Config {
             }
             let repository = self.indexes.iter().find(|index| index.name == publisher.repository);
             if !repository.is_some_and(|index| {
-                index.ecosystem == Ecosystem::Pypi
-                    && matches!(
-                        index.kind,
-                        IndexKind::Hosted { .. } | IndexKind::Virtual { upload: Some(_), .. }
-                    )
+                peryx_ecosystem_registry::supports(
+                    index.ecosystem,
+                    peryx_driver::serving::EcosystemCapability::TrustedPublishing,
+                ) && matches!(
+                    index.kind,
+                    IndexKind::Hosted { .. } | IndexKind::Virtual { upload: Some(_), .. }
+                )
             }) {
                 return Err(ConfigError::TrustedPublisher {
                     id: publisher.id.clone(),
-                    reason: "repository must name a writable PyPI index",
+                    reason: "repository must name a writable index with trusted publishing support",
                 });
             }
         }
@@ -454,13 +522,9 @@ impl Config {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
             }),
-            None if self.read_only
-                || matches!(self.availability.replication(), Some(ReplicationConfig::Replica { .. })) =>
-            {
-                Err(ConfigError::WriterIdentity {
-                    reason: "required in read replica mode",
-                })
-            }
+            None if self.read_only || self.availability.is_replica_mode() => Err(ConfigError::WriterIdentity {
+                reason: "required in read replica mode",
+            }),
             _ => Ok(()),
         }
     }
@@ -762,7 +826,7 @@ impl IndexConfig {
 
 /// The three composable index roles: a read-through cache, a writable hosted store, or a virtual
 /// index that aggregates other indexes under one route.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IndexKind {
     /// Cache an upstream simple index, fetching on demand.
     Cached {
@@ -830,44 +894,9 @@ pub struct UpstreamRoutingConfig {
 }
 
 /// Prefetch behavior configured under `[index.prefetch]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct PrefetchConfig {
-    pub mode: PrefetchMode,
-    pub packages: Vec<String>,
-    pub requirements: Vec<PathBuf>,
-    pub include_wheels: bool,
-    pub include_sdists: bool,
-    pub python_tags: Vec<String>,
-    pub abi_tags: Vec<String>,
-    pub platform_tags: Vec<String>,
-    pub max_file_size_bytes: Option<u64>,
-    pub metadata_only: bool,
-}
-
-impl Default for PrefetchConfig {
-    fn default() -> Self {
-        Self {
-            mode: PrefetchMode::Selected,
-            packages: Vec::new(),
-            requirements: Vec::new(),
-            include_wheels: true,
-            include_sdists: true,
-            python_tags: Vec::new(),
-            abi_tags: Vec::new(),
-            platform_tags: Vec::new(),
-            max_file_size_bytes: None,
-            metadata_only: false,
-        }
-    }
-}
-
-/// Which projects `peryx prefetch` selects before artifact filters apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum PrefetchMode {
-    All,
-    Selected,
-    MetadataOnly,
+    pub options: toml::Table,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -938,53 +967,47 @@ pub struct AcmeConfig {
     pub staging: bool,
 }
 
-/// The out-of-the-box topology: one trio per ecosystem. For pypi, a pypi.org cache and a hosted
-/// store combined by a virtual index at `root/pypi`; for oci, a Docker Hub cache and a hosted store
-/// combined by a virtual index at `root/oci`. Uploads to a virtual index land in its hosted layer
-/// once a token is set.
 fn default_indexes() -> Vec<IndexConfig> {
-    let cache = |upstream: &str| IndexKind::Cached {
-        routing: UpstreamRoutingConfig {
-            upstreams: vec![UpstreamConfig {
-                name: "primary".to_owned(),
-                url: upstream.to_owned(),
-                artifact_url: None,
-                username: None,
-                password: None,
-                token: None,
-                credential_exec: None,
-                credential_refresh: None,
-                tls: UpstreamTlsConfig::default(),
-            }],
-            fallback: true,
-            protected: Vec::new(),
-            pins: BTreeMap::new(),
-        },
-        upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
-        offline: false,
-        prefetch: Box::default(),
-    };
-    let store = || IndexKind::Hosted { volatile: true };
-    let overlay = |hosted: &str, cached: &str| IndexKind::Virtual {
-        layers: vec![hosted.to_owned(), cached.to_owned()],
-        upload: Some(hosted.to_owned()),
-    };
-    vec![
-        default_index("pypi", Ecosystem::Pypi, cache("https://pypi.org/simple/")),
-        default_index("hosted", Ecosystem::Pypi, store()),
-        default_index("root/pypi", Ecosystem::Pypi, overlay("hosted", "pypi")),
-        default_index("dockerhub", Ecosystem::Oci, cache("https://registry-1.docker.io")),
-        default_index("images", Ecosystem::Oci, store()),
-        default_index("root/oci", Ecosystem::Oci, overlay("images", "dockerhub")),
-    ]
+    peryx_ecosystem_registry::default_indexes()
+        .map(|index| default_index(index.name, index.route, index.ecosystem, default_index_kind(index.kind)))
+        .collect()
 }
 
-/// One default index: served at its own name, with no policy, no webhooks, and no access rules beyond
-/// the open reads every index starts with.
-fn default_index(name: &str, ecosystem: Ecosystem, kind: IndexKind) -> IndexConfig {
+fn default_index_kind(kind: peryx_ecosystem_contract::DefaultIndexKind) -> IndexKind {
+    match kind {
+        peryx_ecosystem_contract::DefaultIndexKind::Cached { upstream } => IndexKind::Cached {
+            routing: UpstreamRoutingConfig {
+                upstreams: vec![UpstreamConfig {
+                    name: "primary".to_owned(),
+                    url: upstream.to_owned(),
+                    artifact_url: None,
+                    username: None,
+                    password: None,
+                    token: None,
+                    credential_exec: None,
+                    credential_refresh: None,
+                    tls: UpstreamTlsConfig::default(),
+                }],
+                fallback: true,
+                protected: Vec::new(),
+                pins: BTreeMap::new(),
+            },
+            upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
+            offline: false,
+            prefetch: Box::default(),
+        },
+        peryx_ecosystem_contract::DefaultIndexKind::Hosted => IndexKind::Hosted { volatile: true },
+        peryx_ecosystem_contract::DefaultIndexKind::Virtual { layers, upload } => IndexKind::Virtual {
+            layers: layers.iter().map(|layer| (*layer).to_owned()).collect(),
+            upload: Some(upload.to_owned()),
+        },
+    }
+}
+
+fn default_index(name: &str, route: &str, ecosystem: Ecosystem, kind: IndexKind) -> IndexConfig {
     IndexConfig {
         name: name.to_owned(),
-        route: name.to_owned(),
+        route: route.to_owned(),
         ecosystem,
         anonymous_read: None,
         tokens: Vec::new(),

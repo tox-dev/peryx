@@ -85,7 +85,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
         Index {
             name: "private".to_owned(),
             route: "private".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: UpstreamClient::with_auth(
                     "https://user:pass@example.invalid/simple/?token=url-secret#frag",
@@ -102,7 +102,7 @@ async fn test_status_redacts_upstream_and_upload_secrets() {
             route: "hosted".to_owned(),
             policy: Policy::default(),
             acl: crate::tests::writer_acl("upload-secret".to_owned()),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: false },
         },
     ];
@@ -143,7 +143,7 @@ async fn test_status_reports_routed_upstream_health() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: primary.client().clone(),
                 offline: false,
@@ -230,7 +230,7 @@ async fn test_metrics_omit_hostile_values_and_bound_series_count() {
         .map(|position| Index {
             name: format!("repository-credential-{position}"),
             route: format!("repository-credential-{position}"),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: IndexAcl::default(),

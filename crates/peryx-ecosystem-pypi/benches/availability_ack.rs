@@ -13,7 +13,7 @@
 //! operation. That decision is the whole foreground cost availability adds; the transport that
 //! gathers peer and remote acknowledgements runs in the background under the write deadline, so this
 //! measures the decision arithmetic alone and never a network wait. It is the same shared
-//! `peryx-replication` decision the `PyPI` upload path and the `OCI` push path both invoke, so a
+//! `peryx-ha-distributed` decision the `PyPI` upload path and the `OCI` push path both invoke, so a
 //! wheel and a manifest are two workload identities over one code path, and the reading confirms the
 //! cost is ecosystem-neutral. Artifact size never enters it — a write acknowledges against its
 //! 32-byte digest, not its bytes — so there is no small/large axis here; payload-sized cost lives in
@@ -32,7 +32,7 @@ use std::collections::BTreeSet;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use peryx_replication::{
+use peryx_ha_distributed::{
     AckDecision, Deadline, DurabilityPolicy, FilesystemAck, MetadataOperation, ReceiptAck, RemoteAck,
     assess_remote_metadata_durability,
 };
@@ -122,7 +122,7 @@ fn ha() -> Posture {
 /// Resolve one write's datacenter acknowledgement exactly as the hosted upload path does: seed the
 /// local receipt, fold the gathered peer receipts into the byte quorum, decide the metadata dimension
 /// (a remote-durability fold in `ha`, an immediate local commit otherwise), and combine them.
-fn resolve(posture: &Posture, digest: &Digest) -> peryx_replication::DcAck {
+fn resolve(posture: &Posture, digest: &Digest) -> peryx_ha_distributed::DcAck {
     let mut ack = FilesystemAck::new(digest.clone(), posture.members.clone(), posture.policy);
     ack.record(ReceiptAck {
         node: LOCAL.to_owned(),

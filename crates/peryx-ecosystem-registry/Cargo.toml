@@ -5,19 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Build-time registry of optional ecosystem plugins for composition crates."
-
-[features]
-default = ["ecosystem-pypi", "ecosystem-oci"]
-
-ecosystem-pypi = ["dep:peryx-ecosystem-pypi"]
-ecosystem-oci = ["dep:peryx-ecosystem-oci"]
+description = "Ecosystem composition registry."
 
 [dependencies]
+clap.workspace = true
 peryx-core.workspace = true
+peryx-ecosystem-contract.workspace = true
 peryx-driver.workspace = true
-peryx-ecosystem-oci = { workspace = true, optional = true }
-peryx-ecosystem-pypi = { workspace = true, optional = true, default-features = false, features = ["serving"] }
+peryx-ecosystem-oci.workspace = true
+peryx-ecosystem-pypi = { workspace = true, default-features = false, features = ["serving"] }
 utoipa.workspace = true
 toml.workspace = true
 

@@ -25,5 +25,5 @@ pub use describe::{
     UpstreamSourceDescription, describe_index, describe_indexes,
 };
 pub use ownership::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
+pub use peryx_ha::OperationKind;
 pub use peryx_index::{Index, IndexKind};
-pub use peryx_replication::OperationKind;

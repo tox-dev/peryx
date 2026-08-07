@@ -78,7 +78,7 @@ fn app(route: &str, resource: &str) -> (tempfile::TempDir, AppState, HeaderMap) 
         vec![Index {
             name: "images".to_owned(),
             route: route.to_owned(),
-            ecosystem: Ecosystem::Oci,
+            ecosystem: Ecosystem::new("other"),
             kind: IndexKind::Hosted { volatile: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl {

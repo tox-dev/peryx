@@ -7,13 +7,13 @@ use super::blobs::{
 use super::*;
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self};
+use crate::upload_session::{UploadRecord, UploadStore as _};
 use axum::body::Body;
 use axum::http::response::Builder;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use http_body::Body as _;
 use peryx_driver::ServingState;
-use peryx_storage::meta::UploadRecord;
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when

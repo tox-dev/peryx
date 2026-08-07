@@ -231,7 +231,7 @@ async fn test_file_download_status_store_error_is_server_error() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: upstream,
             offline: false,
@@ -754,7 +754,7 @@ async fn test_head_of_an_uncached_file_on_an_offline_mirror_is_unavailable() {
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Cached {
             client: UpstreamClient::new("https://files.example/simple/").unwrap(),
             offline: true,

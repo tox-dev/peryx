@@ -138,7 +138,7 @@ async fn test_oci_indexer_omits_a_policy_blocked_repository() {
     let index = Index {
         name: "store".to_owned(),
         route: "store".to_owned(),
-        ecosystem: Ecosystem::Oci,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
         policy,
         acl: crate::tests::writer_acl(TOKEN.to_owned()),
@@ -159,7 +159,7 @@ async fn test_oci_indexer_skips_non_oci_indexes() {
     let pypi = Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("other"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl::default(),
@@ -180,7 +180,7 @@ async fn test_oci_indexer_project_update_scopes_to_one_repository() {
     let pypi = Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("other"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl::default(),

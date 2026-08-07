@@ -22,7 +22,7 @@ use peryx_core::path::{self, PathSafetyError};
 use peryx_driver::discovery::BaseUrl;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
-use peryx_driver::serving::{EcosystemDriver, RefreshSweep};
+use peryx_driver::serving::{EcosystemDriver, MaintenanceDriver, RefreshSweep, ReplicatedApplyDriver};
 use peryx_driver::state::{IndexDescription, SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
 use peryx_identity::{
@@ -227,7 +227,7 @@ const PYPI_FAMILIES: &[MetricFamily] = &[
 #[async_trait]
 impl EcosystemDriver for PypiServing {
     fn ecosystem(&self) -> Ecosystem {
-        Ecosystem::Pypi
+        crate::ECOSYSTEM
     }
 
     fn node_job(
@@ -490,6 +490,12 @@ impl EcosystemDriver for PypiServing {
     }
 
     fn apply_replicated_changes(&self, state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
+        Self::apply_replicated_changes_impl(state, changed_keys)
+    }
+}
+
+impl PypiServing {
+    fn apply_replicated_changes_impl(state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
         let ctx = state.indexer_ctx();
         let mut views: std::collections::BTreeSet<(usize, &str)> = std::collections::BTreeSet::new();
         for key in changed_keys {
@@ -514,6 +520,38 @@ impl EcosystemDriver for PypiServing {
             }
         }
         block.map_or(Ok(()), Err)
+    }
+}
+
+#[async_trait]
+impl MaintenanceDriver for PypiServing {
+    fn ecosystem(&self) -> Ecosystem {
+        crate::ECOSYSTEM
+    }
+
+    async fn reclaim_idle(&self, _state: Arc<ServingState>) -> usize {
+        0
+    }
+
+    async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64 {
+        finalize_sweep::finalize_admitted(&state).await
+    }
+
+    async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String> {
+        cache::refresh_stale_pages(&state)
+            .await
+            .map(|summary| RefreshSweep {
+                checked: summary.checked,
+                changed: summary.changed,
+            })
+            .map_err(|err| err.user_message())
+    }
+}
+
+#[async_trait]
+impl ReplicatedApplyDriver for PypiServing {
+    fn apply_replicated_changes(&self, state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
+        Self::apply_replicated_changes_impl(state, changed_keys)
     }
 }
 

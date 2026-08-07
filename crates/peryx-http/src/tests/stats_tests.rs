@@ -92,7 +92,7 @@ async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, Arc<AppState>)
         vec![Index {
             name: "private".to_owned(),
             route: "private".to_owned(),
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: writer_acl(UPLOAD_SECRET),

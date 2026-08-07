@@ -55,7 +55,7 @@ async fn test_stream_detail_offline_cold_miss_falls_back() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -140,7 +140,7 @@ async fn test_json_meta_preflight_streams_without_remainder() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -295,7 +295,7 @@ async fn test_client_disconnect_releases_the_inflight_entry() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -339,7 +339,7 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
@@ -517,7 +517,7 @@ async fn test_transform_whole_withholds_quarantined_files_before_meta() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: true },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),

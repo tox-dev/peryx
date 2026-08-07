@@ -250,7 +250,7 @@ fn state_with_broken_revocation_index() -> (tempfile::TempDir, Arc<AppState>, Di
     let index = Index {
         name: "hosted".to_owned(),
         route: "hosted".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
         acl: peryx_identity::IndexAcl::default(),

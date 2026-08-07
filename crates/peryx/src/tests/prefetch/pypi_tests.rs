@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use peryx_ecosystem_pypi::store::CachedIndex;
-use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_registry::pypi::store::CachedIndex;
+use peryx_ecosystem_registry::pypi::store::PypiStore as _;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 use wiremock::matchers::{header as match_header, method, path};
@@ -9,7 +9,8 @@ use wiremock::{Mock, ResponseTemplate};
 
 use super::*;
 use crate::cli::{PrefetchPlanArgs, PrefetchSyncArgs, PrefetchVerifyArgs};
-use crate::config::{PrefetchMode, SecretSource, UpstreamConfig, UpstreamRoutingConfig};
+use crate::config::{SecretSource, UpstreamConfig, UpstreamRoutingConfig};
+use peryx_ecosystem_registry::pypi::MirrorMode;
 
 fn wheel_page(server: &MockServer, wheel: &[u8], metadata: &[u8]) -> String {
     to_json(&serde_json::json!({
@@ -139,7 +140,7 @@ async fn test_mirror_plan_reports_wheel_tag_filter() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), vec!["flask".to_owned()]);
-    options.python_tags.push("cp312".to_owned());
+    options.ecosystem.pypi.python_tags.push("cp312".to_owned());
 
     let text = run_ok(
         &mirror(&dir, &server),
@@ -171,9 +172,13 @@ async fn test_mirror_plan_accepts_matching_wheel_tags() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), vec!["flask".to_owned()]);
-    options.python_tags.push("cp311".to_owned());
-    options.abi_tags.push("cp311".to_owned());
-    options.platform_tags.push("macosx_14_0_arm64".to_owned());
+    options.ecosystem.pypi.python_tags.push("cp311".to_owned());
+    options.ecosystem.pypi.abi_tags.push("cp311".to_owned());
+    options
+        .ecosystem
+        .pypi
+        .platform_tags
+        .push("macosx_14_0_arm64".to_owned());
 
     let text = run_ok(
         &mirror(&dir, &server),
@@ -262,7 +267,7 @@ async fn test_mirror_plan_offline_reads_cached_pages() {
     assert!(text.contains("file\tpypi\tflask\tflask-1.0.tar.gz"));
 
     let mut options = command_options(dir.path(), Vec::new());
-    options.mode = Some(PrefetchMode::All);
+    options.ecosystem.pypi.mode = Some(MirrorMode::All);
     let text = run_ok(&config, &PrefetchCommand::Plan(PrefetchPlanArgs { options })).await;
     assert!(text.contains("page\tpypi\tflask"));
 }
@@ -353,7 +358,7 @@ async fn test_mirror_sync_all_uses_routed_source_credentials() {
         .await;
     let config = routed_config(dir.path(), &first, &second, &artifacts);
     let mut options = command_options(dir.path(), Vec::new());
-    options.mode = Some(PrefetchMode::All);
+    options.ecosystem.pypi.mode = Some(MirrorMode::All);
 
     let text = run_ok(&config, &PrefetchCommand::Sync(PrefetchSyncArgs { options })).await;
 
@@ -461,7 +466,7 @@ async fn test_mirror_sync_overlay_target_and_metadata_only_skips_artifact() {
         .await;
     let mut options = command_options(dir.path(), vec!["flask".to_owned()]);
     options.index = "root/pypi".to_owned();
-    options.metadata_only = true;
+    options.ecosystem.pypi.metadata_only = true;
     let text = run_ok(
         &overlay_config(dir.path(), &format!("{}/simple/", server.uri())),
         &PrefetchCommand::Sync(PrefetchSyncArgs { options }),
@@ -538,7 +543,7 @@ async fn test_mirror_sync_reports_page_failure_and_skipped_file() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), vec!["broken".to_owned(), "flask".to_owned()]);
-    options.no_sdists = true;
+    options.ecosystem.pypi.no_sdists = true;
     let (text, err) = run_err(
         &mirror(&dir, &server),
         &PrefetchCommand::Sync(PrefetchSyncArgs { options }),
@@ -582,8 +587,8 @@ async fn test_mirror_sync_mode_and_size_options_override_prefetch() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), vec!["flask".to_owned()]);
-    options.mode = Some(PrefetchMode::MetadataOnly);
-    options.max_file_size_bytes = Some(10);
+    options.ecosystem.pypi.mode = Some(MirrorMode::MetadataOnly);
+    options.ecosystem.pypi.max_file_size_bytes = Some(10);
     let text = run_ok(
         &mirror(&dir, &server),
         &PrefetchCommand::Sync(PrefetchSyncArgs { options }),
@@ -617,7 +622,7 @@ async fn test_mirror_sync_all_reads_project_list() {
         .await;
     mount_project(&server, b"wheel".to_vec(), b"metadata".to_vec()).await;
     let mut options = command_options(dir.path(), Vec::new());
-    options.mode = Some(PrefetchMode::All);
+    options.ecosystem.pypi.mode = Some(MirrorMode::All);
     let text = run_ok(
         &mirror(&dir, &server),
         &PrefetchCommand::Sync(PrefetchSyncArgs { options }),
@@ -885,7 +890,7 @@ async fn test_mirror_verify_all_uses_cached_project_list() {
         .write_verified(b"sdist", &Digest::of(b"sdist"))
         .unwrap();
     let mut options = command_options(dir.path(), Vec::new());
-    options.mode = Some(PrefetchMode::All);
+    options.ecosystem.pypi.mode = Some(MirrorMode::All);
     let text = run_ok(
         &mirror(&dir, &server),
         &PrefetchCommand::Verify(PrefetchVerifyArgs { options }),

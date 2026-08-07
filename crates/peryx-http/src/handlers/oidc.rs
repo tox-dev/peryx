@@ -1,4 +1,4 @@
-//! PyPI-compatible CI identity discovery and exchange.
+//! CI identity discovery and exchange.
 
 use std::sync::Arc;
 

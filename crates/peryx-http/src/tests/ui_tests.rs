@@ -28,7 +28,7 @@ struct UiStub;
 #[async_trait::async_trait]
 impl peryx_driver::serving::EcosystemDriver for UiStub {
     fn ecosystem(&self) -> Ecosystem {
-        Ecosystem::Pypi
+        Ecosystem::new("example")
     }
 
     fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
@@ -194,9 +194,9 @@ fn ui_app() -> (tempfile::TempDir, axum::Router) {
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let indexes = vec![
-        index("good", Ecosystem::Pypi),
-        index("bad", Ecosystem::Pypi),
-        index("orphan", Ecosystem::Oci),
+        index("good", Ecosystem::new("example")),
+        index("bad", Ecosystem::new("example")),
+        index("orphan", Ecosystem::new("other")),
     ];
     let mut state = AppState::new(meta, blobs, 60, indexes);
     state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
@@ -271,7 +271,7 @@ fn read_only_app() -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
-    let mut state = AppState::new(meta, blobs, 60, vec![index("replica", Ecosystem::Pypi)]);
+    let mut state = AppState::new(meta, blobs, 60, vec![index("replica", Ecosystem::new("example"))]);
     state.read_only = true;
     (dir, crate::router(Arc::new(state)))
 }
@@ -281,7 +281,12 @@ async fn read_only_app_admin() -> (tempfile::TempDir, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let mut state = AppState::new(meta.clone(), blobs, 60, vec![index("replica", Ecosystem::Pypi)]);
+    let mut state = AppState::new(
+        meta.clone(),
+        blobs,
+        60,
+        vec![index("replica", Ecosystem::new("example"))],
+    );
     state.read_only = true;
     let authorization = grant_administrator(&mut state, meta).await;
     (dir, crate::router(Arc::new(state)), authorization)
@@ -293,9 +298,9 @@ async fn ui_app_admin() -> (tempfile::TempDir, axum::Router, String) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let indexes = vec![
-        index("good", Ecosystem::Pypi),
-        index("bad", Ecosystem::Pypi),
-        index("orphan", Ecosystem::Oci),
+        index("good", Ecosystem::new("example")),
+        index("bad", Ecosystem::new("example")),
+        index("orphan", Ecosystem::new("other")),
     ];
     let mut state = AppState::new(meta.clone(), blobs, 60, indexes);
     state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
@@ -309,7 +314,7 @@ fn unavailable_app() -> (tempfile::TempDir, axum::Router) {
     let blob_path = dir.path().join("not-a-directory");
     std::fs::write(&blob_path, b"x").unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(blob_path);
-    let mut cached = index("cached", Ecosystem::Pypi);
+    let mut cached = index("cached", Ecosystem::new("example"));
     cached.kind = IndexKind::Cached {
         client: peryx_upstream::UpstreamClient::new("https://example.invalid/simple/").unwrap(),
         offline: true,
@@ -635,11 +640,11 @@ async fn test_status_reports_virtual_member_precedence_with_roles() {
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let indexes = vec![
-        index("store", Ecosystem::Pypi),
+        index("store", Ecosystem::new("example")),
         Index {
             name: "combo".to_owned(),
             route: "combo".to_owned(),
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("example"),
             kind: IndexKind::Virtual {
                 layers: vec![0],
                 upload: None,

@@ -104,7 +104,7 @@ async fn harness_with_options(
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: options.offline,
@@ -121,7 +121,7 @@ async fn harness_with_options(
             } else {
                 IndexAcl::default()
             },
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile },
         },
         Index {
@@ -129,7 +129,7 @@ async fn harness_with_options(
             route: "root/pypi".to_owned(),
             policy: overlay_policy,
             acl: IndexAcl::default(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![1, 0],
                 upload: Some(1),
@@ -170,7 +170,7 @@ async fn harness_with_options(
             local_node: Some("a".to_owned()),
         });
         state.set_write_ack(
-            peryx_replication::DurabilityPolicy::Majority,
+            peryx_ha_distributed::DurabilityPolicy::Majority,
             std::time::Duration::from_secs(5),
         );
     }
@@ -286,7 +286,7 @@ pub fn routed_state(dir: &tempfile::TempDir, primary: UpstreamClient, router: Up
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: primary,
                 offline: false,
@@ -311,7 +311,7 @@ pub async fn promotion_harness() -> Harness {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -322,7 +322,7 @@ pub async fn promotion_harness() -> Harness {
         Index {
             name: "staging".to_owned(),
             route: "staging".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: crate::tests::writer_acl("s3cret".to_owned()),
@@ -330,7 +330,7 @@ pub async fn promotion_harness() -> Harness {
         Index {
             name: "prod".to_owned(),
             route: "prod".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: crate::tests::writer_acl("s3cret".to_owned()),
@@ -338,7 +338,7 @@ pub async fn promotion_harness() -> Harness {
         Index {
             name: "release".to_owned(),
             route: "release".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
                 layers: vec![2, 0],
                 upload: Some(2),

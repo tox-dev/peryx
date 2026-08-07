@@ -6,9 +6,8 @@ use std::path::Path;
 use anyhow::{Context as _, bail};
 use peryx_driver::IndexDescription;
 use peryx_driver::discovery::BaseUrl;
-use peryx_ecosystem_pypi::discovery::{SnippetKind, snippet_text};
 
-use crate::cli::{EcosystemArg, IndexCommand};
+use crate::cli::IndexCommand;
 use crate::config::Config;
 use crate::server;
 
@@ -42,13 +41,24 @@ pub fn init(config: &Config) -> anyhow::Result<()> {
 /// # Errors
 /// Returns an error if the base URL is invalid, the index route is unknown, or the requested
 /// snippet needs uploads on a read-only index.
-pub fn config_snippet(config: &Config, route: &str, base_url: &str, kind: SnippetKind) -> anyhow::Result<String> {
+pub fn config_snippet(config: &Config, route: &str, base_url: &str, format: &str) -> anyhow::Result<String> {
     let base = BaseUrl::parse(base_url)?;
     let index = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, &config.auth, config.offline)?)
         .into_iter()
         .find(|index| index.route == route)
         .with_context(|| format!("unknown index route {route:?}"))?;
-    let Some(text) = snippet_text(&base, &index.route, index.uploads, kind) else {
+    let Some(text) = peryx_ecosystem_registry::snippet_text(
+        index
+            .ecosystem
+            .parse()
+            .with_context(|| format!("invalid configured ecosystem {:?}", index.ecosystem))?,
+        &base,
+        &index.route,
+        index.uploads,
+        format,
+    )
+    .map_err(anyhow::Error::msg)?
+    else {
         bail!("index route {route:?} does not accept uploads");
     };
     Ok(text)
@@ -62,20 +72,16 @@ pub fn config_snippet(config: &Config, route: &str, base_url: &str, kind: Snippe
 pub fn index(config: &Config, command: &IndexCommand, out: &mut dyn Write) -> anyhow::Result<()> {
     let indexes = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, &config.auth, config.offline)?);
     match command {
-        IndexCommand::List(args) => index_list(&indexes, args.ecosystem, out),
+        IndexCommand::List(args) => index_list(&indexes, args.ecosystem.as_deref(), out),
         IndexCommand::Show(args) => index_show(&indexes, &args.index, out),
     }
 }
 
-fn index_list(
-    indexes: &[IndexDescription],
-    ecosystem: Option<EcosystemArg>,
-    out: &mut dyn Write,
-) -> anyhow::Result<()> {
+fn index_list(indexes: &[IndexDescription], ecosystem: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> {
     writeln!(out, "name\troute\tecosystem\tkind\tuploads")?;
     for index in indexes
         .iter()
-        .filter(|index| ecosystem.is_none_or(|wanted| wanted.as_str() == index.ecosystem))
+        .filter(|index| ecosystem.is_none_or(|wanted| wanted == index.ecosystem))
     {
         writeln!(
             out,

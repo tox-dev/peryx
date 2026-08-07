@@ -1,8 +1,8 @@
 use std::num::NonZeroUsize;
 
 use peryx_driver::state::{AppState, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
+use peryx_ha_distributed::LoopbackBlobSource;
 use peryx_identity::ArtifactDigest;
-use peryx_replication::LoopbackBlobSource;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{BlobPlacementState, BlobPlacementStatus, DataCenterId, VerifiedSource};
 use tokio_util::bytes::Bytes;

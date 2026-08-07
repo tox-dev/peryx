@@ -92,10 +92,10 @@ impl RequestKind {
 }
 
 #[rstest]
-#[case::pypi_artifact(Ecosystem::Pypi, RequestKind::Artifact)]
-#[case::pypi_metadata(Ecosystem::Pypi, RequestKind::Metadata)]
-#[case::oci_artifact(Ecosystem::Oci, RequestKind::Artifact)]
-#[case::oci_metadata(Ecosystem::Oci, RequestKind::Metadata)]
+#[case::pypi_artifact(peryx_ecosystem_registry::PYPI, RequestKind::Artifact)]
+#[case::pypi_metadata(peryx_ecosystem_registry::PYPI, RequestKind::Metadata)]
+#[case::oci_artifact(peryx_ecosystem_registry::OCI, RequestKind::Artifact)]
+#[case::oci_metadata(peryx_ecosystem_registry::OCI, RequestKind::Metadata)]
 #[tokio::test]
 async fn test_build_state_uses_upstream_ca_and_client_identity(
     #[case] ecosystem: Ecosystem,
@@ -122,7 +122,7 @@ fn test_build_state_rejects_unreadable_tls_before_serving() {
     let data = tempfile::tempdir().unwrap();
     let Err(error) = build_state(&cached_config(
         data.path(),
-        Ecosystem::Pypi,
+        peryx_ecosystem_registry::PYPI,
         "https://packages.example/".to_owned(),
         &files,
     )) else {
@@ -144,7 +144,7 @@ fn test_build_state_rejects_incomplete_programmatic_tls_identity() {
     let data = tempfile::tempdir().unwrap();
     let mut config = cached_config(
         data.path(),
-        Ecosystem::Pypi,
+        peryx_ecosystem_registry::PYPI,
         "https://packages.example/".to_owned(),
         &files,
     );
@@ -292,7 +292,7 @@ async fn test_rebuilding_state_reloads_rotated_tls_files() {
     let unrelated_server = unrelated.start_server(ok_router());
     let unrelated_client = tls_client(&unrelated_server.url("/"), &unrelated_files);
     let data = tempfile::tempdir().unwrap();
-    let config = cached_config(data.path(), Ecosystem::Pypi, server.url("/"), &files);
+    let config = cached_config(data.path(), peryx_ecosystem_registry::PYPI, server.url("/"), &files);
     let previous_state = build_state(&config).unwrap();
     assert!(
         previous_state.indexes[0]

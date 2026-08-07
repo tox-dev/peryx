@@ -21,7 +21,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use peryx_core::TopologyConfig;
 use peryx_driver::state::DcDurabilityMetrics;
-use peryx_replication::{
+use peryx_ha_distributed::{
     AckDecision, DEFAULT_FRONTIER_POLL, DEFAULT_RECEIPT_POLL, DcAck, Deadline, DurabilityPolicy, FilesystemAck,
     MetadataOperation, ReceiptAck, ReceiptSource, RemoteDurability, RemoteFrontierSource,
     assess_remote_metadata_durability, gather_receipts, gather_remote_acks,
@@ -245,7 +245,7 @@ mod tests {
         )
     }
 
-    fn sources(list: Vec<peryx_replication::LoopbackReceiptSource>) -> Vec<Arc<dyn ReceiptSource + Send + Sync>> {
+    fn sources(list: Vec<peryx_ha_distributed::LoopbackReceiptSource>) -> Vec<Arc<dyn ReceiptSource + Send + Sync>> {
         list.into_iter()
             .map(|source| Arc::new(source) as Arc<dyn ReceiptSource + Send + Sync>)
             .collect()
@@ -295,8 +295,8 @@ mod tests {
             MetadataDimension::Local(AckDecision::Acknowledged),
             &digest(),
             &sources(vec![
-                peryx_replication::LoopbackReceiptSource::holding("b", digest(), 4),
-                peryx_replication::LoopbackReceiptSource::absent("c"),
+                peryx_ha_distributed::LoopbackReceiptSource::holding("b", digest(), 4),
+                peryx_ha_distributed::LoopbackReceiptSource::absent("c"),
             ]),
             BUDGET,
             &metrics,
@@ -318,8 +318,8 @@ mod tests {
             MetadataDimension::Local(AckDecision::Acknowledged),
             &digest(),
             &sources(vec![
-                peryx_replication::LoopbackReceiptSource::absent("b"),
-                peryx_replication::LoopbackReceiptSource::absent("c"),
+                peryx_ha_distributed::LoopbackReceiptSource::absent("b"),
+                peryx_ha_distributed::LoopbackReceiptSource::absent("c"),
             ]),
             BUDGET,
             &metrics,
@@ -355,7 +355,7 @@ mod tests {
     }
 
     fn remote_sources(
-        list: Vec<peryx_replication::LoopbackRemoteFrontierSource>,
+        list: Vec<peryx_ha_distributed::LoopbackRemoteFrontierSource>,
     ) -> Vec<Arc<dyn RemoteFrontierSource + Send + Sync>> {
         list.into_iter()
             .map(|source| Arc::new(source) as Arc<dyn RemoteFrontierSource + Send + Sync>)
@@ -372,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn test_ha_write_is_durable_once_an_eligible_remote_holds_the_operation() {
         let metrics = DcDurabilityMetrics::default();
-        let remotes = remote_sources(vec![peryx_replication::LoopbackRemoteFrontierSource::reporting(
+        let remotes = remote_sources(vec![peryx_ha_distributed::LoopbackRemoteFrontierSource::reporting(
             "east", 3, 100,
         )]);
         let ack = resolve_dc_ack(
@@ -401,7 +401,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_ha_write_is_unknown_when_no_remote_applies_the_operation() {
         let metrics = DcDurabilityMetrics::default();
-        let remotes = remote_sources(vec![peryx_replication::LoopbackRemoteFrontierSource::silent("east")]);
+        let remotes = remote_sources(vec![peryx_ha_distributed::LoopbackRemoteFrontierSource::silent("east")]);
         let ack = resolve_dc_ack(
             ack_over(DurabilityPolicy::Local, &["a"]),
             MetadataDimension::Remote {
@@ -429,7 +429,7 @@ mod tests {
         let metrics = DcDurabilityMetrics::default();
         // The remote holds the operation, but the same-DC byte quorum is never reached, so the write
         // stays retry-safe rather than durable.
-        let remotes = remote_sources(vec![peryx_replication::LoopbackRemoteFrontierSource::reporting(
+        let remotes = remote_sources(vec![peryx_ha_distributed::LoopbackRemoteFrontierSource::reporting(
             "east", 3, 100,
         )]);
         let ack = resolve_dc_ack(

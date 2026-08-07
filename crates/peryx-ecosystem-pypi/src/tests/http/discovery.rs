@@ -71,7 +71,7 @@ async fn test_discovery_document_ignores_untrusted_forwarding_and_redacts_token(
     assert!(!body.contains("s3cret"));
 }
 #[tokio::test]
-async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
+async fn test_discovery_uses_the_neutral_entry_for_an_unregistered_ecosystem() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
@@ -79,7 +79,7 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: IndexAcl::default(),
@@ -87,14 +87,12 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
         Index {
             name: "images".to_owned(),
             route: "images".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Oci,
+            ecosystem: peryx_core::Ecosystem::new("other"),
             kind: IndexKind::Hosted { volatile: true },
             policy: Policy::default(),
             acl: IndexAcl::default(),
         },
     ];
-    // No OCI driver is wired here, so the OCI index falls back to the neutral driver's minimal entry:
-    // it still appears in the document, but without the registry URLs a real driver would render.
     let state = crate::tests::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 1000)));
     let (status, body) = get_with_headers(&state, "/+api", &[("host", "127.0.0.1:4433")]).await;
     assert_eq!(status, StatusCode::OK);
@@ -107,35 +105,33 @@ async fn test_discovery_lists_every_ecosystem_with_its_own_driver() {
     assert_eq!(pypi["ecosystem"], "pypi");
     assert!(pypi["urls"]["simple"].is_string());
 
-    let oci = &indexes[1];
-    assert_eq!(oci["ecosystem"], "oci");
+    let other = &indexes[1];
+    assert_eq!(other["ecosystem"], "other");
     assert_eq!(
-        oci["urls"],
+        other["urls"],
         serde_json::Value::Null,
         "the neutral fallback renders no URLs"
     );
 }
 #[tokio::test]
-async fn test_per_index_discovery_dispatches_an_oci_index_to_the_oci_driver() {
+async fn test_per_index_discovery_uses_the_neutral_entry_for_an_unregistered_ecosystem() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
     let indexes = vec![Index {
         name: "images".to_owned(),
         route: "images".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Oci,
+        ecosystem: peryx_core::Ecosystem::new("other"),
         kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
         acl: IndexAcl::default(),
     }];
-    // The PyPI dispatch handles the neutral `/{route}/+api` route for every index, delegating an OCI
-    // index's entry to the OCI driver rather than rendering a Simple-API document for it.
     let state = crate::tests::wired(AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 1000)));
     let (status, body) = get_with_headers(&state, "/images/+api", &[("host", "127.0.0.1:4433")]).await;
     assert_eq!(status, StatusCode::OK);
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["index"]["route"], "images");
-    assert_eq!(json["index"]["ecosystem"], "oci");
+    assert_eq!(json["index"]["ecosystem"], "other");
     assert_eq!(json["index"]["urls"], serde_json::Value::Null);
 }
 #[tokio::test]

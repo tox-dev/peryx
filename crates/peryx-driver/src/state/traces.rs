@@ -1,7 +1,7 @@
 //! Opening and recording the availability operation trace from the live write path.
 //!
-//! The [`OperationEnvelope`](peryx_replication::OperationEnvelope) carries a W3C trace context and the
-//! [`OperationTelemetry`](peryx_replication::OperationTelemetry) surface renders it as a redacted
+//! The [`OperationEnvelope`](peryx_ha_distributed::OperationEnvelope) carries a W3C trace context and the
+//! [`OperationTelemetry`](peryx_ha_distributed::OperationTelemetry) surface renders it as a redacted
 //! `availability operation` event, but nothing opened a trace or recorded the event from the live path.
 //! This is that producer: at the write-path commit chokepoint a home publish opens a root W3C span keyed
 //! to the operation's identity and records the redacted telemetry through the shared surface.
@@ -10,14 +10,14 @@
 //! drawn from an entropy source, so the same operation opens the same trace across a re-push or an
 //! epoch-replay while distinct operations stay distinct — a follower that later derives a child span joins
 //! one stable trace. The sampled flag is a head decision under a fixed ratio that bounds exporter cost,
-//! and [`OperationTelemetry::emit`](peryx_replication::OperationTelemetry::emit) records nothing for an
+//! and [`OperationTelemetry::emit`](peryx_ha_distributed::OperationTelemetry::emit) records nothing for an
 //! unsampled operation, so a publish that is not traced adds no log volume. Only the identity, kind, and
 //! traceparent reach the event; the change payload never does, so no credential, artifact byte, or private
 //! path is exposed.
 
 use std::hash::{Hash as _, Hasher as _};
 
-use peryx_replication::{AuthorityEpoch, OperationKind, OperationTelemetry};
+use peryx_ha::{AuthorityEpoch, OperationKind, OperationTelemetry, sampled};
 
 use crate::state::ServingState;
 
@@ -66,7 +66,7 @@ fn open_ingress_trace(source: &str, epoch: AuthorityEpoch, serial: u64, kind: Op
         epoch: epoch.0,
         serial,
         kind: kind.as_str(),
-        sampled: peryx_replication::sampled(Some(&traceparent)),
+        sampled: sampled(Some(&traceparent)),
         traceparent: Some(traceparent),
     }
 }
@@ -113,7 +113,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use peryx_core::{NodeRole, TopologyConfig, TopologyMember, TopologyMode};
-    use peryx_replication::{AuthorityEpoch, OperationKind};
+    use peryx_ha::{AuthorityEpoch, OperationKind};
     use peryx_storage::blob::BlobStore;
     use peryx_storage::meta::MetaStore;
 
@@ -147,7 +147,7 @@ mod tests {
     /// wrapper's sampled and unsampled arms with a concrete identity rather than a hard-coded guess.
     fn identity_that_samples(source: &str, want: bool) -> (u64, OperationKind) {
         (0..1_000)
-            .map(|epoch| (epoch, OperationKind::Upload))
+            .map(|epoch| (epoch, OperationKind::Publish))
             .find(|(epoch, kind)| open_ingress_trace(source, AuthorityEpoch(*epoch), 0, *kind).sampled == want)
             .expect("a small identity sweep covers both sampled outcomes")
     }
@@ -188,17 +188,17 @@ mod tests {
 
     #[test]
     fn test_trace_entropy_is_stable_and_identity_scoped() {
-        let one = trace_entropy("writer", AuthorityEpoch(3), 7, OperationKind::Upload);
+        let one = trace_entropy("writer", AuthorityEpoch(3), 7, OperationKind::Publish);
         assert_eq!(
             one,
-            trace_entropy("writer", AuthorityEpoch(3), 7, OperationKind::Upload),
+            trace_entropy("writer", AuthorityEpoch(3), 7, OperationKind::Publish),
             "the same operation folds to the same trace so a replay joins its trace",
         );
         for other in [
-            trace_entropy("other", AuthorityEpoch(3), 7, OperationKind::Upload),
-            trace_entropy("writer", AuthorityEpoch(4), 7, OperationKind::Upload),
-            trace_entropy("writer", AuthorityEpoch(3), 8, OperationKind::Upload),
-            trace_entropy("writer", AuthorityEpoch(3), 7, OperationKind::OciPush),
+            trace_entropy("other", AuthorityEpoch(3), 7, OperationKind::Publish),
+            trace_entropy("writer", AuthorityEpoch(4), 7, OperationKind::Publish),
+            trace_entropy("writer", AuthorityEpoch(3), 8, OperationKind::Publish),
+            trace_entropy("writer", AuthorityEpoch(3), 7, OperationKind::Delete),
         ] {
             assert_ne!(one, other, "a distinct operation opens a distinct trace");
         }
@@ -206,11 +206,11 @@ mod tests {
 
     #[test]
     fn test_open_ingress_trace_names_the_operation_and_opens_its_root() {
-        let telemetry = open_ingress_trace("writer", AuthorityEpoch(3), 7, OperationKind::OciPush);
+        let telemetry = open_ingress_trace("writer", AuthorityEpoch(3), 7, OperationKind::Publish);
         assert_eq!(telemetry.source, "writer");
         assert_eq!(telemetry.epoch, 3);
         assert_eq!(telemetry.serial, 7);
-        assert_eq!(telemetry.kind, "oci-push");
+        assert_eq!(telemetry.kind, "publish");
         let parent = telemetry.traceparent.as_deref().unwrap();
         assert_eq!(
             telemetry.sampled,
@@ -282,9 +282,9 @@ mod tests {
     fn test_record_operation_trace_falls_back_to_the_standalone_source() {
         let (_dir, state) = state_with(topology(None));
         let sampled = (0..1_000)
-            .find(|epoch| open_ingress_trace("standalone", AuthorityEpoch(*epoch), 0, OperationKind::Upload).sampled)
+            .find(|epoch| open_ingress_trace("standalone", AuthorityEpoch(*epoch), 0, OperationKind::Publish).sampled)
             .expect("a rosterless node still opens a sampled trace for some epoch");
-        let recorded = captured(|| state.record_operation_trace(OperationKind::Upload, sampled));
+        let recorded = captured(|| state.record_operation_trace(OperationKind::Publish, sampled));
         assert!(
             recorded.contains("standalone"),
             "a rosterless node authors under the standalone source: {recorded}",
@@ -312,9 +312,9 @@ mod tests {
         }
         let head = state.meta.current_serial().unwrap();
         let sampled = (0..1_000)
-            .find(|epoch| open_ingress_trace("writer", AuthorityEpoch(*epoch), head, OperationKind::Upload).sampled)
+            .find(|epoch| open_ingress_trace("writer", AuthorityEpoch(*epoch), head, OperationKind::Publish).sampled)
             .expect("some epoch samples the committed head");
-        let recorded = captured(|| state.record_operation_trace(OperationKind::Upload, sampled));
+        let recorded = captured(|| state.record_operation_trace(OperationKind::Publish, sampled));
         assert_eq!(head, 3);
         assert!(
             recorded.contains("operation.serial=3"),

@@ -613,7 +613,7 @@ fn content_md5(path: &std::path::Path) -> Result<String, UploadError> {
         std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path).map_err(&invalid_content)?);
     let mut md5 = Md5::new();
     std::io::copy(&mut content, &mut md5).map_err(&invalid_content)?;
-    Ok(to_hex(md5.finalize().as_slice()))
+    Ok(to_hex(&md5.finalize()))
 }
 
 fn to_hex(bytes: &[u8]) -> String {

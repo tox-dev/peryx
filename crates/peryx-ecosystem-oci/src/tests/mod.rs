@@ -18,6 +18,7 @@ mod scope_tests;
 mod search_tests;
 mod serve;
 mod tag_name_tests;
+mod upload_session_tests;
 mod virtual_tests;
 mod web_tests;
 mod webhooks_tests;
@@ -98,7 +99,7 @@ fn oci_index(name: &str, route: &str, kind: IndexKind) -> Index {
     Index {
         name: name.to_owned(),
         route: route.to_owned(),
-        ecosystem: Ecosystem::Oci,
+        ecosystem: crate::ECOSYSTEM,
         kind,
         policy: Policy::default(),
         acl: IndexAcl::default(),
@@ -392,7 +393,7 @@ async fn test_v2_without_an_oci_index_is_not_found() {
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: Ecosystem::Pypi,
+            ecosystem: Ecosystem::new("other"),
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: IndexAcl::default(),

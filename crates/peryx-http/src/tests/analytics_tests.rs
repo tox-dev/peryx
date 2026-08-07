@@ -102,7 +102,7 @@ fn index(route: &str, tokens: Vec<NamedToken>) -> Index {
     Index {
         name: route.to_owned(),
         route: route.to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl {

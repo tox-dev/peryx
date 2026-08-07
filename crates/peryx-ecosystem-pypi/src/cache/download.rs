@@ -7,9 +7,9 @@ use crate::store::PypiStore as _;
 use bytes::Bytes;
 use peryx_driver::download::{DownloadHandle, DownloadProducer};
 use peryx_driver::rate_limit::UpstreamPermit;
-use peryx_driver::read_through::fill_from_remote_placement;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Event;
+use peryx_ha::fill_from_remote_placement;
 use peryx_storage::blob::{BlobLease, BlobMetadata, BlobWrite, Digest};
 use peryx_storage::meta::{ArtifactSource, PlacementEvent};
 

@@ -1,5 +1,6 @@
 //! A standalone registry of ecosystem drivers, for the composition root's build and admin paths.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use peryx_core::Ecosystem;
@@ -15,7 +16,7 @@ use crate::serving::EcosystemDriver;
 /// naming any.
 #[derive(Default)]
 pub struct DriverSet {
-    drivers: [Option<Arc<dyn EcosystemDriver>>; Ecosystem::COUNT],
+    drivers: HashMap<Ecosystem, Arc<dyn EcosystemDriver>>,
 }
 
 impl DriverSet {
@@ -23,19 +24,18 @@ impl DriverSet {
     /// built in one expression.
     #[must_use]
     pub fn with(mut self, driver: Arc<dyn EcosystemDriver>) -> Self {
-        let slot = driver.ecosystem().slot();
-        self.drivers[slot] = Some(driver);
+        self.drivers.insert(driver.ecosystem(), driver);
         self
     }
 
     /// The driver for `ecosystem`, or `None` when none is registered.
     #[must_use]
     pub fn get(&self, ecosystem: Ecosystem) -> Option<&Arc<dyn EcosystemDriver>> {
-        self.drivers[ecosystem.slot()].as_ref()
+        self.drivers.get(&ecosystem)
     }
 
     /// Every registered driver, in ecosystem declaration order.
     pub fn present(&self) -> impl Iterator<Item = &Arc<dyn EcosystemDriver>> {
-        self.drivers.iter().flatten()
+        self.drivers.values()
     }
 }

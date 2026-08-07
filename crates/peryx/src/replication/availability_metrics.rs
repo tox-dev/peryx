@@ -10,7 +10,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use peryx_driver::PrometheusSource;
-use peryx_replication::{SyncError, SyncOutcome};
+use peryx_ha_distributed::{SyncError, SyncOutcome};
 
 /// The number of `peryx_availability_*` series this exporter emits once a replica has run one cycle:
 /// the cycle counter, one error counter per [`SyncErrorClass`], the pending-serial gauge, and the

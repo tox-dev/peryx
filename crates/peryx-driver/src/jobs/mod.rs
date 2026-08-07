@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use peryx_search::{RebuildOutcome, RebuildProgress};
 use peryx_storage::meta::JobKind;
 
-use crate::serving::EcosystemDriver;
+use crate::serving::MaintenanceDriver;
 use crate::state::{AppState, ServingState};
 
 pub use attempts::{CancelJobRun, JobAttemptControl};
@@ -222,7 +222,7 @@ pub trait NodeJob: Send + Sync {
 /// revalidate that ecosystem's stale cached pages. Reclaim runs first so an upstream stall during the
 /// refresh cannot extend an idle resource's deadline.
 struct MaintenanceJob {
-    driver: Arc<dyn EcosystemDriver>,
+    driver: Arc<dyn MaintenanceDriver>,
 }
 
 const CACHE_MAINTENANCE: &str = "cache_maintenance";
@@ -739,7 +739,7 @@ pub fn submit_reclamation(scheduler: &JobScheduler, parameters: ReclamationParam
 /// Submit one maintenance job per installed ecosystem driver. The scheduler runs them concurrently
 /// across ecosystems under its bounds and drops any whose predecessor is still sweeping.
 pub fn submit_maintenance(app: &AppState, scheduler: &JobScheduler) {
-    for driver in app.drivers() {
+    for driver in app.maintenance_drivers() {
         scheduler.submit(Arc::new(MaintenanceJob { driver: driver.clone() }));
     }
 }

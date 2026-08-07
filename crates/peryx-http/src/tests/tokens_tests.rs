@@ -172,7 +172,7 @@ fn index(name: &str) -> Index {
     Index {
         name: name.to_owned(),
         route: name.to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl::default(),

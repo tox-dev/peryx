@@ -40,9 +40,9 @@ use peryx_driver::jobs::{JobContext, JobFailure, JobLimits, JobReport, JobSchedu
 use peryx_driver::state::{
     AppState, CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, MembershipControl,
 };
+use peryx_ha_distributed::primary_router;
 use peryx_identity::{GrantScope, Role};
 use peryx_policy::PolicyConfig;
-use peryx_replication::primary_router;
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::{JobRunQuery, JobState, MetaError, MetaStore};
 use rstest::rstest;
@@ -107,8 +107,8 @@ fn feature_indexes() -> Vec<IndexConfig> {
         ..PolicyConfig::default()
     };
     vec![
-        hosted("store", Ecosystem::Pypi, PolicyConfig::default()),
-        hosted("tight", Ecosystem::Pypi, tight),
+        hosted("store", peryx_ecosystem_registry::PYPI, PolicyConfig::default()),
+        hosted("tight", peryx_ecosystem_registry::PYPI, tight),
     ]
 }
 

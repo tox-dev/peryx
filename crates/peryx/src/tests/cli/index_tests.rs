@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::parse;
-use crate::cli::{Command, EcosystemArg, IndexCommand};
+use crate::cli::{Command, IndexCommand};
 
 #[test]
 fn test_parse_index_list_and_show() {
@@ -12,7 +12,7 @@ fn test_parse_index_list_and_show() {
     let IndexCommand::List(args) = &list else {
         panic!("expected index list");
     };
-    assert_eq!(args.ecosystem, Some(EcosystemArg::Pypi));
+    assert_eq!(args.ecosystem.as_deref(), Some("pypi"));
     assert_eq!(list.runtime_args().data_dir, Some(PathBuf::from("/d")));
 
     let Command::Index(show) = parse(&["peryx", "index", "show", "root/pypi"]).command else {

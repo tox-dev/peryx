@@ -82,7 +82,7 @@ fn private_index() -> Index {
     Index {
         name: "private".to_owned(),
         route: "private".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
         acl: IndexAcl {

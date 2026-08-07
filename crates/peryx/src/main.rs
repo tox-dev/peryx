@@ -113,13 +113,21 @@ fn availability_coordinator(
                 .collect()
         })
         .unwrap_or_default();
-    let token = match config.availability.replication() {
-        Some(config::ReplicationConfig::Primary { token, .. } | config::ReplicationConfig::Replica { token, .. }) => {
-            token
-                .read()
-                .context("read the replication token for authority transfers")?
-        }
-        None => String::new(),
+    let token = if config.availability.has_replication_role() {
+        let replication = config
+            .availability
+            .replication()
+            .expect("replication role guarantees config");
+        let token = match replication {
+            config::ReplicationConfig::Primary { token, .. } | config::ReplicationConfig::Replica { token, .. } => {
+                token
+            }
+        };
+        token
+            .read()
+            .context("read the replication token for authority transfers")?
+    } else {
+        String::new()
     };
     let frontier: std::sync::Arc<dyn peryx::availability::FrontierSource> =
         std::sync::Arc::new(peryx::availability::RosterFrontierSource::new(peers, token));
@@ -135,7 +143,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
         let mut is_replica = false;
         let mut router = peryx::server::router_for(state.clone());
         let mut raft_peer_router: Option<axum::Router> = None;
-        let _replication_handle = if config.availability.replication().is_some() {
+        let _replication_handle = if config.availability.has_replication_role() {
             let replication = peryx::replication::ReplicationRuntime::new(config, &state)?;
             // Held for the process lifetime: dropping the handle shuts the ownership Raft runtime down. The
             // mutation path reaches the same group through the state registration.
@@ -381,7 +389,7 @@ fn print_config_snippet(args: &ConfigSnippetArgs) -> anyhow::Result<()> {
     let config = resolve_config_file(args.config.as_deref())?;
     print!(
         "{}",
-        app::config_snippet(&config, &args.index, &args.base_url, args.format.into())?
+        app::config_snippet(&config, &args.index, &args.base_url, &args.format)?
     );
     Ok(())
 }

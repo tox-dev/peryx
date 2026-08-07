@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::parse;
 use crate::cli::{Command, PrefetchCommand};
-use crate::config::PrefetchMode;
+use peryx_ecosystem_registry::pypi::MirrorMode;
 
 #[test]
 fn test_parse_prefetch_plan_options() {
@@ -38,16 +38,17 @@ fn test_parse_prefetch_plan_options() {
     assert_eq!(args.options.runtime.data_dir, Some(PathBuf::from("/d")));
     assert!(args.options.runtime.offline);
     assert_eq!(args.options.index, "root/pypi");
-    assert_eq!(args.options.packages, vec!["Requests>=2,<3".to_owned()]);
-    assert_eq!(args.options.requirements, vec![PathBuf::from("requirements.txt")]);
-    assert_eq!(args.options.mode, Some(PrefetchMode::MetadataOnly));
-    assert!(args.options.metadata_only);
-    assert!(args.options.no_wheels);
-    assert!(args.options.no_sdists);
-    assert_eq!(args.options.python_tags, vec!["py3".to_owned()]);
-    assert_eq!(args.options.abi_tags, vec!["none".to_owned()]);
-    assert_eq!(args.options.platform_tags, vec!["any".to_owned()]);
-    assert_eq!(args.options.max_file_size_bytes, Some(1024));
+    let options = args.options.ecosystem.pypi;
+    assert_eq!(options.packages, vec!["Requests>=2,<3".to_owned()]);
+    assert_eq!(options.requirements, vec![PathBuf::from("requirements.txt")]);
+    assert_eq!(options.mode, Some(MirrorMode::MetadataOnly));
+    assert!(options.metadata_only);
+    assert!(options.no_wheels);
+    assert!(options.no_sdists);
+    assert_eq!(options.python_tags, vec!["py3".to_owned()]);
+    assert_eq!(options.abi_tags, vec!["none".to_owned()]);
+    assert_eq!(options.platform_tags, vec!["any".to_owned()]);
+    assert_eq!(options.max_file_size_bytes, Some(1024));
 }
 
 #[test]

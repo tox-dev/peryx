@@ -290,7 +290,7 @@ async fn test_resolution_skips_a_non_oci_index() {
     let pypi = Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_core::Ecosystem::new("other"),
         kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
         acl: IndexAcl::default(),

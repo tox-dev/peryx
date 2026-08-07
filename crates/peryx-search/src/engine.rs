@@ -313,7 +313,7 @@ impl PackageSearch {
             .map(|(_sort, address)| {
                 searcher.doc::<TantivyDocument>(address).map(|doc| {
                     let mut result = self.result_from_doc(&doc);
-                    let ecosystem = result.ecosystem.parse().unwrap_or_default();
+                    let ecosystem = result.ecosystem.parse().expect("indexed ecosystem identity is valid");
                     ctx.lexicon(ecosystem).search_noun.clone_into(&mut result.type_label);
                     result
                 })

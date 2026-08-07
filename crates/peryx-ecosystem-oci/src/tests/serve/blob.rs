@@ -624,9 +624,11 @@ fn install_remote_placement(state: &std::sync::Arc<peryx_driver::AppState>, cont
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use peryx_driver::read_through::{DEFAULT_READ_THROUGH_LIMITS, DcTransport, MonotonicClock, RemotePlacementReader};
+    use peryx_ha_distributed::read_through::{
+        DEFAULT_READ_THROUGH_LIMITS, DcTransport, MonotonicClock, RemotePlacementReader,
+    };
+    use peryx_ha_distributed::{LoopbackBlobSource, TransferLimits};
     use peryx_identity::ArtifactDigest;
-    use peryx_replication::{LoopbackBlobSource, TransferLimits};
     use peryx_storage::blob::Digest;
     use peryx_storage::meta::{BackendId, BackendLocation, BlobPlacementKey, BlobPlacementTransition, DataCenterId};
 
