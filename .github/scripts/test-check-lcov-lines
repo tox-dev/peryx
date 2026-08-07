@@ -4,13 +4,36 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 covered="$(mktemp)"
 uncovered="$(mktemp)"
-trap 'rm -f "$covered" "$uncovered"' EXIT
+merged="$(mktemp)"
+external="$(mktemp)"
+function_line="$(mktemp)"
+delimiter="$PWD/.lcov-delimiter-test.rs"
 
-printf '%s\n' SF:covered.rs DA:1,1 DA:2,1 LF:2 LH:1 end_of_record >"$covered"
-printf '%s\n' SF:uncovered.rs DA:1,1 DA:2,0 LF:2 LH:1 end_of_record >"$uncovered"
+printf '%s\n' "SF:$PWD/covered.rs" FN:1,covered FNDA:1,covered DA:1,1 end_of_record >"$covered"
+printf '%s\n' "SF:$PWD/uncovered.rs" FN:1,uncovered FNDA:0,uncovered DA:1,0 end_of_record >"$uncovered"
+printf '%s\n' \
+    "SF:$PWD/merged.rs" FN:1,merged FNDA:0,merged DA:1,0 end_of_record \
+    "SF:$PWD/merged.rs" FN:1,merged FNDA:1,merged DA:1,1 end_of_record >"$merged"
+printf '%s\n' SF:/rustc/library/std/src/external.rs FN:1,external FNDA:0,external DA:1,0 end_of_record >"$external"
+printf '%s\n' "SF:$PWD/function.rs" FN:1,function FNDA:1,function DA:1,0 end_of_record >"$function_line"
+printf '}\n' >"$delimiter"
+delimiter_info="$(mktemp)"
+printf '%s\n' "SF:$delimiter" DA:1,0 end_of_record >"$delimiter_info"
+trap 'rm -f "$covered" "$uncovered" "$merged" "$external" "$function_line" "$delimiter" "$delimiter_info"' EXIT
 
 "$script_dir/check-lcov-lines.awk" "$covered"
+"$script_dir/check-lcov-functions.awk" "$covered"
+"$script_dir/check-lcov-lines.awk" "$merged"
+"$script_dir/check-lcov-functions.awk" "$merged"
+"$script_dir/check-lcov-lines.awk" "$external"
+"$script_dir/check-lcov-functions.awk" "$external"
+"$script_dir/check-lcov-lines.awk" "$function_line"
+"$script_dir/check-lcov-lines.awk" "$delimiter_info"
 if "$script_dir/check-lcov-lines.awk" "$uncovered"; then
     echo "uncovered source line passed the LCOV gate" >&2
+    exit 1
+fi
+if "$script_dir/check-lcov-functions.awk" "$uncovered"; then
+    echo "uncovered source function passed the LCOV gate" >&2
     exit 1
 fi

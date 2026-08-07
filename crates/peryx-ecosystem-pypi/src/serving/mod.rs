@@ -574,7 +574,7 @@ impl ArchiveDriver for PypiServing {
             crate::archive::list_members_nested_path(&request.filename, lease.path(), &request.containers)
         })
         .await
-        .map_err(|err| format!("archive listing task failed: {err}"))?
+        .map_err(archive_listing_task_error)?
         .map(|members| {
             members
                 .into_iter()
@@ -586,7 +586,7 @@ impl ArchiveDriver for PypiServing {
                 })
                 .collect()
         })
-        .map_err(|err| err.to_string())
+        .map_err(crate::error_message)
     }
 
     async fn archive_member_chunk(
@@ -613,17 +613,51 @@ impl ArchiveDriver for PypiServing {
             )
         })
         .await
-        .map_err(|err| format!("archive member task failed: {err}"))?
-        .map_err(|err| err.to_string())?;
+        .map_err(archive_member_task_error)?
+        .map_err(crate::error_message)?;
         Ok(peryx_core::UiMemberChunk {
-            text: String::from_utf8(chunk.bytes)
-                .map_err(|err| format!("archive member {:?} is not UTF-8: {err}", request.member))?,
+            text: member_text(&request.member, chunk.bytes)?,
             size: Some(chunk.size),
             offset: chunk.offset,
             next_offset: chunk.next_offset,
         })
     }
 }
+
+fn archive_listing_task_error(error: impl std::fmt::Display) -> String {
+    format!("archive listing task failed: {error}")
+}
+
+fn archive_member_task_error(error: impl std::fmt::Display) -> String {
+    format!("archive member task failed: {error}")
+}
+
+fn member_text(member: &str, bytes: Vec<u8>) -> Result<String, String> {
+    String::from_utf8(bytes).map_err(|error| format!("archive member {member:?} is not UTF-8: {error}"))
+}
+
+#[cfg(test)]
+mod archive_boundary_tests {
+    use super::{archive_listing_task_error, archive_member_task_error, member_text};
+
+    async fn cancelled_task() -> tokio::task::JoinError {
+        let task = tokio::spawn(std::future::pending::<()>());
+        task.abort();
+        task.await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn task_errors_name_the_failed_operation() {
+        assert!(archive_listing_task_error(cancelled_task().await).starts_with("archive listing task failed:"));
+        assert!(archive_member_task_error(cancelled_task().await).starts_with("archive member task failed:"));
+    }
+
+    #[test]
+    fn member_text_rejects_non_utf8_bytes() {
+        assert!(member_text("METADATA", vec![0xff]).unwrap_err().contains("METADATA"));
+    }
+}
+
 impl PypiServing {
     fn apply_replicated_changes_impl(state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
         let ctx = state.indexer_ctx();
@@ -919,5 +953,23 @@ fn security_token_event(
         event.emit();
     } else {
         event.reason(Some(reason)).emit();
+    }
+}
+
+#[cfg(test)]
+mod maintenance_contract_tests {
+    use peryx_driver::serving::MaintenanceDriver as _;
+
+    use super::PypiServing;
+
+    #[test]
+    fn serving_exposes_pypi_maintenance() {
+        let serving = PypiServing;
+        let capabilities = serving.maintenance_capabilities();
+
+        assert_eq!(serving.ecosystem(), crate::ECOSYSTEM);
+        assert!(capabilities.intent_finalizer.is_some());
+        assert!(capabilities.cache_refresher.is_some());
+        assert!(capabilities.idle_reclaimer.is_none());
     }
 }

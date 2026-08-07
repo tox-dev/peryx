@@ -41,6 +41,9 @@ pub fn init(config: &Config) -> anyhow::Result<()> {
 /// # Errors
 /// Returns an error if the base URL is invalid, the index route is unknown, or the requested
 /// snippet needs uploads on a read-only index.
+/// # Panics
+///
+/// Panics if the caller bypasses configuration validation.
 pub fn config_snippet(config: &Config, route: &str, base_url: &str, format: &str) -> anyhow::Result<String> {
     let base = BaseUrl::parse(base_url)?;
     let index = peryx_http::describe_indexes(&server::build_indexes(&config.indexes, &config.auth, config.offline)?)
@@ -48,10 +51,7 @@ pub fn config_snippet(config: &Config, route: &str, base_url: &str, format: &str
         .find(|index| index.route == route)
         .with_context(|| format!("unknown index route {route:?}"))?;
     let Some(text) = peryx_plugin_registry::snippet_text(
-        index
-            .ecosystem
-            .parse()
-            .with_context(|| format!("invalid configured ecosystem {:?}", index.ecosystem))?,
+        index.ecosystem.parse().expect("configured ecosystems were validated"),
         &base,
         &index.route,
         index.uploads,

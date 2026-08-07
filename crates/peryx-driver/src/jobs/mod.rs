@@ -118,6 +118,12 @@ impl JobFailure {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// Split the failure for transfer across service boundaries.
+    #[must_use]
+    pub fn into_parts(self) -> (&'static str, String) {
+        (self.code, self.message)
+    }
 }
 
 impl std::fmt::Display for JobFailure {

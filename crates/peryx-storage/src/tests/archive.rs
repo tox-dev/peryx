@@ -41,6 +41,7 @@ fn zip_with(path: &str) -> Vec<u8> {
 #[case::changelog("CHANGELOG", MemberKind::Text)]
 #[case::makefile("Makefile", MemberKind::Text)]
 #[case::nested_license("bundle/LICENSE", MemberKind::Text)]
+#[case::nested_archive("bundle/source.tar.gz", MemberKind::Archive)]
 #[case::extension_form_still_text("README.md", MemberKind::Text)]
 #[case::exact_match_not_prefix("NOTICES", MemberKind::Unknown)]
 #[case::other_extensionless_stays_unknown("notes", MemberKind::Unknown)]

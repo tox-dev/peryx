@@ -273,8 +273,13 @@ impl peryx_ha::PlacementReconciler for BoundPlacementReconciler {
                 processed: report.processed,
                 changed: report.changed,
             })
-            .map_err(|error| AvailabilityTaskError::new(error.code(), error.message()))
+            .map_err(task_error)
     }
+}
+
+fn task_error(error: JobFailure) -> AvailabilityTaskError {
+    let (code, message) = error.into_parts();
+    AvailabilityTaskError::new(code, message)
 }
 
 /// Whether repairing `digest` would resurrect withdrawn content: an active revocation has retired it, or

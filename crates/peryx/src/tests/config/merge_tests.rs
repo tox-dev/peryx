@@ -772,3 +772,16 @@ fn test_unknown_ecosystem_is_rejected() {
     let err = Config::default().apply(partial).unwrap_err();
     assert!(err.to_string().contains("unknown ecosystem"), "{err}");
 }
+
+#[test]
+fn test_malformed_ecosystem_is_rejected() {
+    let partial = config::from_toml(
+        PathBuf::from("x.toml"),
+        "[[index]]\nname = \"pypi\"\necosystem = \"not valid\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://pypi.org/simple/\"\n",
+    )
+    .unwrap();
+
+    let error = Config::default().apply(partial).unwrap_err();
+
+    assert!(error.to_string().contains("unknown ecosystem"), "{error}");
+}

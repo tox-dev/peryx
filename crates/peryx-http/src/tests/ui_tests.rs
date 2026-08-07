@@ -25,6 +25,31 @@ use peryx_storage::meta::MetaStore;
 /// handlers branch on: a value, an absent item, and a read error.
 struct UiStub;
 
+struct CapabilityFreeStub;
+
+#[async_trait::async_trait]
+impl peryx_driver::serving::EcosystemDriver for CapabilityFreeStub {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::new("empty")
+    }
+
+    fn capabilities(&self) -> peryx_driver::serving::DriverCapabilities<'_> {
+        peryx_driver::serving::DriverCapabilities::default()
+    }
+
+    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
+        peryx_driver::rate_limit::RouteClass::Listing
+    }
+
+    fn discover_index(
+        &self,
+        index: peryx_driver::state::IndexDescription,
+        _base: Option<&peryx_driver::discovery::BaseUrl>,
+    ) -> serde_json::Value {
+        peryx_driver::discovery::minimal_entry(&index)
+    }
+}
+
 #[async_trait::async_trait]
 impl peryx_driver::serving::EcosystemDriver for UiStub {
     fn ecosystem(&self) -> Ecosystem {
@@ -215,10 +240,12 @@ fn ui_app() -> (tempfile::TempDir, axum::Router) {
     let indexes = vec![
         index("good", Ecosystem::new("example")),
         index("bad", Ecosystem::new("example")),
+        index("empty", Ecosystem::new("empty")),
         index("orphan", Ecosystem::new("other")),
     ];
     let mut state = AppState::new(meta, blobs, 60, indexes);
     state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
+    state.register_ecosystem(Arc::new(CapabilityFreeStub), Arc::new(peryx_search::EmptyIndexer));
     (dir, crate::router(Arc::new(state)))
 }
 
@@ -319,10 +346,12 @@ async fn ui_app_admin() -> (tempfile::TempDir, axum::Router, String) {
     let indexes = vec![
         index("good", Ecosystem::new("example")),
         index("bad", Ecosystem::new("example")),
+        index("empty", Ecosystem::new("empty")),
         index("orphan", Ecosystem::new("other")),
     ];
     let mut state = AppState::new(meta.clone(), blobs, 60, indexes);
     state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
+    state.register_ecosystem(Arc::new(CapabilityFreeStub), Arc::new(peryx_search::EmptyIndexer));
     let authorization = grant_administrator(&mut state, meta).await;
     (dir, crate::router(Arc::new(state)), authorization)
 }
@@ -651,6 +680,26 @@ async fn test_ui_member_is_404_for_an_unknown_route() {
         get_status(&app, "/+ui/member?index=nope&project=img&digest=sha256:a&member=f").await,
         StatusCode::NOT_FOUND
     );
+}
+
+#[rstest]
+#[case::projects("/+ui/projects?index=empty")]
+#[case::project("/+ui/project?index=empty&project=demo")]
+#[case::manifest("/+ui/manifest?index=empty&project=demo&ref=latest")]
+#[case::members("/+ui/members?index=empty&project=demo&digest=sha256:a")]
+#[case::member("/+ui/member?index=empty&project=demo&digest=sha256:a&member=f")]
+#[tokio::test]
+async fn test_ui_capability_free_driver_is_404(#[case] uri: &str) {
+    let (_dir, app) = ui_app();
+
+    assert_eq!(get_status(&app, uri).await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_metrics_skip_a_driver_without_metrics() {
+    let (_dir, app) = ui_app();
+
+    assert_eq!(get_status(&app, "/metrics").await, StatusCode::OK);
 }
 
 #[tokio::test]

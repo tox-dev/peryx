@@ -12,6 +12,14 @@ use crate::config::{AvailabilityConfig, DcMember, ReplicationConfig};
 
 const CONTENT: &[u8] = b"cross-datacenter artifact bytes";
 
+#[test]
+fn test_task_error_preserves_the_job_failure() {
+    let error = task_error(JobFailure::new("copy_failed", "peer unavailable"));
+
+    assert_eq!(error.code(), "copy_failed");
+    assert_eq!(error.message(), "peer unavailable");
+}
+
 fn digests(content: &[u8]) -> (Digest, ArtifactDigest) {
     let blob = Digest::of(content);
     let artifact = ArtifactDigest::from_sha256(blob.as_str()).unwrap();
@@ -598,11 +606,16 @@ async fn test_copy_pass_is_fenced_shut_without_a_cluster_term() {
     );
 
     let report = copier
-        .copy_pass(&state, &|| false, DcCopyParameters::new())
+        .bind(state.serving.clone())
+        .copy_pass(&|| false, NonZeroUsize::new(4).unwrap())
         .await
         .unwrap();
 
-    assert_eq!(report, JobReport::default(), "no ownership term fences every copy shut");
+    assert_eq!(
+        report,
+        peryx_ha::AvailabilityTaskReport::default(),
+        "no ownership term fences every copy shut"
+    );
 }
 
 #[tokio::test]

@@ -14,6 +14,14 @@ use crate::config::{DcMember, DcRole};
 
 const CONTENT: &[u8] = b"placement reconcile artifact bytes";
 
+#[test]
+fn test_task_error_preserves_the_job_failure() {
+    let error = task_error(JobFailure::new("reconcile_failed", "store unavailable"));
+
+    assert_eq!(error.code(), "reconcile_failed");
+    assert_eq!(error.message(), "store unavailable");
+}
+
 fn digests(content: &[u8]) -> (Digest, ArtifactDigest) {
     let blob = Digest::of(content);
     let artifact = ArtifactDigest::from_sha256(blob.as_str()).unwrap();
@@ -553,12 +561,14 @@ async fn test_reconcile_pass_is_fenced_shut_without_a_cluster_term() {
     seed_verified(&state.meta, &key(&artifact, &backend, "home", artifact.sha256()), 1);
 
     let report = reconciler("home", store, &["home", "east"])
-        .reconcile_pass(&state, &|| false, PlacementReconcileParameters::new())
+        .bind(state.serving.clone())
+        .reconcile_pass(&|| false, std::num::NonZeroUsize::new(100).unwrap())
+        .await
         .unwrap();
 
     assert_eq!(
         report,
-        JobReport::default(),
+        peryx_ha::AvailabilityTaskReport::default(),
         "no cluster term fences reconciliation shut"
     );
 }

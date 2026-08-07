@@ -120,8 +120,6 @@ pub struct RetentionPage {
 /// Why a retention plan did not complete.
 #[derive(Debug)]
 pub enum RetentionPlanError {
-    /// The repository has no ecosystem driver that plans retention, so there is no plan to page.
-    Unsupported,
     /// A resumed page's cursor names an identity the repository no longer has; streaming it would mix
     /// rows from two snapshots. Carries what the cursor expected and what the repository holds now.
     Stale {
@@ -138,7 +136,6 @@ pub enum RetentionPlanError {
 impl std::fmt::Display for RetentionPlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => f.write_str("the repository does not support retention planning"),
             Self::Stale { .. } => f.write_str("the plan cursor is stale: the repository changed since it was issued"),
             Self::Interrupted(reason) => write!(f, "the retention plan was interrupted: {reason}"),
             Self::Store(reason) => write!(f, "the retention plan could not read the store: {reason}"),
@@ -276,6 +273,9 @@ fn line(value: &impl Serialize) -> Bytes {
 /// and a disconnected reader stops it. `permit` rides along so the repository's concurrency slot stays
 /// held for the stream's whole life. The export's `summary` is the
 /// identity the caller already read and validated the cursor against; the header carries it first.
+///
+/// # Panics
+/// Panics if the caller bypasses retention capability resolution.
 pub fn export_body(
     driver: Arc<dyn EcosystemDriver>,
     meta: MetaStore,
@@ -293,10 +293,10 @@ pub fn export_body(
             limit: None,
             expect: None,
         };
-        let Some(retention) = driver.capabilities().retention else {
-            let _ = tx.blocking_send(Err(std::io::Error::other("retention capability unavailable")));
-            return;
-        };
+        let retention = driver
+            .capabilities()
+            .retention
+            .expect("export preparation requires retention support");
         let result = write_export(retention, &meta, &query, export.summary, &mut |bytes| {
             tx.blocking_send(Ok(bytes)).map_err(drop)
         });
@@ -914,7 +914,6 @@ mod tests {
                 frontier: peryx_policy::RetentionFrontier::default(),
             },
         };
-        assert!(RetentionPlanError::Unsupported.to_string().contains("does not support"));
         assert!(stale.to_string().contains("stale"));
         assert!(
             RetentionPlanError::Interrupted("gone".to_owned())

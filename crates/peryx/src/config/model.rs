@@ -214,18 +214,6 @@ impl AvailabilityConfig {
         }
     }
 
-    /// Whether mode is explicitly `none`.
-    #[must_use]
-    pub const fn is_single_node_mode(&self) -> bool {
-        matches!(self, Self::None)
-    }
-
-    /// Whether mode enables a replica role.
-    #[must_use]
-    pub const fn has_replication_role(&self) -> bool {
-        !self.is_single_node_mode()
-    }
-
     /// Whether mode is `dc` or `ha`.
     #[must_use]
     pub const fn is_distributed_mode(&self) -> bool {

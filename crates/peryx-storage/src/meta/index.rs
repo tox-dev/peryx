@@ -583,4 +583,30 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, MetaScanError::Visit(_)));
     }
+
+    #[test]
+    fn test_remove_driver_values_if_honors_zero_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+
+        assert!(
+            meta.remove_driver_values_if("catalog/", 0, |_| Ok(true))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_remove_driver_values_if_stops_after_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+        meta.put_driver_value("catalog/1", b"one").unwrap();
+        meta.put_driver_value("other/1", b"other").unwrap();
+
+        assert!(
+            meta.remove_driver_values_if("catalog/", 10, |_| Ok(false))
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

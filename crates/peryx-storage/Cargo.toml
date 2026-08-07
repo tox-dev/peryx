@@ -35,6 +35,8 @@ url.workspace = true
 [dev-dependencies]
 aws-smithy-http-client.workspace = true
 http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
 mockall.workspace = true
 reqwest.workspace = true
 rstest.workspace = true

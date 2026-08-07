@@ -55,6 +55,9 @@ struct PlanResponse {
 }
 
 /// One page of ordered removal candidates for a repository.
+///
+/// # Panics
+/// Panics if request resolution returns a driver without retention support.
 pub async fn retention_plan(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
     let request = match Prepared::from_request(&state, request).await {
         Ok(prepared) => prepared,
@@ -73,9 +76,11 @@ pub async fn retention_plan(State(state): State<Arc<AppState>>, request: Request
         limit: Some(request.limit),
         expect: request.expect,
     };
-    let Some(driver) = request.driver.capabilities().retention else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "retention capability unavailable").into_response();
-    };
+    let driver = request
+        .driver
+        .capabilities()
+        .retention
+        .expect("request resolution requires retention support");
     match plan(driver, &state.meta, &query, &mut |decision| {
         candidates.push(decision.clone());
         Ok(())
@@ -234,7 +239,6 @@ fn plan_etag(summary: RetentionSummary) -> HeaderValue {
 
 fn plan_error(error: &RetentionPlanError) -> Response {
     match error {
-        RetentionPlanError::Unsupported => not_found(),
         RetentionPlanError::Stale { .. } => stale(),
         // A buffered page never interrupts its own sink, and an export interruption means the client
         // already left; both remaining cases are a failed read the caller cannot act on.

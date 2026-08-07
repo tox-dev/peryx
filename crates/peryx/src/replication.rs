@@ -934,9 +934,9 @@ fn primary_liveness(config: &Config) -> Option<Arc<LivenessTracker>> {
 
 /// Replication routes and follower work prepared from one resolved configuration.
 pub struct ReplicationRuntime {
-    primary: Option<Router>,
+    routes: Router,
     replica: Option<(ReplicaLoop, AvailabilityRuntime)>,
-    availability: Option<AvailabilityNode>,
+    availability: AvailabilityNode,
     /// The replica's analytics pull worker, spawned onto the availability runtime alongside the replica
     /// loop. `None` unless this process follows an upstream to pull analytics batches from.
     analytics_puller: Option<analytics::AnalyticsPuller>,
@@ -1024,23 +1024,22 @@ impl ReplicationRuntime {
     /// Returns an error if a secret cannot be read, the upstream URL is invalid, or the primary
     /// router rejects its identity or token.
     pub fn new(config: &Config, state: &Arc<AppState>) -> anyhow::Result<Self> {
-        let mode = match &config.availability {
+        let (mode, replication) = match &config.availability {
             AvailabilityConfig::None => anyhow::bail!("distributed runtime requested while availability is disabled"),
-            AvailabilityConfig::Dc(_) => "dc",
-            AvailabilityConfig::Ha(_) => "ha",
+            AvailabilityConfig::Dc(replication) => ("dc", replication),
+            AvailabilityConfig::Ha(replication) => ("ha", replication),
         };
-        let (primary, replica, availability, beacon) = match config.availability.replication() {
-            None => (None, None, None, None),
-            Some(ReplicationConfig::Primary { source, token }) => {
+        let (routes, replica, availability, beacon) = match replication {
+            ReplicationConfig::Primary { source, token } => {
                 let (router, node) = build_primary(config, state, mode, source, token)?;
-                (Some(router), None, Some(node), None)
+                (router, None, node, None)
             }
-            Some(ReplicationConfig::Replica {
+            ReplicationConfig::Replica {
                 upstream,
                 token,
                 poll_interval,
                 page_size,
-            }) => {
+            } => {
                 let token = token.read().context("read the replica replication token")?;
                 let resume = state.meta.current_serial().context("read the replica serial")?;
                 let (metadata, transport) = replica_transports(config, upstream, &token, resume, *page_size)?;
@@ -1069,7 +1068,7 @@ impl ReplicationRuntime {
                     workers: Some(workers),
                 };
                 (
-                    Some(follower),
+                    follower,
                     Some((
                         ReplicaLoop {
                             app: state.clone(),
@@ -1088,21 +1087,19 @@ impl ReplicationRuntime {
                         },
                         runtime,
                     )),
-                    Some(node),
+                    node,
                     beacon,
                 )
             }
         };
         // A `dc` or `ha` node resolves each write to a datacenter durability decision, so it exposes the
         // outcome counters; single-node `none` runs no such decision and registers nothing.
-        if availability.is_some() {
-            state.serving.configure_distributed();
-            if let Some(metrics) = state.serving.dc_durability() {
-                state.register_prometheus(metrics.clone());
-            }
+        state.serving.configure_distributed();
+        if let Some(metrics) = state.serving.dc_durability() {
+            state.register_prometheus(metrics.clone());
         }
         Ok(Self {
-            primary,
+            routes,
             replica,
             availability,
             analytics_puller: build_analytics_puller(config, state)?,
@@ -1146,19 +1143,12 @@ impl ReplicationRuntime {
     /// Mount primary routes and the availability health and readiness resources, when configured, on
     /// the process router. A `none` process has no availability surface and mounts neither resource.
     pub fn mount(&self, router: Router) -> Router {
-        let router = match &self.primary {
-            Some(primary) => router.merge(primary.clone()),
-            None => router,
-        };
-        match &self.availability {
-            Some(node) => router.merge(
-                Router::new()
-                    .route("/+replication/v1/health", get(availability_health))
-                    .route("/+replication/v1/ready", get(availability_readiness))
-                    .with_state(node.clone()),
-            ),
-            None => router,
-        }
+        router.merge(self.routes.clone()).merge(
+            Router::new()
+                .route("/+replication/v1/health", get(availability_health))
+                .route("/+replication/v1/ready", get(availability_readiness))
+                .with_state(self.availability.clone()),
+        )
     }
 
     /// Start the replica loop on its own availability runtime, when configured, returning the
@@ -1179,10 +1169,8 @@ impl ReplicationRuntime {
 
     #[cfg(test)]
     pub(crate) async fn sync_cycle(&mut self) -> Option<bool> {
-        match &mut self.replica {
-            Some((replica, _)) => Some(replica.cycle().await.unwrap_or(true)),
-            None => None,
-        }
+        let (replica, _) = self.replica.as_mut().expect("sync cycle requires a replica runtime");
+        Some(replica.cycle().await.unwrap_or(true))
     }
 }
 

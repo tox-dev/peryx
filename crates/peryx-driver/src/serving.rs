@@ -98,25 +98,18 @@ pub trait EcosystemPlugin: Send + Sync {
         false
     }
 
-    fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
-        paths
-    }
+    fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder;
 
     /// # Errors
     ///
     /// Returns an error when `format` is unsupported or snippet generation fails.
     fn snippet_text(
         &self,
-        _base: &crate::discovery::BaseUrl,
-        _route: &str,
-        _uploads: bool,
+        base: &crate::discovery::BaseUrl,
+        route: &str,
+        uploads: bool,
         format: &str,
-    ) -> Result<Option<String>, String> {
-        Err(format!(
-            "ecosystem {} does not provide client snippet {format:?}",
-            self.ecosystem()
-        ))
-    }
+    ) -> Result<Option<String>, String>;
 }
 
 #[derive(Default, Clone, Copy)]

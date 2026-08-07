@@ -114,9 +114,10 @@ pub fn compile_index_settings(
     name: &str,
     settings: &toml::Table,
 ) -> Result<Option<CompiledEcosystemSettings>, String> {
-    plugin(ecosystem)
-        .ok_or_else(|| format!("ecosystem {ecosystem} is not installed"))?
-        .compile_index_settings(name, settings)
+    let Some(plugin) = plugin(ecosystem) else {
+        return Err(format!("ecosystem {ecosystem} is not installed"));
+    };
+    plugin.compile_index_settings(name, settings)
 }
 
 #[must_use]
@@ -140,7 +141,8 @@ pub fn snippet_text(
     uploads: bool,
     format: &str,
 ) -> Result<Option<String>, String> {
-    plugin(ecosystem)
-        .ok_or_else(|| format!("ecosystem {ecosystem} is not installed"))?
-        .snippet_text(base, route, uploads, format)
+    let Some(plugin) = plugin(ecosystem) else {
+        return Err(format!("ecosystem {ecosystem} is not installed"));
+    };
+    plugin.snippet_text(base, route, uploads, format)
 }

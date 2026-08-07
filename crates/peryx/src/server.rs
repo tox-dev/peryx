@@ -242,11 +242,11 @@ const fn availability_role(config: &Config) -> peryx_core::NodeRole {
 /// Install the resolved availability posture on the state: the authority role, the topology snapshot the
 /// process serves, and the write-ack quorum and deadline hosted writes are acknowledged against.
 fn configure_availability(state: &mut AppState, config: &Config, read_only: bool) -> anyhow::Result<()> {
-    if matches!(config.availability, AvailabilityConfig::None) {
+    let Some(mode) = topology_mode(config.availability.mode()) else {
         return Ok(());
-    }
+    };
     state.set_availability_role(availability_role(config));
-    let topology = availability_topology(config, read_only);
+    let topology = availability_topology(config, read_only, mode);
     state.set_availability_topology(topology.clone());
     state.set_write_acknowledger(Arc::new(peryx_ha_distributed::DistributedWriteAcknowledger::new(
         topology,
@@ -464,12 +464,19 @@ pub fn frontier_endpoint_router(config: &Config, state: &Arc<AppState>) -> anyho
     Ok(Some(router))
 }
 
-fn availability_topology(config: &Config, read_only: bool) -> peryx_core::TopologyConfig {
-    let mode = match config.availability.mode() {
-        AvailabilityMode::None => peryx_core::TopologyMode::None,
-        AvailabilityMode::Dc => peryx_core::TopologyMode::Dc,
-        AvailabilityMode::Ha => peryx_core::TopologyMode::Ha,
-    };
+const fn topology_mode(mode: AvailabilityMode) -> Option<peryx_core::TopologyMode> {
+    match mode {
+        AvailabilityMode::None => None,
+        AvailabilityMode::Dc => Some(peryx_core::TopologyMode::Dc),
+        AvailabilityMode::Ha => Some(peryx_core::TopologyMode::Ha),
+    }
+}
+
+fn availability_topology(
+    config: &Config,
+    read_only: bool,
+    mode: peryx_core::TopologyMode,
+) -> peryx_core::TopologyConfig {
     let (group, members) = config.dc_membership.as_ref().map_or_else(
         || (None, Vec::new()),
         |membership| {

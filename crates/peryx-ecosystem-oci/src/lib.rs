@@ -167,6 +167,16 @@ impl EcosystemPlugin for OciPlugin {
     fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
         openapi::openapi_paths(paths)
     }
+
+    fn snippet_text(
+        &self,
+        _base: &peryx_driver::discovery::BaseUrl,
+        _route: &str,
+        _uploads: bool,
+        format: &str,
+    ) -> Result<Option<String>, String> {
+        Err(format!("OCI does not provide client snippet {format:?}"))
+    }
 }
 
 fn install_compiled(
@@ -174,17 +184,14 @@ fn install_compiled(
     settings: &[(&str, &CompiledEcosystemSettings)],
     journal_outbox: bool,
 ) -> Result<(), String> {
-    let settings = settings
-        .iter()
-        .map(|(name, settings)| {
-            settings
-                .value::<IndexSettings>()
-                .copied()
-                .map(|settings| ((*name).to_owned(), settings))
-                .ok_or_else(|| format!("compiled settings for {name} have the wrong type"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    OciInstaller::new(settings, journal_outbox).install(state);
+    let mut compiled = Vec::with_capacity(settings.len());
+    for (name, settings) in settings {
+        let Some(settings) = settings.value::<IndexSettings>().copied() else {
+            return Err(format!("compiled settings for {name} have the wrong type"));
+        };
+        compiled.push(((*name).to_owned(), settings));
+    }
+    OciInstaller::new(compiled, journal_outbox).install(state);
     Ok(())
 }
 
@@ -213,11 +220,11 @@ impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegi
         }
         output
             .write_all(b"kind\tindex\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n")
-            .map_err(|error| error.to_string())?;
+            .map_err(error_message)?;
         if request.action == MirrorAction::Plan {
             for image in &images {
                 writeln!(output, "manifest\t{}\t{image}\t{image}\t\t\t0\tselected\t", index.name)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(error_message)?;
             }
             writeln!(
                 output,
@@ -225,7 +232,7 @@ impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegi
                 index.name,
                 images.len()
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(error_message)?;
             return Ok(());
         }
         let settings = IndexSettings::compile(request.settings)?;
@@ -236,7 +243,7 @@ impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegi
         };
         let rows = mirror(&state.serving, index, settings, &images, mode)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(error_message)?;
         let mut errors = 0_u64;
         for row in rows {
             errors += u64::from(row.status == "error");
@@ -245,7 +252,7 @@ impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegi
                 "{}\t{}\t{}\t{}\t{}\t\t{}\t{}\t{}",
                 row.kind, row.repo, row.reference, row.reference, row.digest, row.bytes, row.status, row.reason
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(error_message)?;
         }
         if errors == 0 {
             Ok(())
@@ -256,19 +263,24 @@ impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegi
 }
 
 fn table_strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
-    table.get(key).map_or(Ok(Vec::new()), |value| {
-        value
-            .as_array()
-            .ok_or_else(|| format!("{key} must be an array"))?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("{key} entries must be strings"))
-            })
-            .collect()
-    })
+    let Some(value) = table.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = value.as_array() else {
+        return Err(format!("{key} must be an array"));
+    };
+    let mut strings = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(value) = value.as_str() else {
+            return Err(format!("{key} entries must be strings"));
+        };
+        strings.push(value.to_owned());
+    }
+    Ok(strings)
+}
+
+fn error_message(error: impl std::fmt::Display) -> String {
+    error.to_string()
 }
 
 /// Wire the OCI registry driver into a freshly built [`AppState`], with each OCI index's compiled

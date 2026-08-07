@@ -240,6 +240,21 @@ async fn test_trash_list_surfaces_store_faults(#[case] fault: StoreFault, #[case
 }
 
 #[tokio::test]
+async fn test_trash_record_rejects_an_invalid_ecosystem() {
+    let (_dir, app) = app().await;
+
+    let (status, _, document) = get(
+        &app,
+        "/+trash/record?ecosystem=%20&repository=private&name=demo",
+        Some(("Alice", USER_PASSWORD)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(document["error"], "invalid trash query");
+}
+
+#[tokio::test]
 async fn test_trash_inspect_returns_not_found_for_an_absent_record() {
     let (_dir, app) = app().await;
 

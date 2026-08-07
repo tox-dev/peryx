@@ -435,13 +435,17 @@ fn map_sdk_error(error: &aws_sdk_s3::Error) -> S3Error {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
     use std::sync::Arc;
     use std::time::Duration;
 
     use aws_sdk_s3::config::Credentials;
     use aws_sdk_s3::primitives::SdkBody;
     use aws_smithy_http_client::test_util::{CaptureRequestReceiver, capture_request};
+    use bytes::Bytes;
     use futures_util::StreamExt as _;
+    use http_body::Frame;
+    use http_body_util::StreamBody;
     use rstest::rstest;
     use tokio::sync::OnceCell;
     use url::Url;
@@ -820,5 +824,23 @@ mod tests {
 
         assert_eq!(get.total_bytes, 0);
         assert!(collect_body(get).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_body_reports_its_request_deadline() {
+        let body = StreamBody::new(futures_util::stream::pending::<Result<Frame<Bytes>, Infallible>>());
+        let response = http::Response::builder()
+            .status(200)
+            .header(http::header::CONTENT_LENGTH, 1)
+            .body(SdkBody::from_body_1_x(body))
+            .unwrap();
+        let mut settings = base_settings();
+        settings.request_timeout = Duration::from_millis(20);
+        let (client, _) = capturing_client(S3Config::new(settings).unwrap(), Some(response));
+
+        let mut get = client.get("cache/sha256/digest", None).await.unwrap();
+        let error = get.body.next().await.unwrap().unwrap_err();
+
+        assert!(matches!(error, S3Error::Request(_)));
     }
 }

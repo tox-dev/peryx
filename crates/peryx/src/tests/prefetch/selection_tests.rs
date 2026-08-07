@@ -1,11 +1,72 @@
 use peryx_ecosystem_pypi::store::{catalog_state, get_project, list_projects, put_project};
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
+use rstest::rstest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, Request, ResponseTemplate};
 
 use super::*;
 use crate::cli::PrefetchPlanArgs;
+
+#[rstest]
+#[case::missing_separator("packages")]
+#[case::missing_key("=[\"flask\"]")]
+#[case::missing_value("packages=")]
+#[tokio::test]
+async fn test_mirror_rejects_malformed_overrides(#[case] value: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let mut options = command_options(dir.path(), Vec::new());
+    options.overrides.push(value.to_owned());
+
+    let (_text, error) = run_err(
+        &mirror(&dir, &server),
+        &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
+    )
+    .await;
+
+    assert!(error.to_string().contains("must be KEY=VALUE"), "{error}");
+}
+
+#[tokio::test]
+async fn test_mirror_rejects_an_invalid_override_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let mut options = command_options(dir.path(), Vec::new());
+    options.overrides.push("packages=[".to_owned());
+
+    let (_text, error) = run_err(
+        &mirror(&dir, &server),
+        &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
+    )
+    .await;
+
+    assert!(error.to_string().contains("invalid value for mirror option"), "{error}");
+}
+
+#[rstest]
+#[case::array_required("packages", toml::Value::Boolean(true), "packages must be an array")]
+#[case::string_entries("packages", toml::Value::Array(vec![toml::Value::Integer(1)]), "packages entries must be strings")]
+#[case::boolean_required("no_wheels", toml::Value::String("yes".to_owned()), "no_wheels must be a boolean")]
+#[tokio::test]
+async fn test_mirror_rejects_invalid_ecosystem_options(
+    #[case] key: &str,
+    #[case] value: toml::Value,
+    #[case] expected: &str,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let mut options = command_options(dir.path(), Vec::new());
+    set_option(&mut options, key, value);
+
+    let (_text, error) = run_err(
+        &mirror(&dir, &server),
+        &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
+    )
+    .await;
+
+    assert!(error.to_string().contains(expected), "{error}");
+}
 
 #[tokio::test]
 async fn test_mirror_plan_expands_nested_requirements_and_trims_options() {

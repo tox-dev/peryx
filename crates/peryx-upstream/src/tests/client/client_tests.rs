@@ -289,11 +289,9 @@ async fn test_head_file_for_range_requires_content_length() {
 
 #[tokio::test]
 async fn test_new_adds_trailing_slash() {
-    let client = UpstreamClient::new("https://upstream.example/artifacts/").unwrap();
-    // A trailing slash was added, so joining a project stays under /simple/.
-    let bytes_err = client.fetch_bytes("http://127.0.0.1:0/x").await;
-    assert!(bytes_err.is_err()); // exercises the Http error path on an unusable port
-    let _ = client;
+    let client = UpstreamClient::new("https://upstream.example/artifacts").unwrap();
+
+    assert_eq!(client.base_url(), "https://upstream.example/artifacts/");
 }
 
 #[test]

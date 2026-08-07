@@ -217,11 +217,8 @@ impl EcosystemPlugin for PypiPlugin {
         Ok(())
     }
 
-    fn supports(&self, capability: EcosystemCapability) -> bool {
-        matches!(
-            capability,
-            EcosystemCapability::CatalogSync | EcosystemCapability::TrustedPublishing
-        )
+    fn supports(&self, _capability: EcosystemCapability) -> bool {
+        true
     }
 
     fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
@@ -242,6 +239,25 @@ impl EcosystemPlugin for PypiPlugin {
             _ => return Err(format!("unknown snippet format {format:?}")),
         };
         Ok(discovery::snippet_text(base, route, uploads, kind))
+    }
+}
+
+#[cfg(test)]
+mod plugin_contract_tests {
+    use peryx_driver::discovery::BaseUrl;
+    use peryx_driver::serving::{EcosystemCapability, EcosystemPlugin as _};
+
+    use super::PypiPlugin;
+
+    #[test]
+    fn plugin_exposes_capabilities_and_validates_snippet_formats() {
+        let plugin = PypiPlugin;
+        let base = BaseUrl::parse("https://packages.example/").unwrap();
+
+        assert!(plugin.supports(EcosystemCapability::CatalogSync));
+        assert!(plugin.supports(EcosystemCapability::TrustedPublishing));
+        assert!(plugin.snippet_text(&base, "pypi", true, "pip.conf").unwrap().is_some());
+        assert!(plugin.snippet_text(&base, "pypi", true, "unknown").is_err());
     }
 }
 

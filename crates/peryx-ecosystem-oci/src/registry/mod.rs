@@ -459,6 +459,21 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> MaintenanceDriver for Oci
     }
 }
 
+#[cfg(test)]
+mod maintenance_contract_tests {
+    use peryx_driver::serving::MaintenanceDriver as _;
+
+    use super::OciRegistry;
+
+    #[test]
+    fn registry_exposes_oci_idle_reclamation() {
+        let registry = OciRegistry::default();
+
+        assert_eq!(registry.ecosystem(), crate::ECOSYSTEM);
+        assert!(registry.maintenance_capabilities().idle_reclaimer.is_some());
+    }
+}
+
 #[async_trait]
 impl<S: BuildHasher + Default + Send + Sync + 'static> IdleReclaimer for OciRegistryWithHasher<S> {
     async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {

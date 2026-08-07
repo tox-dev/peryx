@@ -120,25 +120,30 @@ fn mode(value: &str) -> Result<PrefetchMode, String> {
 }
 
 fn table_strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
-    table.get(key).map_or(Ok(Vec::new()), |value| {
-        value
-            .as_array()
-            .ok_or_else(|| format!("{key} must be an array"))?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("{key} entries must be strings"))
-            })
-            .collect()
-    })
+    let Some(value) = table.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = value.as_array() else {
+        return Err(format!("{key} must be an array"));
+    };
+    let mut strings = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(value) = value.as_str() else {
+            return Err(format!("{key} entries must be strings"));
+        };
+        strings.push(value.to_owned());
+    }
+    Ok(strings)
 }
 
 fn table_bool(table: &toml::Table, key: &str, default: bool) -> Result<bool, String> {
-    table.get(key).map_or(Ok(default), |value| {
-        value.as_bool().ok_or_else(|| format!("{key} must be a boolean"))
-    })
+    let Some(value) = table.get(key) else {
+        return Ok(default);
+    };
+    let Some(value) = value.as_bool() else {
+        return Err(format!("{key} must be a boolean"));
+    };
+    Ok(value)
 }
 
 fn table_u64(table: &toml::Table, key: &str) -> Result<Option<u64>, String> {
@@ -151,6 +156,24 @@ fn table_u64(table: &toml::Table, key: &str) -> Result<Option<u64>, String> {
         .map(Some)
         .ok_or_else(|| format!("{key} must be an integer"))
     })
+}
+
+#[cfg(test)]
+mod config_contract_tests {
+    use super::{mode, table_u64};
+
+    #[test]
+    fn configuration_rejects_unknown_modes_and_invalid_sizes() {
+        assert_eq!(mode("unknown").unwrap_err(), "unknown mirror mode \"unknown\"");
+        for value in [
+            toml::Value::Integer(-1),
+            toml::Value::String("large".to_owned()),
+            toml::Value::Boolean(true),
+        ] {
+            let table = toml::Table::from_iter([("size".to_owned(), value)]);
+            assert_eq!(table_u64(&table, "size").unwrap_err(), "size must be an integer");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

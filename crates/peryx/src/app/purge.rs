@@ -183,14 +183,9 @@ fn orphan_candidates(blobs: &BlobStorage, referenced: &BTreeSet<String>) -> anyh
 pub fn referenced_blob_digests(meta: &MetaStore) -> anyhow::Result<BTreeSet<String>> {
     let mut digests = BTreeSet::new();
     for serving in crate::server::drivers().present() {
-        let Some(driver) = serving.capabilities().blob_references else {
-            continue;
-        };
-        digests.extend(
-            driver
-                .referenced_blob_digests(meta)
-                .map_err(|reason| anyhow::anyhow!("scan {} blob references: {reason}", serving.ecosystem().as_str()))?,
-        );
+        if let Some(driver) = serving.capabilities().blob_references {
+            digests.extend(driver.referenced_blob_digests(meta).map_err(anyhow::Error::msg)?);
+        }
     }
     Ok(digests)
 }

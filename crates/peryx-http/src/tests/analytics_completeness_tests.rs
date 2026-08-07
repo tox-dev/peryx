@@ -95,6 +95,14 @@ enum Snapshot<'a> {
 }
 
 async fn app(members: Vec<TopologyMember>, snapshot: Snapshot<'_>) -> (tempfile::TempDir, Arc<AppState>) {
+    app_with_completeness(members, snapshot, true).await
+}
+
+async fn app_with_completeness(
+    members: Vec<TopologyMember>,
+    snapshot: Snapshot<'_>,
+    enabled: bool,
+) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -144,8 +152,24 @@ async fn app(members: Vec<TopologyMember>, snapshot: Snapshot<'_>) -> (tempfile:
         members,
         ..TopologyConfig::default()
     });
-    state.set_analytics_completeness(Arc::new(DistributedAnalyticsCompleteness));
+    if enabled {
+        state.set_analytics_completeness(Arc::new(DistributedAnalyticsCompleteness));
+    }
     (dir, Arc::new(state))
+}
+
+#[tokio::test]
+async fn test_completeness_is_unavailable_without_distributed_analytics() {
+    let (_dir, state) = app_with_completeness(Vec::new(), Snapshot::Absent, false).await;
+
+    let (status, _, _) = get(
+        &state,
+        &format!("/+analytics/completeness?{}", window()),
+        Some(("Olivia", USER_PASSWORD)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 fn indexes() -> Vec<Index> {

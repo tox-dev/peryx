@@ -9,6 +9,7 @@ use peryx_storage::meta::{
     BackendId, BackendLocation, BlobPlacementKey, BlobPlacementTransition, DataCenterId, MetaStore, ReclamationState,
     ReclamationStatus,
 };
+use redb::{Database, TableDefinition};
 
 use super::*;
 use crate::config::{DcMember, DcMembership, DcRole};
@@ -112,10 +113,16 @@ async fn test_reclaim_pass_is_a_no_op_without_a_cluster_term() {
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
     let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 0, ReclamationParameters::new())
+        .bind(state.serving.clone())
+        .reclaim_pass(&|| false, 0, std::num::NonZeroUsize::new(100).unwrap())
+        .await
         .unwrap();
 
-    assert_eq!(report, JobReport::default(), "term 0 fences the pass shut");
+    assert_eq!(
+        report,
+        peryx_ha::AvailabilityTaskReport::default(),
+        "term 0 fences the pass shut"
+    );
     assert_eq!(tombstone_status(&state.meta, &artifact), None);
 }
 
@@ -320,10 +327,114 @@ async fn test_a_reference_scan_failure_surfaces() {
     };
 
     let error = reclaimer
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+        .bind(state.serving.clone())
+        .reclaim_pass(&|| false, 9, std::num::NonZeroUsize::new(100).unwrap())
+        .await
         .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_references");
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_frontier_read_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = Database::create(dir.path().join("peryx.redb")).unwrap();
+    let write = database.begin_write().unwrap();
+    write.open_table(TableDefinition::<&str, &str>::new("serial")).unwrap();
+    write.commit().unwrap();
+    drop(database);
+    let (_app_dir, state) = app(MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap());
+
+    let error = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
+        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_frontier_read");
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_blob_scan_failure() {
+    let (_meta_dir, meta) = meta();
+    let dir = tempfile::tempdir().unwrap();
+    let blob_path = dir.path().join("blobs");
+    std::fs::create_dir(&blob_path).unwrap();
+    std::fs::write(blob_path.join("sha256"), b"not a directory").unwrap();
+    let state = AppState::new(meta, BlobStorage::filesystem(blob_path), 60, Vec::new());
+
+    let error = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
+        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_scan");
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_tombstone_read_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = Database::create(dir.path().join("peryx.redb")).unwrap();
+    let write = database.begin_write().unwrap();
+    write.open_table(TableDefinition::<&str, u64>::new("serial")).unwrap();
+    write
+        .open_table(TableDefinition::<&str, u64>::new("reclamation_tombstone"))
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+    let (_app_dir, state) = app(MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap());
+
+    let error = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
+        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_read");
+}
+
+#[test]
+fn test_reclaim_pass_stops_before_finalizing_when_cancelled() {
+    let (_meta_dir, meta) = meta();
+    let artifact = ArtifactDigest::from_sha256("a".repeat(64)).unwrap();
+    meta.select_reclamation_candidate(&artifact, false, 0, 9, 10).unwrap();
+    let (_app_dir, state) = app(meta);
+
+    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
+        .reclaim_pass(&state, &|| true, 9, ReclamationParameters::new())
+        .unwrap();
+
+    assert_eq!(report, JobReport::default());
+    assert_eq!(
+        tombstone_status(&state.meta, &artifact),
+        Some(ReclamationStatus::Pending)
+    );
+}
+
+#[test]
+fn test_reclaim_pass_ignores_a_finalized_tombstone() {
+    let (_meta_dir, meta) = meta();
+    let artifact = ArtifactDigest::from_sha256("b".repeat(64)).unwrap();
+    meta.select_reclamation_candidate(&artifact, false, 0, 9, 10).unwrap();
+    meta.mark_reclamation_ready(&artifact, false, ObservedFrontier { replica: 0, backup: 0 }, 9, 11)
+        .unwrap();
+    let (_app_dir, state) = app(meta);
+
+    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
+        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+        .unwrap();
+
+    assert_eq!(report, JobReport::default());
+    assert_eq!(tombstone_status(&state.meta, &artifact), Some(ReclamationStatus::Ready));
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_stale_finalization_fence() {
+    let (_meta_dir, meta) = meta();
+    let artifact = ArtifactDigest::from_sha256("c".repeat(64)).unwrap();
+    meta.select_reclamation_candidate(&artifact, false, 0, 12, 10).unwrap();
+    let (_app_dir, state) = app(meta);
+
+    let error = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
+        .reclaim_pass(&state, &|| false, 5, ReclamationParameters::new())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_mark");
 }
 
 #[test]
@@ -339,6 +450,7 @@ fn test_driver_references_reads_the_reference_inventory() {
 }
 
 struct StubDriver {
+    supports_trash: bool,
     trash: Result<Vec<peryx_core::TrashRecord>, String>,
 }
 
@@ -362,7 +474,7 @@ impl EcosystemDriver for StubDriver {
 
     fn capabilities(&self) -> DriverCapabilities<'_> {
         DriverCapabilities {
-            trash: Some(self),
+            trash: self.supports_trash.then_some(self),
             ..DriverCapabilities::default()
         }
     }
@@ -415,6 +527,7 @@ fn test_collect_references_surfaces_a_reference_scan_error() {
 fn test_collect_references_surfaces_a_trash_scan_error() {
     let (_meta_dir, meta) = meta();
     let drivers: Vec<Arc<dyn EcosystemDriver>> = vec![Arc::new(StubDriver {
+        supports_trash: true,
         trash: Err("store unreadable".to_owned()),
     })];
 
@@ -427,10 +540,27 @@ fn test_collect_references_surfaces_a_trash_scan_error() {
 }
 
 #[test]
+fn test_collect_references_skips_a_driver_without_trash_inventory() {
+    let (_meta_dir, meta) = meta();
+    let base = BTreeSet::from(["already".to_owned()]);
+    let drivers: Vec<Arc<dyn EcosystemDriver>> = vec![Arc::new(StubDriver {
+        supports_trash: false,
+        trash: Err("must not be read".to_owned()),
+    })];
+
+    assert_eq!(
+        collect_references(Ok(base.clone()), drivers.iter(), &meta, &[]).unwrap(),
+        base,
+        "a driver without trash inventory leaves the base set unchanged"
+    );
+}
+
+#[test]
 fn test_collect_references_folds_trashed_digests_over_the_base_set() {
     let (_meta_dir, meta) = meta();
     let base = BTreeSet::from(["already".to_owned()]);
     let drivers: Vec<Arc<dyn EcosystemDriver>> = vec![Arc::new(StubDriver {
+        supports_trash: true,
         trash: Ok(vec![trashed(Some("sha256:aabb")), trashed(Some("ccdd")), trashed(None)]),
     })];
 

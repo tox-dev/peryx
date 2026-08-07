@@ -11,7 +11,10 @@ use crate::server;
 /// Run a `peryx mirror` command through its ecosystem capability.
 ///
 /// # Errors
-/// Returns configuration, index resolution, capability, or implementation errors.
+/// Returns configuration, index resolution, or implementation errors.
+/// # Panics
+///
+/// Panics if a configured ecosystem does not register mirroring.
 pub async fn run(config: &Config, command: &PrefetchCommand, output: &mut (dyn Write + Send)) -> anyhow::Result<()> {
     let state = server::build_state(config)?;
     let options = command.options();
@@ -20,53 +23,49 @@ pub async fn run(config: &Config, command: &PrefetchCommand, output: &mut (dyn W
         .iter()
         .find(|index| index.name == options.index || index.route == options.index)
         .ok_or_else(|| anyhow::anyhow!("unknown cached index {:?}", options.index))?;
-    if let Some(driver) = state.mirror_driver_for(index.ecosystem) {
-        let settings = config
-            .indexes
-            .iter()
-            .find(|configured| configured.name == index.name)
-            .map_or_else(toml::Table::new, |configured| configured.ecosystem_settings.clone());
-        let configured = mirror_configuration(config, options);
-        let overrides = mirror_overrides(&options.overrides)?;
-        return driver
-            .mirror(
-                state.clone(),
-                MirrorRequest {
-                    action: action(command),
-                    index: &options.index,
-                    settings: &settings,
-                    configured: &configured,
-                    overrides: &overrides,
-                },
-                output,
-            )
-            .await
-            .map_err(anyhow::Error::msg);
-    }
-    Err(anyhow::anyhow!(
-        "ecosystem {} does not support mirroring",
-        index.ecosystem
-    ))
+    let driver = state
+        .mirror_driver_for(index.ecosystem)
+        .expect("configured ecosystem must register mirroring");
+    let settings = config
+        .indexes
+        .iter()
+        .find(|configured| configured.name == index.name)
+        .map_or_else(toml::Table::new, |configured| configured.ecosystem_settings.clone());
+    let configured = mirror_configuration(config, options);
+    let overrides = mirror_overrides(&options.overrides)?;
+    driver
+        .mirror(
+            state.clone(),
+            MirrorRequest {
+                action: action(command),
+                index: &options.index,
+                settings: &settings,
+                configured: &configured,
+                overrides: &overrides,
+            },
+            output,
+        )
+        .await
+        .map_err(anyhow::Error::msg)
 }
 
 fn mirror_overrides(options: &[String]) -> anyhow::Result<toml::Table> {
-    options
-        .iter()
-        .map(|option| {
-            let (key, value) = option
-                .split_once('=')
-                .filter(|(key, value)| !key.is_empty() && !value.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("mirror option {option:?} must be KEY=VALUE"))?;
-            toml::from_str::<toml::Table>(&format!("value = {value}"))
-                .map(|mut table| {
-                    (
-                        key.to_owned(),
-                        table.remove("value").expect("the parser preserves the key"),
-                    )
-                })
-                .map_err(|error| anyhow::anyhow!("invalid value for mirror option {key:?}: {error}"))
-        })
-        .collect()
+    let mut overrides = toml::Table::new();
+    for option in options {
+        let Some((key, value)) = option
+            .split_once('=')
+            .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+        else {
+            anyhow::bail!("mirror option {option:?} must be KEY=VALUE");
+        };
+        let mut table = toml::from_str::<toml::Table>(&format!("value = {value}"))
+            .map_err(|error| anyhow::anyhow!("invalid value for mirror option {key:?}: {error}"))?;
+        overrides.insert(
+            key.to_owned(),
+            table.remove("value").expect("the parser preserves the key"),
+        );
+    }
+    Ok(overrides)
 }
 
 const fn action(command: &PrefetchCommand) -> MirrorAction {
@@ -78,13 +77,11 @@ const fn action(command: &PrefetchCommand) -> MirrorAction {
 }
 
 fn mirror_configuration(config: &Config, options: &PrefetchOptions) -> toml::Table {
-    let Some(index) = config
+    let index = config
         .indexes
         .iter()
         .find(|index| index.name == options.index || index.route == options.index)
-    else {
-        return toml::Table::new();
-    };
+        .expect("runtime indexes originate from configuration");
     let prefetch = match &index.kind {
         IndexKind::Cached { prefetch, .. } => Some(prefetch.as_ref()),
         IndexKind::Virtual { layers, .. } => config.indexes.iter().find_map(|index| {

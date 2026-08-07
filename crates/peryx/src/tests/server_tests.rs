@@ -72,6 +72,25 @@ fn test_build_blob_storage_opens_the_s3_backend() {
     assert_eq!(storage.name(), "s3");
 }
 
+#[test]
+fn test_plugin_registry_rejects_settings_for_an_uninstalled_ecosystem() {
+    let ecosystem = peryx_core::Ecosystem::new("missing");
+
+    let error = peryx_plugin_registry::compile_index_settings(ecosystem, "index", &toml::Table::new()).unwrap_err();
+
+    assert_eq!(error, "ecosystem missing is not installed");
+}
+
+#[test]
+fn test_plugin_registry_rejects_snippets_for_an_uninstalled_ecosystem() {
+    let ecosystem = peryx_core::Ecosystem::new("missing");
+    let base = peryx_driver::discovery::BaseUrl::parse("https://packages.example/").unwrap();
+
+    let error = peryx_plugin_registry::snippet_text(ecosystem, &base, "index", false, "text").unwrap_err();
+
+    assert_eq!(error, "ecosystem missing is not installed");
+}
+
 fn config_with(dir: &tempfile::TempDir, indexes: Vec<IndexConfig>) -> Config {
     Config {
         data_dir: dir.path().to_path_buf(),
@@ -1725,6 +1744,15 @@ fn test_build_state_rejects_invalid_routed_metadata_without_netrc() {
         vec![index]
     },
     &["compile policy for pypi", "unknown field `bogus`"][..]
+)]
+#[case::unsupported_policy(
+    || {
+        let mut index = cached("oci", "https://registry.example/v2/");
+        index.ecosystem = peryx_ecosystem_oci::ECOSYSTEM;
+        index.ecosystem_policy.insert("rule".to_owned(), true.into());
+        vec![index]
+    },
+    &["the oci ecosystem does not support artifact policy"][..]
 )]
 #[case::duplicate_name(|| vec![hosted("a"), hosted("a")], &["duplicate index name"][..])]
 #[case::duplicate_route(

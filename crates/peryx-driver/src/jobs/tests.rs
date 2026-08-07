@@ -28,6 +28,17 @@ use crate::serving::{
 use crate::state::{AppState, Clock, ServingState};
 use peryx_search::{IndexerCtx, PackageDocument, PackageIndexer, PackageSource, SearchError};
 
+#[test]
+fn test_availability_failure_preserves_its_code_and_message() {
+    let error = peryx_ha::AvailabilityTaskError::new("copy_failed", "peer unavailable");
+
+    assert_eq!(error.to_string(), "copy_failed: peer unavailable");
+    let failure = JobFailure::from(error);
+
+    assert_eq!(failure.code(), "copy_failed");
+    assert_eq!(failure.message(), "peer unavailable");
+}
+
 fn serving() -> (tempfile::TempDir, Arc<ServingState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();

@@ -222,14 +222,12 @@ jobs:
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-llvm-cov,cargo-nextest
-      # LCOV DA records aggregate source-line hits across test binaries. LLVM's line total counts
-      # uncovered generic instantiations separately, so it can regress when dependency edges change.
-      # Functions remain LLVM-gated. main.rs is the entrypoint shell; peryx-web is the UI, whose
-      # browser-event closures only execute as wasm. peryx's UI tests assert server rendering;
-      # Playwright asserts browser interactivity. Benchmark crates, modules, and examples execute measurement workloads.
+      # Native profiles cannot represent the process shell, browser/Wasm execution, or timed benchmarks.
+      # CLI tests, Playwright, and CodSpeed cover those paths.
       - run: .github/scripts/test-check-lcov-lines
       - run: >
-          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench(-core)?/|crates/peryx-ecosystem-(pypi|oci)/(src/bench/|examples/catalog_million\.rs))' --fail-under-functions 100 --lcov --output-path lcov.info
+          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench(-core)?/|crates/peryx-ecosystem-(pypi|oci)/(src/bench/|examples/catalog_million\.rs))' --lcov --output-path lcov.info
+      - run: .github/scripts/check-lcov-functions.awk lcov.info
       - run: .github/scripts/check-lcov-lines.awk lcov.info
       # Retain lcov.info even when a gate fails so the regressed function or line can be diagnosed.
       - if: always()

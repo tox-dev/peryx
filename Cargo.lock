@@ -5375,6 +5375,8 @@ dependencies = [
  "futures-util",
  "hex",
  "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
  "mockall",
  "peryx-identity",
  "peryx-policy",

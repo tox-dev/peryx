@@ -97,9 +97,8 @@ mod tests {
 
     #[test]
     fn identity_rejects_invalid_text() {
-        assert_eq!(
-            "Example".parse::<Ecosystem>().unwrap_err(),
-            InvalidEcosystem("Example".to_owned())
-        );
+        let error = "Example".parse::<Ecosystem>().unwrap_err();
+        assert_eq!(error, InvalidEcosystem("Example".to_owned()));
+        assert_eq!(error.to_string(), "invalid ecosystem: Example");
     }
 }

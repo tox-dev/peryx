@@ -113,7 +113,7 @@ fn availability_coordinator(
                 .collect()
         })
         .unwrap_or_default();
-    let token = if config.availability.has_replication_role() {
+    let token = if config.availability.is_distributed_mode() {
         let replication = config
             .availability
             .replication()
@@ -143,7 +143,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
         let mut is_replica = false;
         let mut router = peryx::server::router_for(state.clone());
         let mut raft_peer_router: Option<axum::Router> = None;
-        let _replication_handle = if config.availability.has_replication_role() {
+        let _replication_handle = if config.availability.is_distributed_mode() {
             let replication = peryx::replication::ReplicationRuntime::new(config, &state)?;
             // Held for the process lifetime: dropping the handle shuts the ownership Raft runtime down. The
             // mutation path reaches the same group through the state registration.

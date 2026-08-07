@@ -210,9 +210,8 @@ impl BlobReclamationSelector {
             if referenced.contains(digest.as_str()) {
                 continue;
             }
-            let Ok(artifact) = ArtifactDigest::from_sha256(digest.as_str()) else {
-                continue;
-            };
+            let artifact = ArtifactDigest::from_sha256(digest.as_str())
+                .expect("blob storage only yields canonical SHA-256 digests");
             match meta.select_reclamation_candidate(&artifact, false, required, fence, now) {
                 Ok(SelectOutcome::Selected(_)) => report.changed += 1,
                 Ok(_) => {}
