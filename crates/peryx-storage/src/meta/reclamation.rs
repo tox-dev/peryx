@@ -89,22 +89,28 @@ pub struct ReclamationTombstone {
     pub updated_at_unix: i64,
 }
 
-/// The frontier each replication plane has observably applied, as the caller measured it. Deletion
-/// waits until both have reached the tombstone's required frontier.
+/// The frontier each configured replication plane has observably applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedFrontier {
     /// The lowest serial any live replica has applied.
-    pub replica: u64,
+    pub replica: Option<u64>,
     /// The lowest serial any configured backup has captured.
-    pub backup: u64,
+    pub backup: Option<u64>,
 }
 
 impl ObservedFrontier {
-    /// Whether both planes have applied through `required`, the condition for a candidate to be safe to
-    /// delete on the frontier axis.
+    /// An absent plane imposes no frontier requirement.
     #[must_use]
     pub const fn covers(&self, required: u64) -> bool {
-        self.replica >= required && self.backup >= required
+        let replica = match self.replica {
+            Some(frontier) => frontier >= required,
+            None => true,
+        };
+        let backup = match self.backup {
+            Some(frontier) => frontier >= required,
+            None => true,
+        };
+        replica && backup
     }
 }
 

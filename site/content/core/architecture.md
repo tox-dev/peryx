@@ -38,6 +38,10 @@ timer, watcher, or transport.
 implementation. Its contracts use operations, authority keys, frontiers, placements, and topology snapshots. Ecosystem
 implementations map their mutations onto those contracts; HA code does not parse protocol records.
 
+The `peryx` binary projects configuration, mounts authenticated routes, and starts processes. The distributed crate owns
+replica pull loops, consensus, copy planning, placement reconciliation, reclamation, transfer coordination, metrics, and
+worker lifecycles.
+
 ## Dependencies
 
 Shared crates depend on contracts. Implementation crates depend on shared crates. The `peryx` binary links the PyPI,

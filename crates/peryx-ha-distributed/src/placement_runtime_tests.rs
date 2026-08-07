@@ -10,7 +10,6 @@ use peryx_storage::meta::{
 };
 
 use super::*;
-use crate::config::{DcMember, DcRole};
 
 const CONTENT: &[u8] = b"placement reconcile artifact bytes";
 
@@ -82,22 +81,6 @@ fn reconciler(local: &str, store: BlobStore, targets: &[&str]) -> FilesystemPlac
         local_dc: dc(local),
         store,
         target_dcs: targets.iter().map(|name| dc(name)).collect(),
-    }
-}
-
-fn member(node: &str, data_center: &str, role: DcRole) -> DcMember {
-    DcMember {
-        node: node.to_owned(),
-        dc: data_center.to_owned(),
-        address: format!("http://{node}/"),
-        role,
-    }
-}
-
-fn membership(members: Vec<DcMember>) -> DcMembership {
-    DcMembership {
-        group: "group".to_owned(),
-        members,
     }
 }
 
@@ -600,152 +583,8 @@ async fn test_reconcile_pass_repairs_and_retires_under_a_live_term() {
 }
 
 #[test]
-fn test_from_config_reconciles_nothing_without_membership() {
-    let (_sdir, store, _root, _backend) = filesystem();
+fn test_reconciler_requires_multiple_datacenters() {
+    let (_dir, store, _root, _backend) = filesystem();
 
-    assert!(
-        FilesystemPlacementReconciler::from_config(&Config::default(), store)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn test_from_config_reconciles_nothing_when_this_node_is_unrostered() {
-    let (_sdir, store, _root, _backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("local".to_owned()),
-        dc_membership: Some(membership(vec![member("someone-else", "east", DcRole::Writer)])),
-        ..Config::default()
-    };
-
-    assert!(
-        FilesystemPlacementReconciler::from_config(&config, store)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn test_from_config_reconciles_nothing_for_a_single_datacenter_group() {
-    let (_sdir, store, _root, _backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("local".to_owned()),
-        dc_membership: Some(membership(vec![
-            member("local", "home", DcRole::Writer),
-            member("peer", "home", DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    assert!(
-        FilesystemPlacementReconciler::from_config(&config, store)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn test_from_config_builds_a_reconciler_across_datacenters() {
-    let (_sdir, store, _root, _backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("local".to_owned()),
-        dc_membership: Some(membership(vec![
-            member("local", "home", DcRole::Writer),
-            member("peer", "east", DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    let reconciler = FilesystemPlacementReconciler::from_config(&config, store)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(reconciler.local_dc, dc("home"));
-    assert_eq!(
-        reconciler.target_dcs,
-        ["east", "home"].iter().map(|name| dc(name)).collect()
-    );
-}
-
-#[test]
-fn test_from_config_resolves_the_local_datacenter_from_the_node_identity() {
-    // writer_identity is the one writer every node claims, the same across the group, so a replica in
-    // another datacenter must place itself by node_identity. Here writer_identity names the east
-    // authority while node_identity names this node's west member; the reconciler owns west placements,
-    // not the authority's east ones.
-    let (_sdir, store, _root, _backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("authority".to_owned()),
-        node_identity: Some("replica".to_owned()),
-        dc_membership: Some(membership(vec![
-            member("authority", "east", DcRole::Writer),
-            member("replica", "west", DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    let reconciler = FilesystemPlacementReconciler::from_config(&config, store)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(
-        reconciler.local_dc,
-        dc("west"),
-        "node_identity resolves the local datacenter, not writer_identity"
-    );
-}
-
-#[test]
-fn test_from_config_rejects_an_invalid_datacenter() {
-    let (_sdir, store, _root, _backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("local".to_owned()),
-        dc_membership: Some(membership(vec![
-            member("local", "home", DcRole::Writer),
-            member("peer", &"d".repeat(600), DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    let error = FilesystemPlacementReconciler::from_config(&config, store)
-        .err()
-        .expect("an invalid datacenter is rejected");
-    assert!(error.to_string().contains("datacenter"), "{error}");
-}
-
-#[test]
-fn test_record_transition_reports_commit_and_rejection() {
-    let (_dir, meta) = meta();
-    let (_sdir, _store, _root, backend) = filesystem();
-    let (_blob, artifact) = digests(CONTENT);
-    let clock = clock();
-    let placement = key(&artifact, &backend, "home", artifact.sha256());
-
-    assert!(record_transition(
-        &meta,
-        &placement,
-        &BlobPlacementTransition::Stage,
-        5,
-        &clock
-    ));
-
-    // Fill the digest to its ceiling so a new location cannot stage.
-    for index in 0..peryx_storage::meta::MAX_PLACEMENTS_PER_DIGEST {
-        meta.apply_blob_placement(
-            &key(&artifact, &backend, "home", &format!("loc-{index}")),
-            &BlobPlacementTransition::Stage,
-            5,
-            0,
-        )
-        .ok();
-    }
-    let over = key(&artifact, &backend, "home", "one-too-many");
-    assert!(!record_transition(
-        &meta,
-        &over,
-        &BlobPlacementTransition::Stage,
-        5,
-        &clock
-    ));
+    assert!(FilesystemPlacementReconciler::new(dc("home"), store, BTreeSet::from([dc("home")])).is_none());
 }

@@ -84,6 +84,12 @@ starts no distributed task, timer, watcher, or transport.
 The `peryx-ha-distributed` implementation selected by `mode = "dc"` or `mode = "ha"`. It provides membership,
 replication, reconciliation, liveness, leases, and distributed diagnostics through traits owned by `peryx-ha`.
 
+## Reclamation frontier {#reclamation-frontier}
+
+The lowest metadata serial confirmed by each configured durability plane. Blob reclamation waits until every configured
+plane covers a tombstone's required serial. An unconfigured plane adds no requirement; missing evidence from a
+configured plane blocks finalization.
+
 ## Related
 
 - [Ecosystem boundaries](@/contributing/ecosystem-boundaries.md)

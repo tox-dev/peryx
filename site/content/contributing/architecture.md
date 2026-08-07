@@ -9,19 +9,13 @@ selects the indexes and sets `availability.mode` to `none`, `dc`, or `ha`.
 
 ## Crate map
 
-| Crate                   | Responsibility                                    |
-| ----------------------- | ------------------------------------------------- |
-| `peryx-core`            | Ecosystem contracts, stable IDs, and neutral DTOs |
-| `peryx-driver`          | Shared process state and runtime orchestration    |
-| `peryx-plugin-registry` | Registration indexing and duplicate checks        |
-| `peryx-ecosystem-pypi`  | Python package protocol and policy                |
-| `peryx-ecosystem-oci`   | OCI distribution protocol and policy              |
-| `peryx-ha`              | Availability traits                               |
-| `peryx-ha-distributed`  | Distributed replication and coordination          |
-| `peryx-storage`         | Persistence and content-addressed blobs           |
-| `peryx-http`            | Shared HTTP middleware and dispatch               |
-| `peryx-bench-core`      | Benchmark measurement and reports                 |
-| `peryx`                 | Configuration, linking, and startup               |
+| Crate | Responsibility | | ----------------------- | ------------------------------------------------- | |
+`peryx-core` | Ecosystem contracts, stable IDs, and neutral DTOs | | `peryx-driver` | Shared domain state and service
+coordination | | `peryx-plugin-registry` | Registration indexing and duplicate checks | | `peryx-ecosystem-pypi` |
+Python package protocol and policy | | `peryx-ecosystem-oci` | OCI distribution protocol and policy | | `peryx-ha` |
+Availability traits | | `peryx-ha-distributed` | Distributed algorithms and worker runtimes | | `peryx-storage` |
+Persistence and content-addressed blobs | | `peryx-http` | Shared HTTP middleware and dispatch | | `peryx-bench-core` |
+Benchmark measurement and reports | | `peryx` | Configuration, linking, and startup |
 
 ## Implementation startup
 
@@ -43,6 +37,10 @@ Optional work has a capability trait. Callers skip the work when the selected im
 
 Do not add a Cargo feature or environment mode for this choice. Disabled availability must stay out of the request path
 and task graph.
+
+`peryx` projects configuration, mounts authenticated routes, and starts processes. `peryx-ha-distributed` owns replica
+pull loops, liveness, consensus, copy planning, placement reconciliation, reclamation, authority transfer, worker
+metrics, and their task lifecycles.
 
 ## Dependency rules
 

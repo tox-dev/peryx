@@ -10,6 +10,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::{
+    AnalyticsReceiver, AuthorityEpoch, DEFAULT_APPLY_LIMITS, HttpAnalyticsSource, ProducerId, TransferLimits, pull,
+};
 use anyhow::Context as _;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -17,9 +20,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use peryx_events::metrics::Metrics;
-use peryx_ha_distributed::{
-    AnalyticsReceiver, AuthorityEpoch, DEFAULT_APPLY_LIMITS, HttpAnalyticsSource, ProducerId, TransferLimits, pull,
-};
 use peryx_storage::meta::AnalyticsHandle;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,7 @@ pub fn resolve_producer_epoch(analytics: &AnalyticsHandle) -> anyhow::Result<Aut
         return Ok(AuthorityEpoch(record.epoch));
     }
     let record = ProducerRecord { epoch: 1 };
-    let bytes = serde_json::to_vec(&record).expect("a producer record always serializes");
+    let bytes = serde_json::to_vec(&record).context("encode analytics producer record")?;
     analytics
         .save_producer(&bytes)
         .context("persist analytics producer record")?;
@@ -174,4 +174,5 @@ impl AnalyticsPuller {
 }
 
 #[cfg(test)]
+#[path = "runtime_analytics_tests.rs"]
 mod tests;

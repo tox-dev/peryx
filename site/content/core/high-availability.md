@@ -232,6 +232,21 @@ jobs.
 
 Every distributed subsystem follows the same guarantee: it builds nothing under `none`.
 
+## Runtime ownership
+
+The `peryx` binary resolves configuration, mounts authenticated availability routes, and starts processes.
+`peryx-ha-distributed` owns the replica monitor and pull loops, consensus bridge, cross-datacenter copy, placement
+reconciliation, reclamation, authority transfer, worker metrics, and task lifecycles.
+
+## Blob reclamation
+
+Reclamation first records a tombstone at the current metadata serial. It marks that tombstone ready only after every
+configured durability plane covers the serial and a final reference check still finds the blob unused.
+
+The live replica frontier is the lowest serial reported by any configured replica. A missing replica report blocks
+finalization. A plane that is not configured contributes no frontier; it is absent rather than represented by zero.
+Future backup implementations provide their observed serial through the `ReclamationFrontiers` contract.
+
 ## Background worker runtime
 
 A `dc` or `ha` replica runs its changelog apply and blob copies on a dedicated runtime, apart from the executor that

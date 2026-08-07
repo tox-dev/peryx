@@ -17,11 +17,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use peryx_driver::state::{ControlCommand, ControlError, ControlPlane, OwnershipAuthority};
-use peryx_ha_distributed::{
+use crate::{
     AuthorityEpoch, BatchRequest, DEFAULT_TRANSFER_LIMITS, HttpPeerTransport, PeerTransport, TransferAudit,
     TransferError, TransferPhase, TransferPlan, TransferRequest,
 };
+use peryx_driver::state::{ControlCommand, ControlError, ControlPlane, OwnershipAuthority};
 use peryx_storage::meta::{MetaError, MetaStore, TransferAudit as StoredTransferAudit};
 
 /// How long a frontier probe waits for the target's change-feed to answer before it reads as unreachable.
@@ -382,4 +382,5 @@ fn stored(audit: &TransferAudit) -> StoredTransferAudit {
 }
 
 #[cfg(test)]
+#[path = "authority_transfer_tests.rs"]
 mod tests;

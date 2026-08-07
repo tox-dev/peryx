@@ -123,8 +123,8 @@ async fn reclaim_s3_child() {
         &artifact,
         false,
         ObservedFrontier {
-            replica: FRONTIER,
-            backup: FRONTIER,
+            replica: Some(FRONTIER),
+            backup: Some(FRONTIER),
         },
         EPOCH,
         1,

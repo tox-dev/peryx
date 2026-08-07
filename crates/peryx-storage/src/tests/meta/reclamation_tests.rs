@@ -21,7 +21,10 @@ fn digest(suffix: u8) -> ArtifactDigest {
 }
 
 fn frontier(replica: u64, backup: u64) -> ObservedFrontier {
-    ObservedFrontier { replica, backup }
+    ObservedFrontier {
+        replica: Some(replica),
+        backup: Some(backup),
+    }
 }
 
 fn placement_key(suffix: u8) -> BlobPlacementKey {
@@ -69,6 +72,18 @@ fn test_observed_frontier_covers_requires_both_planes(
     #[case] covered: bool,
 ) {
     assert_eq!(frontier(replica, backup).covers(5), covered);
+}
+
+#[rstest]
+#[case::none(None, None, true)]
+#[case::replica_absent(None, Some(4), false)]
+#[case::backup_absent(Some(4), None, false)]
+fn test_observed_frontier_ignores_only_absent_planes(
+    #[case] replica: Option<u64>,
+    #[case] backup: Option<u64>,
+    #[case] covered: bool,
+) {
+    assert_eq!(ObservedFrontier { replica, backup }.covers(5), covered);
 }
 
 #[test]

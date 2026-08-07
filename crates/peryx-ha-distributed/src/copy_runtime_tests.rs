@@ -1,14 +1,13 @@
 use std::num::NonZeroUsize;
 
+use crate::LoopbackBlobSource;
 use peryx_driver::state::{AppState, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
-use peryx_ha_distributed::LoopbackBlobSource;
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{BlobPlacementState, BlobPlacementStatus, DataCenterId, VerifiedSource};
 use tokio_util::bytes::Bytes;
 
 use super::*;
-use crate::config::{AvailabilityConfig, DcMember, ReplicationConfig};
 
 const CONTENT: &[u8] = b"cross-datacenter artifact bytes";
 
@@ -36,6 +35,29 @@ fn filesystem() -> (tempfile::TempDir, BlobStore, BackendId) {
     let store = blobs.filesystem_store().unwrap().clone();
     let backend = blobs.backend_id();
     (dir, store, backend)
+}
+
+#[test]
+fn test_http_copier_requires_a_remote_datacenter() {
+    let (_dir, store, backend) = filesystem();
+
+    assert!(CrossDcBlobCopier::http(dc("home"), HashMap::new(), "token".to_owned(), store, backend).is_none());
+}
+
+#[test]
+fn test_http_copier_accepts_a_remote_datacenter() {
+    let (_dir, store, backend) = filesystem();
+
+    assert!(
+        CrossDcBlobCopier::http(
+            dc("home"),
+            HashMap::from([("east".to_owned(), "http://peer/".to_owned())]),
+            "token".to_owned(),
+            store,
+            backend,
+        )
+        .is_some()
+    );
 }
 
 fn meta() -> (tempfile::TempDir, MetaStore) {
@@ -117,22 +139,6 @@ fn plan(digest: &ArtifactDigest, backend: &BackendId, source_dc: &str, local: &s
     }
 }
 
-fn member(node: &str, data_center: &str, address: &str, role: DcRole) -> DcMember {
-    DcMember {
-        node: node.to_owned(),
-        dc: data_center.to_owned(),
-        address: address.to_owned(),
-        role,
-    }
-}
-
-fn membership(members: Vec<DcMember>) -> DcMembership {
-    DcMembership {
-        group: "group".to_owned(),
-        members,
-    }
-}
-
 #[test]
 fn test_record_reports_a_committed_transition() {
     let (_dir, meta) = meta();
@@ -197,45 +203,6 @@ fn test_failure_class_maps_each_loss_to_its_evidence() {
     assert_eq!(
         failure_class(&CopyError::Publish(peryx_storage::blob::BlobError::unsupported("no"))),
         BlobPlacementFailure::BackendRejected
-    );
-}
-
-#[test]
-fn test_replication_token_reads_either_role() {
-    let primary = ReplicationConfig::Primary {
-        source: "peer".to_owned(),
-        token: SecretSource::Literal("p".to_owned()),
-    };
-    let replica = ReplicationConfig::Replica {
-        upstream: "http://writer/".to_owned(),
-        token: SecretSource::Literal("r".to_owned()),
-        poll_interval: Duration::from_secs(1),
-        page_size: NonZeroUsize::new(1).unwrap(),
-    };
-    assert_eq!(replication_token(&primary).read().unwrap(), "p");
-    assert_eq!(replication_token(&replica).read().unwrap(), "r");
-}
-
-#[test]
-fn test_source_roster_prefers_a_datacenters_writer_and_excludes_the_local() {
-    let group = membership(vec![
-        member("local", "home", "http://local/", DcRole::Writer),
-        member("a-replica", "east", "http://a-replica/", DcRole::Replica),
-        member("a-writer", "east", "http://a-writer/", DcRole::Writer),
-        member("b-writer", "west", "http://b-writer/", DcRole::Writer),
-        member("b-replica", "west", "http://b-replica/", DcRole::Replica),
-    ]);
-
-    let roster = source_roster(&group, "home");
-
-    assert_eq!(roster.len(), 2);
-    assert_eq!(
-        roster["east"], "http://a-writer/",
-        "the writer supersedes an earlier replica"
-    );
-    assert_eq!(
-        roster["west"], "http://b-writer/",
-        "a later replica does not supersede the writer"
     );
 }
 
@@ -652,122 +619,4 @@ async fn test_copy_pass_drains_the_backlog_under_a_live_term() {
     assert_eq!(store.read(&blob).unwrap(), CONTENT);
     let local = key(&artifact, &backend, "home", artifact.sha256());
     assert_eq!(local_state(&state.meta, &local).status(), BlobPlacementStatus::Verified);
-}
-
-fn ha(token: SecretSource) -> AvailabilityConfig {
-    AvailabilityConfig::Ha(ReplicationConfig::Primary {
-        source: "peer".to_owned(),
-        token,
-    })
-}
-
-#[test]
-fn test_from_config_copies_nothing_without_a_full_topology() {
-    let (_dir, store, backend) = filesystem();
-    let config = Config::default();
-
-    assert!(
-        CrossDcBlobCopier::from_config(&config, store, backend)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn test_from_config_surfaces_an_unreadable_token() {
-    let (_dir, store, backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("local".to_owned()),
-        availability: ha(SecretSource::File("/does/not/exist".into())),
-        dc_membership: Some(membership(vec![
-            member("local", "home", "http://local/", DcRole::Writer),
-            member("peer", "east", "http://peer/", DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    assert!(CrossDcBlobCopier::from_config(&config, store, backend).is_err());
-}
-
-#[test]
-fn test_from_config_builds_a_copier_for_a_rostered_writer() {
-    let (_dir, store, backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("local".to_owned()),
-        availability: ha(SecretSource::Literal("secret".to_owned())),
-        dc_membership: Some(membership(vec![
-            member("local", "home", "http://local/", DcRole::Writer),
-            member("peer", "east", "http://peer/", DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    let copier = CrossDcBlobCopier::from_config(&config, store, backend)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(copier.local_dc, dc("home"));
-}
-
-#[test]
-fn test_from_config_resolves_the_local_datacenter_from_the_node_identity() {
-    // writer_identity is the one writer every node claims, the same across the group, so a replica in
-    // another datacenter must place itself by node_identity. Here writer_identity names the east peer
-    // while node_identity names this node's home member; the copier's datacenter must follow the latter.
-    let (_dir, store, backend) = filesystem();
-    let config = Config {
-        writer_identity: Some("peer".to_owned()),
-        node_identity: Some("local".to_owned()),
-        availability: ha(SecretSource::Literal("secret".to_owned())),
-        dc_membership: Some(membership(vec![
-            member("local", "home", "http://local/", DcRole::Writer),
-            member("peer", "east", "http://peer/", DcRole::Replica),
-        ])),
-        ..Config::default()
-    };
-
-    let copier = CrossDcBlobCopier::from_config(&config, store, backend)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(
-        copier.local_dc,
-        dc("home"),
-        "node_identity resolves the local datacenter, not writer_identity"
-    );
-}
-
-#[test]
-fn test_plan_copies_nothing_when_this_node_is_not_rostered() {
-    let (_dir, store, backend) = filesystem();
-    let group = membership(vec![member("someone-else", "home", "http://x/", DcRole::Writer)]);
-
-    let copier = CrossDcBlobCopier::plan(&group, "local", "t".to_owned(), store, backend).unwrap();
-
-    assert!(copier.is_none());
-}
-
-#[test]
-fn test_plan_rejects_an_invalid_local_datacenter() {
-    let (_dir, store, backend) = filesystem();
-    let group = membership(vec![member("local", &"d".repeat(600), "http://x/", DcRole::Writer)]);
-
-    let error = CrossDcBlobCopier::plan(&group, "local", "t".to_owned(), store, backend)
-        .err()
-        .expect("an invalid datacenter is rejected");
-
-    assert!(error.to_string().contains("datacenter"), "{error}");
-}
-
-#[test]
-fn test_plan_copies_nothing_for_a_single_datacenter_group() {
-    let (_dir, store, backend) = filesystem();
-    let group = membership(vec![
-        member("local", "home", "http://local/", DcRole::Writer),
-        member("peer", "home", "http://peer/", DcRole::Replica),
-    ]);
-
-    let copier = CrossDcBlobCopier::plan(&group, "local", "t".to_owned(), store, backend).unwrap();
-
-    assert!(copier.is_none(), "a group in one datacenter has no peer to copy from");
 }

@@ -4,7 +4,6 @@ use std::time::Duration;
 use peryx_driver::state::{
     CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, MembershipControl,
 };
-use peryx_ha_distributed::{AuthorityKey, DatacenterId, TransferPhase, TransferPlan, TransferRequest};
 use peryx_storage::meta::MetaStore;
 use tokio::sync::Notify;
 
@@ -12,6 +11,7 @@ use super::{
     EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator, TransferDriveError,
     TransferRunError, commit_transfer, observe_target,
 };
+use crate::{AuthorityKey, DatacenterId, TransferError, TransferPhase, TransferPlan, TransferRequest};
 
 const BARRIER: u64 = 5;
 
@@ -201,10 +201,7 @@ async fn test_commit_transfer_refuses_a_plan_that_has_not_reached_the_barrier() 
         .unwrap_err();
 
     // A plan still awaiting catch-up never reaches consensus, so no move commits.
-    assert!(matches!(
-        error,
-        TransferDriveError::Plan(peryx_ha_distributed::TransferError::BarrierNotMet)
-    ));
+    assert!(matches!(error, TransferDriveError::Plan(TransferError::BarrierNotMet)));
     assert!(scripted.submissions.lock().unwrap().is_empty());
 }
 
@@ -220,10 +217,7 @@ async fn test_commit_transfer_refuses_a_cancelled_plan_without_committing() {
         .await
         .unwrap_err();
 
-    assert!(matches!(
-        error,
-        TransferDriveError::Plan(peryx_ha_distributed::TransferError::Cancelled)
-    ));
+    assert!(matches!(error, TransferDriveError::Plan(TransferError::Cancelled)));
     assert!(scripted.submissions.lock().unwrap().is_empty());
 }
 

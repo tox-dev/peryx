@@ -157,7 +157,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
                 raft_peer_router = Some(consensus.peer_router.clone());
             }
             is_replica = replication.is_replica();
-            register_availability_services(config, &state)?;
+            register_availability_services(config, &state, replication.reclamation_frontiers())?;
             router = replication.mount(router);
 
             // Same-datacenter peers query this node for its placement receipts on the token-gated replication
@@ -170,7 +170,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             if let Some(frontiers) = peryx::server::frontier_endpoint_router(config, &state)? {
                 router = router.merge(frontiers);
             }
-            replication.start()
+            replication.start()?
         } else {
             None
         };
@@ -257,6 +257,7 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
 fn register_availability_services(
     config: &Config,
     state: &std::sync::Arc<peryx_driver::AppState>,
+    frontiers: std::sync::Arc<dyn peryx_ha::ReclamationFrontiers>,
 ) -> anyhow::Result<()> {
     if let Some(store) = state.blobs.filesystem_store() {
         if let Some(copier) =
@@ -270,7 +271,7 @@ fn register_availability_services(
             state.set_placement_reconciler(reconciler.bind(state.serving.clone()));
         }
     }
-    if let Some(reclaimer) = peryx::availability::BlobReclamationSelector::from_config(config)? {
+    if let Some(reclaimer) = peryx::availability::BlobReclamationSelector::from_config(config, frontiers) {
         state.set_blob_reclaimer(reclaimer.bind(state.serving.clone()));
     }
     Ok(())

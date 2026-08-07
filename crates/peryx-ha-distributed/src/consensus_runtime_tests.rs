@@ -2,55 +2,21 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::DatacenterId;
+use crate::raft::log_store::RaftLogStoreAdapter;
+use crate::raft::network::PeerRaftNetworkFactory;
+use crate::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
 use openraft::error::{ClientWriteError, ForwardToLeader, RaftError};
 use peryx_driver::state::{
     CommandOutcome, ControlCommand, ControlError, HomeClaim, MembershipControl as _, OwnershipAuthority as _,
     OwnershipError, TransferOutcome,
 };
-use peryx_ha_distributed::DatacenterId;
-use peryx_ha_distributed::raft::log_store::RaftLogStoreAdapter;
-use peryx_ha_distributed::raft::network::PeerRaftNetworkFactory;
-use peryx_ha_distributed::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
 use peryx_storage::raft::RaftLogStore;
 use tempfile::TempDir;
 
-use super::{ConsensusPlan, OwnershipGroup, authority, build_roster, map_write_error, voter_id};
-use crate::config::{AvailabilityConfig, Config, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource};
+use super::{ConsensusMember, ConsensusPlan, OwnershipGroup, authority, build_roster, map_write_error, voter_id};
 
 const TOKEN: &str = "group-secret";
-
-fn member(node: &str, dc: &str, address: &str, role: DcRole) -> DcMember {
-    DcMember {
-        node: node.to_owned(),
-        dc: dc.to_owned(),
-        address: address.to_owned(),
-        role,
-    }
-}
-
-fn ha_config(dir: &TempDir, membership: Option<DcMembership>, identity: Option<&str>, token: SecretSource) -> Config {
-    Config {
-        data_dir: dir.path().to_path_buf(),
-        writer_identity: identity.map(str::to_owned),
-        node_identity: identity.map(str::to_owned),
-        availability: AvailabilityConfig::Ha(ReplicationConfig::Primary {
-            source: "seed".to_owned(),
-            token,
-        }),
-        dc_membership: membership,
-        ..Config::default()
-    }
-}
-
-fn seed_membership() -> DcMembership {
-    DcMembership {
-        group: "ownership".to_owned(),
-        members: vec![
-            member("node-a", "east", "http://east.internal:4460", DcRole::Writer),
-            member("node-b", "west", "http://west.internal:4460", DcRole::Replica),
-        ],
-    }
-}
 
 fn one_voter(dc: &str, addr: &str) -> BTreeMap<u64, PeryxNode> {
     BTreeMap::from([(
@@ -75,168 +41,6 @@ fn plan_at(log_path: PathBuf, local: u64, roster: BTreeMap<u64, PeryxNode>) -> C
         token: TOKEN.to_owned(),
     }
 }
-
-#[test]
-fn test_none_mode_builds_no_plan() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        ..Config::default()
-    };
-
-    assert!(ConsensusPlan::from_config(&config).unwrap().is_none());
-}
-
-#[test]
-fn test_dc_mode_builds_no_plan() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        availability: AvailabilityConfig::Dc(ReplicationConfig::Primary {
-            source: "seed".to_owned(),
-            token: SecretSource::Literal(TOKEN.to_owned()),
-        }),
-        ..Config::default()
-    };
-
-    assert!(ConsensusPlan::from_config(&config).unwrap().is_none());
-}
-
-#[test]
-fn test_ha_resolves_the_local_voter_and_full_roster() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = ha_config(
-        &dir,
-        Some(seed_membership()),
-        Some("node-b"),
-        SecretSource::Literal(TOKEN.to_owned()),
-    );
-
-    let plan = ConsensusPlan::from_config(&config).unwrap().expect("ha builds a plan");
-
-    assert_eq!(plan.local, voter_id("west"));
-    assert_eq!(
-        plan.roster,
-        BTreeMap::from([
-            (
-                voter_id("east"),
-                PeryxNode {
-                    datacenter: DatacenterId("east".to_owned()),
-                    addr: "east.internal:4460".to_owned(),
-                },
-            ),
-            (
-                voter_id("west"),
-                PeryxNode {
-                    datacenter: DatacenterId("west".to_owned()),
-                    addr: "west.internal:4460".to_owned(),
-                },
-            ),
-        ]),
-    );
-    assert!(plan.log_path.ends_with("raft/ownership-log.redb"));
-    assert_eq!(plan.group, "ownership");
-}
-
-#[test]
-fn test_ha_without_a_roster_builds_no_plan() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = ha_config(&dir, None, Some("node-a"), SecretSource::Literal(TOKEN.to_owned()));
-
-    // Ha without a roster keeps the metadata-replication-only posture and forms no consensus group.
-    assert!(ConsensusPlan::from_config(&config).unwrap().is_none());
-}
-
-#[test]
-fn test_ha_reads_the_shared_token_from_a_replica_role() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        writer_identity: Some("node-a".to_owned()),
-        node_identity: Some("node-a".to_owned()),
-        availability: AvailabilityConfig::Ha(ReplicationConfig::Replica {
-            upstream: "http://east.internal:4460/".to_owned(),
-            token: SecretSource::Literal(TOKEN.to_owned()),
-            poll_interval: std::time::Duration::from_secs(1),
-            page_size: std::num::NonZeroUsize::new(100).unwrap(),
-        }),
-        dc_membership: Some(seed_membership()),
-        ..Config::default()
-    };
-
-    // A replica-role process in an ha group draws the same peer token as a primary-role one.
-    assert!(ConsensusPlan::from_config(&config).unwrap().is_some());
-}
-
-#[test]
-fn test_ha_without_a_node_identity_is_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = ha_config(
-        &dir,
-        Some(seed_membership()),
-        None,
-        SecretSource::Literal(TOKEN.to_owned()),
-    );
-
-    let error = ConsensusPlan::from_config(&config).err().unwrap().to_string();
-
-    assert!(error.contains("node-identity"), "{error}");
-}
-
-#[test]
-fn test_ha_with_a_foreign_identity_is_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = ha_config(
-        &dir,
-        Some(seed_membership()),
-        Some("node-z"),
-        SecretSource::Literal(TOKEN.to_owned()),
-    );
-
-    let error = ConsensusPlan::from_config(&config).err().unwrap().to_string();
-
-    assert!(error.contains("not a member"), "{error}");
-}
-
-#[test]
-fn test_ha_with_a_non_authority_address_is_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let membership = DcMembership {
-        group: "ownership".to_owned(),
-        members: vec![member(
-            "node-a",
-            "east",
-            "http://east.internal:4460/raft",
-            DcRole::Writer,
-        )],
-    };
-    let config = ha_config(
-        &dir,
-        Some(membership),
-        Some("node-a"),
-        SecretSource::Literal(TOKEN.to_owned()),
-    );
-
-    let error = ConsensusPlan::from_config(&config).err().unwrap().to_string();
-
-    assert!(error.contains("bare host:port"), "{error}");
-}
-
-#[test]
-fn test_ha_with_an_unreadable_token_is_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = ha_config(
-        &dir,
-        Some(seed_membership()),
-        Some("node-a"),
-        SecretSource::File(dir.path().join("absent-token")),
-    );
-
-    let error = ConsensusPlan::from_config(&config).err().unwrap().to_string();
-
-    assert!(error.contains("peer token"), "{error}");
-}
-
 #[test]
 fn test_authority_extracts_host_and_port() {
     assert_eq!(authority("http://host.internal:4460").unwrap(), "host.internal:4460");
@@ -267,17 +71,18 @@ fn test_authority_rejects_a_path() {
 
 #[test]
 fn test_build_roster_rejects_a_voter_id_collision() {
-    // Two members sharing a datacenter hash onto one voter id; configuration forbids it, but the roster
-    // builder rejects it directly rather than silently dropping a voter.
-    let membership = DcMembership {
-        group: "ownership".to_owned(),
-        members: vec![
-            member("node-a", "east", "http://a.internal:4460", DcRole::Writer),
-            member("node-b", "east", "http://b.internal:4460", DcRole::Replica),
-        ],
-    };
+    let members = [
+        ConsensusMember {
+            datacenter: "east".to_owned(),
+            address: "http://a.internal:4460".to_owned(),
+        },
+        ConsensusMember {
+            datacenter: "east".to_owned(),
+            address: "http://b.internal:4460".to_owned(),
+        },
+    ];
 
-    let error = build_roster(&membership).err().unwrap().to_string();
+    let error = build_roster(&members).err().unwrap().to_string();
 
     assert!(error.contains("same consensus voter id"), "{error}");
 }
@@ -311,16 +116,18 @@ async fn test_ignite_does_not_bootstrap_a_replica_seed() {
 #[tokio::test]
 async fn test_ignite_starts_and_bootstraps_a_single_node_group() {
     let dir = tempfile::tempdir().unwrap();
-    let config = ha_config(
-        &dir,
-        Some(DcMembership {
-            group: "ownership".to_owned(),
-            members: vec![member("node-a", "east", "http://east.internal:4460", DcRole::Writer)],
-        }),
-        Some("node-a"),
-        SecretSource::Literal(TOKEN.to_owned()),
-    );
-    let plan = ConsensusPlan::from_config(&config).unwrap().unwrap();
+    let plan = ConsensusPlan::new(
+        "east".to_owned(),
+        true,
+        &[ConsensusMember {
+            datacenter: "east".to_owned(),
+            address: "http://east.internal:4460".to_owned(),
+        }],
+        dir.path().join("raft/ownership-log.redb"),
+        "ownership".to_owned(),
+        TOKEN.to_owned(),
+    )
+    .unwrap();
 
     let node = plan.ignite().await.unwrap();
 

@@ -17,8 +17,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::available_parallelism;
 
+use anyhow::Context as _;
 use peryx_driver::PrometheusSource;
 use tokio::runtime::{Builder, Handle, Runtime};
+
+use crate::{AnalyticsPuller, BeaconSender, ReplicaLoop};
 
 /// The most worker threads the availability runtime starts, whatever the host reports. A container
 /// that sees many host cores must not spawn one background worker per core; replication is a
@@ -46,10 +49,7 @@ fn worker_thread_count() -> usize {
         .min(WORKER_THREAD_CAP)
 }
 
-/// The shared, always-present state of the availability worker domain: the concurrency accounting a
-/// replica's readiness and the `/metrics` exposition both read. It exists whenever a process runs
-/// background availability work and is registered as a [`PrometheusSource`] beside the replica's
-/// frontier gauges.
+/// Shared concurrency accounting for availability workers.
 #[derive(Debug)]
 pub struct WorkerShared {
     worker_threads: usize,
@@ -74,6 +74,7 @@ impl WorkerShared {
 
     /// The shared state a replica process starts with: a runtime-sized worker pool and the default
     /// slot budget.
+    #[must_use]
     pub fn for_replica() -> Self {
         Self::new(worker_thread_count(), WORKER_SLOTS)
     }
@@ -143,9 +144,7 @@ impl PrometheusSource for WorkerShared {
     }
 }
 
-/// A dedicated Tokio runtime for background availability work, sized once at startup and owning its
-/// own bounded worker and blocking pools so replication never competes with the foreground request
-/// executor.
+/// A runtime that isolates availability work from request handling.
 pub struct AvailabilityRuntime {
     runtime: Option<Runtime>,
     handle: Handle,
@@ -157,7 +156,7 @@ impl AvailabilityRuntime {
     ///
     /// # Errors
     /// Returns the underlying error when the operating system refuses the worker threads.
-    pub(crate) fn start(shared: Arc<WorkerShared>) -> std::io::Result<Self> {
+    pub fn start(shared: Arc<WorkerShared>) -> std::io::Result<Self> {
         let runtime = Builder::new_multi_thread()
             .worker_threads(shared.worker_threads)
             .max_blocking_threads(BLOCKING_THREAD_CAP)
@@ -175,7 +174,7 @@ impl AvailabilityRuntime {
     /// Take a slot and run `task` on the runtime, returning its supervisor handle, or `None` when the
     /// runtime is saturated so the caller applies backpressure. A task that panics releases its slot
     /// and marks the worker domain unhealthy rather than aborting the process.
-    pub(crate) fn try_spawn(&self, task: BackgroundTask) -> Option<tokio::task::JoinHandle<()>> {
+    pub fn try_spawn(&self, task: BackgroundTask) -> Option<tokio::task::JoinHandle<()>> {
         let guard = self.shared.reserve()?;
         let shared = Arc::clone(&self.shared);
         Some(self.handle.spawn(async move {
@@ -186,6 +185,29 @@ impl AvailabilityRuntime {
                 shared.record_panic();
             }
         }))
+    }
+
+    /// Start the replica services on this runtime.
+    ///
+    /// # Errors
+    /// Returns an error when the runtime cannot reserve a slot for a configured service.
+    pub fn start_replica_services(
+        self,
+        replica: ReplicaLoop,
+        analytics: Option<AnalyticsPuller>,
+        beacon: Option<BeaconSender>,
+    ) -> anyhow::Result<Self> {
+        self.try_spawn(Box::pin(replica.run()))
+            .context("reserve the replica loop slot")?;
+        if let Some(analytics) = analytics {
+            self.try_spawn(Box::pin(analytics.run()))
+                .context("reserve the analytics pull slot")?;
+        }
+        if let Some(beacon) = beacon {
+            self.try_spawn(Box::pin(beacon.run()))
+                .context("reserve the frontier beacon slot")?;
+        }
+        Ok(self)
     }
 }
 

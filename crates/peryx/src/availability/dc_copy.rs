@@ -1,110 +1,19 @@
-//! The background cross-data-center filesystem blob copier.
-//!
-//! Local-filesystem HA needs each data center to hold its own verified copy of every blob a peer serves.
-//! This is the orchestrator behind the scheduled [`DcCopy`](peryx_driver::jobs::ScheduledJob::DcCopy)
-//! job: it reads the copy backlog the local data center owes from the placement ledger, pulls each owed
-//! digest from a verified peer over the replication blob transport, and records the resulting local
-//! placement.
-//!
-//! # Fencing
-//!
-//! The copy is fenced by the ownership group's cluster-level monotonic epoch, [`ClusterStatus::term`],
-//! not by a per-repository authority epoch. The copy backlog is digest-keyed and node-wide - it names no
-//! repository - so a per-repository epoch is undefined here, and a node-wide job resolves one to the
-//! closed `0` sentinel that fences all placement writes shut (the trap this design avoids). The copy is a
-//! cluster-level replication activity, so the cluster term is its natural fence. Over-fencing by an
-//! advanced cluster term only forces a harmless re-copy under the newer term; it can never let a stale
-//! copy win, so the choice is HA-safe. A process running no ownership group reads term `0` and copies
-//! nothing.
-//!
-//! [`ClusterStatus::term`]: peryx_driver::state::ClusterStatus::term
-
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context as _;
-use async_trait::async_trait;
-use futures_util::StreamExt as _;
-
-use peryx_driver::jobs::{DcCopyParameters, JobFailure, JobReport};
-use peryx_driver::state::{Clock, ServingState};
-use peryx_ha::{AvailabilityTaskError, AvailabilityTaskReport};
-use peryx_ha_distributed::{
-    BlobTransport, CopyError, HttpBlobTransport, TransferLimits, TransportError, copy_blob_to_target,
-};
-use peryx_storage::blob::{BlobStore, Digest};
-use peryx_storage::meta::{
-    BackendId, BackendLocation, BlobPlacementFailure, BlobPlacementKey, BlobPlacementTransition, CopyBacklogEntry,
-    CopyPlan, CrossDcCopy, DataCenterId, MetaStore, plan_cross_dc_copy,
-};
+use peryx_driver::state::ServingState;
+use peryx_storage::blob::BlobStore;
+use peryx_storage::meta::{BackendId, DataCenterId};
 
 use crate::config::{Config, DcMembership, DcRole, ReplicationConfig, SecretSource};
 
-/// Distinct digests one backlog scan reads before the pass resumes past its cursor. The pass loops until
-/// the ledger is drained, so this only bounds one iteration's read, not the copy it performs.
-const SCAN_BATCH: usize = 256;
-/// How long one peer blob fetch may run before it is a retryable source loss.
-const SOURCE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// A blob transport reaching a verified source in a named data center, resolved per copy.
-trait SourceTransports: Send + Sync {
-    /// The transport reaching a verified peer in `source_dc`, or `None` when the data center is not in the
-    /// roster or its address does not build a usable client.
-    fn transport(&self, source_dc: &str) -> Option<Box<dyn BlobTransport + Send + Sync>>;
-}
-
-/// The production source resolver: a bearer-authenticated HTTP transport per rostered peer data center.
-struct RosterTransports {
-    /// Peer data center to the base URL a copy fetches its blobs from.
-    roster: HashMap<String, String>,
-    /// The shared replication bearer token every peer accepts.
-    token: String,
-    limits: TransferLimits,
-}
-
-impl SourceTransports for RosterTransports {
-    fn transport(&self, source_dc: &str) -> Option<Box<dyn BlobTransport + Send + Sync>> {
-        let base = self.roster.get(source_dc)?;
-        let transport = HttpBlobTransport::new(base, self.token.clone(), self.limits, SOURCE_FETCH_TIMEOUT).ok()?;
-        Some(Box::new(transport))
-    }
-}
-
-/// The background cross-data-center filesystem blob copier registered on the [`ServingState`].
-pub struct CrossDcBlobCopier {
-    /// The data center this node copies bytes into.
-    local_dc: DataCenterId,
-    /// The blob backend the recorded placements name, matching the local store.
-    backend: BackendId,
-    /// The local filesystem store the copy publishes verified bytes to.
-    store: BlobStore,
-    sources: Arc<dyn SourceTransports>,
-}
-
-struct BoundCrossDcBlobCopier {
-    copier: CrossDcBlobCopier,
-    state: Arc<ServingState>,
-}
+pub struct CrossDcBlobCopier(peryx_ha_distributed::CrossDcBlobCopier);
 
 impl CrossDcBlobCopier {
-    pub fn bind(self, state: Arc<ServingState>) -> Arc<dyn peryx_ha::CrossDcCopier> {
-        Arc::new(BoundCrossDcBlobCopier { copier: self, state })
-    }
-    /// Build the copier for a filesystem node from its resolved configuration and runtime store.
-    ///
-    /// Returns `None` when the node copies nothing: no roster, no node identity, no replication token,
-    /// this node absent from the roster, or a single-data-center group with no peer to pull from.
-    ///
-    /// The node names its own roster entry through `node_identity`, so the copier resolves its own
-    /// datacenter from that; `writer_identity` is the shared writer every node claims and is the same
-    /// across the group, so it names one datacenter for all and cannot place this node. It falls back to
-    /// `writer_identity` only for a single-writer group that configures no distinct node identity.
-    ///
     /// # Errors
-    /// Returns an error when the replication token cannot be read or the local data center is not a valid
-    /// placement component.
+    /// Returns an error when the local datacenter or replication credential is invalid.
     pub fn from_config(config: &Config, store: BlobStore, backend: BackendId) -> anyhow::Result<Option<Self>> {
         let (Some(membership), Some(identity), Some(replication)) = (
             config.dc_membership.as_ref(),
@@ -113,163 +22,37 @@ impl CrossDcBlobCopier {
         ) else {
             return Ok(None);
         };
-        let token = replication_token(replication)
-            .read()
-            .context("read the replication token for cross-datacenter copy")?;
-        Self::plan(membership, identity, token, store, backend)
-    }
-
-    fn plan(
-        membership: &DcMembership,
-        identity: &str,
-        token: String,
-        store: BlobStore,
-        backend: BackendId,
-    ) -> anyhow::Result<Option<Self>> {
         let Some(local) = membership.members.iter().find(|member| member.node == identity) else {
             return Ok(None);
         };
         let local_dc =
             DataCenterId::new(&local.dc).context("the local datacenter is not a valid placement component")?;
-        let roster = source_roster(membership, &local.dc);
-        if roster.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(Self {
+        let token = replication_token(replication)
+            .read()
+            .context("read the replication token for cross-datacenter copy")?;
+        Ok(peryx_ha_distributed::CrossDcBlobCopier::http(
             local_dc,
-            backend,
+            source_roster(membership, &local.dc),
+            token,
             store,
-            sources: Arc::new(RosterTransports {
-                roster,
-                token,
-                limits: TransferLimits::default(),
-            }),
-        }))
+            backend,
+        )
+        .map(Self))
     }
 
-    fn plan_one(&self, entry: &CopyBacklogEntry, fence: u64) -> Option<CrossDcCopy> {
-        let location = BackendLocation::for_digest(&entry.digest);
-        match plan_cross_dc_copy(entry, &self.local_dc, &self.backend, &location, fence) {
-            CopyPlan::Copy(copy) => Some(*copy),
-            CopyPlan::Fenced | CopyPlan::NoSource => None,
-        }
-    }
-
-    fn collect_backlog(
-        &self,
-        meta: &MetaStore,
-        fence: u64,
-        batch: usize,
-        cancelled: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<Vec<CrossDcCopy>, JobFailure> {
-        let mut planned = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            if cancelled() {
-                break;
-            }
-            let page = meta
-                .scan_cross_dc_copy_backlog(&self.local_dc, cursor.as_deref(), batch)
-                .map_err(|error| JobFailure::new("copy_backlog_scan", error.to_string()))?;
-            for entry in &page.entries {
-                if let Some(copy) = self.plan_one(entry, fence) {
-                    planned.push(copy);
-                }
-            }
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(planned)
-    }
-
-    async fn copy_one(&self, meta: &MetaStore, clock: &Clock, copy: CrossDcCopy, fence: u64) -> bool {
-        let source_dc = copy.source.data_center.as_str();
-        let Some(transport) = self.sources.transport(source_dc) else {
-            tracing::warn!(source_dc, "cross-datacenter copy has no reachable source peer");
-            return false;
-        };
-        if !record(meta, &copy.target, &BlobPlacementTransition::Stage, fence, clock) {
-            return false;
-        }
-        let digest = Digest::from(&copy.target.digest);
-        let outcome = copy_blob_to_target(transport.as_ref(), &self.store, &digest).await;
-        let transition = match &outcome {
-            Ok(()) => BlobPlacementTransition::Verify {
-                observed: copy.target.digest.clone(),
-                size: copy.size,
-            },
-            Err(error) => BlobPlacementTransition::Fail {
-                class: failure_class(error),
-            },
-        };
-        let recorded = record(meta, &copy.target, &transition, fence, clock);
-        outcome.is_ok() && recorded
+    pub fn bind(self, state: Arc<ServingState>) -> Arc<dyn peryx_ha::CrossDcCopier> {
+        self.0.bind(state)
     }
 }
 
-impl CrossDcBlobCopier {
-    pub(crate) async fn copy_pass(
-        &self,
-        state: &ServingState,
-        cancelled: &(dyn Fn() -> bool + Send + Sync),
-        params: DcCopyParameters,
-    ) -> Result<JobReport, JobFailure> {
-        let fence = state
-            .ownership_authority()
-            .map_or(0, |authority| authority.cluster_status().term);
-        if fence == 0 {
-            return Ok(JobReport::default());
-        }
-        let planned = self.collect_backlog(&state.meta, fence, SCAN_BATCH, cancelled)?;
-        let processed = planned.len() as u64;
-        let meta = &state.meta;
-        let clock = &state.clock;
-        let changed = futures_util::stream::iter(planned)
-            .map(|copy| self.copy_one(meta, clock, copy, fence))
-            .buffer_unordered(params.concurrency.get())
-            .filter(|recorded| std::future::ready(*recorded))
-            .count()
-            .await as u64;
-        Ok(JobReport { processed, changed })
-    }
-}
-
-#[async_trait]
-impl peryx_ha::CrossDcCopier for BoundCrossDcBlobCopier {
-    async fn copy_pass(
-        &self,
-        cancelled: &(dyn Fn() -> bool + Send + Sync),
-        concurrency: std::num::NonZeroUsize,
-    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
-        self.copier
-            .copy_pass(&self.state, cancelled, DcCopyParameters { concurrency })
-            .await
-            .map(|report| AvailabilityTaskReport {
-                processed: report.processed,
-                changed: report.changed,
-            })
-            .map_err(task_error)
-    }
-}
-
-fn task_error(error: JobFailure) -> AvailabilityTaskError {
-    let (code, message) = error.into_parts();
-    AvailabilityTaskError::new(code, message)
-}
-
-/// The replication bearer token a `dc` or `ha` role carries, which peers accept for blob fetches.
 const fn replication_token(replication: &ReplicationConfig) -> &SecretSource {
     match replication {
         ReplicationConfig::Primary { token, .. } | ReplicationConfig::Replica { token, .. } => token,
     }
 }
 
-/// Map each peer data center to one address to pull its blobs from, preferring the data center's writer,
-/// since it holds the authoritative bytes. The local data center is never its own source.
 fn source_roster(membership: &DcMembership, local_dc: &str) -> HashMap<String, String> {
-    let mut roster: HashMap<String, String> = HashMap::new();
+    let mut roster = HashMap::new();
     for member in &membership.members {
         if member.dc == local_dc {
             continue;
@@ -278,46 +61,170 @@ fn source_roster(membership: &DcMembership, local_dc: &str) -> HashMap<String, S
             Entry::Vacant(slot) => {
                 slot.insert(member.address.clone());
             }
-            Entry::Occupied(mut slot) => {
-                if member.role == DcRole::Writer {
-                    slot.insert(member.address.clone());
-                }
+            Entry::Occupied(mut slot) if member.role == DcRole::Writer => {
+                slot.insert(member.address.clone());
             }
+            Entry::Occupied(_) => {}
         }
     }
     roster
 }
 
-/// Apply one placement transition under `fence`, reporting whether it committed. A rejected transition
-/// is logged and counted as not recorded rather than aborting the pass.
-fn record(
-    meta: &MetaStore,
-    key: &BlobPlacementKey,
-    transition: &BlobPlacementTransition,
-    fence: u64,
-    clock: &Clock,
-) -> bool {
-    match meta.apply_blob_placement(key, transition, fence, (clock)()) {
-        Ok(_) => true,
-        Err(error) => {
-            tracing::warn!(%error, ?transition, "cross-datacenter copy could not record a placement");
-            false
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AvailabilityConfig, DcMember};
+    use peryx_driver::state::AppState;
+    use peryx_storage::blob::BlobStorage;
+    use peryx_storage::meta::MetaStore;
+
+    fn member(node: &str, dc: &str, role: DcRole) -> DcMember {
+        DcMember {
+            node: node.to_owned(),
+            dc: dc.to_owned(),
+            address: format!("http://{node}/"),
+            role,
         }
     }
-}
 
-/// Classify a copy failure into the placement evidence it records.
-///
-/// A hash mismatch marks the source's bytes permanently bad, a fetch loss marks the source unreachable,
-/// and a publish loss marks the target backend at fault.
-const fn failure_class(error: &CopyError) -> BlobPlacementFailure {
-    match error {
-        CopyError::Fetch(TransportError::DigestMismatch { .. }) => BlobPlacementFailure::DigestMismatch,
-        CopyError::Fetch(_) => BlobPlacementFailure::SourceUnavailable,
-        CopyError::Publish(_) => BlobPlacementFailure::BackendRejected,
+    fn distributed_config(token: SecretSource) -> Config {
+        Config {
+            writer_identity: Some("local".to_owned()),
+            availability: AvailabilityConfig::Ha(ReplicationConfig::Primary {
+                source: "peer".to_owned(),
+                token,
+            }),
+            dc_membership: Some(DcMembership {
+                group: "group".to_owned(),
+                members: vec![
+                    member("local", "home", DcRole::Writer),
+                    member("peer", "east", DcRole::Replica),
+                ],
+            }),
+            ..Config::default()
+        }
+    }
+
+    fn state() -> (tempfile::TempDir, tempfile::TempDir, Arc<AppState>) {
+        let meta_dir = tempfile::tempdir().unwrap();
+        let blob_dir = tempfile::tempdir().unwrap();
+        let meta = MetaStore::open(meta_dir.path().join("peryx.redb")).unwrap();
+        let state = Arc::new(AppState::new(
+            meta,
+            BlobStorage::filesystem(blob_dir.path().join("blobs")),
+            60,
+            Vec::new(),
+        ));
+        (meta_dir, blob_dir, state)
+    }
+
+    #[test]
+    fn source_roster_prefers_remote_writers() {
+        let membership = DcMembership {
+            group: "group".to_owned(),
+            members: vec![
+                member("local", "home", DcRole::Writer),
+                member("east-replica", "east", DcRole::Replica),
+                member("east-writer", "east", DcRole::Writer),
+            ],
+        };
+
+        assert_eq!(source_roster(&membership, "home")["east"], "http://east-writer/");
+    }
+
+    #[test]
+    fn source_roster_keeps_the_first_replica() {
+        let membership = DcMembership {
+            group: "group".to_owned(),
+            members: vec![
+                member("local", "home", DcRole::Writer),
+                member("east-a", "east", DcRole::Replica),
+                member("east-b", "east", DcRole::Replica),
+            ],
+        };
+
+        assert_eq!(source_roster(&membership, "home")["east"], "http://east-a/");
+    }
+
+    #[test]
+    fn replication_token_accepts_both_roles() {
+        let primary = ReplicationConfig::Primary {
+            source: "peer".to_owned(),
+            token: SecretSource::Literal("primary".to_owned()),
+        };
+        let replica = ReplicationConfig::Replica {
+            upstream: "http://writer/".to_owned(),
+            token: SecretSource::Literal("replica".to_owned()),
+            poll_interval: std::time::Duration::from_secs(1),
+            page_size: std::num::NonZeroUsize::MIN,
+        };
+
+        assert_eq!(replication_token(&primary).read().unwrap(), "primary");
+        assert_eq!(replication_token(&replica).read().unwrap(), "replica");
+    }
+
+    #[test]
+    fn disabled_availability_has_no_copier() {
+        let config = Config {
+            availability: AvailabilityConfig::None,
+            ..Config::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path());
+        let backend = BackendId::new("filesystem").unwrap();
+
+        assert!(
+            CrossDcBlobCopier::from_config(&config, store, backend)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn distributed_config_builds_and_binds_a_copier() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlobStorage::filesystem(dir.path().join("blobs"));
+        let copier = CrossDcBlobCopier::from_config(
+            &distributed_config(SecretSource::Literal("token".to_owned())),
+            storage.filesystem_store().unwrap().clone(),
+            storage.backend_id(),
+        )
+        .unwrap()
+        .unwrap();
+        let (_meta_dir, _blob_dir, state) = state();
+
+        drop(copier.bind(state.serving.clone()));
+    }
+
+    #[test]
+    fn unreadable_replication_token_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlobStorage::filesystem(dir.path().join("blobs"));
+
+        assert!(
+            CrossDcBlobCopier::from_config(
+                &distributed_config(SecretSource::File(dir.path().join("missing"))),
+                storage.filesystem_store().unwrap().clone(),
+                storage.backend_id(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_local_datacenter_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlobStorage::filesystem(dir.path().join("blobs"));
+        let mut config = distributed_config(SecretSource::Literal("token".to_owned()));
+        config.dc_membership.as_mut().unwrap().members[0].dc = "d".repeat(600);
+
+        assert!(
+            CrossDcBlobCopier::from_config(
+                &config,
+                storage.filesystem_store().unwrap().clone(),
+                storage.backend_id(),
+            )
+            .is_err()
+        );
     }
 }
-
-#[cfg(test)]
-#[path = "dc_copy_tests.rs"]
-mod tests;

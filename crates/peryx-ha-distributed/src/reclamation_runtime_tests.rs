@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use peryx_driver::serving::{DriverCapabilities, EcosystemDriver, TrashDriver};
 use peryx_driver::state::AppState;
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::{BlobStorage, Digest};
@@ -12,7 +12,7 @@ use peryx_storage::meta::{
 use redb::{Database, TableDefinition};
 
 use super::*;
-use crate::config::{DcMember, DcMembership, DcRole};
+use crate::{HeartbeatReport, LivenessTracker};
 
 fn meta() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -86,17 +86,14 @@ impl ReferenceInventory for FailingRefs {
 
 fn selector(referenced: &[&ArtifactDigest], frontier: ObservedFrontier) -> BlobReclamationSelector {
     let set = referenced.iter().map(|digest| digest.sha256().to_owned()).collect();
-    BlobReclamationSelector {
-        references: Arc::new(StubRefs(set)),
-        frontiers: Arc::new(StubFrontiers(frontier)),
-    }
+    BlobReclamationSelector::new(Arc::new(StubRefs(set)), Arc::new(StubFrontiers(frontier)))
 }
 
 struct StubFrontiers(ObservedFrontier);
 
 impl ReclamationFrontiers for StubFrontiers {
-    fn observe(&self) -> ObservedFrontier {
-        self.0
+    fn observe(&self) -> Option<ObservedFrontier> {
+        Some(self.0)
     }
 }
 
@@ -112,11 +109,17 @@ async fn test_reclaim_pass_is_a_no_op_without_a_cluster_term() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
-    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .bind(state.serving.clone())
-        .reclaim_pass(&|| false, 0, std::num::NonZeroUsize::new(100).unwrap())
-        .await
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .bind(state.serving.clone())
+    .reclaim_pass(&|| false, 0, std::num::NonZeroUsize::new(100).unwrap())
+    .await
+    .unwrap();
 
     assert_eq!(
         report,
@@ -133,9 +136,15 @@ async fn test_pass_selects_an_unreferenced_digest_and_stamps_the_frontier() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
-    let report = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(report.processed, 1);
     let tombstone = state.meta.reclamation_tombstone(&artifact).unwrap().unwrap();
@@ -153,9 +162,15 @@ async fn test_pass_leaves_a_referenced_digest_untouched() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"kept");
 
-    let report = selector(&[&artifact], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[&artifact],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(report.processed, 1);
     assert_eq!(report.changed, 0);
@@ -173,9 +188,15 @@ async fn test_pass_leaves_a_serveable_digest_untouched() {
     let (_blob, artifact) = store_blob(&state, b"serveable");
     verified_placement(&state.meta, &artifact);
 
-    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(report.changed, 0);
     assert_eq!(
@@ -194,9 +215,15 @@ async fn test_pass_scans_only_the_batch() {
     let mut params = ReclamationParameters::new();
     params.batch = std::num::NonZeroUsize::new(1).unwrap();
 
-    let report = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
-        .reclaim_pass(&state, &|| false, 9, params)
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, params)
+    .unwrap();
 
     assert_eq!(report.processed, 1, "the batch bounds one pass to a single candidate");
 }
@@ -208,9 +235,15 @@ async fn test_a_covered_frontier_marks_a_candidate_ready() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
-    let report = selector(&[], ObservedFrontier { replica: 4, backup: 6 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(4),
+            backup: Some(6),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(tombstone_status(&state.meta, &artifact), Some(ReclamationStatus::Ready));
     assert_eq!(report.changed, 2, "one selection and one readiness advance");
@@ -223,9 +256,15 @@ async fn test_a_lagging_replica_blocks_readiness() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
-    selector(&[], ObservedFrontier { replica: 2, backup: 9 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(2),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(
         tombstone_status(&state.meta, &artifact),
@@ -241,9 +280,15 @@ async fn test_a_lagging_backup_blocks_readiness() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
-    selector(&[], ObservedFrontier { replica: 9, backup: 2 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(2),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(
         tombstone_status(&state.meta, &artifact),
@@ -259,18 +304,30 @@ async fn test_a_reference_returning_before_the_final_check_skips_the_candidate()
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
     // First pass with a lagging replica arms a pending tombstone but cannot mark it ready.
-    selector(&[], ObservedFrontier { replica: 0, backup: 0 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
     assert_eq!(
         tombstone_status(&state.meta, &artifact),
         Some(ReclamationStatus::Pending)
     );
 
     // A reference reappears; the frontier is now covered, but the final check abandons the candidate.
-    selector(&[&artifact], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    selector(
+        &[&artifact],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(
         tombstone_status(&state.meta, &artifact),
@@ -290,9 +347,15 @@ async fn test_a_stale_worker_is_fenced_out_of_selection() {
         .select_reclamation_candidate(&artifact, false, 0, 12, 10)
         .unwrap();
 
-    let error = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 5, ReclamationParameters::new())
-        .unwrap_err();
+    let error = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 5, ReclamationParameters::new())
+    .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_select");
     assert_eq!(
@@ -308,9 +371,15 @@ async fn test_a_cancelled_pass_selects_nothing() {
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"orphan");
 
-    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| true, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| true, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(report, JobReport::default());
     assert_eq!(tombstone_status(&state.meta, &artifact), None);
@@ -323,7 +392,10 @@ async fn test_a_reference_scan_failure_surfaces() {
     store_blob(&state, b"orphan");
     let reclaimer = BlobReclamationSelector {
         references: Arc::new(FailingRefs),
-        frontiers: Arc::new(StubFrontiers(ObservedFrontier { replica: 0, backup: 0 })),
+        frontiers: Arc::new(StubFrontiers(ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        })),
     };
 
     let error = reclaimer
@@ -345,9 +417,15 @@ fn test_reclaim_pass_surfaces_a_frontier_read_failure() {
     drop(database);
     let (_app_dir, state) = app(MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap());
 
-    let error = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap_err();
+    let error = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_frontier_read");
 }
@@ -361,9 +439,15 @@ fn test_reclaim_pass_surfaces_a_blob_scan_failure() {
     std::fs::write(blob_path.join("sha256"), b"not a directory").unwrap();
     let state = AppState::new(meta, BlobStorage::filesystem(blob_path), 60, Vec::new());
 
-    let error = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap_err();
+    let error = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_scan");
 }
@@ -381,11 +465,94 @@ fn test_reclaim_pass_surfaces_a_tombstone_read_failure() {
     drop(database);
     let (_app_dir, state) = app(MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap());
 
-    let error = selector(&[], ObservedFrontier { replica: 0, backup: 0 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap_err();
+    let error = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_read");
+}
+
+struct MissingFrontiers;
+
+impl ReclamationFrontiers for MissingFrontiers {
+    fn observe(&self) -> Option<ObservedFrontier> {
+        None
+    }
+}
+
+#[test]
+fn test_reclaim_pass_keeps_pending_state_without_frontier_evidence() {
+    let (_meta_dir, meta) = meta();
+    let artifact = ArtifactDigest::from_sha256("d".repeat(64)).unwrap();
+    meta.select_reclamation_candidate(&artifact, false, 0, 9, 10).unwrap();
+    let (_app_dir, state) = app(meta);
+    let reclaimer = BlobReclamationSelector::new(Arc::new(StubRefs(BTreeSet::new())), Arc::new(MissingFrontiers));
+
+    let report = reclaimer
+        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+        .unwrap();
+
+    assert_eq!(report, JobReport::default());
+    assert_eq!(
+        tombstone_status(&state.meta, &artifact),
+        Some(ReclamationStatus::Pending)
+    );
+}
+
+#[test]
+fn test_replica_frontiers_impose_no_requirement_without_replicas() {
+    assert_eq!(
+        ReplicaReclamationFrontiers::new(None, Vec::new()).observe(),
+        Some(ObservedFrontier {
+            replica: None,
+            backup: None,
+        })
+    );
+}
+
+#[test]
+fn test_replica_frontiers_require_liveness_for_configured_replicas() {
+    assert_eq!(
+        ReplicaReclamationFrontiers::new(None, vec!["replica".to_owned()]).observe(),
+        None
+    );
+}
+
+#[test]
+fn test_replica_frontiers_use_the_lowest_reported_serial() {
+    let tracker = Arc::new(LivenessTracker::new(
+        ["first".to_owned(), "second".to_owned()],
+        Duration::from_secs(30),
+        Duration::from_mins(1),
+    ));
+    let now = Instant::now();
+    for (node, applied) in [("first", 8), ("second", 5)] {
+        tracker
+            .observe(
+                &HeartbeatReport {
+                    node: node.to_owned(),
+                    incarnation: 1,
+                    sequence: 1,
+                    applied: Some(applied),
+                },
+                now,
+            )
+            .unwrap();
+    }
+
+    assert_eq!(
+        ReplicaReclamationFrontiers::new(Some(tracker), vec!["first".to_owned(), "second".to_owned()]).observe(),
+        Some(ObservedFrontier {
+            replica: Some(5),
+            backup: None,
+        })
+    );
 }
 
 #[test]
@@ -395,9 +562,15 @@ fn test_reclaim_pass_stops_before_finalizing_when_cancelled() {
     meta.select_reclamation_candidate(&artifact, false, 0, 9, 10).unwrap();
     let (_app_dir, state) = app(meta);
 
-    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| true, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| true, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(report, JobReport::default());
     assert_eq!(
@@ -411,13 +584,28 @@ fn test_reclaim_pass_ignores_a_finalized_tombstone() {
     let (_meta_dir, meta) = meta();
     let artifact = ArtifactDigest::from_sha256("b".repeat(64)).unwrap();
     meta.select_reclamation_candidate(&artifact, false, 0, 9, 10).unwrap();
-    meta.mark_reclamation_ready(&artifact, false, ObservedFrontier { replica: 0, backup: 0 }, 9, 11)
-        .unwrap();
+    meta.mark_reclamation_ready(
+        &artifact,
+        false,
+        ObservedFrontier {
+            replica: Some(0),
+            backup: Some(0),
+        },
+        9,
+        11,
+    )
+    .unwrap();
     let (_app_dir, state) = app(meta);
 
-    let report = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
-        .unwrap();
+    let report = selector(
+        &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
+    )
+    .reclaim_pass(&state, &|| false, 9, ReclamationParameters::new())
+    .unwrap();
 
     assert_eq!(report, JobReport::default());
     assert_eq!(tombstone_status(&state.meta, &artifact), Some(ReclamationStatus::Ready));
@@ -430,200 +618,15 @@ fn test_reclaim_pass_surfaces_a_stale_finalization_fence() {
     meta.select_reclamation_candidate(&artifact, false, 0, 12, 10).unwrap();
     let (_app_dir, state) = app(meta);
 
-    let error = selector(&[], ObservedFrontier { replica: 9, backup: 9 })
-        .reclaim_pass(&state, &|| false, 5, ReclamationParameters::new())
-        .unwrap_err();
-
-    assert_eq!(error.code(), "reclamation_mark");
-}
-
-#[test]
-fn test_driver_references_reads_the_reference_inventory() {
-    let (_meta_dir, meta) = meta();
-    let inventory = DriverReferences {
-        index_names: vec!["pypi".to_owned()],
-    };
-
-    let referenced = inventory.referenced(&meta).unwrap();
-
-    assert!(referenced.is_empty(), "an empty store references no blobs");
-}
-
-struct StubDriver {
-    supports_trash: bool,
-    trash: Result<Vec<peryx_core::TrashRecord>, String>,
-}
-
-#[async_trait]
-impl EcosystemDriver for StubDriver {
-    fn ecosystem(&self) -> peryx_core::Ecosystem {
-        peryx_ecosystem_pypi::ECOSYSTEM
-    }
-
-    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
-        peryx_driver::rate_limit::RouteClass::Listing
-    }
-
-    fn discover_index(
-        &self,
-        _index: peryx_driver::state::IndexDescription,
-        _base: Option<&peryx_driver::discovery::BaseUrl>,
-    ) -> serde_json::Value {
-        serde_json::Value::Null
-    }
-
-    fn capabilities(&self) -> DriverCapabilities<'_> {
-        DriverCapabilities {
-            trash: self.supports_trash.then_some(self),
-            ..DriverCapabilities::default()
-        }
-    }
-}
-
-impl TrashDriver for StubDriver {
-    fn trash_records(
-        &self,
-        _meta: &MetaStore,
-        _index_names: &[String],
-    ) -> Result<Vec<peryx_core::TrashRecord>, String> {
-        self.trash.clone()
-    }
-}
-
-fn trashed(digest: Option<&str>) -> peryx_core::TrashRecord {
-    peryx_core::TrashRecord {
-        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
-        repository: "pypi".to_owned(),
-        name: "demo".to_owned(),
-        reference: None,
-        digest: digest.map(ToOwned::to_owned),
-        reason: None,
-        actor: None,
-        deleted_at_unix: 0,
-        retained: true,
-    }
-}
-
-#[test]
-fn test_collect_references_surfaces_a_reference_scan_error() {
-    let (_meta_dir, meta) = meta();
-    let drivers: Vec<Arc<dyn EcosystemDriver>> = Vec::new();
-
-    let error = collect_references(
-        Err(anyhow::anyhow!("reference read failed")),
-        drivers.iter(),
-        &meta,
+    let error = selector(
         &[],
+        ObservedFrontier {
+            replica: Some(9),
+            backup: Some(9),
+        },
     )
+    .reclaim_pass(&state, &|| false, 5, ReclamationParameters::new())
     .unwrap_err();
 
-    assert_eq!(
-        error, "reference read failed",
-        "a base reference read error surfaces verbatim"
-    );
-}
-
-#[test]
-fn test_collect_references_surfaces_a_trash_scan_error() {
-    let (_meta_dir, meta) = meta();
-    let drivers: Vec<Arc<dyn EcosystemDriver>> = vec![Arc::new(StubDriver {
-        supports_trash: true,
-        trash: Err("store unreadable".to_owned()),
-    })];
-
-    let error = collect_references(Ok(BTreeSet::new()), drivers.iter(), &meta, &[]).unwrap_err();
-
-    assert_eq!(
-        error, "scan pypi trash: store unreadable",
-        "a trash scan error names its ecosystem"
-    );
-}
-
-#[test]
-fn test_collect_references_skips_a_driver_without_trash_inventory() {
-    let (_meta_dir, meta) = meta();
-    let base = BTreeSet::from(["already".to_owned()]);
-    let drivers: Vec<Arc<dyn EcosystemDriver>> = vec![Arc::new(StubDriver {
-        supports_trash: false,
-        trash: Err("must not be read".to_owned()),
-    })];
-
-    assert_eq!(
-        collect_references(Ok(base.clone()), drivers.iter(), &meta, &[]).unwrap(),
-        base,
-        "a driver without trash inventory leaves the base set unchanged"
-    );
-}
-
-#[test]
-fn test_collect_references_folds_trashed_digests_over_the_base_set() {
-    let (_meta_dir, meta) = meta();
-    let base = BTreeSet::from(["already".to_owned()]);
-    let drivers: Vec<Arc<dyn EcosystemDriver>> = vec![Arc::new(StubDriver {
-        supports_trash: true,
-        trash: Ok(vec![trashed(Some("sha256:aabb")), trashed(Some("ccdd")), trashed(None)]),
-    })];
-
-    let referenced = collect_references(Ok(base), drivers.iter(), &meta, &[]).unwrap();
-
-    assert_eq!(
-        referenced,
-        BTreeSet::from(["already".to_owned(), "aabb".to_owned(), "ccdd".to_owned()]),
-        "a prefixed digest is stripped, a bare digest is kept, and a digestless record is skipped"
-    );
-}
-
-#[test]
-fn test_deferred_frontiers_report_the_closed_frontier() {
-    assert_eq!(DeferredFrontiers.observe(), ObservedFrontier { replica: 0, backup: 0 });
-}
-
-fn member(node: &str, data_center: &str) -> DcMember {
-    DcMember {
-        node: node.to_owned(),
-        dc: data_center.to_owned(),
-        address: format!("http://{node}/"),
-        role: DcRole::Writer,
-    }
-}
-
-fn config_with(membership: Option<DcMembership>, identity: Option<&str>) -> Config {
-    Config {
-        writer_identity: identity.map(ToOwned::to_owned),
-        dc_membership: membership,
-        ..Config::default()
-    }
-}
-
-#[test]
-fn test_from_config_builds_a_selector_for_a_rostered_node() {
-    let config = config_with(
-        Some(DcMembership {
-            group: "group".to_owned(),
-            members: vec![member("local", "home"), member("peer", "east")],
-        }),
-        Some("local"),
-    );
-
-    assert!(BlobReclamationSelector::from_config(&config).unwrap().is_some());
-}
-
-#[test]
-fn test_from_config_reclaims_nothing_without_membership() {
-    let config = config_with(None, Some("local"));
-
-    assert!(BlobReclamationSelector::from_config(&config).unwrap().is_none());
-}
-
-#[test]
-fn test_from_config_reclaims_nothing_when_this_node_is_unrostered() {
-    let config = config_with(
-        Some(DcMembership {
-            group: "group".to_owned(),
-            members: vec![member("someone-else", "east")],
-        }),
-        Some("local"),
-    );
-
-    assert!(BlobReclamationSelector::from_config(&config).unwrap().is_none());
+    assert_eq!(error.code(), "reclamation_mark");
 }

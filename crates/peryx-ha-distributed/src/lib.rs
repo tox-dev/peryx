@@ -8,6 +8,8 @@ mod ack;
 mod analytics;
 mod analytics_transfer;
 mod authority;
+mod authority_drain;
+mod authority_transfer;
 mod backoff;
 mod beacon;
 mod blob;
@@ -25,6 +27,8 @@ mod channel;
 mod circuit;
 mod completeness;
 mod completeness_query;
+mod consensus_runtime;
+mod copy_runtime;
 mod dc_ack;
 mod dc_copy;
 mod drain;
@@ -43,17 +47,24 @@ mod peer;
 mod peer_http;
 mod peer_receipt;
 mod peer_receipt_http;
+mod placement_runtime;
 mod protocol;
 pub mod raft;
 pub mod read_through;
 mod readiness;
 mod receipt_quorum;
+mod reclamation_runtime;
 mod reconcile;
 mod remote_durability;
 mod remote_frontier;
 mod remote_frontier_http;
 mod replica;
+mod replica_monitor;
+mod replica_runtime;
 mod rollout;
+mod runtime_analytics;
+mod runtime_metrics;
+mod runtime_worker;
 pub mod sim;
 mod status;
 mod telemetry;
@@ -74,6 +85,11 @@ pub use analytics_transfer::{
     AnalyticsPullError, AnalyticsSource, HttpAnalyticsError, HttpAnalyticsSource, PullReport, pull,
 };
 pub use authority::{Admission, AuthorityFence, AuthorityKey, CommitOutcome};
+pub use authority_drain::AuthorityDrainJob;
+pub use authority_transfer::{
+    EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator, TransferDriveError,
+    TransferRunError, commit_transfer, observe_target,
+};
 pub use backoff::{DEFAULT_RECONNECT_POLICY, RETRY_EXHAUSTED, ReconnectPolicy, Retry};
 pub use beacon::{BeaconError, BeaconSender, DEFAULT_BEACON_INTERVAL};
 pub use blob::{BlobRequest, BlobTransport, ByteRange, CapacityLimited, LoopbackBlobSource};
@@ -95,6 +111,8 @@ pub use channel::{BoundedChannel, BufferOutcome, ChannelFull, buffer_batch};
 pub use circuit::{CircuitBreaker, CircuitConfig, DEFAULT_CIRCUIT};
 pub use completeness::{ProducerCoverage, assess};
 pub use completeness_query::{DistributedAnalyticsCompleteness, assess_completeness};
+pub use consensus_runtime::{ConsensusMember, ConsensusPlan, OwnershipGroup};
+pub use copy_runtime::CrossDcBlobCopier;
 pub use dc_ack::{ByteEvidence, DcAck, Deadline, decide_dc_ack};
 pub use dc_copy::{CopyError, copy_blob_to_target};
 pub use drain::{DrainIntent, DrainPlan, plan_drain};
@@ -129,6 +147,7 @@ pub use peer_http::{HttpPeerError, HttpPeerTransport};
 pub use peer_receipt::{DEFAULT_RECEIPT_POLL, LoopbackReceiptSource, PeerReceipt, ReceiptSource, gather_receipts};
 pub use peer_receipt_http::{HttpReceiptError, HttpReceiptSource, ReceiptReply, receipt_router};
 pub use peryx_ha::{Completeness, CompletenessQuery, CompletenessReport, DayBucket, ExpectedProducer, ProducerReport};
+pub use placement_runtime::FilesystemPlacementReconciler;
 pub use protocol::{
     BlobReference, Change, ChangePage, MetadataMutation, PROTOCOL_VERSION, PlacementAvailability, PlacementDescriptor,
     Primary,
@@ -138,6 +157,7 @@ pub use readiness::{
     visibility_compaction_frontier,
 };
 pub use receipt_quorum::{ByteDurability, ReceiptAck, assess_byte_durability};
+pub use reclamation_runtime::{BlobReclamationSelector, ReplicaReclamationFrontiers};
 pub use reconcile::{
     Cleanup, Disposition, OldEpochIdentity, OldEpochOp, ReconcileAction, ReconcileDrain, ReplayCommand, classify,
     cleanup, drain_reconcile, reconcile,
@@ -150,7 +170,12 @@ pub use remote_frontier_http::{
     FrontierReply, HttpRemoteFrontierError, HttpRemoteFrontierSource, MetadataFrontierProvider, frontier_router,
 };
 pub use replica::{AppliedPage, Replica, ReplicaState, SyncOutcome};
+pub use replica_monitor::{ReplicaMonitor, ReplicaObservation};
+pub use replica_runtime::{REPLICA_BLOB_FETCH_CONCURRENCY, ReplicaLoop, ReplicaLoopParts, schedule_delay};
 pub use rollout::{RolloutBlocker, RolloutBudget, RolloutPreflight, rollout_preflight, upgrade_order};
+pub use runtime_analytics::{AnalyticsPuller, analytics_router, resolve_producer_epoch};
+pub use runtime_metrics::AvailabilityMetrics;
+pub use runtime_worker::{AvailabilityRuntime, WorkerShared};
 pub use status::{OperationStatus, WriteRecord};
 pub use telemetry::{OperationTelemetry, operation_telemetry, sampled};
 pub use transfer::{TransferAudit, TransferError, TransferPhase, TransferPlan, TransferRequest};

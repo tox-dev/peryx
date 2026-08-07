@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::{SyncError, SyncOutcome};
 use peryx_driver::PrometheusSource;
-use peryx_ha_distributed::{SyncError, SyncOutcome};
 
 /// The number of `peryx_availability_*` series this exporter emits once a replica has run one cycle:
 /// the cycle counter, one error counter per [`SyncErrorClass`], the pending-serial gauge, and the
@@ -96,9 +96,7 @@ struct AvailabilityState {
     latency: LatencyHistogram,
 }
 
-/// The bounded availability counters a replica updates each sync cycle and the `/metrics` endpoint
-/// renders. Registered as a [`PrometheusSource`] beside the replica's frontier gauges, it adds the
-/// error-class, queue-depth, and latency views without widening any existing series.
+/// Bounded counters for replica sync cycles.
 #[derive(Debug, Default)]
 pub struct AvailabilityMetrics {
     state: Mutex<AvailabilityState>,

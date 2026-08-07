@@ -17,9 +17,9 @@
 
 use std::num::NonZeroUsize;
 
+use crate::{DrainIntent, OldEpochOp, plan_drain};
 use async_trait::async_trait;
 use peryx_driver::jobs::{JobContext, JobFailure, JobReport, NodeJob};
-use peryx_ha_distributed::{DrainIntent, OldEpochOp, plan_drain};
 use peryx_storage::meta::{IntentPhase, IntentTransition, JobKind, MetaError, MetaStore};
 
 const AUTHORITY_DRAIN: &str = "authority_drain";
@@ -126,5 +126,5 @@ fn drain_pending(
 }
 
 #[cfg(test)]
-#[path = "drain_tests.rs"]
+#[path = "authority_drain_tests.rs"]
 mod drain_tests;

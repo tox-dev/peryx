@@ -26,3 +26,33 @@ pub use peryx_ha::{
     CommandOutcome, CommandReceipt, ControlCommand, ControlError, MembershipControl, OperationKind, plan_voter_roster,
 };
 pub use peryx_index::{Index, IndexKind};
+
+impl peryx_ha::ReplicaViewApplier for AppState {
+    fn apply(&self, page: peryx_ha::ReplicaPage, changed_keys: &[String]) {
+        if page.changes == 0 {
+            return;
+        }
+        tracing::info!(
+            changes = page.changes,
+            serial = page.serial,
+            primary_serial = page.primary_serial,
+            "replica page applied"
+        );
+        self.bump_search_epoch();
+        let mut blocked = None;
+        for driver in self.replicated_apply_drivers() {
+            if let Err(block) = driver.apply_replicated_changes(&self.serving, changed_keys) {
+                blocked = Some(block);
+            }
+        }
+        if let Some(block) = blocked {
+            tracing::warn!(view = %block.view, serial = page.serial, "replica view rebuild blocked the frontier");
+        } else if let Err(error) = self.serving.meta.set_view_frontier(SEARCH_VIEW, page.serial) {
+            tracing::error!(%error, serial = page.serial, "recording the replica view frontier failed");
+        }
+    }
+
+    fn readable_frontier(&self) -> u64 {
+        self.serving.readable_frontier().map_or(0, |frontier| frontier.serial)
+    }
+}

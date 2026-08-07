@@ -32,8 +32,8 @@ fn arm_ready(meta: &MetaStore, artifact: &ArtifactDigest, epoch: u64) {
     meta.select_reclamation_candidate(artifact, false, FRONTIER, epoch, 0)
         .unwrap();
     let observed = ObservedFrontier {
-        replica: FRONTIER,
-        backup: FRONTIER,
+        replica: Some(FRONTIER),
+        backup: Some(FRONTIER),
     };
     meta.mark_reclamation_ready(artifact, false, observed, epoch, 1)
         .unwrap();
@@ -213,8 +213,8 @@ async fn test_reclaim_prunes_an_abandoned_candidate_without_deleting_bytes() {
     meta.select_reclamation_candidate(&artifact, false, FRONTIER, EPOCH, 0)
         .unwrap();
     let observed = ObservedFrontier {
-        replica: FRONTIER,
-        backup: FRONTIER,
+        replica: Some(FRONTIER),
+        backup: Some(FRONTIER),
     };
     meta.mark_reclamation_ready(&artifact, true, observed, EPOCH, 1)
         .unwrap();

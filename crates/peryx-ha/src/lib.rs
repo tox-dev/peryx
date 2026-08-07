@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
 use peryx_storage::blob::{BlobDurability, BlobError, BlobMetadata, BlobStorage, Digest, DurabilityRequirement};
-use peryx_storage::meta::{MetaError, MetaStore};
+use peryx_storage::meta::{MetaError, MetaStore, ObservedFrontier};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -396,6 +396,28 @@ pub trait BlobReclaimer: Send + Sync {
         fence: u64,
         batch: NonZeroUsize,
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError>;
+}
+
+pub trait ReferenceInventory: Send + Sync {
+    /// # Errors
+    /// Returns the inventory failure without changing reclamation state.
+    fn referenced(&self, meta: &MetaStore) -> Result<BTreeSet<String>, String>;
+}
+
+pub trait ReclamationFrontiers: Send + Sync {
+    fn observe(&self) -> Option<ObservedFrontier>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplicaPage {
+    pub changes: usize,
+    pub serial: u64,
+    pub primary_serial: u64,
+}
+
+pub trait ReplicaViewApplier: Send + Sync {
+    fn apply(&self, page: ReplicaPage, changed_keys: &[String]);
+    fn readable_frontier(&self) -> u64;
 }
 
 /// Result of attempting to fetch a locally missing blob from distributed storage.

@@ -5197,6 +5197,7 @@ dependencies = [
 name = "peryx-ha-distributed"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "base64",
@@ -5207,6 +5208,8 @@ dependencies = [
  "http-body-util",
  "openraft",
  "peryx-core",
+ "peryx-driver",
+ "peryx-events",
  "peryx-ha",
  "peryx-identity",
  "peryx-storage",
@@ -5223,6 +5226,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

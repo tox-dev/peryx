@@ -372,7 +372,7 @@ async fn test_replica_runtime_drains_available_pages() {
     drop(guard);
 
     let router = runtime.mount(router_for(state.clone()));
-    let availability = runtime.start().unwrap();
+    let availability = runtime.start().unwrap().unwrap();
     let deadline = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(deadline);
     loop {
@@ -1140,6 +1140,13 @@ async fn test_primary_exposes_ready_availability() {
     let state = build_state(&config).unwrap();
     let administrator = credential(&state, "Alice", Role::Administrator).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
+    assert_eq!(
+        runtime.reclamation_frontiers().observe(),
+        Some(peryx_storage::meta::ObservedFrontier {
+            replica: None,
+            backup: None,
+        })
+    );
     let router = runtime.mount(router_for(state));
 
     let (status, ready) = document(&router, "/+replication/v1/ready", Some(&administrator)).await;
@@ -1194,6 +1201,45 @@ async fn test_disabled_runtime_mounts_no_routes_or_task() {
     let metrics = String::from_utf8(body).unwrap();
     assert!(!metrics.contains("peryx_ha_distributed_"), "{metrics}");
     assert!(!metrics.contains("peryx_availability_worker_"), "{metrics}");
+}
+
+#[tokio::test]
+async fn test_primary_runtime_starts_no_replica_services() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(&dir, Some(primary_config()));
+    let state = build_state(&config).unwrap();
+
+    assert!(
+        ReplicationRuntime::new(&config, &state)
+            .unwrap()
+            .start()
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn test_reclamation_frontiers_include_configured_replicas() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config(&dir, Some(primary_config()));
+    config.dc_membership = Some(DcMembership {
+        group: "group".to_owned(),
+        members: vec![DcMember {
+            node: "replica-a".to_owned(),
+            dc: "east".to_owned(),
+            address: "http://replica-a/".to_owned(),
+            role: DcRole::Replica,
+        }],
+    });
+    let state = build_state(&config).unwrap();
+
+    assert!(
+        ReplicationRuntime::new(&config, &state)
+            .unwrap()
+            .reclamation_frontiers()
+            .observe()
+            .is_none()
+    );
 }
 
 #[test]
@@ -1419,8 +1465,6 @@ async fn test_a_replica_that_knows_its_identity_spawns_a_frontier_beacon() {
     let state = build_state(&config).unwrap();
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
 
-    // Starting the replica spawns its loop and its frontier beacon; the beacon beats at the unreachable
-    // writer and drops the failure, so dropping the runtime stops both without the test observing a beat.
-    let availability = runtime.start();
+    let availability = runtime.start().unwrap();
     assert!(availability.is_some());
 }

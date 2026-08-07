@@ -1,17 +1,11 @@
 //! Process-level replication configuration and follower scheduling.
 
-mod analytics;
-mod availability_metrics;
-mod drain;
 mod raft;
-mod worker;
+pub use peryx_ha_distributed::AuthorityDrainJob;
 
-pub use drain::AuthorityDrainJob;
-
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{fmt::Write as _, sync::Mutex};
 
 use anyhow::Context as _;
 use axum::extract::State;
@@ -19,218 +13,29 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use peryx_driver::state::SEARCH_VIEW;
-use peryx_driver::{AppState, PrometheusSource};
+use peryx_driver::AppState;
 use peryx_ha_distributed::read_through::{
     DEFAULT_READ_THROUGH_LIMITS, DcTransport, ReadThroughLimits, RemotePlacementReader,
 };
+pub use peryx_ha_distributed::schedule_delay;
 use peryx_ha_distributed::{
-    BeaconSender, BlobPlaneReport, BlobSources, CapacityLimited, ChangePage, DEFAULT_BEACON_INTERVAL,
+    AnalyticsPuller, AvailabilityMetrics, AvailabilityRuntime, BeaconSender, CapacityLimited, DEFAULT_BEACON_INTERVAL,
     DEFAULT_DEAD_AFTER, DEFAULT_RECONNECT_POLICY, DEFAULT_SET_LIMITS, DEFAULT_SUSPECT_AFTER, DEFAULT_TRANSFER_LIMITS,
-    DurabilityPolicy, HttpBlobTransport, HttpPeerTransport, LivenessTracker, MemberFrontier, MemberRole,
-    PROTOCOL_VERSION, PeerSet, ReconnectPolicy, Replica, Retry, SetLimits, SyncError, SyncOutcome, TransferLimits,
-    TransportError, advance_blob_frontier, follower_router, group_readiness, liveness_router, primary_router,
-    pull_outstanding, pull_round,
+    DurabilityPolicy, HttpBlobTransport, HttpPeerTransport, LivenessTracker, MemberFrontier, MemberRole, PeerSet,
+    REPLICA_BLOB_FETCH_CONCURRENCY, ReplicaLoop, ReplicaLoopParts, ReplicaMonitor, ReplicaReclamationFrontiers,
+    SetLimits, TransferLimits, WorkerShared, analytics_router, follower_router, group_readiness, liveness_router,
+    primary_router, resolve_producer_epoch,
 };
 use peryx_http::handlers::status_authorization;
 use peryx_http::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
 };
-use peryx_storage::blob::BlobStorage;
-use peryx_storage::meta::{DataCenterId, MetaStore};
+use peryx_storage::meta::DataCenterId;
 use peryx_upstream::redact_url;
 use serde_json::{Value, json};
 
 use crate::config::{AvailabilityConfig, Config, DcMembership, DcRole, ReplicationConfig, SecretSource};
-use crate::replication::availability_metrics::AvailabilityMetrics;
-use crate::replication::worker::{AvailabilityRuntime, WorkerShared};
 
-#[derive(Clone, Copy)]
-enum ReplicaHealthStatus {
-    Starting,
-    CatchingUp,
-    CaughtUp,
-    Error,
-}
-
-/// Why a replica is unready, kept apart from the transient status so a schema mismatch a restart
-/// cannot resolve reads differently from a page a later poll will drain.
-#[derive(Clone, Copy)]
-enum ReplicaFault {
-    None,
-    Sync,
-    IncompatibleSchema,
-}
-
-#[derive(Clone, Copy)]
-struct ReplicaObservation {
-    status: ReplicaHealthStatus,
-    fault: ReplicaFault,
-    serial: u64,
-    primary_serial: Option<u64>,
-    changes: u64,
-    errors: u64,
-    readable_serial: u64,
-    blobs_fetched: u64,
-    blobs_pending: u64,
-}
-
-struct ReplicaMonitor {
-    observation: Mutex<ReplicaObservation>,
-}
-
-impl ReplicaMonitor {
-    const fn new(serial: u64) -> Self {
-        Self {
-            observation: Mutex::new(ReplicaObservation {
-                status: ReplicaHealthStatus::Starting,
-                fault: ReplicaFault::None,
-                serial,
-                primary_serial: None,
-                changes: 0,
-                errors: 0,
-                readable_serial: 0,
-                blobs_fetched: 0,
-                blobs_pending: 0,
-            }),
-        }
-    }
-
-    fn record(&self, outcome: SyncOutcome) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.status = if outcome.caught_up() {
-            ReplicaHealthStatus::CaughtUp
-        } else {
-            ReplicaHealthStatus::CatchingUp
-        };
-        observation.fault = ReplicaFault::None;
-        observation.serial = outcome.serial;
-        observation.primary_serial = Some(outcome.primary_serial);
-        observation.changes = observation
-            .changes
-            .saturating_add(u64::try_from(outcome.changes).unwrap_or(u64::MAX));
-    }
-
-    /// Record the serial a reader may safely serve, the lowest frontier every required derived view
-    /// has applied. It trails the committed serial while the search index catches up, so a scrape
-    /// shows how far derived views lag the applied metadata.
-    fn record_readable(&self, serial: u64) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.readable_serial = serial;
-    }
-
-    /// Record what one blob-plane pass made of its outstanding blobs: add the blobs it committed to the
-    /// cumulative fetched counter and set the pending gauge to how many it left for a later pass. A backlog
-    /// that the plane cannot drain shows as a pending gauge stuck above zero while the readable serial
-    /// stalls, so a stuck blob is visible before the readable frontier lags.
-    fn record_blobs(&self, report: BlobPlaneReport) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.blobs_fetched = observation
-            .blobs_fetched
-            .saturating_add(u64::try_from(report.fetched).unwrap_or(u64::MAX));
-        observation.blobs_pending = u64::try_from(report.pending).unwrap_or(u64::MAX);
-    }
-
-    fn record_error(&self, error: &SyncError) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.status = ReplicaHealthStatus::Error;
-        observation.fault = match error {
-            SyncError::UnsupportedVersion { .. } => ReplicaFault::IncompatibleSchema,
-            _ => ReplicaFault::Sync,
-        };
-        observation.errors = observation.errors.saturating_add(1);
-    }
-
-    fn snapshot(&self) -> ReplicaObservation {
-        *self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// The reason this replica cannot yet serve at the primary's frontier, or `None` when it is
-    /// caught up and error-free. A persistent schema mismatch outranks a transient sync failure,
-    /// which outranks ordinary catch-up lag.
-    fn readiness_gap(&self) -> Option<&'static str> {
-        let observation = self.snapshot();
-        match observation.fault {
-            ReplicaFault::IncompatibleSchema => Some("incompatible_schema"),
-            ReplicaFault::Sync => Some("sync_error"),
-            ReplicaFault::None => match observation.status {
-                ReplicaHealthStatus::CaughtUp => None,
-                ReplicaHealthStatus::Starting | ReplicaHealthStatus::CatchingUp | ReplicaHealthStatus::Error => {
-                    Some("frontier_lag")
-                }
-            },
-        }
-    }
-}
-
-impl PrometheusSource for ReplicaMonitor {
-    fn write_metrics(&self, body: &mut String) {
-        let observation = *self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let caught_up = u8::from(matches!(observation.status, ReplicaHealthStatus::CaughtUp));
-        let _ = write!(
-            body,
-            "# HELP peryx_ha_distributed_caught_up Whether the replica has reached the latest observed primary serial.\n\
-             # TYPE peryx_ha_distributed_caught_up gauge\n\
-             peryx_ha_distributed_caught_up {caught_up}\n\
-             # HELP peryx_ha_distributed_serial Last serial committed by the replica.\n\
-             # TYPE peryx_ha_distributed_serial gauge\n\
-             peryx_ha_distributed_serial {}\n\
-             # HELP peryx_ha_distributed_changes_total Metadata changes committed by the replica.\n\
-             # TYPE peryx_ha_distributed_changes_total counter\n\
-             peryx_ha_distributed_changes_total {}\n\
-             # HELP peryx_ha_distributed_sync_errors_total Replica synchronization failures.\n\
-             # TYPE peryx_ha_distributed_sync_errors_total counter\n\
-             peryx_ha_distributed_sync_errors_total {}\n",
-            observation.serial, observation.changes, observation.errors
-        );
-        let _ = write!(
-            body,
-            "# HELP peryx_ha_distributed_readable_serial Highest serial every required derived view has applied.\n\
-             # TYPE peryx_ha_distributed_readable_serial gauge\n\
-             peryx_ha_distributed_readable_serial {}\n\
-             # HELP peryx_ha_distributed_blobs_fetched_total Blobs the dual-plane blob fetch committed.\n\
-             # TYPE peryx_ha_distributed_blobs_fetched_total counter\n\
-             peryx_ha_distributed_blobs_fetched_total {}\n\
-             # HELP peryx_ha_distributed_blobs_pending Blobs the last blob-plane pass left outstanding.\n\
-             # TYPE peryx_ha_distributed_blobs_pending gauge\n\
-             peryx_ha_distributed_blobs_pending {}\n",
-            observation.readable_serial, observation.blobs_fetched, observation.blobs_pending
-        );
-        if let Some(primary_serial) = observation.primary_serial {
-            let _ = write!(
-                body,
-                "# HELP peryx_ha_distributed_primary_serial Latest serial reported by the primary.\n\
-                 # TYPE peryx_ha_distributed_primary_serial gauge\n\
-                 peryx_ha_distributed_primary_serial {primary_serial}\n\
-                 # HELP peryx_ha_distributed_lag Serial distance between the primary and replica.\n\
-                 # TYPE peryx_ha_distributed_lag gauge\n\
-                 peryx_ha_distributed_lag {}\n",
-                primary_serial.saturating_sub(observation.serial)
-            );
-        }
-    }
-}
-
-/// The replication role a `dc` or `ha` process drives, reported to any caller so an operator can
-/// route probes without a credential.
 #[derive(Clone, Copy)]
 enum AvailabilityRole {
     Primary,
@@ -456,7 +261,6 @@ fn availability_response(status: StatusCode, body: serde_json::Map<String, Value
 
 /// How much of the primary's blob traffic one dual-plane fetch pass may hold in flight, and how long a
 /// single blob request may run before it is a retryable loss.
-const BLOB_FETCH_CONCURRENCY: std::num::NonZeroUsize = std::num::NonZeroUsize::new(8).expect("8 is non-zero");
 const BLOB_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 const METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -542,18 +346,17 @@ fn peer_blob_delegates(
 fn replica_blob_deferral(
     config: &Config,
     token: &str,
-) -> (String, HashMap<String, CapacityLimited<HttpBlobTransport>>) {
+) -> anyhow::Result<(String, HashMap<String, CapacityLimited<HttpBlobTransport>>)> {
     let local = config
         .dc_membership
         .as_ref()
         .and_then(|membership| local_datacenter(config, membership));
     let (Some(membership), Some(local_dc)) = (config.dc_membership.as_ref(), local) else {
-        return (String::new(), HashMap::new());
+        return Ok((String::new(), HashMap::new()));
     };
     let limits = config.read_through.unwrap_or(DEFAULT_READ_THROUGH_LIMITS);
-    let delegates = peer_blob_delegates(membership, &local_dc, token, limits)
-        .expect("a replica's peer addresses are validated building its metadata peer set");
-    (local_dc, delegates)
+    let delegates = peer_blob_delegates(membership, &local_dc, token, limits)?;
+    Ok((local_dc, delegates))
 }
 
 /// A peer's blob-serving base URL from its roster address. A bare `host:port` reaches the peer over
@@ -581,34 +384,7 @@ fn local_datacenter(config: &Config, membership: &DcMembership) -> Option<String
         .map(|member| member.dc.clone())
 }
 
-struct ReplicaLoop {
-    app: Arc<AppState>,
-    metadata: PeerSet<HttpPeerTransport>,
-    clock_origin: Instant,
-    policy: ReconnectPolicy,
-    meta: MetaStore,
-    blobs: BlobStorage,
-    page_size: std::num::NonZeroUsize,
-    poll_interval: Duration,
-    monitor: Arc<ReplicaMonitor>,
-    metrics: Arc<AvailabilityMetrics>,
-    transport: CapacityLimited<HttpBlobTransport>,
-    /// This replica's own datacenter, empty until it resolves one, so a blob placed here is held rather
-    /// than deferred.
-    local_dc: String,
-    /// The ranged blob transports to each reachable peer datacenter, keyed by datacenter. Their keys are
-    /// the peers a blob may defer to; empty until the replica resolves its datacenter and peers.
-    delegates: HashMap<String, CapacityLimited<HttpBlobTransport>>,
-}
-
-fn log_replica_page(outcome: SyncOutcome) {
-    tracing::info!(
-        changes = outcome.changes,
-        serial = outcome.serial,
-        primary_serial = outcome.primary_serial,
-        "replica page applied"
-    );
-}
+const UPSTREAM_SOURCE: &str = "upstream";
 
 /// Apply the effects of one replicated page: log it, rebuild the derived views the changed keys touch,
 /// and advance the readable frontier over the applied serial once every required view reflects it.
@@ -620,28 +396,21 @@ fn log_replica_page(outcome: SyncOutcome) {
 /// mutation-epoch bump keeps that recovery path armed for every ecosystem view. A page
 /// with no changes does nothing. This is synchronous and independent of the async sync loop, so a direct
 /// test covers it deterministically rather than riding on async scheduling.
-pub(crate) fn apply_replicated_page(app: &AppState, outcome: SyncOutcome, changed_keys: &[String]) {
-    if outcome.changes == 0 {
-        return;
-    }
-    log_replica_page(outcome);
-    app.bump_search_epoch();
-    let state = app.serving.as_ref();
-    let mut blocked = None;
-    for driver in app.replicated_apply_drivers() {
-        if let Err(block) = driver.apply_replicated_changes(state, changed_keys) {
-            blocked = Some(block);
-        }
-    }
-    if let Some(block) = blocked {
-        tracing::warn!(
-            view = %block.view,
-            serial = outcome.serial,
-            "held the readable frontier: a required derived view could not rebuild"
-        );
-    } else if let Err(error) = state.meta.set_view_frontier(SEARCH_VIEW, outcome.serial) {
-        tracing::error!(%error, serial = outcome.serial, "advancing the search view frontier failed");
-    }
+#[cfg(test)]
+pub(crate) fn apply_replicated_page(
+    app: &AppState,
+    outcome: peryx_ha_distributed::SyncOutcome,
+    changed_keys: &[String],
+) {
+    peryx_ha::ReplicaViewApplier::apply(
+        app,
+        peryx_ha::ReplicaPage {
+            changes: outcome.changes,
+            serial: outcome.serial,
+            primary_serial: outcome.primary_serial,
+        },
+        changed_keys,
+    );
 }
 
 /// The delay the replica loop waits after one pass: nothing between pages that still have more to pull,
@@ -649,146 +418,6 @@ pub(crate) fn apply_replicated_page(app: &AppState, outcome: SyncOutcome, change
 /// falling back to the poll interval once the policy gives up, so a peer that never recovers keeps trying
 /// at the base cadence rather than spinning. `attempt` counts consecutive transport losses and resets on
 /// any pass that applied.
-pub(crate) fn schedule_delay(
-    result: &Result<bool, TransportError>,
-    attempt: &mut u32,
-    policy: &ReconnectPolicy,
-    poll_interval: Duration,
-) -> Duration {
-    match result {
-        Ok(caught_up) => {
-            *attempt = 0;
-            if *caught_up { poll_interval } else { Duration::ZERO }
-        }
-        Err(error) => {
-            *attempt += 1;
-            match policy.on_error(error, *attempt) {
-                Retry::After(delay) => delay,
-                Retry::GiveUp { .. } => poll_interval,
-            }
-        }
-    }
-}
-
-impl ReplicaLoop {
-    async fn run(mut self) {
-        let mut attempt: u32 = 0;
-        loop {
-            let result = self.cycle().await;
-            let delay = schedule_delay(&result, &mut attempt, &self.policy, self.poll_interval);
-            tokio::time::sleep(delay).await;
-        }
-    }
-
-    /// Drive both planes for one pass. Metadata commits and its search view advances first, so a blob
-    /// still in flight never holds up metadata; the blob plane then pulls the tail's outstanding bytes
-    /// and moves the blob frontier only over serials whose blobs are all local. The readable frontier
-    /// the loop records is the slower of the two views, so reads never outrun the bytes they name. A
-    /// blob loss records and retries; the metadata plane keeps advancing regardless.
-    ///
-    /// Returns `Ok(caught_up)` after a page applies, or `Err` on a retryable metadata transport loss so
-    /// the run loop backs off. A page that fails validation or commit records the failure and returns
-    /// `Ok(true)`, since re-fetching the same cursor at the poll cadence is the recovery, not a backoff.
-    async fn cycle(&mut self) -> Result<bool, TransportError> {
-        let started = Instant::now();
-        let now = self.clock_origin.elapsed();
-        let state = match Replica::new(&self.meta, self.page_size).state() {
-            Ok(state) => state,
-            Err(error) => return Ok(self.record_metadata_error(&error, started.elapsed())),
-        };
-        let after = state.as_ref().map_or(0, |state| state.serial);
-        // The authoritative source the replica has committed, if any; the driver falls back to what a
-        // peer advertised this round so a fresh replica's first apply still pins to the writer's identity.
-        let committed = state.map(|state| state.source);
-
-        let app = &self.app;
-        let meta = &self.meta;
-        let page_size = self.page_size;
-        let apply = move |page: ChangePage| -> Result<u64, SyncError> {
-            let (outcome, changed, _referenced) = Replica::new(meta, page_size).apply_page(page)?;
-            apply_replicated_page(app, outcome, &changed);
-            Ok(outcome.serial)
-        };
-        let round = match pull_round(&mut self.metadata, now, after, committed.as_deref(), apply).await {
-            Ok(round) => round,
-            Err(error) => return Ok(self.record_metadata_error(&error, started.elapsed())),
-        };
-        let elapsed = started.elapsed();
-        if let Some(actual) = round.incompatible {
-            let error = SyncError::UnsupportedVersion {
-                actual,
-                expected: PROTOCOL_VERSION,
-            };
-            return Ok(self.record_metadata_error(&error, elapsed));
-        }
-        if !round.answered {
-            let loss = TransportError::Disconnected;
-            self.record_metadata_error(&SyncError::primary(loss.clone()), elapsed);
-            return Err(loss);
-        }
-
-        let outcome = SyncOutcome {
-            changes: round.applied,
-            serial: round.serial,
-            primary_serial: round.head.max(round.serial),
-        };
-        match self.pull_blobs().await {
-            Ok(report) => self.monitor.record_blobs(report),
-            Err(error) => {
-                self.monitor.record_error(&error);
-                self.metrics.record_error(&error, elapsed);
-                tracing::error!(%error, "replica blob plane failed");
-            }
-        }
-        self.monitor.record(outcome);
-        let readable = self.app.readable_frontier().map_or(0, |frontier| frontier.serial);
-        self.monitor.record_readable(readable);
-        self.metrics.record_cycle(outcome, elapsed);
-        Ok(round.caught_up)
-    }
-
-    /// Record a metadata-plane failure on the monitor and the metrics, and report the pass as done so
-    /// the loop retries at its poll cadence. Returns `true` for the caught-up slot the cycle result carries.
-    fn record_metadata_error(&self, error: &SyncError, elapsed: Duration) -> bool {
-        self.monitor.record_error(error);
-        self.metrics.record_error(error, elapsed);
-        tracing::error!(%error, "replica metadata synchronization failed");
-        true
-    }
-
-    async fn pull_blobs(&self) -> Result<BlobPlaneReport, SyncError> {
-        // A blob the policy places only on a reachable peer datacenter is deferred to cross-DC
-        // read-through: the replica leaves it absent and read-through fills a public download from the
-        // peer that holds it. A blob placed here, or one no reachable peer holds, still whole-pulls from
-        // the upstream. With no resolved datacenter and no peers the replica whole-pulls everything.
-        let reachable: BTreeSet<String> = self.delegates.keys().cloned().collect();
-        let sources = BlobSources {
-            simple: &self.transport,
-            delegates: &self.delegates,
-            local_dc: &self.local_dc,
-        };
-        let report = pull_outstanding(
-            &sources,
-            &self.meta,
-            &self.blobs,
-            self.page_size,
-            BLOB_FETCH_CONCURRENCY,
-        )
-        .await?;
-        advance_blob_frontier(&self.meta, &self.blobs, self.page_size, &self.local_dc, &reachable).await?;
-        Ok(report)
-    }
-}
-
-/// The join key for the single configured upstream, distinct from any roster member's node name.
-const UPSTREAM_SOURCE: &str = "upstream";
-
-/// Build the multi-peer metadata puller: every roster member that serves the change-feed - the writer
-/// and every other follower replica - minus this node, plus the configured `upstream`, each resuming at
-/// the replica's durably applied `resume` serial. A deployment with no roster still pulls from its lone
-/// writer, so the set is never empty.
-///
-/// # Errors
 /// Returns an error when a member address is not a usable peer URL.
 fn metadata_peers(
     membership: Option<&DcMembership>,
@@ -853,7 +482,10 @@ fn replica_transports(
         BLOB_FETCH_TIMEOUT,
     )
     .context("build replica blob transport")?;
-    Ok((metadata, CapacityLimited::new(blob_transport, BLOB_FETCH_CONCURRENCY)))
+    Ok((
+        metadata,
+        CapacityLimited::new(blob_transport, REPLICA_BLOB_FETCH_CONCURRENCY),
+    ))
 }
 
 /// Track the configured replica members so the writer can age their beacons into routing hints. A
@@ -939,7 +571,7 @@ pub struct ReplicationRuntime {
     availability: AvailabilityNode,
     /// The replica's analytics pull worker, spawned onto the availability runtime alongside the replica
     /// loop. `None` unless this process follows an upstream to pull analytics batches from.
-    analytics_puller: Option<analytics::AnalyticsPuller>,
+    analytics_puller: Option<AnalyticsPuller>,
     /// The ownership consensus seed for an `ha` process, resolved synchronously here and ignited into a
     /// running node once the async runtime is up. `None` under `none` and `dc`, which run no group.
     consensus: Option<raft::ConsensusPlan>,
@@ -974,9 +606,9 @@ fn merge_analytics_endpoint(
     let Some(identity) = &config.node_identity else {
         return Ok(router);
     };
-    let epoch = analytics::resolve_producer_epoch(&state.serving.meta.analytics())
-        .context("resolve the analytics producer epoch")?;
-    Ok(router.merge(analytics::analytics_router(
+    let epoch =
+        resolve_producer_epoch(&state.serving.meta.analytics()).context("resolve the analytics producer epoch")?;
+    Ok(router.merge(analytics_router(
         token.to_owned(),
         state.serving.metrics.clone(),
         peryx_ha_distributed::ProducerId(identity.clone()),
@@ -985,10 +617,7 @@ fn merge_analytics_endpoint(
 }
 
 /// Build the replica's background analytics pull worker, or `None` when this node is not a replica.
-fn build_analytics_puller(
-    config: &Config,
-    state: &Arc<AppState>,
-) -> anyhow::Result<Option<analytics::AnalyticsPuller>> {
+fn build_analytics_puller(config: &Config, state: &Arc<AppState>) -> anyhow::Result<Option<AnalyticsPuller>> {
     let Some(ReplicationConfig::Replica {
         upstream,
         token,
@@ -1001,12 +630,33 @@ fn build_analytics_puller(
     let token = token
         .read()
         .context("read the replica replication token for analytics")?;
-    let puller = analytics::AnalyticsPuller::new(upstream, token, state.serving.meta.analytics(), *poll_interval)
+    let puller = AnalyticsPuller::new(upstream, token, state.serving.meta.analytics(), *poll_interval)
         .context("build the analytics pull worker")?;
     Ok(Some(puller))
 }
 
 impl ReplicationRuntime {
+    #[must_use]
+    pub fn reclamation_frontiers(&self) -> Arc<dyn peryx_ha::ReclamationFrontiers> {
+        let replicas = self
+            .availability
+            .group
+            .as_ref()
+            .map(|group| {
+                group
+                    .members
+                    .iter()
+                    .filter(|(_, role)| matches!(role, MemberRole::Replica))
+                    .map(|(node, _)| node.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Arc::new(ReplicaReclamationFrontiers::new(
+            self.availability.liveness.clone(),
+            replicas,
+        ))
+    }
+
     /// Return no runtime when distributed availability is disabled.
     ///
     /// # Errors
@@ -1043,7 +693,7 @@ impl ReplicationRuntime {
                 let token = token.read().context("read the replica replication token")?;
                 let resume = state.meta.current_serial().context("read the replica serial")?;
                 let (metadata, transport) = replica_transports(config, upstream, &token, resume, *page_size)?;
-                let (local_dc, delegates) = replica_blob_deferral(config, &token);
+                let (local_dc, delegates) = replica_blob_deferral(config, &token)?;
                 let beacon = replica_beacon(config, state, upstream, &token);
                 let follower = follower_router(token, state.serving.meta.clone())
                     .context("build the follower change-feed routes")?;
@@ -1070,10 +720,9 @@ impl ReplicationRuntime {
                 (
                     follower,
                     Some((
-                        ReplicaLoop {
-                            app: state.clone(),
+                        ReplicaLoop::new(ReplicaLoopParts {
+                            views: state.clone(),
                             metadata,
-                            clock_origin: Instant::now(),
                             policy: DEFAULT_RECONNECT_POLICY,
                             meta: state.serving.meta.clone(),
                             blobs: state.serving.blobs.clone(),
@@ -1084,7 +733,7 @@ impl ReplicationRuntime {
                             transport,
                             local_dc,
                             delegates,
-                        },
+                        }),
                         runtime,
                     )),
                     node,
@@ -1103,7 +752,7 @@ impl ReplicationRuntime {
             replica,
             availability,
             analytics_puller: build_analytics_puller(config, state)?,
-            consensus: raft::ConsensusPlan::from_config(config)?,
+            consensus: raft::consensus_plan(config)?,
             beacon,
         })
     }
@@ -1154,17 +803,16 @@ impl ReplicationRuntime {
     /// Start the replica loop on its own availability runtime, when configured, returning the
     /// runtime so the caller keeps it alive for the process lifetime. Follower work runs on the
     /// bounded worker pool rather than the foreground request executor.
-    #[must_use]
-    pub fn start(self) -> Option<AvailabilityRuntime> {
-        let (replica, runtime) = self.replica?;
-        let _ = runtime.try_spawn(Box::pin(replica.run()));
-        if let Some(puller) = self.analytics_puller {
-            let _ = runtime.try_spawn(Box::pin(puller.run()));
-        }
-        if let Some(beacon) = self.beacon {
-            let _ = runtime.try_spawn(Box::pin(beacon.run()));
-        }
-        Some(runtime)
+    ///
+    /// # Errors
+    /// Returns an error when the availability runtime cannot reserve a configured service slot.
+    pub fn start(self) -> anyhow::Result<Option<AvailabilityRuntime>> {
+        let Some((replica, runtime)) = self.replica else {
+            return Ok(None);
+        };
+        runtime
+            .start_replica_services(replica, self.analytics_puller, self.beacon)
+            .map(Some)
     }
 
     #[cfg(test)]
@@ -1178,10 +826,7 @@ impl ReplicationRuntime {
 mod tests {
     use std::sync::Arc;
 
-    use peryx_driver::PrometheusSource;
-    use peryx_ha_distributed::BlobPlaneReport;
-
-    use super::{ReplicaMonitor, WorkerShared, worker_reason};
+    use super::{WorkerShared, worker_reason};
 
     #[test]
     fn test_worker_reason_names_only_a_failed_domain() {
@@ -1191,24 +836,6 @@ mod tests {
         let failed = Arc::new(WorkerShared::for_replica());
         failed.record_panic();
         assert_eq!(worker_reason(Some(&failed)), Some("worker_unhealthy"));
-    }
-
-    #[test]
-    fn test_monitor_surfaces_blob_fetched_and_pending_counts() {
-        let monitor = ReplicaMonitor::new(0);
-        monitor.record_blobs(BlobPlaneReport { fetched: 2, pending: 3 });
-
-        let mut body = String::new();
-        monitor.write_metrics(&mut body);
-        assert!(body.contains("peryx_ha_distributed_blobs_fetched_total 2\n"), "{body}");
-        assert!(body.contains("peryx_ha_distributed_blobs_pending 3\n"), "{body}");
-
-        // The fetched counter accumulates across passes while the pending gauge takes the latest value.
-        monitor.record_blobs(BlobPlaneReport { fetched: 1, pending: 0 });
-        let mut body = String::new();
-        monitor.write_metrics(&mut body);
-        assert!(body.contains("peryx_ha_distributed_blobs_fetched_total 3\n"), "{body}");
-        assert!(body.contains("peryx_ha_distributed_blobs_pending 0\n"), "{body}");
     }
 
     fn member(node: &str, address: &str, role: crate::config::DcRole) -> crate::config::DcMember {
