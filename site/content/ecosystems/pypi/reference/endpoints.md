@@ -182,13 +182,11 @@ import hmac
 
 
 def verify(secret: str, headers, body: bytes) -> bool:
-    message = (
-        f"{headers['x-peryx-timestamp']}.{headers['x-peryx-delivery']}.".encode() + body
-    )
-    expected = (
-        "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
-    )
-    return hmac.compare_digest(expected, headers["x-peryx-signature"])
+    timestamp = headers["x-peryx-timestamp"]
+    delivery = headers["x-peryx-delivery"]
+    message = f"{timestamp}.{delivery}.".encode() + body
+    digest = hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={digest}", headers["x-peryx-signature"])
 ```
 
 ## Search
