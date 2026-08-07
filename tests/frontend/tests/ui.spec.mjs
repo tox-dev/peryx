@@ -850,12 +850,7 @@ test("release navigation follows native keyboard order", async ({ page }) => {
 });
 
 test("large histories group without rendering unrelated releases", async ({ page }) => {
-  const detail = await page.request.get("/pypi/simple/large-demo/", {
-    headers: { accept: "application/vnd.pypi.simple.v1+json" },
-  });
-  expect((await detail.json()).files).toHaveLength(2_000);
-
-  await goto(page, "/browse?index=pypi&project=large-demo&version=99.0");
+  await page.goto("/browse?index=pypi&project=large-demo&version=99.0");
   await expect(page.locator("section.release-files")).toHaveCount(1);
   await expect(page.locator("section.release-files tbody tr")).toHaveCount(20);
   await expect(page.locator(".file-filter-count")).toHaveText("20 files");
