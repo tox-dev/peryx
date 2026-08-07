@@ -1007,6 +1007,17 @@ fn build_analytics_puller(
 }
 
 impl ReplicationRuntime {
+    /// Return no runtime when distributed availability is disabled.
+    ///
+    /// # Errors
+    /// Returns an error when the selected distributed runtime cannot be prepared.
+    pub fn from_config(config: &Config, state: &Arc<AppState>) -> anyhow::Result<Option<Self>> {
+        if matches!(config.availability, AvailabilityConfig::None) {
+            return Ok(None);
+        }
+        Self::new(config, state).map(Some)
+    }
+
     /// Prepare the configured replication role without starting background work.
     ///
     /// # Errors
@@ -1014,7 +1025,7 @@ impl ReplicationRuntime {
     /// router rejects its identity or token.
     pub fn new(config: &Config, state: &Arc<AppState>) -> anyhow::Result<Self> {
         let mode = match &config.availability {
-            AvailabilityConfig::None => "none",
+            AvailabilityConfig::None => anyhow::bail!("distributed runtime requested while availability is disabled"),
             AvailabilityConfig::Dc(_) => "dc",
             AvailabilityConfig::Ha(_) => "ha",
         };

@@ -14,7 +14,7 @@ use tower::ServiceExt as _;
 
 use crate::config::{self, AvailabilityConfig, Config};
 use crate::replication::ReplicationRuntime;
-use crate::server::{build_state, router_for};
+use crate::server::{build_router, build_state};
 
 /// A zero-config single-node process: the omitted `[availability]` table resolves to `none`.
 fn default_none(dir: &tempfile::TempDir) -> Config {
@@ -63,12 +63,13 @@ async fn test_none_mode_spawns_no_availability_background_work(#[case] build: fn
     let state = build_state(&config).unwrap();
     assert!(!state.read_only, "none retains single-node write behavior");
 
-    let mut runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    assert!(!runtime.is_replica());
-    assert_eq!(runtime.sync_cycle().await, None, "no replica loop to cycle");
-    assert!(
-        runtime.start().is_none(),
-        "no background task, timer, or thread to spawn"
+    assert!(ReplicationRuntime::from_config(&config, &state).unwrap().is_none());
+    let Err(error) = ReplicationRuntime::new(&config, &state) else {
+        panic!("disabled availability must not construct a distributed runtime");
+    };
+    assert_eq!(
+        error.to_string(),
+        "distributed runtime requested while availability is disabled"
     );
 }
 
@@ -79,9 +80,7 @@ async fn test_none_mode_spawns_no_availability_background_work(#[case] build: fn
 async fn test_none_mode_mounts_no_availability_routes(#[case] build: fn(&tempfile::TempDir) -> Config) {
     let dir = tempfile::tempdir().unwrap();
     let config = build(&dir);
-    let state = build_state(&config).unwrap();
-    let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = build_router(&config).unwrap();
 
     for path in [
         "/+replication/v1/health",
@@ -104,10 +103,7 @@ async fn test_none_mode_mounts_no_availability_routes(#[case] build: fn(&tempfil
 async fn test_none_mode_registers_no_availability_metrics(#[case] build: fn(&tempfile::TempDir) -> Config) {
     let dir = tempfile::tempdir().unwrap();
     let config = build(&dir);
-    let state = build_state(&config).unwrap();
-    let router = ReplicationRuntime::new(&config, &state)
-        .unwrap()
-        .mount(router_for(state));
+    let router = build_router(&config).unwrap();
 
     let body = metrics_body(&router).await;
     assert!(!body.contains("peryx_ha_distributed_"), "{body}");

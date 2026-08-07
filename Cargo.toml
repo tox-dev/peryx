@@ -27,13 +27,12 @@ peryx-driver = { path = "crates/peryx-driver" }
 peryx-events = { path = "crates/peryx-events" }
 peryx-index = { path = "crates/peryx-index" }
 peryx-search = { path = "crates/peryx-search" }
-peryx-ecosystem-contract = { path = "crates/peryx-ecosystem-contract" }
 peryx-ecosystem-pypi = { path = "crates/peryx-ecosystem-pypi", default-features = false }
 peryx-ecosystem-oci = { path = "crates/peryx-ecosystem-oci" }
 peryx-policy = { path = "crates/peryx-policy" }
 peryx-pql = { path = "crates/peryx-pql" }
 peryx-identity = { path = "crates/peryx-identity" }
-peryx-ecosystem-registry = { path = "crates/peryx-ecosystem-registry" }
+peryx-plugin-registry = { path = "crates/peryx-plugin-registry" }
 peryx-ha = { path = "crates/peryx-ha" }
 peryx-ha-local = { path = "crates/peryx-ha-local" }
 peryx-ha-distributed = { path = "crates/peryx-ha-distributed" }
@@ -75,6 +74,7 @@ futures-core = "0.3"
 futures-util = "0.3"
 fs4 = "0.13"
 getrandom = "0.4"
+inventory = "0.3"
 moka = { version = "0.12", features = ["sync"] }
 parking_lot = "0.12"
 tokio-util = { version = "0.7", features = ["io"] }

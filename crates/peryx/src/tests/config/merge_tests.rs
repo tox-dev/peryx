@@ -755,11 +755,11 @@ fn test_index_ecosystem_parses_and_defaults() {
     let c = toml_config(
         "[[index]]\nname = \"pypi\"\necosystem = \"pypi\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://pypi.org/simple/\"\n",
     );
-    assert_eq!(c.indexes[0].ecosystem, peryx_ecosystem_registry::PYPI);
+    assert_eq!(c.indexes[0].ecosystem, peryx_ecosystem_pypi::ECOSYSTEM);
     let d = toml_config(
         "[[index]]\nname = \"pypi\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://pypi.org/simple/\"\n",
     );
-    assert_eq!(d.indexes[0].ecosystem, peryx_ecosystem_registry::PYPI);
+    assert_eq!(d.indexes[0].ecosystem, peryx_ecosystem_pypi::ECOSYSTEM);
 }
 
 #[test]

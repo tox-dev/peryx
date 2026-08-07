@@ -9,7 +9,7 @@ configuration decides which indexes and coordinator are active; there is no ecos
 
 ## Runtime composition
 
-Startup resolves each configured ecosystem ID through `peryx-ecosystem-registry`. The registry contains plugin objects,
+Startup resolves each configured ecosystem ID through `peryx-plugin-registry`. The registry contains plugin objects,
 not protocol behavior. Each plugin implements the shared `EcosystemPlugin` contract and supplies:
 
 - its stable ID and default indexes;
@@ -56,7 +56,7 @@ records.
 ## Dependency direction
 
 Shared crates depend on contracts and neutral state. Ecosystem crates depend inward on those crates and implement the
-contracts. Only `peryx-ecosystem-registry` links concrete implementations, and only the `peryx` binary invokes the
+contracts. Only `peryx-plugin-registry` links concrete implementations, and only the `peryx` binary invokes the
 registry during startup.
 
 The boundary rules and dependency checks are documented in

@@ -76,9 +76,9 @@ fn hosted(name: &str, ecosystem: Ecosystem) -> IndexConfig {
 /// hosted `OCI` store.
 fn lifecycle_indexes() -> Vec<IndexConfig> {
     vec![
-        hosted("staging", peryx_ecosystem_registry::PYPI),
-        hosted("prod", peryx_ecosystem_registry::PYPI),
-        hosted("images", peryx_ecosystem_registry::OCI),
+        hosted("staging", peryx_ecosystem_pypi::ECOSYSTEM),
+        hosted("prod", peryx_ecosystem_pypi::ECOSYSTEM),
+        hosted("images", peryx_ecosystem_oci::ECOSYSTEM),
     ]
 }
 

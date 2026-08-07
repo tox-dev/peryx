@@ -370,7 +370,7 @@ async fn test_buffered_files_before_meta_surfaces_a_broken_transfer() {
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Cached { client, offline: false },
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),

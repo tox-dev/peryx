@@ -1,8 +1,4 @@
-//! Shared contracts for ecosystem plugin installation.
-
-pub use peryx_core::EcosystemInstaller;
-
-use peryx_core::Ecosystem;
+use crate::Ecosystem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefaultIndex {

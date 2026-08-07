@@ -107,8 +107,8 @@ fn feature_indexes() -> Vec<IndexConfig> {
         ..PolicyConfig::default()
     };
     vec![
-        hosted("store", peryx_ecosystem_registry::PYPI, PolicyConfig::default()),
-        hosted("tight", peryx_ecosystem_registry::PYPI, tight),
+        hosted("store", peryx_ecosystem_pypi::ECOSYSTEM, PolicyConfig::default()),
+        hosted("tight", peryx_ecosystem_pypi::ECOSYSTEM, tight),
     ]
 }
 

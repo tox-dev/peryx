@@ -5,7 +5,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use peryx_ecosystem_registry::pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use sha2::{Digest as _, Sha256};
@@ -397,7 +397,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_ecosystem_registry::PYPI,
+            ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
             anonymous_read: None,
             tokens: Vec::new(),
             kind: IndexKind::Cached {
@@ -418,7 +418,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_ecosystem_registry::PYPI,
+            ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
             anonymous_read: None,
             tokens: Vec::new(),
             kind: IndexKind::Virtual {
@@ -466,7 +466,7 @@ fn test_import_dir_rejects_unusable_repositories_and_paths() {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_ecosystem_registry::OCI,
+            ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
             anonymous_read: None,
             tokens: Vec::new(),
             kind: IndexKind::Hosted { volatile: true },

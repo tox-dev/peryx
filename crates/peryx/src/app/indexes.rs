@@ -47,7 +47,7 @@ pub fn config_snippet(config: &Config, route: &str, base_url: &str, format: &str
         .into_iter()
         .find(|index| index.route == route)
         .with_context(|| format!("unknown index route {route:?}"))?;
-    let Some(text) = peryx_ecosystem_registry::snippet_text(
+    let Some(text) = peryx_plugin_registry::snippet_text(
         index
             .ecosystem
             .parse()

@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use super::parse;
 use crate::cli::{Command, PrefetchCommand};
-use peryx_ecosystem_registry::pypi::MirrorMode;
 
 #[test]
 fn test_parse_prefetch_plan_options() {
@@ -14,23 +13,12 @@ fn test_parse_prefetch_plan_options() {
         "/d",
         "--offline",
         "root/pypi",
-        "--package",
-        "Requests>=2,<3",
-        "--requirements",
-        "requirements.txt",
-        "--mode",
-        "metadata-only",
-        "--metadata-only",
-        "--no-wheels",
-        "--no-sdists",
-        "--python-tag",
-        "py3",
-        "--abi-tag",
-        "none",
-        "--platform-tag",
-        "any",
-        "--max-file-size-bytes",
-        "1024",
+        "--option",
+        "packages=['Requests>=2,<3']",
+        "--option",
+        "requirements=['requirements.txt']",
+        "--option",
+        "mode='metadata-only'",
     ]);
     let Command::Prefetch(PrefetchCommand::Plan(args)) = cli.command else {
         panic!("expected prefetch plan");
@@ -38,17 +26,14 @@ fn test_parse_prefetch_plan_options() {
     assert_eq!(args.options.runtime.data_dir, Some(PathBuf::from("/d")));
     assert!(args.options.runtime.offline);
     assert_eq!(args.options.index, "root/pypi");
-    let options = args.options.ecosystem.pypi;
-    assert_eq!(options.packages, vec!["Requests>=2,<3".to_owned()]);
-    assert_eq!(options.requirements, vec![PathBuf::from("requirements.txt")]);
-    assert_eq!(options.mode, Some(MirrorMode::MetadataOnly));
-    assert!(options.metadata_only);
-    assert!(options.no_wheels);
-    assert!(options.no_sdists);
-    assert_eq!(options.python_tags, vec!["py3".to_owned()]);
-    assert_eq!(options.abi_tags, vec!["none".to_owned()]);
-    assert_eq!(options.platform_tags, vec!["any".to_owned()]);
-    assert_eq!(options.max_file_size_bytes, Some(1024));
+    assert_eq!(
+        args.options.overrides,
+        [
+            "packages=['Requests>=2,<3']",
+            "requirements=['requirements.txt']",
+            "mode='metadata-only'"
+        ]
+    );
 }
 
 #[test]

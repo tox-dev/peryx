@@ -10,12 +10,12 @@ use std::time::Duration;
 use peryx_core::Ecosystem;
 use peryx_driver::jobs::{MAINTENANCE_INTERVAL, Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
-use peryx_ha_distributed::DurabilityPolicy;
+use peryx_ha::{AvailabilityMode, DurabilityPolicy};
 use peryx_ha_distributed::read_through::ReadThroughLimits;
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_identity::{Action, ExternalGroupGrant, Glob, Grant, IndexAcl, NamedToken, ProviderId};
 use peryx_policy::PolicyConfig;
-use peryx_storage::blob::{DurabilityCapabilities, DurabilityRequirement};
+use peryx_storage::blob::DurabilityCapabilities;
 use peryx_upstream::ExecCredentialConfig;
 use serde::Deserialize;
 use toml::Table;
@@ -191,70 +191,6 @@ pub enum JobsMode {
 
 pub const DEFAULT_REPLICA_PAGE_SIZE: usize = 100;
 pub const DEFAULT_REPLICA_POLL_INTERVAL_SECS: u64 = 1;
-
-/// The runtime availability contract a node promises for authoritative mutations.
-///
-/// The `[availability]` table's `mode` chooses one; each fixes what an acknowledgement guarantees is
-/// durable, as the [availability contracts](@/core/availability-contracts.md) page states normatively.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AvailabilityMode {
-    /// Single writer, local durability, operator-driven failover: the zero-config default.
-    #[default]
-    None,
-    /// A configured writer and explicit read replicas within one datacenter.
-    Dc,
-    /// Metadata durability in a remote datacenter.
-    Ha,
-}
-
-impl AvailabilityMode {
-    /// The `mode` value that selects this variant.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Dc => "dc",
-            Self::Ha => "ha",
-        }
-    }
-
-    /// What this mode requires of the blob backend before a write may be acknowledged as durable.
-    ///
-    /// `none` acknowledges from local durability alone; `dc` and `ha` replicate their acknowledgement,
-    /// so they accept only race-safe, integrity-checked writes rather than a bare storage success.
-    #[must_use]
-    pub const fn durability_requirement(self) -> DurabilityRequirement {
-        match self {
-            Self::None => DurabilityRequirement::LOCAL,
-            Self::Dc | Self::Ha => DurabilityRequirement::REPLICATED,
-        }
-    }
-
-    /// `true` only for the explicit single-node mode.
-    #[must_use]
-    pub const fn is_single_node(self) -> bool {
-        matches!(self, Self::None)
-    }
-
-    /// `true` for `dc` and `ha`, the two replicated modes.
-    #[must_use]
-    pub const fn is_distributed(self) -> bool {
-        matches!(self, Self::Dc | Self::Ha)
-    }
-
-    /// `true` only under `dc`.
-    #[must_use]
-    pub const fn is_dc(self) -> bool {
-        matches!(self, Self::Dc)
-    }
-
-    /// `true` only under `ha`.
-    #[must_use]
-    pub const fn is_ha(self) -> bool {
-        matches!(self, Self::Ha)
-    }
-}
 
 /// The resolved `[availability]` table: the selected mode and its topology.
 ///
@@ -450,7 +386,7 @@ impl Config {
             }
             let repository = self.indexes.iter().find(|index| index.name == publisher.repository);
             if !repository.is_some_and(|index| {
-                peryx_ecosystem_registry::supports(
+                peryx_plugin_registry::supports(
                     index.ecosystem,
                     peryx_driver::serving::EcosystemCapability::TrustedPublishing,
                 ) && matches!(
@@ -968,14 +904,14 @@ pub struct AcmeConfig {
 }
 
 fn default_indexes() -> Vec<IndexConfig> {
-    peryx_ecosystem_registry::default_indexes()
+    peryx_plugin_registry::default_indexes()
         .map(|index| default_index(index.name, index.route, index.ecosystem, default_index_kind(index.kind)))
         .collect()
 }
 
-fn default_index_kind(kind: peryx_ecosystem_contract::DefaultIndexKind) -> IndexKind {
+fn default_index_kind(kind: peryx_core::DefaultIndexKind) -> IndexKind {
     match kind {
-        peryx_ecosystem_contract::DefaultIndexKind::Cached { upstream } => IndexKind::Cached {
+        peryx_core::DefaultIndexKind::Cached { upstream } => IndexKind::Cached {
             routing: UpstreamRoutingConfig {
                 upstreams: vec![UpstreamConfig {
                     name: "primary".to_owned(),
@@ -996,8 +932,8 @@ fn default_index_kind(kind: peryx_ecosystem_contract::DefaultIndexKind) -> Index
             offline: false,
             prefetch: Box::default(),
         },
-        peryx_ecosystem_contract::DefaultIndexKind::Hosted => IndexKind::Hosted { volatile: true },
-        peryx_ecosystem_contract::DefaultIndexKind::Virtual { layers, upload } => IndexKind::Virtual {
+        peryx_core::DefaultIndexKind::Hosted => IndexKind::Hosted { volatile: true },
+        peryx_core::DefaultIndexKind::Virtual { layers, upload } => IndexKind::Virtual {
             layers: layers.iter().map(|layer| (*layer).to_owned()).collect(),
             upload: Some(upload.to_owned()),
         },

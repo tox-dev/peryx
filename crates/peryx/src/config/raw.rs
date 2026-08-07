@@ -10,7 +10,9 @@ use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
 
-use super::model::{AvailabilityMode, CredentialFailureMode, DcRole, JobsMode, LogFormat, LogSink, PrefetchConfig};
+use peryx_ha::AvailabilityMode;
+
+use super::model::{CredentialFailureMode, DcRole, JobsMode, LogFormat, LogSink, PrefetchConfig};
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default)]

@@ -370,7 +370,7 @@ struct StubDriver {
 #[async_trait]
 impl EcosystemDriver for StubDriver {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
-        peryx_ecosystem_registry::PYPI
+        peryx_ecosystem_pypi::ECOSYSTEM
     }
 
     fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
@@ -396,7 +396,7 @@ impl EcosystemDriver for StubDriver {
 
 fn trashed(digest: Option<&str>) -> peryx_core::TrashRecord {
     peryx_core::TrashRecord {
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         repository: "pypi".to_owned(),
         name: "demo".to_owned(),
         reference: None,

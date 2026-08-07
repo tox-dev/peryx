@@ -143,12 +143,13 @@ fn table_bool(table: &toml::Table, key: &str, default: bool) -> Result<bool, Str
 
 fn table_u64(table: &toml::Table, key: &str) -> Result<Option<u64>, String> {
     table.get(key).map_or(Ok(None), |value| {
-        value
-            .as_str()
-            .ok_or_else(|| format!("{key} must be an integer"))?
-            .parse()
-            .map(Some)
-            .map_err(|_| format!("{key} must be an integer"))
+        match value {
+            toml::Value::Integer(value) => u64::try_from(*value).ok(),
+            toml::Value::String(value) => value.parse().ok(),
+            _ => None,
+        }
+        .map(Some)
+        .ok_or_else(|| format!("{key} must be an integer"))
     })
 }
 

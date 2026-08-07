@@ -1,6 +1,6 @@
-//! Centralized ecosystem plugin registration.
+//! Link-time ecosystem plugin registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use peryx_core::Ecosystem;
@@ -9,54 +9,43 @@ use peryx_driver::serving::{CompiledEcosystemSettings, EcosystemCapability, Ecos
 use peryx_driver::{AppState, DriverSet};
 use utoipa::openapi::PathsBuilder;
 
-pub mod pypi {
-    pub use peryx_ecosystem_pypi::*;
+pub struct EcosystemRegistration {
+    pub plugin: &'static dyn EcosystemPlugin,
+    pub priority: u16,
 }
 
-pub use peryx_ecosystem_pypi::ECOSYSTEM as PYPI;
+inventory::collect!(EcosystemRegistration);
 
-pub mod oci {
-    pub use peryx_ecosystem_oci::*;
-}
-
-pub use peryx_ecosystem_oci::ECOSYSTEM as OCI;
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
-pub struct MirrorOptions {
-    #[command(flatten)]
-    pub pypi: peryx_ecosystem_pypi::MirrorOptions,
-    #[command(flatten)]
-    pub oci: peryx_ecosystem_oci::MirrorOptions,
-}
-
-impl MirrorOptions {
-    #[must_use]
-    pub fn overrides(&self, ecosystem: Ecosystem) -> toml::Table {
-        if ecosystem == PYPI {
-            self.pypi.overrides()
-        } else if ecosystem == OCI {
-            self.oci.overrides()
-        } else {
-            toml::Table::new()
-        }
-    }
-}
-
-fn plugins() -> &'static [Arc<dyn EcosystemPlugin>] {
-    static PLUGINS: OnceLock<Vec<Arc<dyn EcosystemPlugin>>> = OnceLock::new();
+fn plugins() -> &'static [&'static dyn EcosystemPlugin] {
+    static PLUGINS: OnceLock<Vec<&'static dyn EcosystemPlugin>> = OnceLock::new();
     PLUGINS.get_or_init(|| {
-        vec![
-            Arc::new(peryx_ecosystem_pypi::PypiPlugin),
-            Arc::new(peryx_ecosystem_oci::OciPlugin),
-        ]
+        let mut registrations = inventory::iter::<EcosystemRegistration>.into_iter().collect::<Vec<_>>();
+        registrations.sort_unstable_by_key(|registration| registration.priority);
+        let mut ecosystems = HashSet::new();
+        let mut priorities = HashSet::new();
+        for registration in &registrations {
+            assert!(
+                ecosystems.insert(registration.plugin.ecosystem()),
+                "duplicate ecosystem plugin"
+            );
+            assert!(priorities.insert(registration.priority), "duplicate plugin priority");
+        }
+        let plugins = registrations
+            .into_iter()
+            .map(|registration| registration.plugin)
+            .collect::<Vec<_>>();
+        assert!(
+            !plugins.is_empty(),
+            "the binary must link at least one ecosystem plugin"
+        );
+        plugins
     })
 }
 
-fn plugin(ecosystem: Ecosystem) -> Option<&'static Arc<dyn EcosystemPlugin>> {
-    plugins().iter().find(|plugin| plugin.ecosystem() == ecosystem)
+fn plugin(ecosystem: Ecosystem) -> Option<&'static dyn EcosystemPlugin> {
+    plugins().iter().copied().find(|plugin| plugin.ecosystem() == ecosystem)
 }
 
-/// The ecosystem used when an index omits `ecosystem`.
 #[must_use]
 pub fn default_ecosystem() -> Ecosystem {
     plugins()[0].ecosystem()
@@ -67,24 +56,20 @@ pub fn is_installed(ecosystem: Ecosystem) -> bool {
     plugin(ecosystem).is_some()
 }
 
-pub fn default_indexes() -> impl Iterator<Item = &'static peryx_ecosystem_contract::DefaultIndex> {
+pub fn default_indexes() -> impl Iterator<Item = &'static peryx_core::DefaultIndex> {
     plugins().iter().flat_map(|plugin| plugin.default_indexes())
 }
 
-/// Build the installed driver set for this binary.
 pub fn drivers() -> &'static DriverSet {
     static DRIVERS: OnceLock<DriverSet> = OnceLock::new();
     DRIVERS.get_or_init(|| {
-        let mut drivers = DriverSet::default();
-        register_pypi(&mut drivers);
-        register_oci(&mut drivers);
-        drivers
+        plugins()
+            .iter()
+            .fold(DriverSet::default(), |drivers, plugin| drivers.with(plugin.driver()))
     })
 }
 
-/// Register all installed ecosystem runtime components into application state.
 /// # Errors
-///
 /// Returns an error when an ecosystem plugin cannot install its runtime services.
 pub fn install_drivers<S: std::hash::BuildHasher>(
     state: &mut AppState,
@@ -102,20 +87,6 @@ pub fn install_drivers<S: std::hash::BuildHasher>(
     Ok(())
 }
 
-/// Register just the `PyPI` plugin.
-pub fn register_pypi(drivers: &mut DriverSet) {
-    let current = std::mem::take(drivers);
-    *drivers = current.with(peryx_ecosystem_pypi::PypiPlugin.driver());
-}
-
-/// Register just the OCI plugin.
-pub fn register_oci(drivers: &mut DriverSet) {
-    let current = std::mem::take(drivers);
-    *drivers = current.with(peryx_ecosystem_oci::OciPlugin.driver());
-}
-
-/// Validate one index's ecosystem-owned settings and return any runtime settings needed at install.
-///
 /// # Errors
 /// Returns the implementation's settings error or reports an uninstalled ecosystem.
 pub fn compile_index_settings(
@@ -133,7 +104,6 @@ pub fn supports(ecosystem: Ecosystem, capability: EcosystemCapability) -> bool {
     plugin(ecosystem).is_some_and(|plugin| plugin.supports(capability))
 }
 
-/// Merge ecosystem `OpenAPI` paths into the provided builder.
 #[must_use]
 pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
     plugins()
@@ -141,17 +111,14 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         .fold(paths, |paths, plugin| plugin.openapi_paths(paths))
 }
 
-/// Resolve the driver that serves one index by ecosystem.
 #[must_use]
 pub fn driver_for(
     drivers: &DriverSet,
     ecosystem: Ecosystem,
-) -> Option<&std::sync::Arc<dyn peryx_driver::serving::EcosystemDriver>> {
+) -> Option<&Arc<dyn peryx_driver::serving::EcosystemDriver>> {
     drivers.get(ecosystem)
 }
 
-/// Render an ecosystem-owned client configuration snippet.
-///
 /// # Errors
 /// Returns an error when the format is unsupported or the ecosystem is not installed.
 pub fn snippet_text(

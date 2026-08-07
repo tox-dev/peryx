@@ -8,9 +8,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use peryx_core::path::local_file_url;
-use peryx_ecosystem_registry::pypi::store::{CachedIndex, PypiStore as _};
-use peryx_ecosystem_registry::pypi::upload::Uploaded;
-use peryx_ecosystem_registry::pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
+use peryx_ecosystem_pypi::store::{CachedIndex, PypiStore as _};
+use peryx_ecosystem_pypi::upload::Uploaded;
+use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use peryx_identity::{Action, Glob, Grant, GrantScope, Principal, Role, Signer};
 use peryx_storage::blob::Digest;
 use rstest::{fixture, rstest};
@@ -53,7 +53,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 ecosystem_policy: toml::Table::new(),
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_ecosystem_registry::PYPI,
+                ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
                 anonymous_read: None,
                 tokens: Vec::new(),
                 kind: IndexKind::Cached {
@@ -70,7 +70,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 ecosystem_policy: toml::Table::new(),
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_ecosystem_registry::PYPI,
+                ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
                 anonymous_read: None,
                 tokens: vec![crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned()))],
                 kind: IndexKind::Hosted { volatile: true },
@@ -82,7 +82,7 @@ fn ui_config(dir: &tempfile::TempDir) -> Config {
                 ecosystem_policy: toml::Table::new(),
                 ecosystem_settings: toml::Table::new(),
                 webhooks: Vec::new(),
-                ecosystem: peryx_ecosystem_registry::PYPI,
+                ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
                 anonymous_read: None,
                 tokens: Vec::new(),
                 kind: IndexKind::Virtual {
@@ -113,7 +113,7 @@ fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_ecosystem_registry::OCI,
+            ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
             anonymous_read: None,
             tokens: vec![crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned()))],
             kind: IndexKind::Hosted { volatile: true },
@@ -401,7 +401,7 @@ async fn test_ui_private_oci_project_list_rejects_bearer_for_another_index(
         .unwrap()
         .as_secs()
         .cast_signed();
-    let token = Signer::new(b"signing-secret", peryx_ecosystem_registry::oci::TOKEN_SERVICE).mint(
+    let token = Signer::new(b"signing-secret", peryx_ecosystem_oci::TOKEN_SERVICE).mint(
         &Principal::Named {
             subject: "reader".to_owned(),
         },

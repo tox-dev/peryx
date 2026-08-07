@@ -4900,8 +4900,8 @@ dependencies = [
  "openraft",
  "peryx-core",
  "peryx-driver",
- "peryx-ecosystem-contract",
- "peryx-ecosystem-registry",
+ "peryx-ecosystem-oci",
+ "peryx-ecosystem-pypi",
  "peryx-events",
  "peryx-ha",
  "peryx-ha-distributed",
@@ -4909,6 +4909,7 @@ dependencies = [
  "peryx-http",
  "peryx-identity",
  "peryx-index",
+ "peryx-plugin-registry",
  "peryx-policy",
  "peryx-storage",
  "peryx-upstream",
@@ -4985,7 +4986,6 @@ dependencies = [
  "ipnet",
  "moka",
  "peryx-core",
- "peryx-ecosystem-contract",
  "peryx-events",
  "peryx-ha",
  "peryx-identity",
@@ -5010,13 +5010,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peryx-ecosystem-contract"
-version = "0.0.1"
-dependencies = [
- "peryx-core",
-]
-
-[[package]]
 name = "peryx-ecosystem-oci"
 version = "0.0.1"
 dependencies = [
@@ -5025,7 +5018,6 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "clap",
  "codspeed-criterion-compat",
  "flate2",
  "futures-util",
@@ -5033,16 +5025,17 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
+ "inventory",
  "parking_lot",
  "peryx-core",
  "peryx-driver",
- "peryx-ecosystem-contract",
  "peryx-events",
  "peryx-ha",
  "peryx-ha-distributed",
  "peryx-http",
  "peryx-identity",
  "peryx-index",
+ "peryx-plugin-registry",
  "peryx-policy",
  "peryx-search",
  "peryx-storage",
@@ -5076,7 +5069,6 @@ dependencies = [
  "base64",
  "blake2",
  "bytes",
- "clap",
  "codspeed-criterion-compat",
  "csv",
  "email_address",
@@ -5088,6 +5080,7 @@ dependencies = [
  "http-body-util",
  "httpdate",
  "insta",
+ "inventory",
  "md-5 0.10.6",
  "moka",
  "pep440_rs",
@@ -5095,13 +5088,13 @@ dependencies = [
  "percent-encoding",
  "peryx-core",
  "peryx-driver",
- "peryx-ecosystem-contract",
  "peryx-events",
  "peryx-ha",
  "peryx-ha-distributed",
  "peryx-http",
  "peryx-identity",
  "peryx-index",
+ "peryx-plugin-registry",
  "peryx-policy",
  "peryx-search",
  "peryx-storage",
@@ -5137,20 +5130,6 @@ dependencies = [
  "wiremock",
  "xml-rs",
  "zip",
-]
-
-[[package]]
-name = "peryx-ecosystem-registry"
-version = "0.0.1"
-dependencies = [
- "clap",
- "peryx-core",
- "peryx-driver",
- "peryx-ecosystem-contract",
- "peryx-ecosystem-oci",
- "peryx-ecosystem-pypi",
- "toml",
- "utoipa",
 ]
 
 [[package]]
@@ -5315,6 +5294,17 @@ dependencies = [
  "peryx-upstream",
  "stats_alloc",
  "tokio",
+]
+
+[[package]]
+name = "peryx-plugin-registry"
+version = "0.0.1"
+dependencies = [
+ "inventory",
+ "peryx-core",
+ "peryx-driver",
+ "toml",
+ "utoipa",
 ]
 
 [[package]]

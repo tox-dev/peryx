@@ -9,7 +9,6 @@ description = "The seam an ecosystem plugs into: the serving traits a driver imp
 
 [dependencies]
 peryx-core.workspace = true
-peryx-ecosystem-contract.workspace = true
 peryx-events.workspace = true
 peryx-identity.workspace = true
 peryx-index.workspace = true

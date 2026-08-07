@@ -1,5 +1,19 @@
 use serde::Serialize;
 
+/// A container format understood by the archive decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    Zip,
+    Tar,
+    TarGz,
+}
+
+/// Ecosystem-owned archive naming and member classification.
+pub trait ArchiveProfile: Send + Sync {
+    fn format(&self, name: &str) -> Option<ArchiveFormat>;
+    fn member_kind(&self, path: &str) -> MemberKind;
+}
+
 /// One entry of an archive listing.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Member {
@@ -43,7 +57,7 @@ pub struct MemberChunk {
 /// An error while reading an archive.
 #[derive(Debug, thiserror::Error)]
 pub enum ArchiveError {
-    #[error("unsupported archive type; accepted formats are .whl, .zip, .egg, .tar, .tar.gz, and .tgz")]
+    #[error("unsupported archive type")]
     Unsupported,
     #[error("nested archive member {0:?} is not a supported archive")]
     UnsupportedNestedArchive(String),

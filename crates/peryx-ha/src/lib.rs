@@ -4,9 +4,57 @@ use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
 use peryx_core::{TopologyConfig, TopologyMember, TopologySnapshot};
-use peryx_storage::blob::{BlobDurability, BlobError, BlobMetadata, BlobStorage, Digest};
+use peryx_storage::blob::{BlobDurability, BlobError, BlobMetadata, BlobStorage, Digest, DurabilityRequirement};
 use peryx_storage::meta::{MetaError, MetaStore};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AvailabilityMode {
+    #[default]
+    None,
+    Dc,
+    Ha,
+}
+
+impl AvailabilityMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Dc => "dc",
+            Self::Ha => "ha",
+        }
+    }
+
+    #[must_use]
+    pub const fn durability_requirement(self) -> DurabilityRequirement {
+        match self {
+            Self::None => DurabilityRequirement::LOCAL,
+            Self::Dc | Self::Ha => DurabilityRequirement::REPLICATED,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_single_node(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    #[must_use]
+    pub const fn is_distributed(self) -> bool {
+        matches!(self, Self::Dc | Self::Ha)
+    }
+
+    #[must_use]
+    pub const fn is_dc(self) -> bool {
+        matches!(self, Self::Dc)
+    }
+
+    #[must_use]
+    pub const fn is_ha(self) -> bool {
+        matches!(self, Self::Ha)
+    }
+}
 
 /// Stable identity of an analytics producer.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

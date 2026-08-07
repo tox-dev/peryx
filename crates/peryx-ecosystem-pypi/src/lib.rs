@@ -12,118 +12,33 @@ use peryx_driver::serving::{CompiledEcosystemSettings, EcosystemCapability, Ecos
 /// Stable identity of the Python package ecosystem.
 pub const ECOSYSTEM: Ecosystem = Ecosystem::new("pypi");
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
-#[group(id = "pypi_mirror_options")]
-pub struct MirrorOptions {
-    /// Add a package selector such as `requests>=2,<3`.
-    #[arg(long = "package", short = 'p')]
-    pub packages: Vec<String>,
-
-    /// Read package selectors from a requirements or constraints file.
-    #[arg(long = "requirements", short = 'r')]
-    pub requirements: Vec<std::path::PathBuf>,
-
-    /// Override the configured selection mode.
-    #[arg(long, value_enum)]
-    pub mode: Option<MirrorMode>,
-
-    /// Fetch Simple pages and metadata, but skip artifacts.
-    #[arg(long)]
-    pub metadata_only: bool,
-
-    /// Exclude wheel artifacts.
-    #[arg(long)]
-    pub no_wheels: bool,
-
-    /// Exclude source distributions.
-    #[arg(long)]
-    pub no_sdists: bool,
-
-    /// Keep only wheels with this Python tag.
-    #[arg(long = "python-tag")]
-    pub python_tags: Vec<String>,
-
-    /// Keep only wheels with this ABI tag.
-    #[arg(long = "abi-tag")]
-    pub abi_tags: Vec<String>,
-
-    /// Keep only wheels with this platform tag.
-    #[arg(long = "platform-tag")]
-    pub platform_tags: Vec<String>,
-
-    /// Skip files larger than this many bytes when size metadata is available.
-    #[arg(long)]
-    pub max_file_size_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MirrorMode {
     All,
     Selected,
     MetadataOnly,
 }
 
-impl MirrorOptions {
-    #[must_use]
-    pub fn overrides(&self) -> toml::Table {
-        let mut options = toml::Table::from_iter([
-            ("packages".to_owned(), strings(&self.packages)),
-            (
-                "requirements".to_owned(),
-                toml::Value::Array(
-                    self.requirements
-                        .iter()
-                        .map(|path| toml::Value::String(path.display().to_string()))
-                        .collect(),
-                ),
-            ),
-            ("metadata_only".to_owned(), toml::Value::Boolean(self.metadata_only)),
-            ("no_wheels".to_owned(), toml::Value::Boolean(self.no_wheels)),
-            ("no_sdists".to_owned(), toml::Value::Boolean(self.no_sdists)),
-            ("python_tags".to_owned(), strings(&self.python_tags)),
-            ("abi_tags".to_owned(), strings(&self.abi_tags)),
-            ("platform_tags".to_owned(), strings(&self.platform_tags)),
-        ]);
-        if let Some(mode) = self.mode {
-            options.insert(
-                "mode".to_owned(),
-                toml::Value::String(format!("{mode:?}").to_ascii_lowercase()),
-            );
-        }
-        if let Some(maximum) = self.max_file_size_bytes {
-            options.insert(
-                "max_file_size_bytes".to_owned(),
-                toml::Value::String(maximum.to_string()),
-            );
-        }
-        options
-    }
-}
-
-fn strings(values: &[String]) -> toml::Value {
-    toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect())
-}
-
-pub const DEFAULT_INDEXES: &[peryx_ecosystem_contract::DefaultIndex] = &[
-    peryx_ecosystem_contract::DefaultIndex {
+pub const DEFAULT_INDEXES: &[peryx_core::DefaultIndex] = &[
+    peryx_core::DefaultIndex {
         name: "pypi",
         route: "pypi",
         ecosystem: ECOSYSTEM,
-        kind: peryx_ecosystem_contract::DefaultIndexKind::Cached {
+        kind: peryx_core::DefaultIndexKind::Cached {
             upstream: "https://pypi.org/simple/",
         },
     },
-    peryx_ecosystem_contract::DefaultIndex {
+    peryx_core::DefaultIndex {
         name: "hosted",
         route: "hosted",
         ecosystem: ECOSYSTEM,
-        kind: peryx_ecosystem_contract::DefaultIndexKind::Hosted,
+        kind: peryx_core::DefaultIndexKind::Hosted,
     },
-    peryx_ecosystem_contract::DefaultIndex {
+    peryx_core::DefaultIndex {
         name: "root/pypi",
         route: "root/pypi",
         ecosystem: ECOSYSTEM,
-        kind: peryx_ecosystem_contract::DefaultIndexKind::Virtual {
+        kind: peryx_core::DefaultIndexKind::Virtual {
             layers: &["hosted", "pypi"],
             upload: "hosted",
         },
@@ -132,6 +47,14 @@ pub const DEFAULT_INDEXES: &[peryx_ecosystem_contract::DefaultIndex] = &[
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PypiPlugin;
+
+#[cfg(feature = "serving")]
+inventory::submit! {
+    peryx_plugin_registry::EcosystemRegistration {
+        plugin: &PypiPlugin,
+        priority: 0,
+    }
+}
 
 #[cfg(feature = "serving")]
 mod admin;
@@ -267,7 +190,7 @@ impl EcosystemPlugin for PypiPlugin {
         ECOSYSTEM
     }
 
-    fn default_indexes(&self) -> &'static [peryx_ecosystem_contract::DefaultIndex] {
+    fn default_indexes(&self) -> &'static [peryx_core::DefaultIndex] {
         DEFAULT_INDEXES
     }
 

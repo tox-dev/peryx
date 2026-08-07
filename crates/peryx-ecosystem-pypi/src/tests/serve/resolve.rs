@@ -543,7 +543,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
@@ -551,7 +551,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Hosted { volatile: true },
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
@@ -559,7 +559,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "inner".to_owned(),
                 route: "inner".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -570,7 +570,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "outer".to_owned(),
                 route: "outer".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![1, 2],
                     upload: None,
@@ -603,7 +603,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_several_virtual_layers(
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
@@ -611,7 +611,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_several_virtual_layers(
             Index {
                 name: "inner".to_owned(),
                 route: "inner".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -622,7 +622,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_several_virtual_layers(
             Index {
                 name: "middle".to_owned(),
                 route: "middle".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![1],
                     upload: None,
@@ -633,7 +633,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_several_virtual_layers(
             Index {
                 name: "outer".to_owned(),
                 route: "outer".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![2],
                     upload: None,
@@ -663,7 +663,7 @@ async fn test_protected_name_blocks_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
@@ -671,7 +671,7 @@ async fn test_protected_name_blocks_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "inner".to_owned(),
                 route: "inner".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -682,7 +682,7 @@ async fn test_protected_name_blocks_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "outer".to_owned(),
                 route: "outer".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![1],
                     upload: None,
@@ -711,7 +711,7 @@ async fn test_private_first_shadows_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "pypi".to_owned(),
                 route: "pypi".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Cached { client, offline: false },
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
@@ -719,7 +719,7 @@ async fn test_private_first_shadows_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Hosted { volatile: true },
                 policy: Policy::default(),
                 acl: IndexAcl::default(),
@@ -727,7 +727,7 @@ async fn test_private_first_shadows_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "inner".to_owned(),
                 route: "inner".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![0],
                     upload: None,
@@ -738,7 +738,7 @@ async fn test_private_first_shadows_a_cache_reached_through_a_nested_virtual() {
             Index {
                 name: "outer".to_owned(),
                 route: "outer".to_owned(),
-                ecosystem: peryx_core::Ecosystem::Pypi,
+                ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
                     layers: vec![1, 2],
                     upload: None,

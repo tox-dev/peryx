@@ -1,4 +1,4 @@
-use peryx_ecosystem_registry::pypi::store::{catalog_state, get_project, list_projects, put_project};
+use peryx_ecosystem_pypi::store::{catalog_state, get_project, list_projects, put_project};
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
 use wiremock::matchers::{method, path};
@@ -6,7 +6,6 @@ use wiremock::{Mock, Request, ResponseTemplate};
 
 use super::*;
 use crate::cli::PrefetchPlanArgs;
-use peryx_ecosystem_registry::pypi::MirrorMode;
 
 #[tokio::test]
 async fn test_mirror_plan_expands_nested_requirements_and_trims_options() {
@@ -45,11 +44,13 @@ async fn test_mirror_plan_expands_nested_requirements_and_trims_options() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), Vec::new());
-    options
-        .ecosystem
-        .pypi
-        .requirements
-        .push(dir.path().join("constraints.txt"));
+    set_option(
+        &mut options,
+        "requirements",
+        toml::Value::Array(vec![toml::Value::String(
+            dir.path().join("constraints.txt").display().to_string(),
+        )]),
+    );
 
     let text = run_ok(
         &mirror(&dir, &server),
@@ -121,8 +122,8 @@ async fn test_mirror_sync_all_reads_html_project_list_and_filters_files() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), Vec::new());
-    options.ecosystem.pypi.mode = Some(MirrorMode::All);
-    options.ecosystem.pypi.no_wheels = true;
+    set_option(&mut options, "mode", toml::Value::String("all".to_owned()));
+    set_option(&mut options, "no_wheels", toml::Value::Boolean(true));
     let text = run_ok(
         &mirror(&dir, &server),
         &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
@@ -177,7 +178,7 @@ async fn test_mirror_plan_all_reuses_not_modified_catalog() {
         .await;
     let mut options = command_options(dir.path(), Vec::new());
     options.index = "catalog-reuse".to_owned();
-    options.ecosystem.pypi.mode = Some(MirrorMode::All);
+    set_option(&mut options, "mode", toml::Value::String("all".to_owned()));
     let config = mirror_named(&dir, &server, "catalog-reuse");
 
     for _ in 0..3 {
@@ -234,7 +235,7 @@ async fn test_mirror_plan_all_aborts_invalid_catalog_refresh() {
         .await;
     let mut options = command_options(dir.path(), Vec::new());
     options.index = "catalog-refresh".to_owned();
-    options.ecosystem.pypi.mode = Some(MirrorMode::All);
+    set_option(&mut options, "mode", toml::Value::String("all".to_owned()));
     let config = mirror_named(&dir, &server, "catalog-refresh");
     let command = PrefetchCommand::Plan(PrefetchPlanArgs {
         options: options.clone(),
@@ -275,7 +276,11 @@ async fn test_mirror_requirements_parse_errors_include_context() {
     let requirements = dir.path().join("requirements.txt");
     std::fs::write(&requirements, "$bad\n").unwrap();
     let mut options = command_options(dir.path(), Vec::new());
-    options.ecosystem.pypi.requirements.push(requirements);
+    set_option(
+        &mut options,
+        "requirements",
+        toml::Value::Array(vec![toml::Value::String(requirements.display().to_string())]),
+    );
     let (_text, err) = run_err(
         &mirror(&dir, &server),
         &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
@@ -294,7 +299,7 @@ async fn test_mirror_all_mode_errors_on_upstream_project_list_status() {
         .mount(&server)
         .await;
     let mut options = command_options(dir.path(), Vec::new());
-    options.ecosystem.pypi.mode = Some(MirrorMode::All);
+    set_option(&mut options, "mode", toml::Value::String("all".to_owned()));
     let (_text, err) = run_err(
         &mirror(&dir, &server),
         &PrefetchCommand::Plan(PrefetchPlanArgs { options }),
@@ -329,7 +334,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Cached {
@@ -346,7 +351,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Virtual {
@@ -361,7 +366,7 @@ async fn test_mirror_rejects_non_mirror_targets() {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Virtual {
@@ -423,11 +428,13 @@ async fn test_mirror_plan_accepts_pip_include_syntax() {
     }
     std::fs::write(dir.path().join("requirements.txt"), root).unwrap();
     let mut options = command_options(dir.path(), Vec::new());
-    options
-        .ecosystem
-        .pypi
-        .requirements
-        .push(dir.path().join("requirements.txt"));
+    set_option(
+        &mut options,
+        "requirements",
+        toml::Value::Array(vec![toml::Value::String(
+            dir.path().join("requirements.txt").display().to_string(),
+        )]),
+    );
 
     let text = run_ok(
         &mirror(&dir, &server),
@@ -454,11 +461,13 @@ async fn test_mirror_plan_skips_malformed_include_directives() {
     .unwrap();
     mount_project(&server, "flask").await;
     let mut options = command_options(dir.path(), Vec::new());
-    options
-        .ecosystem
-        .pypi
-        .requirements
-        .push(dir.path().join("requirements.txt"));
+    set_option(
+        &mut options,
+        "requirements",
+        toml::Value::Array(vec![toml::Value::String(
+            dir.path().join("requirements.txt").display().to_string(),
+        )]),
+    );
 
     let text = run_ok(
         &mirror(&dir, &server),
@@ -499,11 +508,13 @@ async fn test_mirror_requirements_join_continuations_and_strip_comments() {
             .await;
     }
     let mut options = command_options(dir.path(), Vec::new());
-    options
-        .ecosystem
-        .pypi
-        .requirements
-        .push(dir.path().join("requirements.txt"));
+    set_option(
+        &mut options,
+        "requirements",
+        toml::Value::Array(vec![toml::Value::String(
+            dir.path().join("requirements.txt").display().to_string(),
+        )]),
+    );
 
     let text = run_ok(
         &mirror(&dir, &server),
@@ -522,7 +533,11 @@ async fn test_mirror_requirements_keep_hash_glued_to_token() {
     let requirements = dir.path().join("requirements.txt");
     std::fs::write(&requirements, "numpy#notacomment\n").unwrap();
     let mut options = command_options(dir.path(), Vec::new());
-    options.ecosystem.pypi.requirements.push(requirements);
+    set_option(
+        &mut options,
+        "requirements",
+        toml::Value::Array(vec![toml::Value::String(requirements.display().to_string())]),
+    );
     let (_text, err) = run_err(
         &mirror(&dir, &server),
         &PrefetchCommand::Plan(PrefetchPlanArgs { options }),

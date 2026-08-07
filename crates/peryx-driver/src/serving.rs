@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use axum::extract::{Multipart, Request};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use peryx_core::DefaultIndex;
 use peryx_core::{Ecosystem, UiManifest, UiMember, UiMemberChunk, UiMeta, UiProject, UiProjectView};
-use peryx_ecosystem_contract::DefaultIndex;
 
 use crate::state::{ServingState, ViewBlock};
 

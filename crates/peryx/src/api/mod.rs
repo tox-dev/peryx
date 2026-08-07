@@ -8,7 +8,7 @@ mod service;
 mod shadow;
 mod trash;
 
-use peryx_ecosystem_registry as ecosystem_registry;
+use peryx_plugin_registry as ecosystem_registry;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
     ComponentsBuilder, ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, PathsBuilder,

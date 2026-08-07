@@ -41,8 +41,9 @@ pub struct PrefetchOptions {
     /// Configured index name or route to sync.
     pub index: String,
 
-    #[command(flatten)]
-    pub ecosystem: peryx_ecosystem_registry::MirrorOptions,
+    /// Override one ecosystem mirror setting as TOML `KEY=VALUE`.
+    #[arg(long = "option", value_name = "KEY=VALUE")]
+    pub overrides: Vec<String>,
 }
 
 /// Options for `peryx prefetch plan`.

@@ -9,9 +9,9 @@ configuration in one binary. Shared crates define contracts; implementation crat
 
 ## Crate map
 
-| Crate | Ownership | | --- | --- | | `peryx-core` | Stable IDs and neutral domain DTOs | | `peryx-ecosystem-contract` |
+| Crate | Ownership | | --- | --- | | `peryx-core` | Stable IDs and neutral domain DTOs | | `peryx-core` |
 Shared ecosystem configuration DTOs | | `peryx-driver` | Plugin, serving, maintenance, mirror, and replicated-apply
-traits; process state | | `peryx-ecosystem-registry` | Composition of the implementations shipped in the binary | |
+traits; process state | | `peryx-plugin-registry` | Composition of the implementations shipped in the binary | |
 `peryx-ecosystem-pypi` | Python package protocol and related policy, metadata, storage, UI data, mirroring, and snippets
 | | `peryx-ecosystem-oci` | Distribution protocol and related policy, metadata, storage, UI data, mirroring, and
 settings | | `peryx-ha` | Coordinator, membership, topology, lease, and diagnostics contracts | | `peryx-ha-local` |
@@ -21,7 +21,7 @@ Protocol-neutral HTTP boundary and middleware | | `peryx` | CLI, configuration m
 
 ## Ecosystem startup
 
-`peryx-ecosystem-registry` constructs one `EcosystemPlugin` object per shipped implementation. The binary uses those
+`peryx-plugin-registry` constructs one `EcosystemPlugin` object per shipped implementation. The binary uses those
 objects to validate ecosystem IDs, collect defaults, compile settings into opaque values, build the driver set, merge
 OpenAPI paths, and install runtime capabilities.
 

@@ -59,7 +59,7 @@ pub(super) fn staged_upload(bytes: &[u8]) -> (tempfile::TempDir, StagedUpload) {
 pub(super) fn md5_hex(bytes: &[u8]) -> String {
     let mut hasher = Md5::default();
     hasher.update(bytes);
-    hex(hasher.finalize_fixed().as_slice())
+    hex(&hasher.finalize_fixed())
 }
 
 pub(super) fn wheel_metadata(name: &str, version: &str) -> Vec<u8> {

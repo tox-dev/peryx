@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use peryx_ecosystem_registry::pypi::store::CachedIndex;
-use peryx_ecosystem_registry::pypi::store::PypiStore as _;
-use peryx_ecosystem_registry::pypi::upload::Uploaded;
-use peryx_ecosystem_registry::pypi::{CoreMetadata, File, Provenance, Yanked};
+use peryx_ecosystem_pypi::store::CachedIndex;
+use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::upload::Uploaded;
+use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 

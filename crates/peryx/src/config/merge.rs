@@ -21,8 +21,8 @@ use std::collections::HashSet;
 
 use super::ConfigError;
 use super::model::{
-    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, AvailabilityMode,
-    BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
+    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, BlobStorageConfig,
+    Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, MAX_TOKEN_TTL_SECS, OidcProviderConfig,
     ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig, UpstreamConfig,
@@ -34,6 +34,7 @@ use super::raw::{
     RawExternalGroupGrant, RawIndex, RawJobSchedule, RawLdapMode, RawLdapProvider, RawOidcProvider, RawReadThrough,
     RawReplication, RawScheduledJob, RawTls, RawToken, RawUpstream, RawWebhook, RawWriteAck, RawWriteAckPolicy,
 };
+use peryx_ha::AvailabilityMode;
 use peryx_ha_distributed::read_through::{DEFAULT_READ_THROUGH_LIMITS, ReadThroughLimits};
 use peryx_ha_distributed::{CircuitConfig, ReconnectPolicy};
 
@@ -276,7 +277,7 @@ fn validate_schedules(indexes: &[IndexConfig], schedules: &[Schedule]) -> Result
                 reason: "catalog sync `repository` must name a cached index",
             });
         };
-        if !peryx_ecosystem_registry::supports(
+        if !peryx_plugin_registry::supports(
             repository.ecosystem,
             peryx_driver::serving::EcosystemCapability::CatalogSync,
         ) || *offline
@@ -654,7 +655,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
                 name: raw.name.clone(),
                 reason: "unknown ecosystem",
             })?;
-            if !peryx_ecosystem_registry::is_installed(ecosystem) {
+            if !peryx_plugin_registry::is_installed(ecosystem) {
                 return Err(ConfigError::Index {
                     name: raw.name.clone(),
                     reason: "unknown ecosystem",
@@ -662,7 +663,7 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
             }
             ecosystem
         }
-        None => peryx_ecosystem_registry::default_ecosystem(),
+        None => peryx_plugin_registry::default_ecosystem(),
     };
     let kind = classify_index_kind(&mut raw)?;
     let tokens = classify_tokens(&raw.name, raw.tokens)?;

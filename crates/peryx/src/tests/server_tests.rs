@@ -88,7 +88,7 @@ fn cached(name: &str, upstream: &str) -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Cached {
@@ -108,7 +108,7 @@ fn hosted(name: &str) -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Hosted { volatile: true },
@@ -123,7 +123,7 @@ fn virtual_index(layers: &[&str], upload: Option<&str>) -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Virtual {
@@ -1251,7 +1251,7 @@ fn bad_upstream_config(dir: &tempfile::TempDir) -> Config {
 
 fn bad_settings_config(dir: &tempfile::TempDir) -> Config {
     let mut index = hosted("images");
-    index.ecosystem = peryx_ecosystem_registry::OCI;
+    index.ecosystem = peryx_ecosystem_oci::ECOSYSTEM;
     index
         .ecosystem_settings
         .insert("bogus".to_owned(), toml::Value::from("x"));

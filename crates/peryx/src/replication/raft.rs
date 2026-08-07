@@ -7,7 +7,7 @@
 //! store and assembles the [`RaftNode`], seeding a fresh group with an idempotent bootstrap so a restart
 //! rejoins the existing one.
 //!
-//! [`AvailabilityMode::Ha`]: crate::config::AvailabilityMode::Ha
+//! [`AvailabilityMode::Ha`]: peryx_ha::AvailabilityMode::Ha
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

@@ -9,9 +9,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use peryx_driver::AppState;
-use peryx_ecosystem_registry::pypi::store::{CachedIndex, PypiStore as _};
-use peryx_ecosystem_registry::pypi::upload::Uploaded;
-use peryx_ecosystem_registry::pypi::{CoreMetadata, File, Provenance, Yanked};
+use peryx_ecosystem_pypi::store::{CachedIndex, PypiStore as _};
+use peryx_ecosystem_pypi::upload::Uploaded;
+use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
 use peryx_identity::{GrantScope, Role};
 use peryx_policy::{PolicyAction, PolicyDecisionState};
 use peryx_storage::meta::NewPolicyDecision;
@@ -35,7 +35,7 @@ fn cached_pypi() -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Cached {
@@ -55,7 +55,7 @@ fn hosted() -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: vec![crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned()))],
         kind: IndexKind::Hosted { volatile: true },
@@ -70,7 +70,7 @@ fn virtual_root() -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: Vec::new(),
         kind: IndexKind::Virtual {

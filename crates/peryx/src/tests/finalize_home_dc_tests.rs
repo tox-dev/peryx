@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use peryx_driver::serving::EcosystemDriver;
 use peryx_driver::state::AppState;
-use peryx_ecosystem_registry::pypi::PypiServing;
-use peryx_ecosystem_registry::pypi::store::put_upload;
+use peryx_ecosystem_pypi::PypiServing;
+use peryx_ecosystem_pypi::store::put_upload;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::{BlobStorage, Digest};
@@ -36,7 +36,7 @@ fn hosted_index() -> Index {
     Index {
         name: INDEX.to_owned(),
         route: INDEX.to_owned(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: false },
         policy: peryx_policy::Policy::default(),
         acl: IndexAcl {

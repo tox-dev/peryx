@@ -27,7 +27,7 @@ pub async fn run(config: &Config, command: &PrefetchCommand, output: &mut (dyn W
             .find(|configured| configured.name == index.name)
             .map_or_else(toml::Table::new, |configured| configured.ecosystem_settings.clone());
         let configured = mirror_configuration(config, options);
-        let overrides = options.ecosystem.overrides(index.ecosystem);
+        let overrides = mirror_overrides(&options.overrides)?;
         return driver
             .mirror(
                 state.clone(),
@@ -47,6 +47,26 @@ pub async fn run(config: &Config, command: &PrefetchCommand, output: &mut (dyn W
         "ecosystem {} does not support mirroring",
         index.ecosystem
     ))
+}
+
+fn mirror_overrides(options: &[String]) -> anyhow::Result<toml::Table> {
+    options
+        .iter()
+        .map(|option| {
+            let (key, value) = option
+                .split_once('=')
+                .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("mirror option {option:?} must be KEY=VALUE"))?;
+            toml::from_str::<toml::Table>(&format!("value = {value}"))
+                .map(|mut table| {
+                    (
+                        key.to_owned(),
+                        table.remove("value").expect("the parser preserves the key"),
+                    )
+                })
+                .map_err(|error| anyhow::anyhow!("invalid value for mirror option {key:?}: {error}"))
+        })
+        .collect()
 }
 
 const fn action(command: &PrefetchCommand) -> MirrorAction {

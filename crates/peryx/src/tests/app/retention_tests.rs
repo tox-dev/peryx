@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use peryx_driver::retention::encode_cursor;
-use peryx_ecosystem_registry::pypi::store::PypiStore as _;
-use peryx_ecosystem_registry::pypi::upload::Uploaded;
-use peryx_ecosystem_registry::pypi::{CoreMetadata, File, Provenance, Yanked};
+use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::upload::Uploaded;
+use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
 use peryx_policy::{RetentionFrontier, RetentionSummary};
 
 use super::*;

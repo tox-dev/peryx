@@ -572,7 +572,7 @@ fn test_apply_replicated_page_holds_the_frontier_when_a_view_rebuild_fails() {
     let state = build_state(&config).unwrap();
     // A corrupt upload record for flask makes deriving its search document fail, so the driver reports a
     // blocked view rather than rebuilding it.
-    peryx_ecosystem_registry::pypi::store::put_upload(
+    peryx_ecosystem_pypi::store::put_upload(
         &state.meta,
         "hosted",
         "flask",

@@ -9,9 +9,9 @@ but they must not know a protocol's routes, media types, settings, storage keys,
 
 ## Crates
 
-- `peryx-ecosystem-contract` contains neutral installation DTOs and reexports the core installer contract. It cannot
+- `peryx-core` contains neutral installation DTOs and reexports the core installer contract. It cannot
   depend on an ecosystem implementation.
-- `peryx-ecosystem-registry` is the composition boundary. It links every implementation shipped in the binary, resolves
+- `peryx-plugin-registry` is the composition boundary. It links every implementation shipped in the binary, resolves
   configured IDs, and dispatches settings compilation and installation through plugins.
 - `peryx-ecosystem-pypi` owns all Python package protocol behavior, metadata, storage encoding, mirroring, snippets,
   defaults, routes, and tests.
@@ -53,7 +53,7 @@ documentation.
 1. Create `peryx-ecosystem-<name>` and define its ID in that crate.
 1. Implement only the capabilities the ecosystem supports.
 1. Keep protocol DTOs, storage keys, parsing, routes, defaults, snippets, mirror behavior, and tests in that crate.
-1. Add its installer to `peryx-ecosystem-registry`.
+1. Add its installer to `peryx-plugin-registry`.
 1. Add user documentation below `site/content/ecosystems/<name>/`.
 
 If a change to an ecosystem requires a match arm, concrete import, or protocol term in a shared crate, the boundary is

@@ -21,7 +21,7 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
             ecosystem_policy: toml::Table::new(),
             ecosystem_settings: toml::Table::new(),
             webhooks: Vec::new(),
-            ecosystem: peryx_ecosystem_registry::OCI,
+            ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
             anonymous_read: None,
             tokens: Vec::new(),
             kind: IndexKind::Cached {
@@ -38,7 +38,11 @@ fn oci_config(data_dir: &Path, upstream: &str) -> Config {
 fn oci_options(data_dir: &Path, images: Vec<String>) -> PrefetchOptions {
     let mut options = command_options(data_dir, Vec::new());
     options.index = "oci".to_owned();
-    options.ecosystem.oci.images = images;
+    set_option(
+        &mut options,
+        "images",
+        toml::Value::Array(images.into_iter().map(toml::Value::String).collect()),
+    );
     options
 }
 

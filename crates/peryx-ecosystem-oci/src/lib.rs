@@ -18,44 +18,26 @@ use peryx_driver::serving::{
 /// Stable identity of the OCI distribution ecosystem.
 pub const ECOSYSTEM: Ecosystem = Ecosystem::new("oci");
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
-#[group(id = "oci_mirror_options")]
-pub struct MirrorOptions {
-    /// Add an image reference such as `library/alpine:latest`.
-    #[arg(long = "image")]
-    pub images: Vec<String>,
-}
-
-impl MirrorOptions {
-    #[must_use]
-    pub fn overrides(&self) -> toml::Table {
-        toml::Table::from_iter([(
-            "images".to_owned(),
-            toml::Value::Array(self.images.iter().cloned().map(toml::Value::String).collect()),
-        )])
-    }
-}
-
-pub const DEFAULT_INDEXES: &[peryx_ecosystem_contract::DefaultIndex] = &[
-    peryx_ecosystem_contract::DefaultIndex {
+pub const DEFAULT_INDEXES: &[peryx_core::DefaultIndex] = &[
+    peryx_core::DefaultIndex {
         name: "dockerhub",
         route: "dockerhub",
         ecosystem: ECOSYSTEM,
-        kind: peryx_ecosystem_contract::DefaultIndexKind::Cached {
+        kind: peryx_core::DefaultIndexKind::Cached {
             upstream: "https://registry-1.docker.io",
         },
     },
-    peryx_ecosystem_contract::DefaultIndex {
+    peryx_core::DefaultIndex {
         name: "images",
         route: "images",
         ecosystem: ECOSYSTEM,
-        kind: peryx_ecosystem_contract::DefaultIndexKind::Hosted,
+        kind: peryx_core::DefaultIndexKind::Hosted,
     },
-    peryx_ecosystem_contract::DefaultIndex {
+    peryx_core::DefaultIndex {
         name: "root/oci",
         route: "root/oci",
         ecosystem: ECOSYSTEM,
-        kind: peryx_ecosystem_contract::DefaultIndexKind::Virtual {
+        kind: peryx_core::DefaultIndexKind::Virtual {
             layers: &["images", "dockerhub"],
             upload: "images",
         },
@@ -64,6 +46,13 @@ pub const DEFAULT_INDEXES: &[peryx_ecosystem_contract::DefaultIndex] = &[
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OciPlugin;
+
+inventory::submit! {
+    peryx_plugin_registry::EcosystemRegistration {
+        plugin: &OciPlugin,
+        priority: 1,
+    }
+}
 
 /// The container ecosystem's user-facing words for peryx's neutral concepts.
 pub const OCI_LEXICON: Lexicon = Lexicon {
@@ -145,7 +134,7 @@ impl EcosystemPlugin for OciPlugin {
         ECOSYSTEM
     }
 
-    fn default_indexes(&self) -> &'static [peryx_ecosystem_contract::DefaultIndex] {
+    fn default_indexes(&self) -> &'static [peryx_core::DefaultIndex] {
         DEFAULT_INDEXES
     }
 

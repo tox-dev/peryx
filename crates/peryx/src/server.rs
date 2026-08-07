@@ -12,7 +12,6 @@ use axum::Router;
 use peryx_core::path;
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, DriverSet, Index, IndexKind};
-use peryx_ecosystem_registry as ecosystem_registry;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_ha_distributed::{
     FrontierReply, HttpReceiptSource, HttpRemoteFrontierSource, MetadataFrontierProvider, ReceiptSource,
@@ -23,6 +22,7 @@ use peryx_identity::{
     Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
     OidcProviderSettings, SessionSealer, Signer,
 };
+use peryx_plugin_registry as ecosystem_registry;
 use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
 use peryx_storage::blob::{BlobStorage, S3Config};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
@@ -73,8 +73,13 @@ pub(crate) fn build_blob_storage(config: &Config) -> anyhow::Result<BlobStorage>
 /// a virtual index references an unknown or non-hosted index.
 pub fn build_router(config: &Config) -> anyhow::Result<Router> {
     let state = build_state(config)?;
-    let replication = crate::replication::ReplicationRuntime::new(config, &state)?;
-    Ok(replication.mount(router_for(state)))
+    let router = router_for(state.clone());
+    Ok(
+        match crate::replication::ReplicationRuntime::from_config(config, &state)? {
+            Some(replication) => replication.mount(router),
+            None => router,
+        },
+    )
 }
 
 /// Validate a fully resolved configuration the way `serve` would accept it.
@@ -198,7 +203,9 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     }
     state.set_openapi(crate::api::openapi_json());
     let state = Arc::new(state);
-    crate::replication::install_read_through(config, &state)?;
+    if config.availability.is_distributed_mode() {
+        crate::replication::install_read_through(config, &state)?;
+    }
     if !state.read_only && !state.webhooks.is_empty() {
         peryx_events::webhook::kick(state.serving.clone());
     }

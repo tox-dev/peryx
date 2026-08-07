@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use peryx::config::{BlobStorageConfig, Config, IndexConfig, IndexKind, S3StorageConfig, SecretSource, TokenConfig};
 use peryx::server::build_router;
-use peryx_ecosystem_registry::pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_identity::Action;
 use peryx_storage::blob::{BlobStorage, Digest, S3Config, S3Settings};
 use peryx_storage::meta::MetaStore;
@@ -101,7 +101,7 @@ fn hosted() -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_ecosystem_registry::PYPI,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: vec![TokenConfig {
             name: "uploader".to_owned(),
