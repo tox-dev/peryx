@@ -12,8 +12,10 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use redb::Database;
+#[cfg(test)]
+use redb::WriteTransaction;
 use redb::backends::InMemoryBackend;
-use redb::{Database, StorageBackend as _, WriteTransaction};
 
 use super::{MetaDatabase, MetaStore};
 
@@ -52,7 +54,7 @@ impl redb::StorageBackend for FaultBackend {
 pub struct Fault(AtomicI64);
 
 impl Fault {
-    fn disabled() -> Self {
+    const fn disabled() -> Self {
         Self(AtomicI64::new(-1))
     }
 
@@ -99,8 +101,16 @@ pub fn backend() -> (Arc<InMemoryBackend>, Arc<Fault>) {
     (Arc::new(InMemoryBackend::new()), Arc::new(Fault::disabled()))
 }
 
+/// Use the production schema so dependent-crate failure tests cross the same tables as runtime code.
+pub fn initialized() -> (MetaStore, Arc<InMemoryBackend>, Arc<Fault>) {
+    let (inner, fault) = backend();
+    let store = MetaStore::initialize(database(&inner, &fault)).unwrap();
+    (store, inner, fault)
+}
+
 /// Open a store over `inner`, initializing the tables `init` opens. Keep the fault disabled here so
 /// initialization and any seeding run cleanly.
+#[cfg(test)]
 pub fn create(
     inner: &Arc<InMemoryBackend>,
     fault: &Arc<Fault>,
@@ -125,6 +135,7 @@ pub fn reopen(inner: &Arc<InMemoryBackend>, fault: &Arc<Fault>) -> MetaStore {
 
 /// Overwrite `key` in a `<&str, &[u8]>` table with raw `bytes`, so a store's decode arm meets a
 /// malformed record without a backend fault.
+#[cfg(test)]
 pub fn corrupt(store: &MetaStore, table: redb::TableDefinition<'_, &str, &[u8]>, key: &str, bytes: &[u8]) {
     let write = store.db.begin_write().unwrap();
     write.open_table(table).unwrap().insert(key, bytes).unwrap();
@@ -133,6 +144,8 @@ pub fn corrupt(store: &MetaStore, table: redb::TableDefinition<'_, &str, &[u8]>,
 
 #[test]
 fn test_backend_delegates_every_call_then_faults_on_demand() {
+    use redb::StorageBackend as _;
+
     // Drive each StorageBackend method directly: redb does not exercise all five in the store tests,
     // yet every one must delegate to the inner backend when disarmed and fail once armed.
     let (inner, fault) = backend();
@@ -151,4 +164,11 @@ fn test_backend_delegates_every_call_then_faults_on_demand() {
     assert!(disk.len().is_err());
     fault.disable();
     assert!(disk.len().is_ok());
+}
+
+#[test]
+fn test_initialized_opens_the_production_schema() {
+    let (store, _inner, _fault) = initialized();
+
+    assert!(store.view_frontiers().unwrap().is_empty());
 }

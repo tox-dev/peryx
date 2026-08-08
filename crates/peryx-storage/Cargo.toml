@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Content-addressed blob store and metadata storage for peryx."
 
+[features]
+test-support = []
+
 [dependencies]
 atomicwrites.workspace = true
 aws-config.workspace = true

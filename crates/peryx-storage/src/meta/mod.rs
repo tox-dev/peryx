@@ -16,7 +16,7 @@ mod bootstrap;
 mod cross_dc_copy;
 mod error;
 mod external_identity;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "../../tests/unit/meta/fault.rs"]
 mod fault;
 mod finalize;
@@ -38,6 +38,9 @@ mod repository;
 mod revocation;
 mod role_grant;
 mod scoped_token;
+#[cfg(feature = "test-support")]
+#[path = "../../tests/unit/meta/test_support.rs"]
+pub mod test_support;
 mod transfer_attempt;
 mod transfer_audit;
 mod user;
@@ -284,7 +287,10 @@ impl MetaStore {
     /// # Errors
     /// Returns a store error if the database cannot be opened or initialized.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MetaError> {
-        let db = Database::create(path)?;
+        Self::initialize(Database::create(path)?)
+    }
+
+    fn initialize(db: Database) -> Result<Self, MetaError> {
         let txn = db.begin_write()?;
         {
             txn.open_table(SERIAL)?;
