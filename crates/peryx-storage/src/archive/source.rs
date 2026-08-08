@@ -66,9 +66,6 @@ fn nested_zip_source(
         return Err(ArchiveError::MemberNotFound);
     };
     safe_member_name(entry.name())?;
-    if !entry.is_file() {
-        return Err(ArchiveError::MemberNotFound);
-    }
     reject_large_nested_archive(member, entry.size())?;
     if entry.compression() == zip::CompressionMethod::Stored
         && !entry.encrypted()
@@ -90,14 +87,13 @@ fn nested_tar_source(
     let mut archive = tar::Archive::new(reader.take(MAX_DECOMPRESSED_INSPECT_BYTES));
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-        let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
-        let path = safe_member_name(&path)?;
-        if path == member {
-            reject_large_nested_archive(member, entry.size())?;
-            return copy_nested_archive(entry, temps);
+        if entry.header().entry_type().is_file() {
+            let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
+            let path = safe_member_name(&path)?;
+            if path == member {
+                reject_large_nested_archive(member, entry.size())?;
+                return copy_nested_archive(entry, temps);
+            }
         }
     }
     Err(ArchiveError::MemberNotFound)

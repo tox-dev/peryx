@@ -35,6 +35,15 @@ fn test_webhook_delivery_queue_orders_due_records() {
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].id, earlier);
     assert_eq!(store.get_webhook_delivery(&later).unwrap().unwrap().event, "upload");
+    assert_eq!(
+        store
+            .list_webhook_deliveries()
+            .unwrap()
+            .into_iter()
+            .map(|delivery| delivery.id)
+            .collect::<HashSet<_>>(),
+        HashSet::from([earlier, later])
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use crate::meta::MetaError;
+use crate::meta::{DriverBatch, MetaError};
 
 fn decode_error() -> MetaError {
     MetaError::from(serde_json::from_str::<serde_json::Value>("{").unwrap_err())
@@ -217,4 +217,108 @@ fn test_driver_txn_prefix_stops_at_the_first_key_outside_the_prefix() {
         store.get_driver_value("appz").unwrap().as_deref(),
         Some(b"3".as_slice())
     );
+}
+
+#[test]
+fn test_driver_value_update_and_delete_report_prior_state() {
+    let (_dir, store) = super::store();
+    assert_eq!(
+        store
+            .update_driver_value("key", |current| {
+                assert_eq!(current, None);
+                Ok((Some(b"value".to_vec()), "inserted"))
+            })
+            .unwrap(),
+        "inserted"
+    );
+    assert_eq!(
+        store
+            .update_driver_value("key", |current| {
+                assert_eq!(current, Some(b"value".as_slice()));
+                Ok((None, "removed"))
+            })
+            .unwrap(),
+        "removed"
+    );
+    assert!(!store.delete_driver_value("key").unwrap());
+    store.put_driver_value("key", b"value").unwrap();
+    assert!(store.delete_driver_value("key").unwrap());
+}
+
+#[test]
+fn test_driver_batch_applies_puts_and_deletes_with_selected_durability() {
+    let (_dir, store) = super::store();
+    store.put_driver_value("delete", b"old").unwrap();
+    let mut batch = DriverBatch::new();
+    batch.put("put".to_owned(), b"new".to_vec());
+    batch.delete("delete".to_owned());
+
+    store.commit_driver_batch(&batch, false).unwrap();
+
+    assert_eq!(
+        (
+            store.get_driver_value("put").unwrap(),
+            store.get_driver_value("delete").unwrap(),
+        ),
+        (Some(b"new".to_vec()), None)
+    );
+}
+
+#[test]
+fn test_driver_policy_snapshot_reads_rows_and_current_serial() {
+    let (_dir, store) = super::store();
+    store.put_driver_value("scope/a", b"one").unwrap();
+    store.put_driver_value("scope/b", b"two").unwrap();
+    store.next_serial().unwrap();
+    let mut seen = Vec::new();
+
+    let generation = store
+        .visit_driver_policy_snapshot("scope/", "repository", |key, value| {
+            seen.push((key.to_owned(), value.to_vec()));
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap();
+
+    assert_eq!(
+        seen,
+        vec![
+            ("scope/a".to_owned(), b"one".to_vec()),
+            ("scope/b".to_owned(), b"two".to_vec())
+        ]
+    );
+    assert_eq!(generation.repository, 1);
+}
+
+#[test]
+fn test_driver_cache_transaction_removes_local_rows() {
+    let (_dir, store) = super::store();
+    store.put_driver_value("key", b"value").unwrap();
+    assert!(store.commit_driver_cache_txn(|txn| txn.remove_local("key")).unwrap());
+    assert_eq!(store.get_driver_value("key").unwrap(), None);
+}
+
+#[test]
+fn test_driver_prefix_operations_stop_at_limits_and_prefix_boundaries() {
+    let (_dir, store) = super::store();
+    for (key, value) in [
+        ("scope/a", b"remove".as_slice()),
+        ("scope/b", b"keep".as_slice()),
+        ("scopez", b"outside".as_slice()),
+    ] {
+        store.put_driver_value(key, value).unwrap();
+    }
+    assert_eq!(
+        store
+            .remove_driver_values_if("scope/", 1, |value| Ok(value == b"remove"))
+            .unwrap(),
+        vec!["scope/a"]
+    );
+    store.put_driver_value("scope/c", b"remove").unwrap();
+    assert_eq!(
+        store
+            .remove_driver_values_if("scope/", 2, |value| Ok(value == b"remove"))
+            .unwrap(),
+        vec!["scope/c"]
+    );
+    assert_eq!(store.driver_prefix_keys("scope/").unwrap(), vec!["scope/b"]);
 }

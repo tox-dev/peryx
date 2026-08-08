@@ -64,6 +64,7 @@ fn test_policy_decision_replaces_current_and_retains_history() {
 fn test_policy_decision_repository_change_makes_current_stale() {
     let (_dir, meta) = store();
     meta.advance_policy_generation("private").unwrap();
+    meta.next_serial().unwrap();
     meta.record_policy_decision(decision("package", PolicyDecisionState::Allow, 10))
         .unwrap();
     meta.next_serial().unwrap();
@@ -224,6 +225,32 @@ fn test_policy_decision_query_filters_and_paginates() {
             second.next_cursor,
         ),
         (vec!["gamma"], true, vec!["beta"], None)
+    );
+}
+
+#[test]
+fn test_policy_decision_query_applies_the_inclusive_upper_time_bound() {
+    let (_dir, meta) = store();
+    for evaluated_at_unix in [10, 20, 30] {
+        meta.record_policy_decision(decision(
+            &format!("package-{evaluated_at_unix}"),
+            PolicyDecisionState::Allow,
+            evaluated_at_unix,
+        ))
+        .unwrap();
+    }
+    assert_eq!(
+        meta.query_policy_decisions(&PolicyDecisionQuery {
+            evaluated_to_unix: Some(20),
+            limit: 10,
+            ..PolicyDecisionQuery::default()
+        })
+        .unwrap()
+        .decisions
+        .into_iter()
+        .map(|decision| decision.record.evaluated_at_unix)
+        .collect::<Vec<_>>(),
+        vec![20, 10]
     );
 }
 

@@ -98,6 +98,28 @@ fn test_digest_revocation_lift_unknown_is_absent() {
 }
 
 #[test]
+fn test_digest_revocation_reads_reject_an_incompatible_record_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("incompatible.redb");
+    let database = redb::Database::create(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    txn.open_table(redb::TableDefinition::<&str, u64>::new("digest_revocation"))
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+    let store = MetaStore::open_existing(path).unwrap();
+
+    assert!(matches!(
+        store.has_active_digest_revocation(),
+        Err(crate::meta::MetaError::Table(_))
+    ));
+    assert!(matches!(
+        store.digest_revocation(&digest(1)),
+        Err(crate::meta::MetaError::Table(_))
+    ));
+}
+
+#[test]
 fn test_digest_revocation_query_filters_and_paginates_stably() {
     let (_dir, store) = store();
     let actor = UserId::random();

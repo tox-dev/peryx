@@ -112,6 +112,7 @@ fn test_revoke_blocks_the_next_verification_and_is_idempotent() {
     );
 
     let repeat = store.revoke_scoped_token(&created.id, 400).unwrap().unwrap();
+    assert_eq!(repeat.record(), &revoked);
     assert_eq!(repeat, RevokeScopedTokenOutcome::Unchanged(revoked));
     assert_eq!(
         store.revoke_scoped_token(&TokenId::new("tok_absent"), 400).unwrap(),

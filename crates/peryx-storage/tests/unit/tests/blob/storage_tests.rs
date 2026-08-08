@@ -1,4 +1,9 @@
-use crate::blob::{BlobErrorKind, BlobStorage, Digest, DurabilityCapabilities, S3Config, S3Settings};
+use futures_util::StreamExt as _;
+
+use crate::blob::{
+    BlobErrorKind, BlobMetadata, BlobOperation, BlobRead, BlobReadBody, BlobScanError, BlobStorage, Digest,
+    DurabilityCapabilities, S3Config, S3Settings,
+};
 
 #[test]
 fn test_filesystem_backend_id_matches_its_name() {
@@ -32,7 +37,9 @@ fn dummy_s3(dir: &std::path::Path) -> BlobStorage {
 fn test_filesystem_backend_exposes_its_store_and_s3_does_not() {
     let dir = tempfile::tempdir().unwrap();
     assert!(BlobStorage::filesystem(dir.path()).filesystem_store().is_some());
-    assert!(dummy_s3(dir.path()).filesystem_store().is_none());
+    let s3 = dummy_s3(dir.path());
+    assert!(s3.filesystem_store().is_none());
+    assert_eq!(s3.name(), "s3");
 }
 
 #[tokio::test]
@@ -128,4 +135,100 @@ async fn test_object_store_rejects_resumable_upload_staging() {
         storage.discard_upload("s").await.unwrap_err().kind(),
         BlobErrorKind::Unsupported
     );
+}
+
+#[test]
+fn test_blocking_storage_verifies_and_visits_filesystem_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlobStorage::filesystem(dir.path());
+    let digest = storage.blocking().put_bytes(b"package").unwrap();
+    assert!(storage.blocking().verify(&digest).unwrap());
+    let mut entries = Vec::new();
+    storage
+        .blocking()
+        .visit(|entry| {
+            entries.push((entry.digest, entry.bytes));
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap();
+    assert_eq!(entries, vec![(Some(digest), 7)]);
+
+    let missing = Digest::of(b"missing");
+    let error = storage.blocking().verify(&missing).unwrap_err();
+    assert_eq!(error.context().unwrap().operation, BlobOperation::Verify);
+    assert!(matches!(
+        storage.blocking().visit(|_| Err("stop")),
+        Err(BlobScanError::Visit("stop"))
+    ));
+    let error = storage.blocking().materialize(&missing).unwrap_err();
+    assert_eq!(error.context().unwrap().operation, BlobOperation::Materialize);
+
+    let blocked = dir.path().join("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::write(blocked.join("sha256"), b"file").unwrap();
+    assert!(matches!(
+        BlobStorage::filesystem(blocked).blocking().visit(|_| Ok::<_, std::convert::Infallible>(())),
+        Err(BlobScanError::Store(error)) if error.context().unwrap().operation == BlobOperation::List
+    ));
+}
+
+#[test]
+fn test_blocking_put_as_commits_when_the_digest_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlobStorage::filesystem(dir.path());
+    let digest = Digest::of(b"package");
+    storage.blocking().put_bytes_as(b"package", &digest).unwrap();
+    assert_eq!(storage.blocking().read_bytes(&digest, 7).unwrap(), b"package");
+}
+
+#[tokio::test]
+async fn test_reversed_stream_reports_its_declared_range_when_polled_directly() {
+    let digest = Digest::of(b"package");
+    let read = BlobRead::new(
+        "stream",
+        digest,
+        BlobMetadata {
+            bytes: 7,
+            modified: None,
+        },
+        std::ops::Range { start: 5, end: 1 },
+        BlobReadBody::Stream(futures_util::stream::empty().boxed()),
+    );
+    let BlobReadBody::Stream(mut stream) = read.body else {
+        panic!("stream body changed representation");
+    };
+    assert_eq!(
+        stream.next().await.unwrap().unwrap_err().invalid_range_values(),
+        Some((5, 1, 7))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_filesystem_open_reports_non_missing_io_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlobStorage::filesystem(dir.path());
+    let digest = Digest::of(b"loop");
+    let hex = digest.as_str();
+    let path = dir.path().join(format!("sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+    assert_eq!(
+        storage.open(&digest, None).await.err().unwrap().kind(),
+        BlobErrorKind::Io
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_filesystem_write_abort_reports_stage_removal_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlobStorage::filesystem(dir.path());
+    let write = storage.begin().await.unwrap();
+    let path = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let error = write.abort().await.unwrap_err();
+    assert_eq!(error.context().unwrap().operation, BlobOperation::Write);
 }

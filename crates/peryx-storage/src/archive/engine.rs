@@ -213,27 +213,24 @@ fn read_zip_member(
 ) -> Result<MemberChunk, ArchiveError> {
     let member = safe_member_name(member)?;
     let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
-    if offset > 0 {
-        match archive.by_name_seek(&member) {
-            Ok(mut entry) => {
-                let size = {
-                    let metadata = entry.get_metadata();
-                    safe_member_name(&metadata.file_name)?;
-                    metadata.uncompressed_size
-                };
-                if offset > size {
-                    return Err(ArchiveError::InvalidRange { offset, size });
-                }
-                entry.seek(SeekFrom::Start(offset)).map_err(read_error)?;
-                return read_from_current(entry, size, offset, limit);
-            }
-            Err(zip::result::ZipError::UnsupportedArchive("Seekable compressed files are not yet supported")) => {}
-            Err(zip::result::ZipError::FileNotFound) => return Err(ArchiveError::MemberNotFound),
-            Err(err) => return Err(read_error(err)),
+    if offset > 0
+        && let Ok(mut entry) = archive.by_name_seek(&member)
+    {
+        let size = {
+            let metadata = entry.get_metadata();
+            safe_member_name(&metadata.file_name)?;
+            metadata.uncompressed_size
+        };
+        if offset > size {
+            return Err(ArchiveError::InvalidRange { offset, size });
         }
+        entry.seek(SeekFrom::Start(offset)).map_err(read_error)?;
+        return read_from_current(entry, size, offset, limit);
     }
-    let Ok(entry) = archive.by_name(&member) else {
-        return Err(ArchiveError::MemberNotFound);
+    let entry = match archive.by_name(&member) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Err(ArchiveError::MemberNotFound),
+        Err(error) => return Err(read_error(error)),
     };
     safe_member_name(entry.name())?;
     let size = entry.size();
@@ -270,14 +267,13 @@ fn read_tar_member(reader: impl Read, member: &str, offset: u64, limit: u64) -> 
     let mut archive = tar::Archive::new(reader.take(MAX_DECOMPRESSED_INSPECT_BYTES));
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-        let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
-        let path = safe_member_name(&path)?;
-        if path == member {
-            let size = entry.size();
-            return read_slice(entry, size, offset, limit);
+        if entry.header().entry_type().is_file() {
+            let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
+            let path = safe_member_name(&path)?;
+            if path == member {
+                let size = entry.size();
+                return read_slice(entry, size, offset, limit);
+            }
         }
     }
     Err(ArchiveError::MemberNotFound)

@@ -65,3 +65,17 @@ fn test_io_error_reports_a_source() {
 fn test_not_found_error_has_no_source() {
     assert!(BlobError::not_found(&Digest::of(b"missing")).source().is_none());
 }
+
+#[test]
+fn test_digest_mismatch_error_names_both_digests() {
+    let expected = Digest::of(b"expected");
+    let actual = Digest::of(b"actual");
+    assert_eq!(
+        BlobError::digest_mismatch(&expected, &actual).to_string(),
+        format!(
+            "digest mismatch: expected {}, got {}",
+            expected.as_str(),
+            actual.as_str()
+        )
+    );
+}

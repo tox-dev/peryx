@@ -130,6 +130,16 @@ fn test_user_rename_preserves_id_and_moves_name_index() {
 }
 
 #[test]
+fn test_user_updates_are_idempotent_and_preserve_canonical_identity() {
+    let (_dir, store) = super::store();
+    let user = store.create_user("Alice").unwrap();
+    assert_eq!(store.rename_user(&user.id, "Alice").unwrap(), user);
+    let renamed = store.rename_user(&user.id, "ALICE").unwrap();
+    assert_eq!((renamed.name.canonical(), renamed.name.display()), ("alice", "ALICE"));
+    assert_eq!(store.set_user_state(&user.id, UserState::Active).unwrap(), renamed);
+}
+
+#[test]
 fn test_user_rename_rejects_duplicate_without_changing_either_user() {
     let (_dir, store) = store();
     let alice = store.create_user("Alice").unwrap();
