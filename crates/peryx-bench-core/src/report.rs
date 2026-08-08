@@ -22,6 +22,10 @@ pub struct Report {
     pub tables: std::collections::BTreeMap<String, Table>,
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/report.rs"]
+mod tests;
+
 /// Load a report from disk for an A/B compare.
 ///
 /// # Errors

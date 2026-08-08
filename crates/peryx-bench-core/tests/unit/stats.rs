@@ -1,4 +1,4 @@
-use peryx_bench_core::stats::{Summary, geometric_mean};
+use super::{Summary, geometric_mean};
 
 #[test]
 fn summary_reduces_rounds() {

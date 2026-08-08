@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use peryx_bench_core::usage::Usage;
+use super::Usage;
 
 #[test]
 fn usage_skips_absent_process() {

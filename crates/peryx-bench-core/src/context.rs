@@ -8,6 +8,10 @@ pub struct BenchmarkContext {
     report_path: PathBuf,
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/context.rs"]
+mod tests;
+
 impl BenchmarkContext {
     #[must_use]
     pub const fn new(peryx_binary: PathBuf, report_path: PathBuf) -> Self {

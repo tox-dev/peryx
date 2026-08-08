@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use peryx_bench_core::context::BenchmarkContext;
-use peryx_bench_core::report::{
+use super::{
     Absent, Cell, Metric, Party, Report, Row, Table, anchor, baseline, cost_rows, cost_rows_per_request, load,
     network_row, publish_to, repo_root, report_path, row, summarize, table,
 };
-use peryx_bench_core::servers::Server;
-use peryx_bench_core::stats::Summary;
-use peryx_bench_core::usage::Cost;
+use crate::context::BenchmarkContext;
+use crate::servers::Server;
+use crate::stats::Summary;
+use crate::usage::Cost;
 
 fn base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/")
@@ -96,6 +96,23 @@ fn report_store_rejects_invalid_documents() {
     )
     .expect_err("invalid tables value fails");
     assert!(error.to_string().contains("`tables` is not a TOML table"));
+}
+
+#[test]
+fn report_store_rejects_a_path_without_a_filename() {
+    assert!(
+        publish_to(
+            Path::new(""),
+            "new",
+            Table {
+                label: String::new(),
+                baseline: String::new(),
+                parties: Vec::new(),
+                rows: Vec::new(),
+            },
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -272,12 +289,7 @@ fn summaries_keep_each_partys_distribution() {
 }
 
 #[test]
-fn benchmark_context_owns_artifact_paths() {
+fn report_path_follows_the_repository_root() {
     let root = repo_root();
     assert_eq!(report_path(), root.join("site/data/bench/report.toml"));
-    let binary = root.join("target/custom-peryx");
-    let report = root.join("target/custom-report.toml");
-    let context = BenchmarkContext::new(binary.clone(), report.clone());
-    assert_eq!(context.peryx_binary(), binary);
-    assert_eq!(context.report_path(), report);
 }

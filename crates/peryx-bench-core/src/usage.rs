@@ -17,6 +17,10 @@ pub struct Usage {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/usage.rs"]
+mod tests;
+
 /// What one window cost: `None` when there was no server process to watch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cost {

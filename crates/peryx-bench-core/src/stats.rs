@@ -28,6 +28,10 @@ pub struct Summary {
     pub n: usize,
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/stats.rs"]
+mod tests;
+
 impl Summary {
     /// Summarize `samples`, or `None` when there is nothing to summarize.
     #[must_use]

@@ -30,6 +30,10 @@ struct Change {
     reason: &'static str,
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/compare.rs"]
+mod tests;
+
 /// Compare reports stored outside the published report path.
 ///
 /// # Errors

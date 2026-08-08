@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use peryx_bench_core::compare::compare;
-use peryx_bench_core::report::{Cell, Party, Report, Row, Table};
+use super::{against_paths, compare};
+use crate::report::{Cell, Party, Report, Row, Table, publish_to};
 
 fn report(value: f64, higher_is_better: bool, network_bound: bool, noisy: bool) -> Report {
     Report {
@@ -93,4 +93,19 @@ fn compare_skips_unmatched_report_parts() {
         ),
         (false, false, false, false)
     );
+}
+
+#[test]
+fn against_paths_loads_both_reports() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let baseline = directory.path().join("baseline.toml");
+    let head = directory.path().join("head.toml");
+    for (path, value) in [(&baseline, 1.0), (&head, 1.1)] {
+        let table = report(value, false, false, false)
+            .tables
+            .remove("workload")
+            .expect("fixture table");
+        publish_to(path, "workload", table).unwrap();
+    }
+    assert!(against_paths(&baseline, &head).unwrap());
 }

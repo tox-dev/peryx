@@ -51,6 +51,10 @@ pub struct ProfileSettings {
     pub rounds: usize,
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/machine.rs"]
+mod tests;
+
 impl Default for ProfileSettings {
     fn default() -> Self {
         Self {
@@ -112,29 +116,38 @@ fn host() -> Host {
     let system = System::new_all();
     Host {
         model: model(),
-        cpu: system
-            .cpus()
-            .first()
-            .map_or_else(|| "unknown".to_owned(), |cpu| cpu.brand().trim().to_owned()),
+        cpu: cpu(&system),
         architecture: System::cpu_arch(),
         cores: cores(system.cpus().len()),
         memory: gibibytes(system.total_memory()),
-        os: System::long_os_version().unwrap_or_else(|| "unknown".to_owned()),
-        kernel: System::kernel_version().unwrap_or_else(|| "unknown".to_owned()),
+        os: or_unknown(System::long_os_version()),
+        kernel: or_unknown(System::kernel_version()),
     }
+}
+
+fn cpu(system: &System) -> String {
+    or_unknown(system.cpus().first().map(|cpu| cpu.brand().trim().to_owned()))
+}
+
+fn or_unknown(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "unknown".to_owned())
 }
 
 /// The board, which no portable API exposes: a desktop and a laptop of the same chip thermally
 /// throttle differently, so a reader comparing against their own box needs to know which this was.
 #[cfg(target_os = "macos")]
 fn model() -> String {
-    sysctl("hw.model").unwrap_or_else(|| "unknown".to_owned())
+    or_unknown(sysctl("hw.model"))
 }
 
 #[cfg(not(target_os = "macos"))]
 fn model() -> String {
-    std::fs::read_to_string("/sys/devices/virtual/dmi/id/product_name")
-        .map_or_else(|_| "unknown".to_owned(), |text| text.trim().to_owned())
+    model_at(Path::new("/sys/devices/virtual/dmi/id/product_name"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn model_at(path: &Path) -> String {
+    std::fs::read_to_string(path).map_or_else(|_| "unknown".to_owned(), |text| text.trim().to_owned())
 }
 
 /// Apple Silicon splits its cores into performance and efficiency halves, and a workload that scales
@@ -142,7 +155,16 @@ fn model() -> String {
 /// where they do.
 #[cfg(target_os = "macos")]
 fn cores(logical: usize) -> String {
-    match (sysctl("hw.perflevel0.logicalcpu"), sysctl("hw.perflevel1.logicalcpu")) {
+    describe_cores(
+        logical,
+        sysctl("hw.perflevel0.logicalcpu"),
+        sysctl("hw.perflevel1.logicalcpu"),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn describe_cores(logical: usize, performance: Option<String>, efficiency: Option<String>) -> String {
+    match (performance, efficiency) {
         (Some(performance), Some(efficiency)) => {
             format!("{logical} ({performance} performance + {efficiency} efficiency)")
         }
@@ -152,7 +174,12 @@ fn cores(logical: usize) -> String {
 
 #[cfg(not(target_os = "macos"))]
 fn cores(logical: usize) -> String {
-    System::physical_core_count().map_or_else(
+    describe_cores(logical, System::physical_core_count())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn describe_cores(logical: usize, physical: Option<usize>) -> String {
+    physical.map_or_else(
         || logical.to_string(),
         |physical| format!("{logical} logical / {physical} physical"),
     )
