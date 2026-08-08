@@ -3,6 +3,7 @@ pub mod servers;
 pub mod workloads;
 
 #[derive(Debug, Clone, Default, clap::Args)]
+#[group(skip)]
 pub struct Options {}
 
 /// Run the `PyPI` suite: every workload not in `skip`, against every server named in `only`.

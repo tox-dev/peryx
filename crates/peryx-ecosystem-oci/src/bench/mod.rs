@@ -3,6 +3,7 @@ pub mod servers;
 pub mod workloads;
 
 #[derive(Debug, Clone, Default, clap::Args)]
+#[group(skip)]
 pub struct Options {
     /// Use a local pull-through mirror to avoid remote rate limits and network variance.
     #[arg(long)]
