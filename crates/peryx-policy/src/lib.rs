@@ -636,3 +636,7 @@ pub fn retain_versions(versions: &mut Vec<String>, keep: BTreeSet<String>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
+mod tests;

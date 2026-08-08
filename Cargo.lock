@@ -5350,6 +5350,7 @@ dependencies = [
 name = "peryx-policy"
 version = "0.0.1"
 dependencies = [
+ "mockall",
  "serde",
  "serde_json",
 ]

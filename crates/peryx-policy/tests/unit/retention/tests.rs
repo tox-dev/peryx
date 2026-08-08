@@ -1,4 +1,4 @@
-use peryx_policy::{
+use crate::{
     RetentionCandidate, RetentionClass, RetentionConfig, RetentionFrontier, RetentionOutcome, RetentionPolicy,
     RetentionSelector, RetentionSummary, RetentionVisibility,
 };
@@ -33,7 +33,7 @@ fn expiring(selector: RetentionSelector) -> RetentionPolicy {
     })
 }
 
-fn outcomes(decisions: &[peryx_policy::RetentionDecision]) -> Vec<(&str, RetentionOutcome, Option<&str>)> {
+fn outcomes(decisions: &[crate::RetentionDecision]) -> Vec<(&str, RetentionOutcome, Option<&str>)> {
     decisions
         .iter()
         .map(|decision| (decision.artifact.as_str(), decision.outcome, decision.rule))

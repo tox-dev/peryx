@@ -327,3 +327,7 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
         *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/retention/tests.rs"]
+mod tests;
