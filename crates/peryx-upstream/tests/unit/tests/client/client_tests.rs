@@ -416,6 +416,16 @@ fn test_auth_status_redacts_basic_credentials_and_url_secrets() {
     assert_eq!(client.redacted_base_url(), "https://example.invalid/simple/");
 }
 
+#[rstest]
+#[case::none(Auth::None, "none")]
+#[case::basic(Auth::Basic { username: "reader".to_owned(), password: "secret".to_owned() }, "basic")]
+#[case::bearer(Auth::Bearer("secret".to_owned()), "bearer")]
+fn test_auth_status_classifies_the_configured_credential(#[case] auth: Auth, #[case] expected: &str) {
+    let client = UpstreamClient::with_auth("https://example.invalid/simple/", auth).unwrap();
+
+    assert_eq!(client.auth_status().as_str(), expected);
+}
+
 #[test]
 fn test_auth_returns_the_configured_credentials() {
     let auth = Auth::Basic {
@@ -423,6 +433,7 @@ fn test_auth_returns_the_configured_credentials() {
         password: "s3cret".to_owned(),
     };
     let client = UpstreamClient::with_auth("https://example.invalid/simple/", auth.clone()).unwrap();
+    assert_eq!(client.auth().current().unwrap().auth(), &auth);
     assert_eq!(client.current_credential().unwrap().auth(), &auth);
     assert_eq!(
         UpstreamClient::new("https://example.invalid/simple/")
@@ -431,6 +442,33 @@ fn test_auth_returns_the_configured_credentials() {
             .unwrap()
             .auth(),
         &Auth::None
+    );
+}
+
+#[tokio::test]
+async fn test_send_validated_uses_the_cross_origin_client() {
+    let origin = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&target)
+        .await;
+    let client = simple_client(&origin);
+
+    assert_eq!(
+        client
+            .send_validated(
+                url::Url::parse(&format!("{}/simple/", target.uri())).unwrap(),
+                "application/json",
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK
     );
 }
 

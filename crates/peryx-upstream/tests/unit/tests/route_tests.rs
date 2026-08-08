@@ -1,3 +1,5 @@
+use futures_util::TryStreamExt as _;
+use rstest::rstest;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -79,7 +81,14 @@ fn test_named_upstream_health_is_shared_between_router_clones() {
             UpstreamHealth::Configured
         ]
     );
-    assert_eq!(UpstreamHealth::Unhealthy.as_str(), "unhealthy");
+}
+
+#[rstest]
+#[case::configured(UpstreamHealth::Configured, "configured")]
+#[case::healthy(UpstreamHealth::Healthy, "healthy")]
+#[case::unhealthy(UpstreamHealth::Unhealthy, "unhealthy")]
+fn test_upstream_health_has_stable_status_text(#[case] health: UpstreamHealth, #[case] expected: &str) {
+    assert_eq!(health.as_str(), expected);
 }
 
 #[test]
@@ -254,6 +263,138 @@ async fn test_artifact_client_rejects_an_invalid_advertised_url() {
     };
 
     assert!(matches!(err, UpstreamError::Url(_)));
+}
+
+#[tokio::test]
+async fn test_artifact_client_streams_from_its_mirror() {
+    let mirror = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"mirror".to_vec()))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    let source = NamedUpstream::new("origin", UpstreamClient::new("https://origin.example/simple/").unwrap())
+        .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
+
+    assert_eq!(
+        source
+            .artifacts()
+            .stream_bytes("https://origin.example/files/pkg.bin")
+            .await
+            .unwrap()
+            .try_fold(Vec::new(), |mut bytes, chunk| async move {
+                bytes.extend_from_slice(&chunk);
+                Ok(bytes)
+            })
+            .await
+            .unwrap(),
+        b"mirror"
+    );
+}
+
+#[tokio::test]
+async fn test_direct_artifact_client_streams_from_its_origin() {
+    let origin = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"origin".to_vec()))
+        .expect(1)
+        .mount(&origin)
+        .await;
+    let artifacts = ArtifactClient::from(UpstreamClient::new(&origin.uri()).unwrap());
+
+    assert_eq!(
+        artifacts
+            .stream_bytes(&format!("{}/files/pkg.bin", origin.uri()))
+            .await
+            .unwrap()
+            .try_fold(Vec::new(), |mut bytes, chunk| async move {
+                bytes.extend_from_slice(&chunk);
+                Ok(bytes)
+            })
+            .await
+            .unwrap(),
+        b"origin"
+    );
+}
+
+#[rstest]
+#[case::disabled(false, None)]
+#[case::enabled(true, Some(b"origin".as_slice()))]
+#[tokio::test]
+async fn test_artifact_stream_fallback(#[case] fallback: bool, #[case] expected: Option<&[u8]>) {
+    let origin = MockServer::start().await;
+    let mirror = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.bin"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"origin".to_vec()))
+        .expect(u64::from(fallback))
+        .mount(&origin)
+        .await;
+    let source = NamedUpstream::new("origin", UpstreamClient::new(&origin.uri()).unwrap())
+        .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), fallback);
+    let result = source
+        .artifacts()
+        .stream_bytes(&format!("{}/files/pkg.bin", origin.uri()))
+        .await;
+
+    if let Some(expected) = expected {
+        assert_eq!(
+            result
+                .unwrap()
+                .try_fold(Vec::new(), |mut bytes, chunk| async move {
+                    bytes.extend_from_slice(&chunk);
+                    Ok(bytes)
+                })
+                .await
+                .unwrap(),
+            expected
+        );
+    } else {
+        assert_eq!(result.err().unwrap().status(), Some(404));
+    }
+}
+
+#[tokio::test]
+async fn test_direct_artifact_client_reads_ranges() {
+    let origin = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/files/pkg.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", "5"),
+        )
+        .expect(1)
+        .mount(&origin)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/pkg.bin"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 1-3/5")
+                .set_body_bytes(b"hee".to_vec()),
+        )
+        .expect(1)
+        .mount(&origin)
+        .await;
+    let artifacts = ArtifactClient::from(UpstreamClient::new(&origin.uri()).unwrap());
+    let url = format!("{}/files/pkg.bin", origin.uri());
+
+    assert_eq!(
+        (
+            artifacts.head_file_for_range(&url).await.unwrap().len,
+            artifacts.fetch_range(&url, 1, 3).await.unwrap(),
+        ),
+        (5, bytes::Bytes::from_static(b"hee"))
+    );
 }
 
 #[test]

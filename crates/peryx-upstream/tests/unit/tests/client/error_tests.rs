@@ -30,6 +30,20 @@ fn test_blocked_destination_hides_reason_from_users() {
     );
 }
 
+#[test]
+fn test_invalid_response_hides_reason_from_users() {
+    let error = UpstreamError::InvalidResponse {
+        reason: "signed URL contained credentials".to_owned(),
+    };
+
+    assert_eq!(error.status(), None);
+    assert_eq!(error.user_message(), "upstream returned an invalid response");
+    assert_eq!(
+        error.to_string(),
+        "invalid upstream response: signed URL contained credentials"
+    );
+}
+
 #[tokio::test]
 async fn test_fetch_bytes_reports_decode_errors() {
     let server = MockServer::start().await;

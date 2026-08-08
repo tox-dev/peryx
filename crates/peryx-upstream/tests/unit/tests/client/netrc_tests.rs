@@ -179,3 +179,24 @@ fn test_netrc_rejects_group_or_other_permissions() {
     assert!(message.contains("must not grant group or other permissions"));
     assert!(!message.contains("secret"));
 }
+
+#[cfg(unix)]
+#[test]
+fn test_netrc_rejects_a_file_owned_by_another_user() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = if rustix::process::geteuid().is_root() {
+        let path = directory.path().join("other-user.netrc");
+        write_netrc(&path, "machine example.com login reader password secret\n");
+        rustix::fs::chown(&path, Some(rustix::fs::Uid::from_raw(1)), None).unwrap();
+        path
+    } else {
+        "/etc/hosts".into()
+    };
+
+    assert!(
+        Netrc::from_path(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("must be owned by")
+    );
+}
