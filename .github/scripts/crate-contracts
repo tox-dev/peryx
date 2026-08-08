@@ -13,23 +13,31 @@ mkdir -p "$output"
 
 for package in "$@"; do
   cargo check -p "$package" --all-targets
+  cargo test -p "$package" --doc
 done
 
 cargo llvm-cov clean --workspace
-eval "$(cargo llvm-cov show-env --sh)"
-profile_dir="$(dirname -- "$LLVM_PROFILE_FILE")"
 metadata="$(cargo metadata --no-deps --format-version 1)"
+target_dir="$(jq -r .target_directory <<<"$metadata")"
 for package in "$@"; do
-  find "$profile_dir" -maxdepth 1 -name '*.profraw' -delete
-  cargo nextest run -p "$package" --lib --bins --tests --examples
+  find "$target_dir" -maxdepth 1 -name '*.profraw' -delete
+  report="$output/$package.lcov"
+  test_report="$output/.$package-tests.lcov"
+  cargo llvm-cov nextest --no-clean -p "$package" --lib --bins --tests --examples \
+    --ignore-filename-regex '$^' --lcov --output-path "$test_report"
   if jq -e --arg package "$package" \
     '.packages[] | select(.name == $package) | any(.targets[]; .kind | index("bench"))' \
     <<<"$metadata" >/dev/null; then
-    cargo test -p "$package" --benches
+    find "$target_dir" -maxdepth 1 -name '*.profraw' -delete
+    bench_report="$output/.$package-benches.lcov"
+    cargo llvm-cov --no-clean -p "$package" --benches --ignore-filename-regex '$^' --lcov \
+      --output-path "$bench_report"
+    lcov --add-tracefile "$test_report" --add-tracefile "$bench_report" --output-file "$report"
+    rm "$bench_report"
+  else
+    mv "$test_report" "$report"
   fi
-  cargo test -p "$package" --doc
-  report="$output/$package.lcov"
-  cargo llvm-cov report -p "$package" --ignore-filename-regex '$^' --lcov --output-path "$report"
+  rm -f "$test_report"
   .github/scripts/check-lcov-functions.awk "$report"
   .github/scripts/check-lcov-lines.awk "$report"
 done
