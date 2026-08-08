@@ -35,7 +35,9 @@ tokio-util.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
 hdrhistogram.workspace = true
 http-body-util.workspace = true
+peryx-events = { workspace = true, features = ["test-util"] }
 redb.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 stats_alloc.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

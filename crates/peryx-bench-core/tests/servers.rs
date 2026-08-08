@@ -22,15 +22,31 @@ fn python_server(_: &BenchmarkContext, port: u16, state: &Path) -> Command {
     command
 }
 
+#[cfg(not(windows))]
 fn exit_early(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
     let mut command = Command::new("sh");
     command.args(["-c", "printf 'startup failed' >&2; exit 7"]);
     command
 }
 
+#[cfg(windows)]
+fn exit_early(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "echo startup failed 1>&2 & exit /B 7"]);
+    command
+}
+
+#[cfg(not(windows))]
 fn never_ready(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
     let mut command = Command::new("sh");
     command.args(["-c", "sleep 2"]);
+    command
+}
+
+#[cfg(windows)]
+fn never_ready(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "ping -n 3 127.0.0.1 >NUL"]);
     command
 }
 

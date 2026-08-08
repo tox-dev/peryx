@@ -1,34 +1,33 @@
+#[cfg(not(windows))]
 use std::path::Path;
 use std::process::Command;
 
-fn fake_cargo(directory: &Path) -> std::path::PathBuf {
-    #[cfg(windows)]
-    let path = directory.join("cargo.cmd");
-    #[cfg(not(windows))]
-    let path = directory.join("cargo");
+#[cfg(not(windows))]
+fn fake_cargo(directory: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
 
-    #[cfg(windows)]
+    let path = directory.join("cargo");
     std::fs::write(
         &path,
-        "@echo off\r\nif \"%1\"==\"metadata\" echo {\"target_directory\":\"%PERYX_FAKE_TARGET%\"}\r\nexit /b 0\r\n",
+        "#!/bin/sh\nif [ \"$1\" = metadata ]; then printf '{\"target_directory\":\"%s\"}\\n' \"$PERYX_FAKE_TARGET\"; fi\n",
     )
     .unwrap();
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        std::fs::write(
-            &path,
-            "#!/bin/sh\nif [ \"$1\" = metadata ]; then printf '{\"target_directory\":\"%s\"}\\n' \"$PERYX_FAKE_TARGET\"; fi\n",
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
-    }
-    path
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
 }
 
+#[test]
+fn cli_prints_help() {
+    let output = Command::new(env!("CARGO_BIN_EXE_peryx-bench"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+}
+
+#[cfg(not(windows))]
 #[test]
 fn cli_runs_with_every_workload_disabled() {
     let directory = tempfile::tempdir().unwrap();

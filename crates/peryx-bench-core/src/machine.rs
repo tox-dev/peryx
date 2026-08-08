@@ -63,21 +63,6 @@ impl Default for ProfileSettings {
     }
 }
 
-/// Measure the host and its raw rates, then write `site/data/bench/machine.toml`.
-///
-/// # Errors
-/// Returns an error when a baseline cannot run or the report cannot be written.
-pub async fn publish() -> anyhow::Result<()> {
-    println!("[machine] profiling the host");
-    let scratch = std::env::temp_dir();
-    write_profile(
-        &repo_root().join("site").join("data").join("bench").join("machine.toml"),
-        &scratch,
-        ProfileSettings::default(),
-    )
-    .await
-}
-
 /// Use this entry point when a run must not overwrite the checkout's published profile.
 ///
 /// # Errors
