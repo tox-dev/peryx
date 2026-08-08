@@ -301,11 +301,10 @@ impl TrashRecordResponse {
 }
 
 fn trash_page(page: TrashPage, actor: ActorDetail, authorization: ResponseAuthorization) -> Response {
-    let records = page
-        .items
-        .into_iter()
-        .map(|item| TrashRecordResponse::new(item, actor))
-        .collect::<Vec<_>>();
+    let mut records = Vec::with_capacity(page.items.len());
+    for item in page.items {
+        records.push(TrashRecordResponse::new(item, actor));
+    }
     axum::Json(serde_json::Value::Object(
         filter_fields(
             authorization,

@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use peryx_core::Ecosystem;
+use peryx_core::{Ecosystem, TrashRecord};
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::trash::TrashQueryError;
@@ -15,6 +15,8 @@ use peryx_policy::Policy;
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use tower::ServiceExt as _;
+
+use peryx_driver::serving::{DriverCapabilities, EcosystemDriver, TrashDriver};
 
 use crate::handlers::trash_error_response;
 
@@ -29,11 +31,75 @@ enum StoreFault {
     Authorization,
 }
 
+struct TrashStub {
+    error: bool,
+}
+
+impl TrashDriver for TrashStub {
+    fn trash_records(&self, _meta: &MetaStore, index_names: &[String]) -> Result<Vec<TrashRecord>, String> {
+        if self.error {
+            return Err("trash unavailable".to_owned());
+        }
+        Ok(index_names
+            .iter()
+            .map(|repository| TrashRecord {
+                ecosystem: Ecosystem::new("example"),
+                repository: repository.clone(),
+                name: "flask".to_owned(),
+                reference: Some("flask-1.0.bin".to_owned()),
+                digest: Some("sha256:abc".to_owned()),
+                reason: Some("replaced".to_owned()),
+                actor: Some("Alice".to_owned()),
+                deleted_at_unix: 1_000,
+                retained: true,
+            })
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl EcosystemDriver for TrashStub {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::new("example")
+    }
+
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            trash: Some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+
+    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
+        peryx_driver::rate_limit::RouteClass::Artifact
+    }
+
+    fn discover_index(
+        &self,
+        index: peryx_driver::state::IndexDescription,
+        _base: Option<&peryx_driver::discovery::BaseUrl>,
+    ) -> serde_json::Value {
+        peryx_driver::discovery::minimal_entry(&index)
+    }
+}
+
 async fn app() -> (tempfile::TempDir, axum::Router) {
     app_with_fault(StoreFault::None).await
 }
 
 async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, axum::Router) {
+    build_app(fault, None).await
+}
+
+async fn app_with_driver() -> (tempfile::TempDir, axum::Router) {
+    build_app(StoreFault::None, Some(false)).await
+}
+
+async fn app_with_error_driver() -> (tempfile::TempDir, axum::Router) {
+    build_app(StoreFault::None, Some(true)).await
+}
+
+async fn build_app(fault: StoreFault, driver_error: Option<bool>) -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -75,6 +141,9 @@ async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, axum::Router) 
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::new(meta.clone(), blobs, 60, vec![private_index(), read_only_index()]);
     state.users = UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), 2);
+    if let Some(error) = driver_error {
+        state.register_ecosystem(Arc::new(TrashStub { error }), Arc::new(peryx_search::EmptyIndexer));
+    }
     (dir, crate::router(Arc::new(state)))
 }
 
@@ -156,6 +225,36 @@ async fn test_trash_list_returns_an_empty_page_for_an_authorized_administrator()
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(document, serde_json::json!({"trash": [], "next_cursor": null}));
+}
+
+#[tokio::test]
+async fn test_trash_list_and_record_render_driver_records() {
+    let (_dir, app) = app_with_driver().await;
+    let (status, _, page) = get(&app, "/+trash?repository=private", Some(("Alice", USER_PASSWORD))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["trash"][0]["name"], "flask");
+    assert_eq!(page["trash"][0]["actor"], "Alice");
+
+    let (status, _, record) = get(
+        &app,
+        "/+trash/record?ecosystem=example&repository=private&name=flask&reference=flask-1.0.bin&digest=sha256%3Aabc",
+        Some(("Alice", USER_PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(record["record"]["reference"], "flask-1.0.bin");
+}
+
+#[tokio::test]
+async fn test_trash_record_reports_driver_failures() {
+    let (_dir, app) = app_with_error_driver().await;
+    let (status, _, _) = get(
+        &app,
+        "/+trash/record?ecosystem=example&repository=private&name=flask",
+        Some(("Alice", USER_PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]

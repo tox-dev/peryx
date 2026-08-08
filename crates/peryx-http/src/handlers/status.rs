@@ -142,99 +142,100 @@ pub async fn status_authorization(state: &AppState, headers: &HeaderMap) -> Resp
 /// fields (upstream hosts and auth, hosted upload-token state, and bounded upload summaries).
 fn index_documents(state: &AppState, details: bool) -> Vec<serde_json::Value> {
     let summaries = details.then(|| state.index_summaries(STATUS_RECENT_UPLOADS));
-    state
-        .describe_indexes()
-        .into_iter()
-        .map(|index| {
-            let driver = state.driver_for_name(index.ecosystem);
-            let endpoint = driver.as_ref().map_or_else(
-                || format!("/{}/", index.route),
-                |driver| driver.client_endpoint(&index.route),
-            );
-            let upload = driver.and_then(|driver| {
-                driver
-                    .capabilities()
-                    .upload_ui
-                    .and_then(|driver| driver.upload_ui(&index.route, index.uploads))
-            });
-            let mut object = serde_json::Map::from_iter([
-                ("name".to_owned(), serde_json::json!(index.name)),
-                ("route".to_owned(), serde_json::json!(index.route)),
-                ("ecosystem".to_owned(), serde_json::json!(index.ecosystem)),
-                ("endpoint".to_owned(), serde_json::json!(endpoint)),
-                ("kind".to_owned(), serde_json::json!(index.kind)),
-                ("layers".to_owned(), serde_json::json!(index.layers)),
-                (
-                    "precedence".to_owned(),
-                    serde_json::json!(
-                        index
-                            .precedence
-                            .iter()
-                            .map(|member| serde_json::json!({"name": member.name, "role": member.role}))
-                            .collect::<Vec<_>>()
-                    ),
-                ),
-                ("uploads".to_owned(), serde_json::json!(index.uploads)),
-                ("upload".to_owned(), serde_json::json!(upload)),
-                ("volatile_deletes".to_owned(), serde_json::json!(index.volatile_deletes)),
-                ("upload_to".to_owned(), serde_json::json!(index.upload_to)),
-            ]);
-            if let Some(summaries) = &summaries {
-                object.insert(
-                    "upstream".to_owned(),
-                    serde_json::json!(index.upstream.map(|upstream| serde_json::json!({
-                        "url": upstream.url,
-                        "auth": {
-                            "kind": upstream.auth,
-                            "redacted": (upstream.auth != "none").then_some("<redacted>"),
-                        },
-                        "offline": upstream.offline,
-                        "status": upstream.status,
-                        "sources": upstream.sources.into_iter().map(|source| serde_json::json!({
-                            "name": source.name, "url": source.url,
-                            "auth": {
-                                "kind": source.auth,
-                                "redacted": (source.auth != "none").then_some("<redacted>"),
-                            },
-                            "status": source.status,
-                        })).collect::<Vec<_>>(),
-                    }))),
-                );
-                object.insert(
-                    "hosted".to_owned(),
-                    serde_json::json!(index.hosted.map(|hosted| serde_json::json!({
-                        "volatile": hosted.volatile,
-                        "upload_token": {
-                            "configured": hosted.upload_token.configured,
-                            "redacted": hosted.upload_token.redacted,
-                        },
-                    }))),
-                );
-                let summary = summaries.get(&index.name).cloned().unwrap_or_default();
-                object.insert("project_count".to_owned(), serde_json::json!(summary.project_count));
-                object.insert("upload_count".to_owned(), serde_json::json!(summary.upload_count));
-                object.insert(
-                    "recent_uploads".to_owned(),
-                    serde_json::json!(
-                        summary
-                            .recent_uploads
-                            .into_iter()
-                            .map(|upload| {
-                                serde_json::json!({
-                                    "project": upload.project,
-                                    "filename": upload.filename,
-                                    "version": upload.version,
-                                    "uploaded_at": upload.uploaded_at,
-                                    "size": upload.size,
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    ),
-                );
+    let mut documents = Vec::new();
+    for index in state.describe_indexes() {
+        let driver = state.driver_for_name(index.ecosystem);
+        let endpoint = if let Some(driver) = &driver {
+            driver.client_endpoint(&index.route)
+        } else {
+            format!("/{}/", index.route)
+        };
+        let upload = if let Some(driver) = &driver {
+            if let Some(driver) = driver.capabilities().upload_ui {
+                driver.upload_ui(&index.route, index.uploads)
+            } else {
+                None
             }
-            serde_json::Value::Object(object)
-        })
-        .collect()
+        } else {
+            None
+        };
+        let mut object = serde_json::Map::from_iter([
+            ("name".to_owned(), serde_json::json!(index.name)),
+            ("route".to_owned(), serde_json::json!(index.route)),
+            ("ecosystem".to_owned(), serde_json::json!(index.ecosystem)),
+            ("endpoint".to_owned(), serde_json::json!(endpoint)),
+            ("kind".to_owned(), serde_json::json!(index.kind)),
+            ("layers".to_owned(), serde_json::json!(index.layers)),
+            (
+                "precedence".to_owned(),
+                serde_json::json!(
+                    index
+                        .precedence
+                        .iter()
+                        .map(|member| serde_json::json!({"name": member.name, "role": member.role}))
+                        .collect::<Vec<_>>()
+                ),
+            ),
+            ("uploads".to_owned(), serde_json::json!(index.uploads)),
+            ("upload".to_owned(), serde_json::json!(upload)),
+            ("volatile_deletes".to_owned(), serde_json::json!(index.volatile_deletes)),
+            ("upload_to".to_owned(), serde_json::json!(index.upload_to)),
+        ]);
+        if let Some(summaries) = &summaries {
+            let upstream = if let Some(upstream) = index.upstream {
+                let mut sources = Vec::with_capacity(upstream.sources.len());
+                for source in upstream.sources {
+                    sources.push(serde_json::json!({
+                        "name": source.name, "url": source.url,
+                        "auth": {
+                            "kind": source.auth,
+                            "redacted": (source.auth != "none").then_some("<redacted>"),
+                        },
+                        "status": source.status,
+                    }));
+                }
+                serde_json::json!({
+                    "url": upstream.url,
+                    "auth": {
+                        "kind": upstream.auth,
+                        "redacted": (upstream.auth != "none").then_some("<redacted>"),
+                    },
+                    "offline": upstream.offline,
+                    "status": upstream.status,
+                    "sources": sources,
+                })
+            } else {
+                serde_json::Value::Null
+            };
+            object.insert("upstream".to_owned(), upstream);
+            object.insert(
+                "hosted".to_owned(),
+                serde_json::json!(index.hosted.map(|hosted| serde_json::json!({
+                    "volatile": hosted.volatile,
+                    "upload_token": {
+                        "configured": hosted.upload_token.configured,
+                        "redacted": hosted.upload_token.redacted,
+                    },
+                }))),
+            );
+            let summary = summaries.get(&index.name).cloned().unwrap_or_default();
+            object.insert("project_count".to_owned(), serde_json::json!(summary.project_count));
+            object.insert("upload_count".to_owned(), serde_json::json!(summary.upload_count));
+            let mut recent_uploads = Vec::with_capacity(summary.recent_uploads.len());
+            for upload in summary.recent_uploads {
+                recent_uploads.push(serde_json::json!({
+                    "project": upload.project,
+                    "filename": upload.filename,
+                    "version": upload.version,
+                    "uploaded_at": upload.uploaded_at,
+                    "size": upload.size,
+                }));
+            }
+            object.insert("recent_uploads".to_owned(), serde_json::json!(recent_uploads));
+        }
+        documents.push(serde_json::Value::Object(object));
+    }
+    documents
 }
 
 /// `GET /+health`: process liveness for restart decisions.
@@ -273,11 +274,10 @@ fn health_document(state: &AppState, metadata: bool, blobs: bool) -> serde_json:
             if *offline {
                 disabled += 1;
             } else {
-                match client.reachability().as_str() {
-                    "reachable" => reachable += 1,
-                    "unreachable" => unreachable += 1,
-                    _ => unknown += 1,
-                }
+                let reachability = client.reachability().as_str();
+                reachable += u64::from(reachability == "reachable");
+                unreachable += u64::from(reachability == "unreachable");
+                unknown += u64::from(reachability != "reachable" && reachability != "unreachable");
             }
         }
     }

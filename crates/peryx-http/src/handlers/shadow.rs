@@ -202,6 +202,18 @@ struct ShadowDecisionResponse {
 impl From<InspectedCandidate> for ShadowCandidateResponse {
     fn from(inspected: InspectedCandidate) -> Self {
         let candidate = inspected.candidate;
+        let decision = if let Some(decision) = inspected.decision {
+            Some(ShadowDecisionResponse {
+                state: decision.state,
+                rule: decision.rule,
+                reason: decision.reason,
+                evaluated_at_unix: decision.evaluated_at_unix,
+                next_eligible_at_unix: decision.next_eligible_at_unix,
+                fresh: decision.fresh,
+            })
+        } else {
+            None
+        };
         Self {
             member: candidate.member,
             source: candidate.source.as_str(),
@@ -209,14 +221,7 @@ impl From<InspectedCandidate> for ShadowCandidateResponse {
             digest: candidate.digest,
             selected: candidate.selected,
             reason: candidate.reason.map(ShadowReason::as_str),
-            decision: inspected.decision.map(|decision| ShadowDecisionResponse {
-                state: decision.state,
-                rule: decision.rule,
-                reason: decision.reason,
-                evaluated_at_unix: decision.evaluated_at_unix,
-                next_eligible_at_unix: decision.next_eligible_at_unix,
-                fresh: decision.fresh,
-            }),
+            decision,
         }
     }
 }

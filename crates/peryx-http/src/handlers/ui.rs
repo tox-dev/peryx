@@ -76,7 +76,13 @@ pub async fn ui_projects(
     match driver.project_names(&state.serving, position) {
         Ok(mut names) => {
             if let Some(access) = access {
-                names.retain(|project| access.authorize_project(project).is_ok());
+                let mut authorized = Vec::with_capacity(names.len());
+                for project in names {
+                    if access.authorize_project(&project).is_ok() {
+                        authorized.push(project);
+                    }
+                }
+                names = authorized;
             }
             private_json(names)
         }

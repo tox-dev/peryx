@@ -88,12 +88,12 @@ pub async fn dispatch_get(
 
 /// `POST /{*path}`: serve a driver's non-multipart compatibility route or dispatch an index upload.
 pub async fn dispatch_post(State(state): State<Arc<AppState>>, Path(path): Path<String>, request: Request) -> Response {
-    if let Some(serving) = state
-        .drivers()
-        .filter_map(|driver| driver.capabilities().service)
-        .find(|driver| driver.classify_service_post(&path, request.headers()).is_some())
-    {
-        return serving.service_post(state.serving.clone(), request).await;
+    for driver in state.drivers() {
+        if let Some(serving) = driver.capabilities().service
+            && serving.classify_service_post(&path, request.headers()).is_some()
+        {
+            return serving.service_post(state.serving.clone(), request).await;
+        }
     }
     let serving = match driver_for(&state, &path) {
         Ok(serving) => serving.clone(),

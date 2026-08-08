@@ -177,13 +177,17 @@ async fn reject_replica_mutation(State(state): State<Arc<AppState>>, request: Re
 /// which is read-only by construction, or a driver-classified service read.
 fn is_read_only_post(state: &AppState, request: &Request) -> bool {
     let path = request.uri().path();
-    path == "/+query"
-        || path == "/_/logout"
-        || state.drivers().any(|driver| {
-            driver.capabilities().service.is_some_and(|driver| {
-                driver
-                    .classify_service_post(path.trim_start_matches('/'), request.headers())
-                    .is_some()
-            })
-        })
+    if path == "/+query" || path == "/_/logout" {
+        return true;
+    }
+    for driver in state.drivers() {
+        if let Some(driver) = driver.capabilities().service
+            && driver
+                .classify_service_post(path.trim_start_matches('/'), request.headers())
+                .is_some()
+        {
+            return true;
+        }
+    }
+    false
 }

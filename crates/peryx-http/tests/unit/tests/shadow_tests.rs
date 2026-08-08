@@ -5,16 +5,18 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use peryx_core::Ecosystem;
+use peryx_core::{Ecosystem, ShadowCandidate, ShadowSource};
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::shadow::ShadowQueryError;
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::users::UserService;
 use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role};
-use peryx_policy::Policy;
-use peryx_storage::meta::MetaStore;
+use peryx_policy::{Policy, PolicyAction, PolicyDecisionState};
+use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use rstest::rstest;
 use tower::ServiceExt as _;
+
+use peryx_driver::serving::{DriverCapabilities, EcosystemDriver, ShadowDriver};
 
 use crate::handlers::shadow_error_response;
 
@@ -29,11 +31,70 @@ enum StoreFault {
     Authorization,
 }
 
+struct ShadowStub;
+
+impl ShadowDriver for ShadowStub {
+    fn shadowed_candidates(
+        &self,
+        _state: &peryx_driver::state::ServingState,
+        _position: usize,
+        _project: &str,
+    ) -> Result<Vec<ShadowCandidate>, String> {
+        Ok(["flask-1.0.bin", "flask-2.0.bin"]
+            .into_iter()
+            .map(|filename| ShadowCandidate {
+                repository: "private".to_owned(),
+                project: "flask".to_owned(),
+                member: "hosted".to_owned(),
+                source: ShadowSource::Hosted,
+                filename: filename.to_owned(),
+                digest: Some("sha256:abc".to_owned()),
+                selected: true,
+                reason: None,
+            })
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl EcosystemDriver for ShadowStub {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::new("example")
+    }
+
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            shadow: Some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+
+    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
+        peryx_driver::rate_limit::RouteClass::Artifact
+    }
+
+    fn discover_index(
+        &self,
+        index: peryx_driver::state::IndexDescription,
+        _base: Option<&peryx_driver::discovery::BaseUrl>,
+    ) -> serde_json::Value {
+        peryx_driver::discovery::minimal_entry(&index)
+    }
+}
+
 async fn app() -> (tempfile::TempDir, axum::Router) {
     app_with_fault(StoreFault::None).await
 }
 
 async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, axum::Router) {
+    build_app(fault, false).await
+}
+
+async fn app_with_driver() -> (tempfile::TempDir, axum::Router) {
+    build_app(StoreFault::None, true).await
+}
+
+async fn build_app(fault: StoreFault, register_driver: bool) -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -75,6 +136,25 @@ async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, axum::Router) 
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::new(meta.clone(), blobs, 60, vec![private_index(), read_only_index()]);
     state.users = UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), 2);
+    if register_driver {
+        state.register_ecosystem(Arc::new(ShadowStub), Arc::new(peryx_search::EmptyIndexer));
+        state
+            .meta
+            .record_policy_decision(NewPolicyDecision {
+                repository: "private",
+                project: "flask",
+                version: None,
+                filename: Some("flask-1.0.bin"),
+                source: None,
+                action: PolicyAction::Serve,
+                state: PolicyDecisionState::Deny,
+                rule: Some("blocked"),
+                reason: Some("policy"),
+                evaluated_at_unix: 42,
+                next_eligible_at_unix: None,
+            })
+            .unwrap();
+    }
     (dir, crate::router(Arc::new(state)))
 }
 
@@ -156,6 +236,21 @@ async fn test_shadow_returns_an_empty_page_when_no_driver_resolves_the_repositor
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(document, serde_json::json!({"candidates": [], "next_cursor": null}));
+}
+
+#[tokio::test]
+async fn test_shadow_renders_driver_candidates_with_policy_decisions() {
+    let (_dir, app) = app_with_driver().await;
+    let (status, _, document) = get(
+        &app,
+        "/+shadow/candidates?repository=private&project=flask",
+        Some(("Alice", USER_PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(document["candidates"][0]["filename"], "flask-1.0.bin");
+    assert_eq!(document["candidates"][0]["decision"]["rule"], "blocked");
+    assert!(document["candidates"][1]["decision"].is_null());
 }
 
 #[tokio::test]

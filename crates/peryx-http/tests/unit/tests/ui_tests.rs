@@ -2,6 +2,7 @@
 //! the driver's view model as JSON, answering `404` for an unknown route or absent item and `500` when
 //! the driver fails.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -17,7 +18,7 @@ use peryx_core::{
 };
 use peryx_driver::state::{AppState, Index, IndexKind, ServingState};
 use peryx_driver::users::UserService;
-use peryx_identity::{GrantScope, IndexAcl, PasswordPolicy, Role};
+use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
@@ -58,9 +59,12 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
 
     fn capabilities(&self) -> peryx_driver::serving::DriverCapabilities<'_> {
         peryx_driver::serving::DriverCapabilities {
+            metrics: Some(self),
             browse: Some(self),
             manifest: Some(self),
             artifact_members: Some(self),
+            index_summary: Some(self),
+            upload_ui: Some(self),
             ..peryx_driver::serving::DriverCapabilities::default()
         }
     }
@@ -75,6 +79,64 @@ impl peryx_driver::serving::EcosystemDriver for UiStub {
         _base: Option<&peryx_driver::discovery::BaseUrl>,
     ) -> serde_json::Value {
         peryx_driver::discovery::minimal_entry(&index)
+    }
+}
+
+const METRIC_FAMILY: &[peryx_events::metrics::MetricFamily] = &[peryx_events::metrics::MetricFamily {
+    key: "example_reads",
+    prom_name: "peryx_example_reads_total",
+    help: "Example reads.",
+    ui_label: "Example reads",
+    roles: &[peryx_core::Role::Hosted],
+}];
+
+impl peryx_driver::serving::MetricsDriver for UiStub {
+    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
+        METRIC_FAMILY
+    }
+}
+
+impl peryx_driver::serving::IndexSummaryDriver for UiStub {
+    fn summarize_indexes(
+        &self,
+        _meta: &MetaStore,
+        index_names: &[String],
+        _recent_limit: usize,
+    ) -> Result<std::collections::HashMap<String, peryx_driver::serving::IndexSummary>, String> {
+        Ok(index_names
+            .iter()
+            .map(|name| {
+                (
+                    name.clone(),
+                    peryx_driver::serving::IndexSummary {
+                        project_count: 1,
+                        upload_count: 1,
+                        recent_uploads: vec![peryx_driver::serving::RecentUpload {
+                            project: "demo".to_owned(),
+                            filename: "demo-1.0.bin".to_owned(),
+                            version: "1.0".to_owned(),
+                            uploaded_at: Some("2026-01-01T00:00:00Z".to_owned()),
+                            size: Some(42),
+                        }],
+                    },
+                )
+            })
+            .collect())
+    }
+}
+
+impl peryx_driver::serving::UploadUiDriver for UiStub {
+    fn upload_ui(&self, route: &str, enabled: bool) -> Option<peryx_core::UiUploadSpec> {
+        enabled.then(|| peryx_core::UiUploadSpec {
+            endpoint: format!("/{route}/"),
+            form_field: "file".to_owned(),
+            authorization_username: None,
+            token_label: "Token".to_owned(),
+            file_label: "Artifact".to_owned(),
+            accept: "*/*".to_owned(),
+            help: String::new(),
+            allowed_suffixes: Vec::new(),
+        })
     }
 }
 
@@ -231,6 +293,20 @@ fn index(route: &str, ecosystem: Ecosystem) -> Index {
     }
 }
 
+fn cached_index(route: &str) -> Index {
+    Index {
+        name: route.to_owned(),
+        route: route.to_owned(),
+        ecosystem: Ecosystem::new("example"),
+        kind: IndexKind::Cached {
+            client: peryx_upstream::UpstreamClient::new("https://example.invalid/simple/").unwrap(),
+            offline: false,
+        },
+        policy: peryx_policy::Policy::default(),
+        acl: IndexAcl::default(),
+    }
+}
+
 /// Indexes `good` and `bad` are served by the stub; `orphan` is configured for an ecosystem with no
 /// driver, so it resolves to an index but not a driver.
 fn ui_app() -> (tempfile::TempDir, axum::Router) {
@@ -242,10 +318,26 @@ fn ui_app() -> (tempfile::TempDir, axum::Router) {
         index("bad", Ecosystem::new("example")),
         index("empty", Ecosystem::new("empty")),
         index("orphan", Ecosystem::new("other")),
+        cached_index("cached"),
     ];
     let mut state = AppState::new(meta, blobs, 60, indexes);
+    state.upstream_routes.insert(
+        "cached".to_owned(),
+        peryx_upstream::UpstreamRouter::new(vec![peryx_upstream::NamedUpstream::new(
+            "primary",
+            peryx_upstream::UpstreamClient::new("https://mirror.example.invalid/simple/").unwrap(),
+        )])
+        .unwrap(),
+    );
     state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
     state.register_ecosystem(Arc::new(CapabilityFreeStub), Arc::new(peryx_search::EmptyIndexer));
+    state.metrics.record(peryx_events::metrics::Event::Ecosystem {
+        route: "good".to_owned(),
+        project: "demo".to_owned(),
+        filename: None,
+        family: "example_reads",
+    });
+    state.metrics.settle();
     (dir, crate::router(Arc::new(state)))
 }
 
@@ -348,10 +440,26 @@ async fn ui_app_admin() -> (tempfile::TempDir, axum::Router, String) {
         index("bad", Ecosystem::new("example")),
         index("empty", Ecosystem::new("empty")),
         index("orphan", Ecosystem::new("other")),
+        cached_index("cached"),
     ];
     let mut state = AppState::new(meta.clone(), blobs, 60, indexes);
+    state.upstream_routes.insert(
+        "cached".to_owned(),
+        peryx_upstream::UpstreamRouter::new(vec![peryx_upstream::NamedUpstream::new(
+            "primary",
+            peryx_upstream::UpstreamClient::new("https://mirror.example.invalid/simple/").unwrap(),
+        )])
+        .unwrap(),
+    );
     state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
     state.register_ecosystem(Arc::new(CapabilityFreeStub), Arc::new(peryx_search::EmptyIndexer));
+    state.metrics.record(peryx_events::metrics::Event::Ecosystem {
+        route: "good".to_owned(),
+        project: "demo".to_owned(),
+        filename: None,
+        family: "example_reads",
+    });
+    state.metrics.settle();
     let authorization = grant_administrator(&mut state, meta).await;
     (dir, crate::router(Arc::new(state)), authorization)
 }
@@ -484,6 +592,49 @@ async fn test_status_reads_the_client_endpoint_from_a_registered_driver() {
 async fn test_ui_projects_returns_the_driver_project_names() {
     let (_dir, app) = ui_app();
     let (status, document) = get_json(&app, "/+ui/projects?index=good").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(document, serde_json::json!(["flask"]));
+}
+
+fn private_ui_app() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut private = index("private", Ecosystem::new("example"));
+    private.acl = IndexAcl {
+        anonymous_read: false,
+        tokens: vec![NamedToken {
+            name: "reader".to_owned(),
+            secret: "read-secret".to_owned(),
+            grants: vec![Grant {
+                projects: vec![Glob::new("*")],
+                actions: BTreeSet::from([Action::Read]),
+            }],
+            expires_at: None,
+        }],
+    };
+    let mut state = AppState::new(meta, blobs, 60, vec![private]);
+    state.register_ecosystem(Arc::new(UiStub), Arc::new(peryx_search::EmptyIndexer));
+    (dir, crate::router(Arc::new(state)))
+}
+
+#[rstest]
+#[case::projects("/+ui/projects?index=private")]
+#[case::project("/+ui/project?index=private&project=flask")]
+#[case::manifest("/+ui/manifest?index=private&project=img&ref=1.0")]
+#[case::members("/+ui/members?index=private&project=img&digest=sha256:a")]
+#[case::member("/+ui/member?index=private&project=img&digest=sha256:a&member=f")]
+#[tokio::test]
+async fn test_private_ui_routes_reject_anonymous_reads(#[case] uri: &str) {
+    let (_dir, app) = private_ui_app();
+    assert_eq!(get_status(&app, uri).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_private_ui_projects_filter_with_repository_access() {
+    let (_dir, app) = private_ui_app();
+    let authorization = format!("Basic {}", STANDARD.encode("__token__:read-secret"));
+    let (status, document) = get_json_as(&app, "/+ui/projects?index=private", &authorization).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(document, serde_json::json!(["flask"]));
 }
@@ -737,4 +888,5 @@ async fn test_status_reports_virtual_member_precedence_with_roles() {
         combo["precedence"],
         serde_json::json!([{"name": "store", "role": "hosted"}])
     );
+    assert_eq!(get_status(&app, "/metrics").await, StatusCode::OK);
 }

@@ -3,12 +3,14 @@
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderMap, Method, Request, StatusCode};
+use axum::response::{IntoResponse as _, Response};
 use peryx_driver::rate_limit::RateLimitConfig;
 use peryx_identity::IndexAcl;
 use rstest::rstest;
 use tower::ServiceExt as _;
 
+use peryx_driver::serving::{DriverCapabilities, RouteMount, ServiceDriver};
 use peryx_driver::state::{AppState, ServingState};
 
 fn unwired_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
@@ -125,6 +127,22 @@ async fn test_unwired_state_discovery_lists_no_indexes() {
     let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(document["indexes"].as_array().unwrap().is_empty());
     assert!(document["urls"]["status"].is_string());
+}
+
+#[tokio::test]
+async fn test_openapi_document_is_served() {
+    let (_dir, state) = unwired_state();
+    let response = crate::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[axum::http::header::CONTENT_TYPE], "application/json");
 }
 
 #[rstest]
@@ -253,6 +271,294 @@ impl peryx_driver::serving::EcosystemDriver for StubServing {
     fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
         peryx_driver::rate_limit::RouteClass::Listing
     }
+}
+
+struct AbsoluteDriver;
+
+#[async_trait::async_trait]
+impl peryx_driver::serving::EcosystemDriver for AbsoluteDriver {
+    fn ecosystem(&self) -> peryx_core::Ecosystem {
+        peryx_core::Ecosystem::new("absolute")
+    }
+
+    fn mount(&self) -> RouteMount {
+        RouteMount::Absolute(&["/artifacts"])
+    }
+
+    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
+        peryx_driver::rate_limit::RouteClass::Artifact
+    }
+
+    fn discover_index(
+        &self,
+        _index: peryx_driver::state::IndexDescription,
+        _base: Option<&peryx_driver::discovery::BaseUrl>,
+    ) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    async fn serve(&self, _state: std::sync::Arc<ServingState>, request: axum::extract::Request) -> Response {
+        request.uri().path().to_owned().into_response()
+    }
+}
+
+struct ServiceStub;
+
+#[async_trait::async_trait]
+impl ServiceDriver for ServiceStub {
+    fn classify_service_post(&self, path: &str, _headers: &HeaderMap) -> Option<peryx_driver::rate_limit::RouteClass> {
+        (path == "service/read").then_some(peryx_driver::rate_limit::RouteClass::Listing)
+    }
+
+    async fn service_post(&self, _state: std::sync::Arc<ServingState>, _request: axum::extract::Request) -> Response {
+        StatusCode::NO_CONTENT.into_response()
+    }
+}
+
+#[async_trait::async_trait]
+impl peryx_driver::serving::EcosystemDriver for ServiceStub {
+    fn ecosystem(&self) -> peryx_core::Ecosystem {
+        peryx_core::Ecosystem::new("example")
+    }
+
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            service: Some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+
+    fn classify_route(&self, _path: &str) -> peryx_driver::rate_limit::RouteClass {
+        peryx_driver::rate_limit::RouteClass::Listing
+    }
+
+    fn discover_index(
+        &self,
+        index: peryx_driver::state::IndexDescription,
+        _base: Option<&peryx_driver::discovery::BaseUrl>,
+    ) -> serde_json::Value {
+        peryx_driver::discovery::minimal_entry(&index)
+    }
+}
+
+#[rstest]
+#[case::root("/artifacts")]
+#[case::nested("/artifacts/layers/sha256:a")]
+#[tokio::test]
+async fn test_absolute_mounts_own_exact_and_nested_paths(#[case] uri: &str) {
+    let (_dir, mut state) = {
+        let (dir, state) = unwired_state();
+        (dir, std::sync::Arc::into_inner(state).unwrap())
+    };
+    state.register_ecosystem(
+        std::sync::Arc::new(AbsoluteDriver),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        uri
+    );
+}
+
+#[rstest]
+#[case::writable(false)]
+#[case::read_only(true)]
+#[tokio::test]
+async fn test_service_reads_dispatch_on_writable_and_read_only_nodes(#[case] read_only: bool) {
+    let (dir, state) = unwired_state_with(vec![test_index("alpha")]);
+    let mut state = std::sync::Arc::into_inner(state).unwrap();
+    state.read_only = read_only;
+    state.register_ecosystem(
+        std::sync::Arc::new(ServiceStub),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/service/read")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    drop(dir);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn test_read_only_node_rejects_unclassified_service_posts() {
+    let (_dir, state) = unwired_state_with(vec![test_index("alpha")]);
+    let mut state = std::sync::Arc::into_inner(state).unwrap();
+    state.read_only = true;
+    state.register_ecosystem(
+        std::sync::Arc::new(ServiceStub),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/service/write")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_rate_limit_layer_is_mounted_when_enabled() {
+    let (_dir, state) = unwired_state_with_limits(RateLimitConfig::enabled_defaults());
+    let response = crate::router(state)
+        .oneshot(Request::builder().uri("/+health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_driver_mismatch_is_not_routable() {
+    let mut other = test_index("other");
+    other.ecosystem = peryx_core::Ecosystem::new("other");
+    let (_dir, state) = unwired_state_with(vec![other]);
+    let mut state = std::sync::Arc::into_inner(state).unwrap();
+    state.register_ecosystem(
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::new("example"))),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(Request::builder().uri("/other/file").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[rstest]
+#[case::post(Method::POST, "/alpha/", Some("multipart/form-data; boundary=x"))]
+#[case::put(Method::PUT, "/alpha/item", None)]
+#[case::delete(Method::DELETE, "/alpha/item", None)]
+#[tokio::test]
+async fn test_registered_driver_handles_mutations(
+    #[case] method: Method,
+    #[case] uri: &str,
+    #[case] content_type: Option<&str>,
+) {
+    let (_dir, state) = unwired_state_with(vec![test_index("alpha")]);
+    let mut state = std::sync::Arc::into_inner(state).unwrap();
+    state.register_ecosystem(
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::new("example"))),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(content_type) = content_type {
+        request = request.header("content-type", content_type);
+    }
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(request.body(Body::from("--x--\r\n")).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[rstest]
+#[case::put(Method::PUT)]
+#[case::delete(Method::DELETE)]
+#[tokio::test]
+async fn test_unknown_mutation_route_is_not_found(#[case] method: Method) {
+    let (_dir, state) = unwired_state();
+    let response = crate::router(state)
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri("/missing/item")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[rstest]
+#[case::discovery("/alpha/+api", StatusCode::OK)]
+#[case::search("/alpha/+search?q=demo", StatusCode::OK)]
+#[case::bad_search("/alpha/+search?availability=invalid", StatusCode::BAD_REQUEST)]
+#[tokio::test]
+async fn test_index_neutral_routes_precede_driver_dispatch(#[case] uri: &str, #[case] expected: StatusCode) {
+    let (dir, state) = unwired_state_with(vec![test_index("alpha")]);
+    let mut state = std::sync::Arc::into_inner(state).unwrap();
+    state.register_ecosystem(
+        std::sync::Arc::new(StubServing(peryx_core::Ecosystem::new("example"))),
+        std::sync::Arc::new(peryx_search::EmptyIndexer),
+    );
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    drop(dir);
+    assert_eq!(response.status(), expected);
+}
+
+#[tokio::test]
+async fn test_root_search_rejects_an_invalid_filter() {
+    let (_dir, state) = unwired_state();
+    let response = crate::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/+search?availability=invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_private_index_search_uses_authorized_search() {
+    let mut index = test_index("private");
+    index.acl.anonymous_read = false;
+    let (_dir, state) = unwired_state_with(vec![index]);
+    let response = crate::router(state)
+        .oneshot(Request::builder().uri("/+search?q=demo").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[test]
+fn test_search_internal_errors_are_server_errors() {
+    let response = crate::handlers::search_error_response(&peryx_search::SearchError::Indexer("failed".to_owned()));
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[test]
+fn test_search_response_maps_storage_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    drop(peryx_storage::meta::MetaStore::open(&path).unwrap());
+    let database = redb::Database::open(&path).unwrap();
+    let transaction = database.begin_write().unwrap();
+    transaction
+        .delete_table(redb::TableDefinition::<&str, u64>::new("serial"))
+        .unwrap();
+    transaction
+        .open_table(redb::TableDefinition::<&str, &[u8]>::new("serial"))
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(database);
+    let meta = peryx_storage::meta::MetaStore::open_existing(path).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let state = AppState::new(meta, blobs, 60, Vec::new());
+    let response = crate::handlers::search_response(&state, peryx_search::SearchParams::default(), None);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[test]
