@@ -188,6 +188,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(signal, () => {
     if (stopping) return;
     stopping = true;
+    peryx.kill(signal);
     peryx.once("close", () => {
       upstream.close();
       ready?.close();

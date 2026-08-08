@@ -18,7 +18,6 @@ test.afterEach(async ({ page }, testInfo) => {
   if (!process.env.PERYX_WASM_PROFRAW || page.isClosed() || (await page.locator("body[data-hydrated]").count()) === 0) return;
   const profile = await page.evaluate(async () => {
     const module = await import("/pkg/peryx_web.js");
-    module.capture_coverage();
     return Array.from(module.capture_coverage());
   });
   const identity = `${testInfo.workerIndex}-${testInfo.retry}-${testInfo.titlePath.join("-")}`;
