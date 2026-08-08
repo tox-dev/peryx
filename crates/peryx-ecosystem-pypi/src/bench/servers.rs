@@ -2,7 +2,6 @@ use std::process::Command;
 
 use anyhow::{Context as _, bail};
 
-use peryx_bench_core::report::peryx_binary;
 use peryx_bench_core::servers::Server;
 
 /// The always-present project every simple index answers for, used to probe readiness.
@@ -20,8 +19,8 @@ fn peryx() -> Server {
         homepage: "https://peryx.readthedocs.io/",
         base_url: |port| format!("http://127.0.0.1:{port}/root/pypi/simple/"),
         probe: |base| format!("{base}{PROBE}"),
-        command: Some(|port, state| {
-            let mut command = Command::new(peryx_binary());
+        command: Some(|context, port, state| {
+            let mut command = Command::new(context.peryx_binary());
             command
                 .arg("serve")
                 .args(["--host", "127.0.0.1"])
@@ -53,7 +52,7 @@ fn devpi() -> Server {
         homepage: "https://devpi.net/docs/",
         base_url: |port| format!("http://127.0.0.1:{port}/root/pypi/+simple/"),
         probe: |base| format!("{base}{PROBE}"),
-        command: Some(|port, state| {
+        command: Some(|_context, port, state| {
             let mut command = Command::new("uvx");
             command
                 .args(["--from", "devpi-server", "devpi-server"])
@@ -83,7 +82,7 @@ fn proxpi() -> Server {
         homepage: "https://github.com/EpicWink/proxpi",
         base_url: |port| format!("http://127.0.0.1:{port}/index/"),
         probe: |base| format!("{base}{PROBE}"),
-        command: Some(|port, _state| {
+        command: Some(|_context, port, _state| {
             let mut command = Command::new("uvx");
             command
                 .args(["--from", "proxpi", "--with", "gunicorn", "gunicorn"])
@@ -102,7 +101,7 @@ fn pypiserver() -> Server {
         homepage: "https://github.com/pypiserver/pypiserver",
         base_url: |port| format!("http://127.0.0.1:{port}/simple/"),
         probe: |base| format!("{base}{PROBE}"),
-        command: Some(|port, state| {
+        command: Some(|_context, port, state| {
             let mut command = Command::new("uvx");
             command
                 .args(["--from", "pypiserver[passlib]", "pypi-server", "run"])
@@ -123,7 +122,7 @@ fn pypicloud() -> Server {
         homepage: "https://pypicloud.readthedocs.io/",
         base_url: |port| format!("http://127.0.0.1:{port}/simple/"),
         probe: |base| format!("{base}{PROBE}"),
-        command: Some(|_port, state| {
+        command: Some(|_context, _port, state| {
             let mut command = Command::new("uvx");
             command
                 .args(["--python", "3.10", "--from", "pypicloud"])

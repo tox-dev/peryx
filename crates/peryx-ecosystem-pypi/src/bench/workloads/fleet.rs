@@ -6,7 +6,8 @@ use anyhow::{Context as _, bail};
 
 use super::super::packages::FLEET_PACKAGE;
 use super::{BENCH_PYTHON, Rounds, report_samples, run_checked};
-use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, row, summarize, table};
 use peryx_bench_core::servers::Server;
 use peryx_bench_core::usage::{Cost, Usage};
 
@@ -17,7 +18,12 @@ use peryx_bench_core::usage::{Cost, Usage};
 ///
 /// # Errors
 /// Returns an error when a server cannot start; a server failing the fleet is a table cell.
-pub async fn fleet(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn fleet(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let mut cold: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     let mut warm: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     let mut costs: Vec<Option<Vec<Cost>>> = Vec::new();
@@ -27,7 +33,7 @@ pub async fn fleet(servers: &[Server], rounds: usize, http: &reqwest::Client) ->
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             let usage = Usage::watch(active.pid());
             match fleet_round(&active.url, scratch.path()) {
                 Ok((cold_seconds, warm_seconds)) => {
@@ -59,7 +65,7 @@ pub async fn fleet(servers: &[Server], rounds: usize, http: &reqwest::Client) ->
         ),
     ];
     rows.extend(cost_rows(servers, &costs));
-    publish(
+    context.publish(
         "parallel-install",
         table(
             &format!("uv: ten venvs install {FLEET_PACKAGE} at once"),

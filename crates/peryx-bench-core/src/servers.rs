@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 
+use crate::context::BenchmarkContext;
+
 /// How long a server gets to answer its first request (uvx may resolve an environment first).
 const START_TIMEOUT: Duration = Duration::from_mins(3);
 
@@ -50,7 +52,7 @@ pub struct Server {
     /// The readiness URL derived from the base, hit until any HTTP status answers.
     pub probe: fn(&str) -> String,
     /// How to spawn the server; `None` for a party that runs no process (a direct baseline).
-    pub command: Option<fn(u16, &Path) -> Command>,
+    pub command: Option<fn(&BenchmarkContext, u16, &Path) -> Command>,
     /// One-time preparation before the first spawn (init a datadir, write a config).
     pub setup: Option<fn(u16, &Path) -> anyhow::Result<()>>,
     /// Teardown after the spawned process is killed, keyed by port. A container competitor detaches
@@ -110,8 +112,14 @@ impl Server {
     ///
     /// # Errors
     /// Returns an error when the server exits early or never becomes ready; includes its log tail.
-    pub async fn start(&self, state: &Path, client: &reqwest::Client) -> anyhow::Result<Active> {
-        self.start_with_policy(state, client, StartupPolicy::default()).await
+    pub async fn start(
+        &self,
+        context: &BenchmarkContext,
+        state: &Path,
+        client: &reqwest::Client,
+    ) -> anyhow::Result<Active> {
+        self.start_with_policy(context, state, client, StartupPolicy::default())
+            .await
     }
 
     /// Use explicit deadlines for bounded smoke runs and slow competitor setup.
@@ -120,6 +128,7 @@ impl Server {
     /// Returns an error when setup, process startup, or readiness fails.
     pub async fn start_with_policy(
         &self,
+        context: &BenchmarkContext,
         state: &Path,
         client: &reqwest::Client,
         policy: StartupPolicy,
@@ -142,7 +151,7 @@ impl Server {
         }
         let log = state.join("server.log");
         let sink = std::fs::File::create(&log)?;
-        let mut spawned = command(port, state);
+        let mut spawned = command(context, port, state);
         spawned.stdout(Stdio::from(sink.try_clone()?)).stderr(Stdio::from(sink));
         // Lead a fresh process group so teardown can reap forked workers along with the parent.
         #[cfg(unix)]

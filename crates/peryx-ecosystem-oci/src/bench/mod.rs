@@ -24,6 +24,7 @@ pub struct Options {
 /// # Errors
 /// Returns an error when a registry cannot start or a workload against a healthy one fails.
 pub async fn run(
+    context: &peryx_bench_core::context::BenchmarkContext,
     options: &Options,
     rounds: usize,
     skip: &[String],
@@ -42,16 +43,16 @@ pub async fn run(
         .collect();
     let enabled = |part: &str| !skip.iter().any(|skipped| skipped.eq_ignore_ascii_case(part));
     if enabled("pull") {
-        workloads::pulls(&servers, rounds, http).await?;
+        workloads::pulls(context, &servers, rounds, http).await?;
     }
     if enabled("throughput") {
-        workloads::throughput(&servers, rounds, http).await?;
+        workloads::throughput(context, &servers, rounds, http).await?;
     }
     if enabled("parallel") {
-        workloads::fleet(&servers, rounds, http).await?;
+        workloads::fleet(context, &servers, rounds, http).await?;
     }
     if enabled("endpoints") {
-        workloads::endpoints(&servers, rounds, http).await?;
+        workloads::endpoints(context, &servers, rounds, http).await?;
     }
     Ok(())
 }

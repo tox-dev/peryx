@@ -4,7 +4,8 @@ use anyhow::{Context as _, bail};
 
 use super::super::packages::METADATA_PROJECT;
 use super::{Rounds, SIMPLE_ACCEPT, SIMPLE_ACCEPT_HTML};
-use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, row, summarize, table};
 use peryx_bench_core::servers::Server;
 use peryx_bench_core::stats::Summary;
 use peryx_bench_core::usage::{Cost, Usage};
@@ -30,7 +31,12 @@ const ENDPOINTS: [&str; 7] = [
 ///
 /// # Errors
 /// Returns an error when peryx cannot start; an endpoint that fails is an empty cell.
-pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn endpoints(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let Some(position) = servers.iter().position(|server| server.name == "peryx") else {
         return Ok(());
     };
@@ -46,7 +52,7 @@ pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             let usage = Usage::watch(active.pid());
             match endpoint_round(&active.url, http).await {
                 Ok(seconds) => {
@@ -78,7 +84,7 @@ pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client
         })
         .collect();
     rows.extend(cost_rows(servers, &costs));
-    publish(
+    context.publish(
         "endpoints",
         table(
             "peryx only: one warm request to each endpoint it serves. A PyPI server shapes its own urls, \

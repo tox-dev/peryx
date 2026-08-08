@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
+use peryx_bench_core::context::BenchmarkContext;
 use peryx_bench_core::servers::{Server, StartupPolicy, http_client};
 
 fn base_url(port: u16) -> String {
@@ -13,7 +14,7 @@ fn probe(url: &str) -> String {
     url.to_owned()
 }
 
-fn python_server(port: u16, state: &Path) -> Command {
+fn python_server(_: &BenchmarkContext, port: u16, state: &Path) -> Command {
     let mut command = Command::new("python3");
     command
         .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1"])
@@ -21,19 +22,19 @@ fn python_server(port: u16, state: &Path) -> Command {
     command
 }
 
-fn exit_early(_: u16, _: &Path) -> Command {
+fn exit_early(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
     let mut command = Command::new("sh");
     command.args(["-c", "printf 'startup failed' >&2; exit 7"]);
     command
 }
 
-fn never_ready(_: u16, _: &Path) -> Command {
+fn never_ready(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
     let mut command = Command::new("sh");
     command.args(["-c", "sleep 2"]);
     command
 }
 
-fn missing_command(_: u16, _: &Path) -> Command {
+fn missing_command(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
     Command::new("peryx-command-that-does-not-exist")
 }
 
@@ -48,7 +49,7 @@ fn teardown(port: u16) {
     TORN_DOWN_PORT.store(port, Ordering::Relaxed);
 }
 
-fn server(command: Option<fn(u16, &Path) -> Command>) -> Server {
+fn server(command: Option<fn(&BenchmarkContext, u16, &Path) -> Command>) -> Server {
     Server {
         name: "fixture",
         homepage: "https://example.invalid",
@@ -58,6 +59,10 @@ fn server(command: Option<fn(u16, &Path) -> Command>) -> Server {
         setup: None,
         teardown: None,
     }
+}
+
+fn context(state: &Path) -> BenchmarkContext {
+    BenchmarkContext::new(state.join("peryx"), state.join("report.toml"))
 }
 
 const fn short_policy() -> StartupPolicy {
@@ -72,7 +77,11 @@ const fn short_policy() -> StartupPolicy {
 async fn direct_server_has_no_process() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let active = server(None)
-        .start(directory.path(), &http_client().expect("HTTP client builds"))
+        .start(
+            &context(directory.path()),
+            directory.path(),
+            &http_client().expect("HTTP client builds"),
+        )
         .await
         .expect("direct server starts");
     assert_eq!(
@@ -87,7 +96,7 @@ async fn server_waits_until_http_is_ready() {
     std::fs::write(directory.path().join("index.html"), "ready").expect("fixture writes");
     let client = http_client().expect("HTTP client builds");
     let active = server(Some(python_server))
-        .start(directory.path(), &client)
+        .start(&context(directory.path()), directory.path(), &client)
         .await
         .expect("HTTP server starts");
     assert_eq!(
@@ -108,6 +117,7 @@ async fn server_reports_early_exit_and_log() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let error = server(Some(exit_early))
         .start_with_policy(
+            &context(directory.path()),
             directory.path(),
             &http_client().expect("HTTP client builds"),
             short_policy(),
@@ -123,6 +133,7 @@ async fn server_reports_readiness_timeout() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let error = server(Some(never_ready))
         .start_with_policy(
+            &context(directory.path()),
             directory.path(),
             &http_client().expect("HTTP client builds"),
             short_policy(),
@@ -141,7 +152,11 @@ async fn server_runs_setup_and_teardown() {
     fixture.setup = Some(setup);
     fixture.teardown = Some(teardown);
     let active = fixture
-        .start(directory.path(), &http_client().expect("HTTP client builds"))
+        .start(
+            &context(directory.path()),
+            directory.path(),
+            &http_client().expect("HTTP client builds"),
+        )
         .await
         .expect("server starts");
     let port = active
@@ -163,7 +178,11 @@ async fn server_runs_setup_and_teardown() {
 async fn server_describes_spawn_failure() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let error = server(Some(missing_command))
-        .start(directory.path(), &http_client().expect("HTTP client builds"))
+        .start(
+            &context(directory.path()),
+            directory.path(),
+            &http_client().expect("HTTP client builds"),
+        )
         .await
         .err()
         .expect("spawn fails");

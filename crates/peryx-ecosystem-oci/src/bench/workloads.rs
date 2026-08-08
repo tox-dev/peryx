@@ -6,7 +6,8 @@ use tokio::process::Command;
 
 use super::images::{FLEET_IMAGE, PULL_IMAGES, STRESS_IMAGE};
 use super::servers::{DOCKERHUB, client_reference, hub_credentials, insecure, table_name, upstream_for};
-use peryx_bench_core::report::{Absent, Metric, baseline, network_row, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, network_row, row, summarize, table};
 use peryx_bench_core::servers::{Active, Server};
 use peryx_bench_core::stats::Summary;
 
@@ -27,7 +28,12 @@ fn docker_arch() -> &'static str {
 ///
 /// # Errors
 /// Returns an error when a registry cannot start; a registry failing the pulls is a table cell.
-pub async fn pulls(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn pulls(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let mut cold: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     let mut warm: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     for (index, server) in servers.iter().enumerate() {
@@ -35,7 +41,7 @@ pub async fn pulls(servers: &[Server], rounds: usize, http: &reqwest::Client) ->
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             match pull_round(&active, scratch.path()).await {
                 Ok((cold_seconds, warm_seconds)) => {
                     cold[index].push(cold_seconds);
@@ -56,7 +62,7 @@ pub async fn pulls(servers: &[Server], rounds: usize, http: &reqwest::Client) ->
         network_row("cold cache", &summarize(&cold), base, Metric::Seconds, Absent::Failed),
         row("warm cache", &summarize(&warm), base, Metric::Seconds, Absent::Failed),
     ];
-    publish(
+    context.publish(
         &table_name("pull"),
         table(
             &format!("pull {} images through each registry", PULL_IMAGES.len()),
@@ -137,7 +143,12 @@ async fn crane_pull_once(base: &str, image: &str, dest: &Path) -> anyhow::Result
 ///
 /// # Errors
 /// Returns an error when a registry cannot start or the stress layer cannot be resolved.
-pub async fn throughput(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn throughput(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let (digest, size) = largest_layer(&upstream_for(DOCKERHUB), STRESS_IMAGE).await?;
     #[expect(clippy::cast_precision_loss, reason = "layer sizes fit f64 to the byte")]
     let megabytes = size as f64 / 1e6;
@@ -149,7 +160,7 @@ pub async fn throughput(servers: &[Server], rounds: usize, http: &reqwest::Clien
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             match blob_round(http, &active.url, &digest, size).await {
                 Ok((single, eight)) => {
                     hot1[index].push(single);
@@ -182,7 +193,7 @@ pub async fn throughput(servers: &[Server], rounds: usize, http: &reqwest::Clien
             Absent::Failed,
         ),
     ];
-    publish(
+    context.publish(
         &table_name("image-throughput"),
         table(
             &format!("streaming one large cached layer ({STRESS_IMAGE}), alone and eight-way"),
@@ -385,7 +396,12 @@ async fn crane_manifest(reference: &str, insecure: bool, digest: Option<&str>) -
 ///
 /// # Errors
 /// Returns an error when a registry cannot start; a registry failing the fleet is a table cell.
-pub async fn fleet(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn fleet(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let mut cold: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     let mut warm: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     for (index, server) in servers.iter().enumerate() {
@@ -393,7 +409,7 @@ pub async fn fleet(servers: &[Server], rounds: usize, http: &reqwest::Client) ->
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             match fleet_round(&active.url, scratch.path()).await {
                 Ok((cold_seconds, warm_seconds)) => {
                     cold[index].push(cold_seconds);
@@ -426,7 +442,7 @@ pub async fn fleet(servers: &[Server], rounds: usize, http: &reqwest::Client) ->
             Absent::Failed,
         ),
     ];
-    publish(
+    context.publish(
         &table_name("parallel-pull"),
         table(&format!("ten clients pull {FLEET_IMAGE} at once"), servers, base, rows),
     )
@@ -502,7 +518,12 @@ const ENDPOINTS: [&str; 9] = [
 ///
 /// # Errors
 /// Returns an error when a registry cannot start; a registry not serving an endpoint is an empty cell.
-pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn endpoints(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let mut samples: Vec<Vec<Vec<f64>>> = ENDPOINTS
         .iter()
         .map(|_| servers.iter().map(|_| Vec::new()).collect())
@@ -512,7 +533,7 @@ pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             match endpoint_round(&active.url, http).await {
                 Ok(seconds) => {
                     for (endpoint, sample) in seconds.iter().enumerate() {
@@ -541,7 +562,7 @@ pub async fn endpoints(servers: &[Server], rounds: usize, http: &reqwest::Client
             )
         })
         .collect();
-    publish(
+    context.publish(
         &table_name("image-endpoints"),
         table(
             "one warm request to each served endpoint; an empty cell is an endpoint the registry does not offer",

@@ -36,8 +36,16 @@ struct Change {
 /// # Errors
 /// Returns an error when either report cannot be read.
 pub fn against(baseline: &Path) -> anyhow::Result<bool> {
+    against_paths(baseline, &report_path())
+}
+
+/// Compare reports stored outside the published report path.
+///
+/// # Errors
+/// Returns an error when either report cannot be read.
+pub fn against_paths(baseline: &Path, head: &Path) -> anyhow::Result<bool> {
     let base = load(baseline)?;
-    let head = load(&report_path())?;
+    let head = load(head)?;
     Ok(compare(&base, &head))
 }
 

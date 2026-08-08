@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
+use peryx_bench_core::context::BenchmarkContext;
 use peryx_bench_core::report::{
     Absent, Cell, Metric, Party, Report, Row, Table, anchor, baseline, cost_rows, cost_rows_per_request, load,
-    network_row, peryx_binary, publish_to, repo_root, report_path, row, set_peryx_binary, summarize, table,
+    network_row, publish_to, repo_root, report_path, row, summarize, table,
 };
 use peryx_bench_core::servers::Server;
 use peryx_bench_core::stats::Summary;
@@ -18,7 +19,7 @@ fn probe(url: &str) -> String {
     url.to_owned()
 }
 
-fn command(_: u16, _: &Path) -> Command {
+fn command(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
     Command::new("true")
 }
 
@@ -271,12 +272,12 @@ fn summaries_keep_each_partys_distribution() {
 }
 
 #[test]
-fn report_paths_and_binary_override_follow_checkout() {
+fn benchmark_context_owns_artifact_paths() {
     let root = repo_root();
     assert_eq!(report_path(), root.join("site/data/bench/report.toml"));
-    assert_eq!(peryx_binary(), root.join("target/release/peryx"));
-    let custom = root.join("target/custom-peryx");
-    set_peryx_binary(Some(custom.clone()));
-    assert_eq!(peryx_binary(), custom);
-    set_peryx_binary(None);
+    let binary = root.join("target/custom-peryx");
+    let report = root.join("target/custom-report.toml");
+    let context = BenchmarkContext::new(binary.clone(), report.clone());
+    assert_eq!(context.peryx_binary(), binary);
+    assert_eq!(context.report_path(), report);
 }

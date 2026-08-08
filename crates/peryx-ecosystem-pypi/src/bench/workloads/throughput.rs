@@ -4,7 +4,8 @@ use anyhow::Context as _;
 
 use super::super::packages::STRESS_PROJECT;
 use super::{Rounds, median_or_dash_rate};
-use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, row, summarize, table};
 use peryx_bench_core::servers::{Active, Server};
 use peryx_bench_core::usage::{Cost, Usage};
 
@@ -18,7 +19,12 @@ use peryx_bench_core::usage::{Cost, Usage};
 ///
 /// # Errors
 /// Returns an error when a server cannot start; a server failing the transfers is a table cell.
-pub async fn throughput(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn throughput(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let filename = stress_wheel_filename(http).await?;
     println!("[throughput] measuring with {filename}");
     let mut cold4: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
@@ -31,7 +37,7 @@ pub async fn throughput(servers: &[Server], rounds: usize, http: &reqwest::Clien
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             let usage = Usage::watch(active.pid());
             match transfer_round(&active, &filename, http).await {
                 Ok((cold, single, eight)) => {
@@ -76,7 +82,7 @@ pub async fn throughput(servers: &[Server], rounds: usize, http: &reqwest::Clien
         ),
     ];
     rows.extend(cost_rows(servers, &costs));
-    publish(
+    context.publish(
         "throughput",
         table(
             &format!("moving one large wheel ({STRESS_PROJECT}): cold under contention, hot at speed"),

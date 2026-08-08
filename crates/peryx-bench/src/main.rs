@@ -4,6 +4,7 @@ use std::process::Command;
 use anyhow::{Context as _, bail};
 use clap::Parser;
 
+use peryx_bench_core::context::BenchmarkContext;
 use peryx_bench_core::report::repo_root;
 use peryx_bench_core::{compare, machine, report};
 
@@ -71,8 +72,8 @@ async fn main() -> anyhow::Result<()> {
     match cli.mode.clone() {
         Some(Mode::Ab { base, head_first }) => ab(&base, head_first, &cli, &http).await,
         Some(Mode::VsRest) | None => {
-            ensure_peryx_built()?;
-            run_suite(&cli, &http).await
+            let context = BenchmarkContext::workspace(ensure_peryx_built()?);
+            run_suite(&context, &cli, &http).await
         }
     }
 }
@@ -81,13 +82,17 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// The host profile comes first, before any server is up: it is ecosystem-neutral, and its loopback
 /// number is the ceiling the serving rows below are read against.
-async fn run_suite(cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
+async fn run_suite(context: &BenchmarkContext, cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
     if !cli.skip.iter().any(|part| part == "machine") {
         machine::publish().await?;
     }
     match cli.ecosystem {
-        Ecosystem::Pypi => peryx_ecosystem_pypi::bench::run(&cli.pypi, cli.rounds, &cli.skip, &cli.only, http).await,
-        Ecosystem::Oci => peryx_ecosystem_oci::bench::run(&cli.oci, cli.rounds, &cli.skip, &cli.only, http).await,
+        Ecosystem::Pypi => {
+            peryx_ecosystem_pypi::bench::run(context, &cli.pypi, cli.rounds, &cli.skip, &cli.only, http).await
+        }
+        Ecosystem::Oci => {
+            peryx_ecosystem_oci::bench::run(context, &cli.oci, cli.rounds, &cli.skip, &cli.only, http).await
+        }
     }
 }
 
@@ -107,24 +112,22 @@ async fn ab(base_ref: &str, head_first: bool, cli: &Cli, http: &reqwest::Client)
         suite.skip.push("machine".to_owned());
     }
     suite.mode = None;
-    ensure_peryx_built()?;
-    let head_binary = report::peryx_binary();
+    let head_binary = ensure_peryx_built()?;
     let base_binary = build_base(base_ref)?;
-    let saved = save_report()?;
 
     let base_report = report::repo_root().join("target").join("bench-base-report.toml");
     let head_report = report::repo_root().join("target").join("bench-head-report.toml");
+    let base_context = BenchmarkContext::new(base_binary, base_report.clone());
+    let head_context = BenchmarkContext::new(head_binary, head_report.clone());
     if head_first {
-        measure("working tree", &head_binary, &head_report, &suite, http).await?;
-        measure(&format!("base ({base_ref})"), &base_binary, &base_report, &suite, http).await?;
-        std::fs::copy(&head_report, report::report_path())?;
+        measure("working tree", &head_context, &suite, http).await?;
+        measure(&format!("base ({base_ref})"), &base_context, &suite, http).await?;
     } else {
-        measure(&format!("base ({base_ref})"), &base_binary, &base_report, &suite, http).await?;
-        measure("working tree", &head_binary, &head_report, &suite, http).await?;
+        measure(&format!("base ({base_ref})"), &base_context, &suite, http).await?;
+        measure("working tree", &head_context, &suite, http).await?;
     }
-    let regressed = compare::against(&base_report)?;
+    let regressed = compare::against_paths(&base_report, &head_report)?;
 
-    restore_report(saved)?;
     for report in [base_report, head_report] {
         let _ = std::fs::remove_file(report);
     }
@@ -135,25 +138,9 @@ async fn ab(base_ref: &str, head_first: bool, cli: &Cli, http: &reqwest::Client)
     Ok(())
 }
 
-async fn measure(
-    label: &str,
-    binary: &std::path::Path,
-    destination: &std::path::Path,
-    cli: &Cli,
-    http: &reqwest::Client,
-) -> anyhow::Result<()> {
+async fn measure(label: &str, context: &BenchmarkContext, cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
     println!("== measuring {label} ==");
-    run_with_binary(binary, cli, http).await?;
-    std::fs::copy(report::report_path(), destination)?;
-    Ok(())
-}
-
-/// Run the suite with the peryx party launched from `binary`, clearing the override afterwards.
-async fn run_with_binary(binary: &std::path::Path, cli: &Cli, http: &reqwest::Client) -> anyhow::Result<()> {
-    report::set_peryx_binary(Some(binary.to_path_buf()));
-    let result = run_suite(cli, http).await;
-    report::set_peryx_binary(None);
-    result
+    run_suite(context, cli, http).await
 }
 
 /// The worktree path base builds live in.
@@ -177,6 +164,8 @@ fn build_base(base_ref: &str) -> anyhow::Result<PathBuf> {
     println!("building peryx ({base_ref})");
     let status = Command::new("cargo")
         .args(["build", "--release", "-p", "peryx"])
+        .arg("--target-dir")
+        .arg(worktree.join("target"))
         .current_dir(&worktree)
         .status()
         .context("cargo did not start for the base build")?;
@@ -195,26 +184,6 @@ fn remove_worktree() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Read the committed report aside so the A/B runs (which overwrite it) can be undone.
-fn save_report() -> anyhow::Result<Option<String>> {
-    match std::fs::read_to_string(report::report_path()) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Put the saved report back after the A/B runs overwrote it.
-fn restore_report(saved: Option<String>) -> anyhow::Result<()> {
-    match saved {
-        Some(contents) => std::fs::write(report::report_path(), contents)?,
-        None => {
-            let _ = std::fs::remove_file(report::report_path());
-        }
-    }
-    Ok(())
-}
-
 fn run_git(args: &[&str]) -> anyhow::Result<()> {
     let status = Command::new("git")
         .args(args)
@@ -227,10 +196,8 @@ fn run_git(args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the release binary before every run so the benchmark always measures the current source, never
-/// a stale artifact from an earlier build. Cargo's incremental build makes this a no-op when nothing
-/// changed, so it stays a one-command reproduction while keeping A/B comparisons honest.
-fn ensure_peryx_built() -> anyhow::Result<()> {
+/// Build before every run so a stale binary cannot affect a comparison.
+fn ensure_peryx_built() -> anyhow::Result<PathBuf> {
     println!("building peryx (release)");
     let status = Command::new("cargo")
         .args(["build", "--release", "-p", "peryx"])
@@ -240,5 +207,19 @@ fn ensure_peryx_built() -> anyhow::Result<()> {
     if !status.success() {
         bail!("cargo build failed");
     }
-    Ok(())
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(repo_root())
+        .output()
+        .context("cargo metadata did not start")?;
+    if !output.status.success() {
+        bail!("cargo metadata failed");
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let target = metadata["target_directory"]
+        .as_str()
+        .context("cargo metadata omitted target_directory")?;
+    Ok(PathBuf::from(target)
+        .join("release")
+        .join(format!("peryx{}", std::env::consts::EXE_SUFFIX)))
 }

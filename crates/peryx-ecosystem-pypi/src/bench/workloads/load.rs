@@ -4,7 +4,8 @@ use tokio::time::{Duration, Instant as TokioInstant, sleep_until};
 
 use super::super::packages::TOP_PACKAGES;
 use super::Rounds;
-use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows_per_request, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows_per_request, row, summarize, table};
 use peryx_bench_core::servers::Server;
 use peryx_bench_core::usage::{Cost, Usage};
 
@@ -13,7 +14,13 @@ use peryx_bench_core::usage::{Cost, Usage};
 ///
 /// # Errors
 /// Returns an error when a server cannot start or its pages cannot be warmed.
-pub async fn load(servers: &[Server], users: &[usize], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn load(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    users: &[usize],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let mut rps: Vec<Vec<Vec<f64>>> = servers
         .iter()
         .map(|_| users.iter().map(|_| Vec::new()).collect())
@@ -32,7 +39,7 @@ pub async fn load(servers: &[Server], users: &[usize], rounds: usize, http: &req
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             let usage = Usage::watch(active.pid());
             println!("[load] {} round {attempt}/{rounds}", server.name);
             match load_round(&active.url, users, http).await {
@@ -82,7 +89,7 @@ pub async fn load(servers: &[Server], users: &[usize], rounds: usize, http: &req
         ));
     }
     rows.extend(cost_rows_per_request(servers, &costs, &served));
-    publish(
+    context.publish(
         "load",
         table(
             "PEP 691 JSON simple-page requests against a warm cache: peak rate, and p95 latency at 70% of it",

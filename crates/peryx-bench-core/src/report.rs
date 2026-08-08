@@ -355,15 +355,6 @@ pub fn table(label: &str, servers: &[Server], baseline: usize, rows: Vec<Row>) -
     }
 }
 
-/// Merge `name` into the report on disk, keeping tables other runs produced.
-///
-/// # Errors
-/// Returns an error when the existing report cannot be parsed or the new one cannot be written.
-pub fn publish(name: &str, table: Table) -> anyhow::Result<()> {
-    let path = report_path();
-    publish_to(&path, name, table)
-}
-
 /// Use an explicit path for isolated A/B runs and tests.
 ///
 /// # Errors
@@ -448,32 +439,6 @@ fn thousands(value: f64) -> String {
 #[must_use]
 pub fn report_path() -> PathBuf {
     repo_root().join("site").join("data").join("bench").join("report.toml")
-}
-
-/// The override an A/B sets so the peryx party launches from a specific binary (a base-commit
-/// build) instead of this checkout's release binary.
-fn binary_override() -> &'static std::sync::Mutex<Option<PathBuf>> {
-    static OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
-    OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-/// Point the peryx party at `path`, or clear the override with `None`. Set between the two runs of
-/// an A/B so each measures a different build through the same harness.
-pub fn set_peryx_binary(path: Option<PathBuf>) {
-    *binary_override()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
-}
-
-/// The peryx binary the harness launches: the A/B override when one is set, otherwise the release
-/// binary this checkout builds.
-#[must_use]
-pub fn peryx_binary() -> PathBuf {
-    binary_override()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-        .unwrap_or_else(|| repo_root().join("target").join("release").join("peryx"))
 }
 
 /// The repository checkout root.

@@ -5,7 +5,7 @@ use std::process::Command;
 use anyhow::{Context as _, bail};
 
 use super::images::{FLEET_IMAGE, PULL_IMAGES, STRESS_IMAGE};
-use peryx_bench_core::report::{peryx_binary, repo_root};
+use peryx_bench_core::report::repo_root;
 use peryx_bench_core::servers::Server;
 
 /// The upstream every proxy caches and `direct` pulls from, when no local mirror is set.
@@ -263,8 +263,8 @@ fn peryx() -> Server {
         homepage: "https://peryx.readthedocs.io/",
         base_url: |port| format!("http://127.0.0.1:{port}/dockerhub/"),
         probe: api_root,
-        command: Some(|_port, state| {
-            let mut command = Command::new(peryx_binary());
+        command: Some(|context, _port, state| {
+            let mut command = Command::new(context.peryx_binary());
             command.arg("serve").arg("--config").arg(state.join("peryx.toml"));
             command
         }),
@@ -312,7 +312,7 @@ fn distribution() -> Server {
         homepage: "https://distribution.github.io/distribution/",
         base_url: |port| format!("http://127.0.0.1:{port}/"),
         probe: api_root,
-        command: Some(|port, _state| {
+        command: Some(|_context, port, _state| {
             let mut command = Command::new("docker");
             command
                 .args(["run", "--rm", "--name", &container(port)])
@@ -337,7 +337,7 @@ fn zot() -> Server {
         homepage: "https://zotregistry.dev/",
         base_url: |port| format!("http://127.0.0.1:{port}/"),
         probe: api_root,
-        command: Some(|_port, state| {
+        command: Some(|_context, _port, state| {
             let mut command = Command::new(bench_cache().join("zot"));
             command.arg("serve").arg(state.join("zot.json"));
             command

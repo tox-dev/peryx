@@ -4,7 +4,8 @@ use anyhow::{Context as _, bail};
 
 use super::super::packages::METADATA_PROJECT;
 use super::{Rounds, median_or_dash_rate};
-use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, row, summarize, table};
 use peryx_bench_core::servers::Server;
 use peryx_bench_core::usage::{Cost, Usage};
 
@@ -13,7 +14,12 @@ use peryx_bench_core::usage::{Cost, Usage};
 /// # Errors
 /// Returns an error when a server cannot start; a server failing the metadata requests is a table
 /// cell.
-pub async fn metadata(servers: &[Server], rounds: usize, http: &reqwest::Client) -> anyhow::Result<()> {
+pub async fn metadata(
+    context: &BenchmarkContext,
+    servers: &[Server],
+    rounds: usize,
+    http: &reqwest::Client,
+) -> anyhow::Result<()> {
     let mut cold: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     let mut hot: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
     let mut rate: Vec<Vec<f64>> = servers.iter().map(|_| Vec::new()).collect();
@@ -24,7 +30,7 @@ pub async fn metadata(servers: &[Server], rounds: usize, http: &reqwest::Client)
             let scratch = tempfile::tempdir()?;
             let state = scratch.path().join("state");
             std::fs::create_dir(&state)?;
-            let active = server.start(&state, http).await?;
+            let active = server.start(context, &state, http).await?;
             let usage = Usage::watch(active.pid());
             match metadata_round(&active.url, http).await {
                 Ok((cold_seconds, hot_seconds, docs)) => {
@@ -68,7 +74,7 @@ pub async fn metadata(servers: &[Server], rounds: usize, http: &reqwest::Client)
         ),
     ];
     rows.extend(cost_rows(servers, &costs));
-    publish(
+    context.publish(
         "metadata",
         table(
             &format!("PEP 658 metadata siblings for {METADATA_PROJECT}"),

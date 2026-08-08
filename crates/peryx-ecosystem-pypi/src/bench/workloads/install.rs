@@ -6,7 +6,8 @@ use anyhow::{Context as _, bail};
 
 use super::super::packages::TOP_PACKAGES;
 use super::{BENCH_PYTHON, Rounds, report_samples, run_checked};
-use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, publish, row, summarize, table};
+use peryx_bench_core::context::BenchmarkContext;
+use peryx_bench_core::report::{Absent, Metric, baseline, cost_rows, network_row, row, summarize, table};
 use peryx_bench_core::servers::Server;
 use peryx_bench_core::usage::{Cost, Usage};
 
@@ -15,6 +16,7 @@ use peryx_bench_core::usage::{Cost, Usage};
 /// # Errors
 /// Returns an error when a server cannot start or an install against a healthy server fails.
 pub async fn installs(
+    context: &BenchmarkContext,
     servers: &[Server],
     clients: &[&str],
     rounds: usize,
@@ -31,7 +33,7 @@ pub async fn installs(
                 let scratch = tempfile::tempdir()?;
                 let state = scratch.path().join("state");
                 std::fs::create_dir(&state)?;
-                let active = server.start(&state, http).await?;
+                let active = server.start(context, &state, http).await?;
                 let usage = Usage::watch(active.pid());
                 println!("[{client}] {} round {attempt}/{rounds}", server.name);
                 match install_round(client, &active.url, scratch.path()) {
@@ -52,7 +54,7 @@ pub async fn installs(
             row("warm cache", &summarize(&warm), base, Metric::Seconds, Absent::Failed),
         ];
         rows.extend(cost_rows(servers, &costs));
-        publish(
+        context.publish(
             &format!("install-{client}"),
             table(
                 &format!("{client}: install the top {} PyPI packages", TOP_PACKAGES.len()),
