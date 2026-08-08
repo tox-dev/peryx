@@ -62,6 +62,10 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain*'
               - 'hawk.toml'
+              - 'justfile'
+              - 'compose.yaml'
+              - 'tests/Dockerfile'
+              - '.github/scripts/**'
               - '.github/workflows/ci.yml'
             pypi:
               - 'crates/peryx-ecosystem-pypi/**'
@@ -82,7 +86,6 @@ jobs:
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -115,32 +118,18 @@ jobs:
         run: >
           cargo-hawk check --manifest-path Cargo.toml --only dead-public
           --deny hawk::dead_public --output-format json
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
-  # One build+test job per platform, uniform across the matrix. sccache (shared with local dev) plus
-  # the workspace target cache keep the Windows compile — the reason this leg was once split into a
-  # build-once plus sharded-run workaround — down to a single job like the others. A failure fails the
-  # matrix fast: `fail-fast` cancels the sibling platforms and nextest stops at the first failing test.
-  test:
+  platform-test:
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            features: --all-features
-          - os: macos-26
-            features: ""
-          - os: windows-2025
-            features: ""
+        os: [macos-26, windows-2025]
     runs-on: ${{ matrix.os }}
     permissions:
-      actions: write
       contents: read
     # Homebrew (pulled in by taiki-e/install-action on macOS) warns about the runner's pre-installed
     # aws/tap unless tap-trust checks are disabled.
@@ -198,35 +187,50 @@ jobs:
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace ${{ matrix.features }} -E 'not(binary(e2e)) & not(binary(availability)) & not(binary(observability)) & not(binary(sim_campaign))'
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
+      - run: cargo nextest run --workspace -E 'not(binary(e2e)) & not(binary(availability)) & not(binary(observability)) & not(binary(sim_campaign))'
 
-  coverage-native:
+  crate-contracts:
+    name: crate contracts (${{ matrix.shard }})
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: pypi
+            packages: peryx-ecosystem-pypi
+          - shard: process
+            packages: peryx peryx-web peryx-pql peryx-events peryx-core peryx-policy peryx-search peryx-index peryx-bench-core
+          - shard: distributed
+            packages: peryx-ha-distributed peryx-ecosystem-oci peryx-ha peryx-plugin-registry
+          - shard: storage
+            packages: peryx-storage peryx-http peryx-driver peryx-upstream peryx-identity peryx-bench
     runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: crate-contracts-${{ matrix.shard }}
+          cache-on-failure: true
+          cache-workspace-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-llvm-cov,cargo-nextest,just
-      - run: just coverage-native
+      - run: just crate-contracts .tox/crate-contracts ${{ matrix.packages }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
         with:
-          name: coverage-native
-          path: coverage-native.lcov
+          name: coverage-crates-${{ matrix.shard }}
+          path: .tox/crate-contracts/*.lcov
+          if-no-files-found: ignore
 
   # Hermetic end-to-end: real pip/uv drive a spawned peryx that proxies a local fixture index, so no
   # external network is touched. Proves downstream clients work through peryx on every PR.
@@ -237,7 +241,6 @@ jobs:
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -264,9 +267,6 @@ jobs:
         with:
           name: coverage-e2e
           path: coverage-e2e.lcov
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   # The same client flows against the real pypi.org, to catch upstream drift.
   e2e-live:
@@ -276,7 +276,6 @@ jobs:
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -301,9 +300,6 @@ jobs:
         run: cargo build -p peryx --features e2e-live --tests
       - name: Run live e2e tests
         run: cargo nextest run -p peryx --features e2e-live -E 'test(e2e_live)'
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   # The multi-process availability harness: spawns real peryx binaries and injects network faults
   # through Toxiproxy. Off the default test matrix (it needs the toxiproxy-server binary); run here.
@@ -314,7 +310,6 @@ jobs:
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -340,9 +335,6 @@ jobs:
         with:
           name: coverage-availability
           path: coverage-availability.lcov
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   # The availability safety-simulator seed campaign: a bounded seed sweep plus the checked-in regression
   # corpus, per pull request. A break writes the minimized trace as an artifact with a repro command.
@@ -353,7 +345,6 @@ jobs:
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     env:
       PERYX_SIM_ARTIFACTS: ${{ github.workspace }}/sim-artifacts
@@ -376,9 +367,6 @@ jobs:
           name: sim-campaign-traces
           path: ${{ env.PERYX_SIM_ARTIFACTS }}
           if-no-files-found: ignore
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   # A large sharded seed campaign, scheduled only: each shard runs a disjoint slice of the range once.
   # A shard that finds a violating seed uploads its trace; promote that seed into the corpus with its fix.
@@ -425,7 +413,6 @@ jobs:
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     env:
       CARGO_LEPTOS_VERSION: "0.3.6"
@@ -466,19 +453,15 @@ jobs:
         with:
           name: coverage-frontend
           path: coverage-frontend-*.lcov
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   coverage:
-    needs: [changes, coverage-native, e2e, availability, frontend]
+    needs: [changes, crate-contracts, e2e, availability, frontend]
     if: >-
       always() &&
       (needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -504,9 +487,6 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   # Mermaid diagrams are pre-rendered from source to committed dual-theme SVG partials (site/diagrams,
   # keyed by a hash of the diagram source) because the docs host has no headless browser. This job
@@ -520,7 +500,6 @@ jobs:
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -532,16 +511,13 @@ jobs:
           sudo mv zola /usr/local/bin/
       - run: zola --root site build
       - run: python3 site/scripts/inline_diagrams.py site/public
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   # Required-status-check anchor: branch protection requires this job, not the conditional ones above,
   # because a skipped required check blocks merge on GitHub. Passes when every dependency succeeded or
   # skipped; fails if any failed or was cancelled.
   ci-gate:
     if: always()
-    needs: [changes, lint, test, coverage, e2e, e2e-live, availability, sim-campaign, frontend, docs]
+    needs: [changes, lint, platform-test, crate-contracts, coverage, e2e, e2e-live, availability, sim-campaign, frontend, docs]
     runs-on: ubuntu-24.04
     steps:
       - name: Verify no required job failed

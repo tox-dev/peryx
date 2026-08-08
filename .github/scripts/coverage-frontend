@@ -55,7 +55,7 @@ cargo leptos build --lib-features wasm-coverage --wasm-debug
 target="$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)"
 PERYX_FRONTEND_BINARY="$target/debug/peryx" PERYX_WASM_PROFRAW="$profiles/wasm" \
   npm --prefix tests/frontend test
-cargo llvm-cov report --lcov --output-path "$native_output"
+cargo llvm-cov report --ignore-filename-regex '$^' --lcov --output-path "$native_output"
 
 profile="$profiles/wasm.profdata"
 "$LLVM_PROFDATA" merge -sparse "$profiles"/wasm/*.profraw -o "$profile"

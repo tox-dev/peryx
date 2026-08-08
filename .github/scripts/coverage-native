@@ -11,4 +11,4 @@ test_targets=(--lib --bins --tests --examples)
 cargo test --workspace --exclude peryx --exclude peryx-web "${test_targets[@]}"
 cargo nextest run -p peryx -p peryx-web "${test_targets[@]}"
 cargo test --workspace --bench '*'
-cargo llvm-cov report --lcov --output-path "${1:-coverage-native.lcov}"
+cargo llvm-cov report --ignore-filename-regex '$^' --lcov --output-path "${1:-coverage-native.lcov}"
