@@ -18,28 +18,41 @@ inventory::collect!(PluginRegistration);
 
 fn plugins() -> &'static [&'static dyn EcosystemPlugin] {
     static PLUGINS: OnceLock<Vec<&'static dyn EcosystemPlugin>> = OnceLock::new();
-    PLUGINS.get_or_init(|| {
-        let mut registrations = inventory::iter::<PluginRegistration>.into_iter().collect::<Vec<_>>();
-        registrations.sort_unstable_by_key(|registration| registration.priority);
-        let mut ecosystems = HashSet::new();
-        let mut priorities = HashSet::new();
-        for registration in &registrations {
-            assert!(
-                ecosystems.insert(registration.plugin.ecosystem()),
-                "duplicate ecosystem plugin"
-            );
-            assert!(priorities.insert(registration.priority), "duplicate plugin priority");
-        }
-        let plugins = registrations
-            .into_iter()
-            .map(|registration| registration.plugin)
-            .collect::<Vec<_>>();
-        assert!(
-            !plugins.is_empty(),
-            "the binary must link at least one ecosystem plugin"
-        );
-        plugins
-    })
+    PLUGINS.get_or_init(linked_plugins)
+}
+
+fn linked_plugins() -> Vec<&'static dyn EcosystemPlugin> {
+    ordered_plugins(inventory::iter::<PluginRegistration>.into_iter().collect())
+}
+
+fn ordered_plugins(mut registrations: Vec<&PluginRegistration>) -> Vec<&'static dyn EcosystemPlugin> {
+    assert!(
+        !registrations.is_empty(),
+        "the binary must link at least one ecosystem plugin"
+    );
+    registrations.sort_unstable_by_key(|registration| registration.priority);
+    assert_eq!(
+        registrations
+            .iter()
+            .map(|registration| registration.plugin.ecosystem())
+            .collect::<HashSet<_>>()
+            .len(),
+        registrations.len(),
+        "duplicate ecosystem plugin"
+    );
+    assert_eq!(
+        registrations
+            .iter()
+            .map(|registration| registration.priority)
+            .collect::<HashSet<_>>()
+            .len(),
+        registrations.len(),
+        "duplicate plugin priority"
+    );
+    registrations
+        .into_iter()
+        .map(|registration| registration.plugin)
+        .collect()
 }
 
 fn plugin(ecosystem: Ecosystem) -> Option<&'static dyn EcosystemPlugin> {
@@ -146,3 +159,7 @@ pub fn snippet_text(
     };
     plugin.snippet_text(base, route, uploads, format)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
+mod tests;

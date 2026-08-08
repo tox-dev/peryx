@@ -14,5 +14,11 @@ peryx-driver.workspace = true
 utoipa.workspace = true
 toml.workspace = true
 
+[dev-dependencies]
+async-trait.workspace = true
+peryx-storage.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

@@ -5197,10 +5197,15 @@ name = "peryx-ha"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "mockall",
  "peryx-core",
  "peryx-storage",
+ "rstest",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
+ "tokio",
  "tracing",
 ]
 
@@ -5328,9 +5333,13 @@ dependencies = [
 name = "peryx-plugin-registry"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "inventory",
  "peryx-core",
  "peryx-driver",
+ "peryx-storage",
+ "serde_json",
+ "tempfile",
  "toml",
  "utoipa",
 ]
