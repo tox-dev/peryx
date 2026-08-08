@@ -18,6 +18,7 @@ services:
 
   test:
     profiles: ["test"]
+    cap_drop: ["DAC_OVERRIDE", "DAC_READ_SEARCH"]
     build:
       context: tests
       dockerfile: Dockerfile
@@ -25,6 +26,7 @@ services:
     depends_on:
       docker:
         condition: service_healthy
+    network_mode: "service:docker"
     working_dir: /workspace
     environment:
       CARGO_HOME: /cargo

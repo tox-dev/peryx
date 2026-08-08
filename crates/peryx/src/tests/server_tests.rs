@@ -918,8 +918,18 @@ fn test_build_state_rejects_an_insecure_netrc_mode() {
 #[cfg(unix)]
 #[test]
 fn test_build_state_rejects_a_netrc_owned_by_another_user() {
-    let path = PathBuf::from("/etc/hosts");
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     let dir = tempfile::tempdir().unwrap();
+    let foreign = dir.path().join("foreign.netrc");
+    write_netrc(&foreign, "machine corp.example login reader password swordfish\n");
+    std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let path = if std::os::unix::fs::chown(&foreign, Some(std::fs::metadata(&foreign).unwrap().uid() ^ 1), None).is_ok()
+    {
+        foreign
+    } else {
+        PathBuf::from("/etc/hosts")
+    };
     let Err(error) = build_state(&Config {
         data_dir: dir.path().join("data"),
         netrc: Some(path),
