@@ -48,6 +48,7 @@ export LLVM_COV="$llvm_bin/llvm-cov"
 export LLVM_PROFDATA="$llvm_bin/llvm-profdata"
 export RUSTUP_TOOLCHAIN="$toolchain"
 export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-Zno-profiler-runtime --emit=llvm-ir --cfg=wasm_bindgen_unstable_test_coverage"
+unset RUSTFLAGS
 
 npm --prefix tests/frontend ci
 cargo leptos build --lib-features wasm-coverage --wasm-debug
