@@ -490,39 +490,6 @@ async fn test_search_rejects_an_unknown_availability_filter() {
     assert_eq!(value["error"], "invalid availability filter \"maybe\"");
 }
 
-#[test]
-fn test_search_public_filter_labels_and_scan_errors() {
-    let dir = tempfile::tempdir().unwrap();
-    PackageSearch::open(dir.path()).unwrap();
-    assert_eq!(
-        [
-            SourceFilter::All.as_str(),
-            SourceFilter::Uploaded.as_str(),
-            SourceFilter::Cached.as_str(),
-            SourceFilter::Override.as_str(),
-        ],
-        ["all", "uploaded", "cached", "override"]
-    );
-    assert_eq!(SourceFilter::from_value("blocked"), None);
-    assert_eq!(
-        [
-            PackageSource::Uploaded.label(),
-            PackageSource::Cached.label(),
-            PackageSource::Override.label(),
-        ],
-        ["Uploaded", "Cached", "Override"]
-    );
-    assert_eq!(PackageSource::from_value("blocked"), None);
-    assert!(matches!(
-        SearchError::from(MetaScanError::Visit(SearchError::InvalidSource("blocked".to_owned()))),
-        SearchError::InvalidSource(_)
-    ));
-    assert!(matches!(
-        SearchError::from(MetaScanError::Store(meta_error())),
-        SearchError::Meta(_)
-    ));
-}
-
 /// A quarantining member of a virtual index must withhold the merged files from search whatever its listed
 /// order, so a benign sibling never leaks a project a quarantine should hide. Reverting the merge in
 /// `virtual_detail` back to a benign-wins rule makes the `[0, 1]` case index the served files and fail.

@@ -20,6 +20,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 hdrhistogram.workspace = true
+peryx-identity.workspace = true
+peryx-policy.workspace = true
 stats_alloc.workspace = true
 tempfile.workspace = true
 

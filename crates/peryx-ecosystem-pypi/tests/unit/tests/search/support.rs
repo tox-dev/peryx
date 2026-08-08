@@ -10,7 +10,7 @@ pub(super) use crate::store::PypiStore as _;
 pub(super) use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
 pub(super) use axum::http::StatusCode;
 pub(super) use peryx_storage::blob::{BlobStorage, Digest};
-pub(super) use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
+pub(super) use peryx_storage::meta::MetaStore;
 pub(super) use peryx_upstream::UpstreamClient;
 
 pub(super) use crate::cache;
@@ -21,7 +21,6 @@ pub(super) use peryx_core::path::local_file_url;
 pub(super) use peryx_driver::state::AppState;
 pub(super) use peryx_index::{Index, IndexKind};
 pub(super) use peryx_policy::{Policy, PolicyConfig};
-pub(super) use peryx_search::{PackageSearch, PackageSource, SearchError, SourceFilter};
 
 pub(super) fn policy(configure: impl FnOnce(&mut PolicyConfig)) -> Policy {
     let mut config = PolicyConfig::default();
@@ -244,10 +243,6 @@ pub(super) fn cached_index(body: &str) -> CachedIndex {
         fresh_secs: Some(60),
         body: body.as_bytes().to_vec(),
     }
-}
-
-pub(super) fn meta_error() -> MetaError {
-    MetaError::Decode(serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
 }
 
 pub(super) async fn search_total(state: &Arc<AppState>, uri: &str) -> u64 {

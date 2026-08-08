@@ -5375,7 +5375,9 @@ version = "0.0.1"
 dependencies = [
  "hdrhistogram",
  "peryx-core",
+ "peryx-identity",
  "peryx-index",
+ "peryx-policy",
  "peryx-storage",
  "serde",
  "serde_json",

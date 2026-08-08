@@ -1,9 +1,12 @@
 //! The search index composes several ecosystems' indexers: a second `add_indexer` widens the results
 //! rather than replacing the first.
 
+mod context_tests;
 mod engine_tests;
+mod error_tests;
 mod frontier_tests;
 mod integration_tests;
+mod params_tests;
 
 use peryx_core::{Lexicon, LexiconRegistry};
 use peryx_index::Index;

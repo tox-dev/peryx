@@ -6,7 +6,7 @@ use super::{ALT_WORDS, Stores};
 use crate::context::IndexerCtx;
 use crate::{
     AvailabilityFilter, PackageDocument, PackageIndexer, PackageSearch, PackageSource, SearchAccess,
-    SearchAccessPattern, SearchError, SearchParams,
+    SearchAccessPattern, SearchError, SearchParams, SourceFilter,
 };
 
 /// A stand-in ecosystem indexer that yields one document of a given ecosystem regardless of context.
@@ -92,6 +92,90 @@ fn test_search_rebuilds_after_epoch_bump() {
         (before, search.search(&stores.ctx(&lexicons), params).unwrap().total),
         (0, 1)
     );
+}
+
+#[test]
+fn test_search_applies_source_and_route_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = PackageSearch::in_memory();
+    search.add_indexer(Arc::new(OneDoc {
+        name: "demo",
+        ecosystem: "alpha",
+    }));
+
+    for (source, route, expected) in [
+        (SourceFilter::Cached, Some("root"), 1),
+        (SourceFilter::Uploaded, Some("root"), 0),
+        (SourceFilter::Override, Some("root"), 0),
+        (SourceFilter::Cached, Some("other"), 0),
+    ] {
+        assert_eq!(
+            search
+                .search(
+                    &stores.ctx(&lexicons),
+                    SearchParams {
+                        route: route.map(str::to_owned),
+                        source,
+                        ..SearchParams::default()
+                    },
+                )
+                .unwrap()
+                .total,
+            expected,
+            "{source:?} {route:?}"
+        );
+    }
+}
+
+#[test]
+fn test_search_handles_empty_and_escaped_regex_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = PackageSearch::in_memory();
+    search.add_indexer(Arc::new(OneDoc {
+        name: "demo",
+        ecosystem: "alpha",
+    }));
+
+    for (query, expected) in [("re:", 1), ("+", 0)] {
+        assert_eq!(
+            search
+                .search(
+                    &stores.ctx(&lexicons),
+                    SearchParams {
+                        query: query.to_owned(),
+                        ..SearchParams::default()
+                    },
+                )
+                .unwrap()
+                .total,
+            expected,
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn test_search_rejects_invalid_regex_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let search = PackageSearch::in_memory();
+
+    let error = search
+        .search(
+            &stores.ctx(&lexicons),
+            SearchParams {
+                query: "re:[".to_owned(),
+                ..SearchParams::default()
+            },
+        )
+        .expect_err("an invalid regular expression should be rejected");
+
+    assert!(error.is_bad_request());
 }
 
 #[test]
