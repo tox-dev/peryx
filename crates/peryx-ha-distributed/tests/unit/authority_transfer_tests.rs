@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peryx_driver::state::{
-    CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, MembershipControl,
+    ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, ControlPlane, HomeClaim,
+    MembershipControl, OwnershipAuthority, OwnershipError, TransferOutcome,
 };
 use peryx_storage::meta::MetaStore;
 use tokio::sync::Notify;
@@ -55,6 +56,43 @@ struct FixedEpoch(u64);
 impl EpochOracle for FixedEpoch {
     async fn committed_epoch(&self, _authority: &str) -> u64 {
         self.0
+    }
+}
+
+struct FixedAuthority(u64);
+
+#[async_trait::async_trait]
+impl OwnershipAuthority for FixedAuthority {
+    async fn has_home(&self, _authority: &str) -> bool {
+        true
+    }
+
+    async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
+        Ok(HomeClaim::AlreadyHomed)
+    }
+
+    fn cluster_status(&self) -> ClusterStatus {
+        ClusterStatus {
+            leader: None,
+            term: self.0,
+            voters: Vec::new(),
+        }
+    }
+
+    async fn committed_epoch(&self, _authority: &str) -> u64 {
+        self.0
+    }
+
+    async fn admit_epoch(&self, _authority: &str, _presented: u64) -> bool {
+        true
+    }
+
+    async fn transfer_home(
+        &self,
+        _authority: &str,
+        _new_home: &str,
+    ) -> Result<Option<TransferOutcome>, OwnershipError> {
+        Ok(None)
     }
 }
 
@@ -170,6 +208,12 @@ async fn test_commit_transfer_commits_derives_the_epoch_and_persists_the_audit()
         ),
         (3, 9, "drain east")
     );
+}
+
+#[tokio::test]
+async fn test_ownership_authority_supplies_the_committed_epoch() {
+    let authority: Arc<dyn OwnershipAuthority> = Arc::new(FixedAuthority(7));
+    assert_eq!(EpochOracle::committed_epoch(&authority, "proj").await, 7);
 }
 
 #[tokio::test]
@@ -378,7 +422,7 @@ async fn test_coordinator_cancel_of_a_committed_transfer_is_refused() {
 #[tokio::test]
 async fn test_coordinator_cancel_of_an_unregistered_authority_is_unknown() {
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
-    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3);
+    let coordinator = TransferCoordinator::new(frontier);
 
     let error = coordinator.cancel("ghost").await.unwrap_err();
 

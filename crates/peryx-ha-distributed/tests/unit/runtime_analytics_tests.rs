@@ -6,10 +6,14 @@ use crate::{
     AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsReceiver, AuthorityEpoch,
     DEFAULT_APPLY_LIMITS, HttpAnalyticsSource, IntervalId, ProducerId, TransferLimits,
 };
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use axum::{Json, Router};
+use http_body_util::BodyExt as _;
 use peryx_events::metrics::{Clock, Event, Metrics};
 use peryx_storage::meta::MetaStore;
+use tower::ServiceExt as _;
 
 use super::*;
 
@@ -90,6 +94,14 @@ fn error_router() -> Router {
     )
 }
 
+fn analytics_request(token: Option<&str>) -> Request<Body> {
+    let mut request = Request::builder().uri("/+replication/v1/analytics?after=-1");
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    request.body(Body::empty()).unwrap()
+}
+
 #[test]
 fn test_resolve_producer_epoch_assigns_generation_one_on_first_start() {
     let (_dir, meta) = open_meta();
@@ -149,13 +161,8 @@ async fn test_endpoint_rejects_an_unauthenticated_pull() {
         ProducerId("east".to_owned()),
         AuthorityEpoch(1),
     );
-    let server = TestServer::start(router).await;
-    let response = reqwest::Client::new()
-        .get(format!("{}+replication/v1/analytics?after=-1", server.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let response = router.oneshot(analytics_request(None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -166,14 +173,8 @@ async fn test_endpoint_rejects_a_mismatched_token() {
         ProducerId("east".to_owned()),
         AuthorityEpoch(1),
     );
-    let server = TestServer::start(router).await;
-    let response = reqwest::Client::new()
-        .get(format!("{}+replication/v1/analytics?after=-1", server.url))
-        .bearer_auth("wrong")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let response = router.oneshot(analytics_request(Some("wrong"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -194,16 +195,13 @@ async fn test_endpoint_serves_sealed_batches_to_an_authorized_pull() {
     metrics.settle();
     day.store(11 * 86_400, Ordering::SeqCst);
 
-    let router = analytics_router(TOKEN, metrics, ProducerId("east".to_owned()), AuthorityEpoch(1));
-    let server = TestServer::start(router).await;
-    let response = reqwest::Client::new()
-        .get(format!("{}+replication/v1/analytics?after=-1", server.url))
-        .bearer_auth(TOKEN)
-        .send()
+    let response = analytics_router(TOKEN, metrics, ProducerId("east".to_owned()), AuthorityEpoch(1))
+        .oneshot(analytics_request(Some(TOKEN)))
         .await
         .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let batches: Vec<AnalyticsBatch> = response.json().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let batches: Vec<AnalyticsBatch> =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].interval.sequence, 10);
     assert_eq!(batches[0].rows[0].delta.downloads, 1);

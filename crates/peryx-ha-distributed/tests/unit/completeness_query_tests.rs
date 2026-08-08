@@ -1,7 +1,10 @@
 use crate::{
     AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsReceiver, AuthorityEpoch, Completeness,
-    CompletenessQuery, DEFAULT_APPLY_LIMITS, DayBucket, ExpectedProducer, IntervalId, ProducerId, assess_completeness,
+    CompletenessQuery, DEFAULT_APPLY_LIMITS, DayBucket, DistributedAnalyticsCompleteness, ExpectedProducer, IntervalId,
+    ProducerId, assess_completeness,
 };
+use peryx_ha::AnalyticsCompleteness as _;
+use peryx_storage::meta::MetaStore;
 
 fn batch(producer: &str, epoch: u64, day: i64, rows: &[(&str, &str, u64, u64)]) -> AnalyticsBatch {
     AnalyticsBatch {
@@ -407,4 +410,33 @@ fn test_a_restored_receiver_reports_the_same_completeness() {
         assess_completeness(&restored, &members, &query),
         assess_completeness(&original, &members, &query),
     );
+}
+
+#[test]
+fn test_distributed_reader_restores_the_durable_receiver() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    meta.analytics()
+        .save_apply(&receiver(&[batch("east", 1, 10, &[("alpha", "flask", 3, 30)])]).encode())
+        .unwrap();
+
+    let report = DistributedAnalyticsCompleteness
+        .assess(&meta, &expected(&[("east", "east-dc")]), &query(0, 10, 11, None))
+        .unwrap();
+
+    assert_eq!(report.completeness, Completeness::Complete);
+    assert_eq!(report.totals.downloads, 3);
+}
+
+#[test]
+fn test_distributed_reader_starts_empty_without_durable_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+
+    let report = DistributedAnalyticsCompleteness
+        .assess(&meta, &expected(&[("east", "east-dc")]), &query(0, 10, 11, None))
+        .unwrap();
+
+    assert_eq!(report.completeness, Completeness::Unavailable);
+    assert_eq!(report.totals, AggregateDelta::default());
 }

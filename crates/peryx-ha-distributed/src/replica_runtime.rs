@@ -209,3 +209,7 @@ impl ReplicaLoop {
         Ok(report)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/replica_runtime_tests.rs"]
+mod tests;

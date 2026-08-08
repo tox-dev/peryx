@@ -1,4 +1,58 @@
 use super::*;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use peryx_ha::{ReplicaPage, ReplicaViewApplier};
+use peryx_storage::blob::BlobStorage;
+use peryx_storage::meta::MetaStore;
+
+use crate::multi_peer::DEFAULT_SET_LIMITS;
+use crate::{
+    AnalyticsPuller, AvailabilityMetrics, BeaconSender, CapacityLimited, HttpBlobTransport, PeerSet, ReconnectPolicy,
+    ReplicaLoopParts, ReplicaMonitor, TransferLimits,
+};
+
+struct Views;
+
+impl ReplicaViewApplier for Views {
+    fn apply(&self, _page: ReplicaPage, _changed_keys: &[String]) {}
+
+    fn readable_frontier(&self) -> u64 {
+        0
+    }
+}
+
+fn replica() -> (tempfile::TempDir, MetaStore, ReplicaLoop) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let metadata = PeerSet::new(DEFAULT_SET_LIMITS, ReconnectPolicy::default());
+    let transport = HttpBlobTransport::new(
+        "http://127.0.0.1:1/",
+        "token",
+        TransferLimits::default(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    (
+        dir,
+        meta.clone(),
+        ReplicaLoop::new(ReplicaLoopParts {
+            views: Arc::new(Views),
+            metadata,
+            policy: ReconnectPolicy::default(),
+            meta,
+            blobs,
+            page_size: NonZeroUsize::new(1).unwrap(),
+            poll_interval: Duration::from_secs(1),
+            monitor: Arc::new(ReplicaMonitor::new(0)),
+            metrics: Arc::new(AvailabilityMetrics::default()),
+            transport: CapacityLimited::new(transport, NonZeroUsize::new(1).unwrap()),
+            local_dc: String::new(),
+            delegates: HashMap::new(),
+        }),
+    )
+}
 
 fn rendered(shared: &WorkerShared) -> String {
     let mut body = String::new();
@@ -108,4 +162,42 @@ fn test_saturated_runtime_refuses_further_tasks() {
     assert_eq!(shared.rejected.load(Ordering::Relaxed), 1);
     release.send(()).expect("resident still waiting");
     runtime.handle.block_on(resident).expect("resident joins");
+}
+
+#[test]
+fn test_replica_services_report_initial_saturation() {
+    let shared = Arc::new(WorkerShared::new(1, 0));
+    let runtime = AvailabilityRuntime::start(shared).unwrap();
+    let (_dir, _meta, replica) = replica();
+
+    let error = runtime.start_replica_services(replica, None, None).err().unwrap();
+
+    assert!(error.to_string().contains("reserve the replica loop slot"), "{error}");
+}
+
+#[test]
+fn test_replica_services_start_selected_loops() {
+    for include_optional in [false, true] {
+        let runtime = AvailabilityRuntime::start(Arc::new(WorkerShared::for_replica())).unwrap();
+        let (_dir, meta, replica) = replica();
+        let analytics = include_optional
+            .then(|| AnalyticsPuller::new("http://127.0.0.1:1/", "token", meta.analytics(), Duration::from_secs(1)))
+            .transpose()
+            .unwrap();
+        let beacon = include_optional
+            .then(|| {
+                BeaconSender::new(
+                    "http://127.0.0.1:1/",
+                    "token",
+                    "replica",
+                    1,
+                    meta,
+                    Duration::from_secs(1),
+                )
+            })
+            .transpose()
+            .unwrap();
+
+        drop(runtime.start_replica_services(replica, analytics, beacon).unwrap());
+    }
 }

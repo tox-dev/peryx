@@ -15,9 +15,7 @@ fn test_error_class_classifies_each_bounded_reason() {
         SyncErrorClass::Schema
     );
     assert_eq!(
-        SyncErrorClass::of(&SyncError::Primary(Box::new(std::io::Error::other(
-            "primary unreachable"
-        )))),
+        SyncErrorClass::of(&SyncError::primary(std::io::Error::other("primary unreachable"))),
         SyncErrorClass::Transport
     );
     assert_eq!(SyncErrorClass::of(&SyncError::EmptySource), SyncErrorClass::Apply);

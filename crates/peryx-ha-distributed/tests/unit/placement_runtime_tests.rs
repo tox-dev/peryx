@@ -588,3 +588,10 @@ fn test_reconciler_requires_multiple_datacenters() {
 
     assert!(FilesystemPlacementReconciler::new(dc("home"), store, BTreeSet::from([dc("home")])).is_none());
 }
+
+#[test]
+fn test_reconciler_accepts_multiple_datacenters() {
+    let (_dir, store, _root, _backend) = filesystem();
+
+    assert!(FilesystemPlacementReconciler::new(dc("home"), store, BTreeSet::from([dc("home"), dc("west")])).is_some());
+}

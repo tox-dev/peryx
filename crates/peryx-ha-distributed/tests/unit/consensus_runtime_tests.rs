@@ -129,6 +129,9 @@ async fn test_ignite_starts_and_bootstraps_a_single_node_group() {
     )
     .unwrap();
 
+    assert_eq!(plan.home(), DatacenterId("east".to_owned()));
+    assert_eq!(plan.token(), TOKEN);
+
     let node = plan.ignite().await.unwrap();
 
     // The lone voter elects itself within an election window; poll its own leader view rather than
