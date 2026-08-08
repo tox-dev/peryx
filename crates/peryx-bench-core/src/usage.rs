@@ -18,7 +18,7 @@ pub struct Usage {
 }
 
 /// What one window cost: `None` when there was no server process to watch.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cost {
     pub cpu_seconds: f64,
     pub peak_rss_bytes: u64,

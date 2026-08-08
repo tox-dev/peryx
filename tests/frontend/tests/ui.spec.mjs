@@ -1,6 +1,8 @@
 // Functional tests of the hydrated web UI: every reactive feature is driven the way a person would
 // drive it, against a real peryx with a real uploaded package.
 import { expect, test } from "@playwright/test";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +13,18 @@ const FIXTURE_WHEEL = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtu
 // The status, dashboard, and stats surfaces filter to the caller's class, so viewing the topology and
 // counters needs the bootstrapped administrator's credential on every request the page makes.
 const ADMIN_AUTH = `Basic ${Buffer.from("administrator:browser-admin-secret").toString("base64")}`;
+
+test.afterEach(async ({ page }, testInfo) => {
+  if (!process.env.PERYX_WASM_PROFRAW || page.isClosed() || (await page.locator("body[data-hydrated]").count()) === 0) return;
+  const profile = await page.evaluate(async () => {
+    const module = await import("/pkg/peryx_web.js");
+    module.capture_coverage();
+    return Array.from(module.capture_coverage());
+  });
+  const identity = `${testInfo.workerIndex}-${testInfo.retry}-${testInfo.titlePath.join("-")}`;
+  const digest = createHash("sha256").update(identity).digest("hex");
+  writeFileSync(join(process.env.PERYX_WASM_PROFRAW, `${digest}.profraw`), Buffer.from(profile));
+});
 
 /// Navigate and wait for the wasm bundle to hydrate, so clicks hit live handlers.
 async function goto(page, url) {

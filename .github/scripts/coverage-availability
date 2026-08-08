@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+cargo llvm-cov nextest -p peryx --features availability-e2e --lcov --output-path "${1:-coverage-availability.lcov}"

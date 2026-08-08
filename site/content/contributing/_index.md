@@ -26,15 +26,20 @@ prek install         # fmt, clippy, and hygiene hooks on every commit
 Run the CI gates before pushing:
 
 ```shell
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace
-cargo llvm-cov nextest --workspace --ignore-filename-regex 'main\.rs' \
-  --fail-under-lines 100 --fail-under-functions 100
+just all
 ```
 
-Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on stable
-[Rust](https://www.rust-lang.org/) can reach compiler-generated branches (async expansions, drop glue).
+`just all` runs linting, pre-commit, every Rust and browser suite, and the 100% line and function coverage gate. Use the
+same targets separately while developing, such as `just test`, `just frontend`, or `just coverage-native`.
+
+Run the Linux gate from macOS or Windows without copying the working tree into an image:
+
+```shell
+docker compose --profile test run --rm test all
+```
+
+Compose bind-mounts the working tree and keeps Cargo, target, npm, and Docker data in named volumes. The nested Docker
+daemon supports tests that create containers. Use `docker compose --profile test down` to stop it.
 
 Run the suite with [nextest](https://nexte.st/), not `cargo test`. nextest gives each test its own process; `cargo test`
 runs a binary's tests as threads in one process. The web UI tests render Leptos pages, and Leptos drives a per-thread
@@ -74,8 +79,9 @@ npx playwright install chromium
 npx playwright test
 ```
 
-The UI crate sits outside the `llvm-cov` gate: wasm cannot be coverage-instrumented and event handlers only run in a
-browser, so the Playwright suite and peryx's server-side render tests are its gates instead.
+`just coverage-frontend` instruments the native server and the Wasm bundle. It selects a nightly Rust compiler whose
+LLVM major matches the stable compiler, records each browser test, and emits separate LCOV reports for native and Wasm
+code. `just coverage` merges them with the Rust suites before enforcing complete line and function coverage.
 
 ## The documentation site
 

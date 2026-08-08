@@ -283,5 +283,19 @@ pub fn hydrate() {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "wasm-coverage"))]
+#[allow(
+    unsafe_code,
+    reason = "each page owns one single-threaded Wasm instance while minicov snapshots its counters"
+)]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn capture_coverage() -> Vec<u8> {
+    let mut profile = Vec::new();
+    unsafe {
+        minicov::capture_coverage(&mut profile).expect("coverage profile must serialize");
+    }
+    profile
+}
+
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,16 @@ function tail(value,    separator) {
     return substr(value, separator + 1)
 }
 
+function function_name(value,    rest, separator, end_line) {
+    rest = tail(value)
+    separator = index(rest, ",")
+    if (!separator) {
+        return rest
+    }
+    end_line = substr(rest, 1, separator - 1)
+    return end_line ~ /^[0-9]+$/ ? substr(rest, separator + 1) : rest
+}
+
 /^SF:/ {
     source = substr($0, 4)
     local = index(source, root) == 1
@@ -21,7 +31,7 @@ function tail(value,    separator) {
 
 local && /^FN:/ {
     value = substr($0, 4)
-    function_key = source SUBSEP tail(value)
+    function_key = source SUBSEP function_name(value)
     declaration = source SUBSEP field(value)
     function_declaration[function_key] = declaration
     source_function[declaration] = 1
@@ -30,6 +40,20 @@ local && /^FN:/ {
 local && /^FNDA:/ {
     value = substr($0, 6)
     function_hits[source SUBSEP tail(value)] += field(value)
+}
+
+local && /^FNL:/ {
+    value = substr($0, 5)
+    function_key = source SUBSEP field(value)
+    declaration = source SUBSEP tail(value)
+    function_declaration[function_key] = declaration
+    source_function[declaration] = 1
+}
+
+local && /^FNA:/ {
+    value = substr($0, 5)
+    rest = tail(value)
+    function_hits[source SUBSEP field(value)] += field(rest)
 }
 
 END {

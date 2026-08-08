@@ -29,6 +29,7 @@ ssr = [
 ]
 # The browser half: compiled to wasm32 by cargo-leptos, hydrates the server-rendered page.
 hydrate = ["dep:wasm-bindgen", "dep:gloo-net", "dep:base64", "dep:console_error_panic_hook", "dep:send_wrapper", "dep:web-sys"]
+wasm-coverage = ["hydrate", "dep:minicov"]
 
 [dependencies]
 leptos.workspace = true
@@ -44,6 +45,7 @@ axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = ["fs"] }
 tokio = { workspace = true, optional = true, features = ["rt"] }
 wasm-bindgen = { workspace = true, optional = true }
+minicov = { workspace = true, optional = true }
 gloo-net = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 send_wrapper = { workspace = true, optional = true }

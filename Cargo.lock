@@ -4210,6 +4210,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "minicov"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4869b6a491569605d66d3952bcdf03df789e5b536e5f0cf7758a7f08a55ae24d"
+dependencies = [
+ "cc",
+ "walkdir",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4971,6 +4981,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "reqwest",
+ "rustls 0.23.43",
  "serde",
  "statrs",
  "sysinfo",
@@ -5442,6 +5453,7 @@ dependencies = [
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "minicov",
  "peryx-core",
  "peryx-driver",
  "peryx-http",

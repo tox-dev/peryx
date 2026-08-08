@@ -14,20 +14,14 @@ function tail(value,    separator) {
     return substr(value, separator + 1)
 }
 
-function excluded_line(path, number,    current, text, stripped) {
-    current = 0
-    while ((getline text < path) > 0) {
-        current++
-        if (current == number) {
-            close(path)
-            stripped = text
-            gsub(/[[:space:]]/, "", stripped)
-            gsub(/[][{}(),;]/, "", stripped)
-            return stripped == "" || text ~ /^[[:space:]]*\)[^{]*\{[[:space:]]*$/
-        }
+function function_name(value,    rest, separator, end_line) {
+    rest = tail(value)
+    separator = index(rest, ",")
+    if (!separator) {
+        return rest
     }
-    close(path)
-    return 0
+    end_line = substr(rest, 1, separator - 1)
+    return end_line ~ /^[0-9]+$/ ? substr(rest, separator + 1) : rest
 }
 
 /^SF:/ {
@@ -37,12 +31,23 @@ function excluded_line(path, number,    current, text, stripped) {
 
 local && /^FN:/ {
     value = substr($0, 4)
-    function_line[source SUBSEP tail(value)] = field(value)
+    function_line[source SUBSEP function_name(value)] = field(value)
 }
 
 local && /^FNDA:/ {
     value = substr($0, 6)
     function_hits[source SUBSEP tail(value)] += field(value)
+}
+
+local && /^FNL:/ {
+    value = substr($0, 5)
+    function_line[source SUBSEP field(value)] = tail(value)
+}
+
+local && /^FNA:/ {
+    value = substr($0, 5)
+    rest = tail(value)
+    function_hits[source SUBSEP field(value)] += field(rest)
 }
 
 local && /^DA:/ {
@@ -62,10 +67,8 @@ END {
             continue
         }
         split(key, parts, SUBSEP)
-        if (!excluded_line(parts[1], parts[2])) {
-            print parts[1] ":" parts[2]
-            failed = 1
-        }
+        print parts[1] ":" parts[2]
+        failed = 1
     }
     exit failed
 }

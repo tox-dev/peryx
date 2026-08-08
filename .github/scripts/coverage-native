@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+toolchain="$(.github/scripts/coverage-toolchain)"
+cargo +"$toolchain" llvm-cov clean --workspace
+eval "$(cargo +"$toolchain" llvm-cov show-env --sh --doctests)"
+cargo +"$toolchain" nextest run --workspace --lib --bins --tests --examples
+cargo +"$toolchain" test --workspace --bench '*'
+cargo +"$toolchain" test --doc --workspace
+cargo +"$toolchain" llvm-cov report --doctests --lcov --output-path "${1:-coverage-native.lcov}"

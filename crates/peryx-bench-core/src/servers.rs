@@ -14,6 +14,33 @@ use anyhow::{Context as _, bail};
 /// How long a server gets to answer its first request (uvx may resolve an environment first).
 const START_TIMEOUT: Duration = Duration::from_mins(3);
 
+/// Override these deadlines for competitors that need setup before they can answer.
+#[derive(Clone, Copy)]
+pub struct StartupPolicy {
+    pub timeout: Duration,
+    pub request_timeout: Duration,
+    pub poll_interval: Duration,
+}
+
+impl Default for StartupPolicy {
+    fn default() -> Self {
+        Self {
+            timeout: START_TIMEOUT,
+            request_timeout: Duration::from_secs(30),
+            poll_interval: Duration::from_millis(300),
+        }
+    }
+}
+
+/// Rustls needs a process-wide provider before reqwest builds a client.
+///
+/// # Errors
+/// Returns an error when reqwest cannot build the client.
+pub fn http_client() -> anyhow::Result<reqwest::Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    Ok(reqwest::Client::builder().build()?)
+}
+
 /// One index server under test; every field is filled in by a per-ecosystem definition.
 pub struct Server {
     pub name: &'static str,
@@ -84,6 +111,19 @@ impl Server {
     /// # Errors
     /// Returns an error when the server exits early or never becomes ready; includes its log tail.
     pub async fn start(&self, state: &Path, client: &reqwest::Client) -> anyhow::Result<Active> {
+        self.start_with_policy(state, client, StartupPolicy::default()).await
+    }
+
+    /// Use explicit deadlines for bounded smoke runs and slow competitor setup.
+    ///
+    /// # Errors
+    /// Returns an error when setup, process startup, or readiness fails.
+    pub async fn start_with_policy(
+        &self,
+        state: &Path,
+        client: &reqwest::Client,
+        policy: StartupPolicy,
+    ) -> anyhow::Result<Active> {
         let port = free_port()?;
         let url = (self.base_url)(port);
         let probe_url = (self.probe)(&url);
@@ -118,7 +158,7 @@ impl Server {
             port,
             teardown: self.teardown,
         };
-        active.wait_ready(client).await.with_context(|| {
+        active.wait_ready(client, policy).await.with_context(|| {
             let tail = active
                 .log
                 .as_ref()
@@ -131,9 +171,9 @@ impl Server {
 }
 
 impl Active {
-    async fn wait_ready(&mut self, client: &reqwest::Client) -> anyhow::Result<()> {
+    async fn wait_ready(&mut self, client: &reqwest::Client, policy: StartupPolicy) -> anyhow::Result<()> {
         let probe = self.probe_url.clone();
-        let deadline = Instant::now() + START_TIMEOUT;
+        let deadline = Instant::now() + policy.timeout;
         while Instant::now() < deadline {
             if let Some(process) = self.process.as_mut()
                 && let Some(status) = process.try_wait()?
@@ -141,9 +181,9 @@ impl Active {
                 bail!("server exited early with {status}");
             }
             // Any HTTP status means the server is up and routing; only transport errors retry.
-            match client.get(&probe).timeout(Duration::from_secs(30)).send().await {
+            match client.get(&probe).timeout(policy.request_timeout).send().await {
                 Ok(_) => return Ok(()),
-                Err(_) => tokio::time::sleep(Duration::from_millis(300)).await,
+                Err(_) => tokio::time::sleep(policy.poll_interval).await,
             }
         }
         bail!("server never answered at {probe}")

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+commit_date="$(rustc -vV | awk '/^commit-date:/ { print $2 }')"
+toolchain="nightly-$commit_date"
+args=(--profile minimal --component llvm-tools-preview)
+if [[ "${1:-}" == wasm ]]; then
+  args+=(--target wasm32-unknown-unknown)
+fi
+rustup toolchain install "$toolchain" "${args[@]}" >&2
+printf '%s\n' "$toolchain"

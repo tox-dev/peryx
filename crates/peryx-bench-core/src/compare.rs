@@ -38,8 +38,13 @@ struct Change {
 pub fn against(baseline: &Path) -> anyhow::Result<bool> {
     let base = load(baseline)?;
     let head = load(&report_path())?;
-    let changes = collect(&base, &head);
-    Ok(verdict(&changes))
+    Ok(compare(&base, &head))
+}
+
+/// Use loaded reports when the caller owns their storage paths.
+#[must_use]
+pub fn compare(base: &Report, head: &Report) -> bool {
+    verdict(&collect(base, head))
 }
 
 /// Every peryx metric present in both reports, oriented and gated.

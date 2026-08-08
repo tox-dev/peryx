@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+output="${1:?output path is required}"
+shift
+if (($# == 0)); then
+  printf 'at least one LCOV input is required\n' >&2
+  exit 1
+fi
+args=()
+for input in "$@"; do
+  args+=(--add-tracefile "$input")
+done
+lcov "${args[@]}" --output-file "$output"
+.github/scripts/test-check-lcov-lines
+.github/scripts/check-lcov-functions.awk "$output"
+.github/scripts/check-lcov-lines.awk "$output"

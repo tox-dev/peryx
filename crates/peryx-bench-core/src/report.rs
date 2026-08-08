@@ -1,6 +1,6 @@
 //! The TOML report zola renders: one file, one table per workload, merged across partial runs.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ const LADDER: &[&str] = &["faster", "par", "mild", "slow", "veryslow", "worst"];
 const MIN_SPAN: f64 = 2.079_441_541_679_835_9; // ln 8
 
 /// The whole report: every workload's table, keyed by name.
-#[derive(Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct Report {
     #[serde(default)]
     pub tables: std::collections::BTreeMap<String, Table>,
@@ -32,7 +32,7 @@ pub fn load(path: &std::path::Path) -> anyhow::Result<Report> {
 }
 
 /// One comparison table.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Table {
     pub label: String,
     pub baseline: String,
@@ -40,13 +40,13 @@ pub struct Table {
     pub rows: Vec<Row>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Party {
     pub name: String,
     pub url: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     pub name: String,
     pub cells: Vec<Cell>,
@@ -60,7 +60,7 @@ pub struct Row {
     pub higher_is_better: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     pub text: String,
     pub ratio: String,
@@ -361,7 +361,15 @@ pub fn table(label: &str, servers: &[Server], baseline: usize, rows: Vec<Row>) -
 /// Returns an error when the existing report cannot be parsed or the new one cannot be written.
 pub fn publish(name: &str, table: Table) -> anyhow::Result<()> {
     let path = report_path();
-    let mut report: toml::Table = match std::fs::read_to_string(&path) {
+    publish_to(&path, name, table)
+}
+
+/// Use an explicit path for isolated A/B runs and tests.
+///
+/// # Errors
+/// Returns an error when the report cannot be parsed or written.
+pub fn publish_to(path: &Path, name: &str, table: Table) -> anyhow::Result<()> {
+    let mut report: toml::Table = match std::fs::read_to_string(path) {
         Ok(existing) => existing.parse().context("existing report is not valid TOML")?,
         Err(_) => toml::Table::new(),
     };
@@ -371,8 +379,10 @@ pub fn publish(name: &str, table: Table) -> anyhow::Result<()> {
         .as_table_mut()
         .context("`tables` is not a TOML table")?;
     tables.insert(name.to_owned(), toml::Value::try_from(table)?);
-    std::fs::create_dir_all(repo_root().join("site").join("data").join("bench"))?;
-    std::fs::write(&path, toml::to_string_pretty(&report)?)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, toml::to_string_pretty(&report)?)?;
     println!("updated {} [{name}]", path.display());
     Ok(())
 }

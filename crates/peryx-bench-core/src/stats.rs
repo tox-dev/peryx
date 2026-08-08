@@ -16,6 +16,7 @@ const NOISY_CV: f64 = 0.05;
 /// noise gauge; the Tukey outlier count reports how many rounds landed past the `1.5·IQR` fence
 /// without discarding them (dropping points silently would bias an A/B whenever the two sides drop a
 /// different number).
+#[derive(Debug, PartialEq)]
 pub struct Summary {
     pub median: f64,
     pub min: f64,

@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const target = resolve(repo, process.env.CARGO_TARGET_DIR ?? "target");
-const binary = ["debug", "release"].map((profile) => join(target, profile, "peryx")).find(existsSync);
+const binary =
+  process.env.PERYX_FRONTEND_BINARY ?? ["debug", "release"].map((profile) => join(target, profile, "peryx")).find(existsSync);
 if (!binary) {
   console.error("build the server and web bundle first: cargo leptos build");
   process.exit(1);
@@ -182,13 +183,20 @@ process.on("exit", () => {
   upstream.close();
   ready?.close();
 });
+let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-  // A plain signal skips the exit handler, which leaks peryx on the port; forward and quit.
   process.on(signal, () => {
-    peryx.kill();
-    upstream.close();
-    ready?.close();
-    process.exit(0);
+    if (stopping) return;
+    stopping = true;
+    peryx.once("close", () => {
+      upstream.close();
+      ready?.close();
+      process.exit(0);
+    });
+    setTimeout(() => {
+      peryx.kill("SIGKILL");
+      process.exit(1);
+    }, 10_000).unref();
   });
 }
 

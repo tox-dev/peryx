@@ -13,7 +13,7 @@ Run them with the binary on your `PATH`:
 
 ```console
 $ brew install toxiproxy     # or download toxiproxy-server from the releases
-$ cargo test -p peryx --features availability-e2e --test availability
+$ just availability
 ```
 
 ## Test API
