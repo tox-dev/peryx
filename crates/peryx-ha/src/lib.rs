@@ -731,3 +731,7 @@ fn trace_flags(traceparent: &str) -> Option<u8> {
         .map_or(traceparent, |dash| &traceparent[dash + 1..]);
     (flags.len() == 2).then(|| u8::from_str_radix(flags, 16).ok()).flatten()
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
+mod tests;

@@ -15,5 +15,12 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+mockall.workspace = true
+rstest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
 [lints]
 workspace = true
