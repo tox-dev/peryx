@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::report::{Table, publish_to, report_path};
+use crate::report::{Table, publish_to};
 
 #[derive(Clone, Debug)]
 pub struct BenchmarkContext {
@@ -9,11 +9,6 @@ pub struct BenchmarkContext {
 }
 
 impl BenchmarkContext {
-    #[must_use]
-    pub fn workspace(peryx_binary: PathBuf) -> Self {
-        Self::new(peryx_binary, report_path())
-    }
-
     #[must_use]
     pub const fn new(peryx_binary: PathBuf, report_path: PathBuf) -> Self {
         Self {

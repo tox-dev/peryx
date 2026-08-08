@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::report::{Report, Table, load, report_path};
+use crate::report::{Report, Table, load};
 use crate::stats::geometric_mean;
 
 /// The party whose two revisions the compare weighs.
@@ -28,15 +28,6 @@ struct Change {
     worse: f64,
     gated: bool,
     reason: &'static str,
-}
-
-/// Compare the current report against `baseline`, print the per-metric table, and return whether the
-/// gated geometric mean crossed the regression threshold.
-///
-/// # Errors
-/// Returns an error when either report cannot be read.
-pub fn against(baseline: &Path) -> anyhow::Result<bool> {
-    against_paths(baseline, &report_path())
 }
 
 /// Compare reports stored outside the published report path.

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Peak resident memory and CPU seconds of one server's process tree during a workload window.
 ///
@@ -62,8 +62,9 @@ impl Usage {
 fn sample(root: Pid, peak_rss: &AtomicU64, cpu_millis: &AtomicU64, stop: &AtomicU64) {
     let mut system = System::new();
     let interval = Duration::from_millis(200);
+    let refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
     while stop.load(Ordering::Relaxed) == 0 {
-        system.refresh_processes(ProcessesToUpdate::All, true);
+        system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
         let tree = tree_of(&system, root);
         let rss: u64 = tree
             .iter()
