@@ -172,9 +172,7 @@ impl ServingCache {
                 .weigher(|key: &String, (value, _, _): &(bytes::Bytes, i64, Option<u64>)| {
                     u32::try_from(key.len() + value.len()).unwrap_or(u32::MAX)
                 })
-                .time_to_live(std::time::Duration::from_secs(
-                    u64::try_from(ttl_secs.max(1)).unwrap_or(1800),
-                ))
+                .time_to_live(std::time::Duration::from_secs(ttl_secs.max(1).unsigned_abs()))
                 .build(),
             negative: moka::sync::Cache::builder().max_capacity(65_536).build(),
             hot_epochs: Mutex::new(BTreeMap::new()),

@@ -1,4 +1,6 @@
-use super::{Inflight, flight_gate, within_stale_bound};
+use bytes::Bytes;
+
+use super::{Inflight, ServingCache, flight_gate, release_flight, within_stale_bound};
 
 #[tokio::test]
 async fn test_same_key_waiters_share_one_gate() {
@@ -51,6 +53,77 @@ fn test_active_counts_registered_callers() {
         0,
         "the gate retires when its last caller leaves"
     );
+}
+
+#[test]
+fn test_release_flight_retires_the_gate() {
+    let inflight = Inflight::default();
+
+    release_flight(
+        &inflight,
+        "digest",
+        flight_gate(&inflight, "digest").try_lock_owned().unwrap(),
+    );
+
+    assert_eq!(inflight.active("digest"), 0);
+}
+
+#[test]
+fn test_forget_flight_retires_an_uncontended_gate() {
+    let cache = ServingCache::new(1024, 60);
+    let guard = flight_gate(&cache.inflight, "digest").try_lock_owned().unwrap();
+
+    cache.forget_flight("digest");
+
+    assert_eq!(cache.inflight.active("digest"), 0);
+    drop(guard);
+}
+
+#[test]
+fn test_hot_cache_honors_entry_expiry() {
+    let cache = ServingCache::new(1024, 0);
+    cache.store_hot("page".to_owned(), Bytes::from_static(b"body"), 10);
+
+    assert_eq!(cache.hot_fresh("page", 9), Some(Bytes::from_static(b"body")));
+    assert_eq!(cache.hot_fresh("page", 10), None);
+    assert_eq!(cache.hot_fresh("missing", 0), None);
+}
+
+#[test]
+fn test_versioned_hot_cache_returns_source_revision() {
+    let cache = ServingCache::new(1024, 60);
+    cache.store_hot_versioned("page".to_owned(), Bytes::from_static(b"body"), 10, Some(7));
+
+    assert_eq!(
+        cache.hot_fresh_versioned("page", 9),
+        Some((Bytes::from_static(b"body"), Some(7)))
+    );
+    assert_eq!(cache.hot_fresh_versioned("page", 10), None);
+    assert_eq!(cache.hot_fresh_versioned("missing", 0), None);
+}
+
+#[test]
+fn test_hot_keys_change_only_for_the_invalidated_project() {
+    let cache = ServingCache::new(1024, 60);
+    let first = cache.hot_key("route", "first", "json");
+    let second = cache.hot_key("route", "second", "json");
+
+    cache.invalidate_hot("first");
+
+    assert_ne!(cache.hot_key("route", "first", "json"), first);
+    assert_eq!(cache.hot_key("route", "second", "json"), second);
+}
+
+#[test]
+fn test_negative_cache_retires_expired_entries() {
+    let cache = ServingCache::new(1024, 60);
+    assert!(!cache.negative_fresh("missing", 0));
+
+    cache.remember_negative("missing".to_owned(), 10);
+
+    assert!(cache.negative_fresh("missing", 9));
+    assert!(!cache.negative_fresh("missing", 10));
+    assert!(!cache.negative_fresh("missing", 9));
 }
 
 #[test]

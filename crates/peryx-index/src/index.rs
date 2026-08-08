@@ -49,3 +49,7 @@ pub enum IndexKind {
         upload: Option<usize>,
     },
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/index/tests.rs"]
+mod tests;
