@@ -36,6 +36,10 @@ struct Cli {
     #[arg(long, default_value = "")]
     only: String,
 
+    /// Write tables to this file instead of the published site report.
+    #[arg(long, value_name = "PATH")]
+    report: Option<PathBuf>,
+
     #[command(subcommand)]
     mode: Option<Mode>,
 
@@ -72,7 +76,10 @@ async fn main() -> anyhow::Result<()> {
     match cli.mode.clone() {
         Some(Mode::Ab { base, head_first }) => ab(&base, head_first, &cli, &http).await,
         Some(Mode::VsRest) | None => {
-            let context = BenchmarkContext::workspace(ensure_peryx_built()?);
+            let context = BenchmarkContext::new(
+                ensure_peryx_built()?,
+                cli.report.clone().unwrap_or_else(report::report_path),
+            );
             run_suite(&context, &cli, &http).await
         }
     }
