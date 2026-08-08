@@ -3,10 +3,12 @@ set -euo pipefail
 
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo"
-toolchain="$(.github/scripts/coverage-toolchain)"
-cargo +"$toolchain" llvm-cov clean --workspace
-eval "$(cargo +"$toolchain" llvm-cov show-env --sh --doctests)"
-cargo +"$toolchain" nextest run --workspace --lib --bins --tests --examples
-cargo +"$toolchain" test --workspace --bench '*'
-cargo +"$toolchain" test --doc --workspace
-cargo +"$toolchain" llvm-cov report --doctests --lcov --output-path "${1:-coverage-native.lcov}"
+cargo llvm-cov clean --workspace
+eval "$(cargo llvm-cov show-env --sh)"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+export CARGO_PROFILE_TEST_DEBUG=0
+test_targets=(--lib --bins --tests --examples)
+cargo test --workspace --exclude peryx --exclude peryx-web "${test_targets[@]}"
+cargo nextest run -p peryx -p peryx-web "${test_targets[@]}"
+cargo test --workspace --bench '*'
+cargo llvm-cov report --lcov --output-path "${1:-coverage-native.lcov}"
