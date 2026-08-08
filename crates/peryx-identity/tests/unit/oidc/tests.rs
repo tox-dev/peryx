@@ -158,6 +158,22 @@ async fn test_exchange_mints_a_route_scoped_token_once() {
 }
 
 #[tokio::test]
+async fn test_identity_exchange_dispatches_through_the_contract() {
+    let (server, runtime) = runtime().await;
+    let exchange: &dyn IdentityExchange = runtime.as_ref();
+
+    assert_eq!(exchange.audience(), "peryx");
+    assert_eq!(
+        exchange
+            .exchange(&identity(&server.uri(), "key-1", "contract"), NOW)
+            .await
+            .unwrap()
+            .publisher_id,
+        "github-release"
+    );
+}
+
+#[tokio::test]
 async fn test_concurrent_exchange_has_one_winner() {
     let (server, runtime) = runtime().await;
     let token = identity(&server.uri(), "key-1", "race");

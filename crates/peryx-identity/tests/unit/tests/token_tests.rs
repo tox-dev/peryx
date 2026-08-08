@@ -71,6 +71,11 @@ fn test_mint_and_verify_round_trip_a_named_principal() {
 }
 
 #[test]
+fn test_signer_reports_its_audience() {
+    assert_eq!(signer().audience(), "peryx");
+}
+
+#[test]
 fn test_mint_and_verify_round_trip_an_anonymous_principal() {
     let signer = signer();
     let token = signer.mint(&Principal::Anonymous, &[], now(), HOUR);
