@@ -21,6 +21,7 @@ fn test_is_local_file_url_matches_only_the_route_files_prefix() {
 
 #[test]
 fn test_path_segments_decode_percent_encoding() {
+    assert_eq!(decode_path_segment("pkg.bin").unwrap(), "pkg.bin");
     assert_eq!(decode_path_segment("pkg%201.0%23x%3F.bin").unwrap(), "pkg 1.0#x?.bin");
     assert_eq!(decode_path_segment("pkg%252Fname.bin").unwrap(), "pkg%2Fname.bin");
     assert_eq!(

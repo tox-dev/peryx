@@ -8,3 +8,7 @@ pub trait EcosystemInstaller<State>: Send + Sync {
     /// Register the ecosystem driver, indexers, and lexicon for one plugin.
     fn register_driver(&self, state: &mut State);
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/contracts/tests.rs"]
+mod tests;

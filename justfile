@@ -15,6 +15,14 @@ test:
     cargo test --workspace --bench '*'
     cargo test --workspace --doc
 
+# Check, test, and enforce complete coverage for one crate.
+crate-contract package output=".tox/crate-contracts":
+    .github/scripts/crate-contracts "{{output}}" "{{package}}"
+
+# Check, test, and enforce complete coverage for a crate group.
+crate-contracts output +packages:
+    .github/scripts/crate-contracts "{{output}}" {{packages}}
+
 # Run end-to-end tests against external service boundaries.
 e2e:
     cargo nextest run -p peryx --features e2e
@@ -56,6 +64,10 @@ coverage output=".tox/coverage":
 # Run repository hooks against every file.
 pre-commit:
     pre-commit run --all-files
+
+# Run any Just recipe in the Linux test container.
+linux +args:
+    docker compose --profile test run --rm test {{args}}
 
 # Run every validation target.
 all: lint coverage pre-commit
