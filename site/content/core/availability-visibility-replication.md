@@ -15,8 +15,8 @@ visibility projection specifically; the read-side frontier it gates on is the on
 ## The operation and its order
 
 A transition is a typed **visibility operation**: which artifact it targets, which of the four transitions it is, and
-where it sits in the authoritative order. The order is a pair — the **authority epoch** first, the operation **serial**
-within that epoch — and the authority that owns the artifact stamps it. A higher epoch always outranks a lower one; a
+where it sits in the authoritative order. The order is a pair : the **authority epoch** first, the operation **serial**
+within that epoch : and the authority that owns the artifact stamps it. A higher epoch always outranks a lower one; a
 higher serial outranks a lower one within an epoch. The serial is drawn from the same monotonic metadata journal counter
 every other mutation uses, so a visibility operation orders against uploads and yanks by the one serial the contract
 already expresses staleness over.
@@ -47,7 +47,7 @@ already applied is not undone by a lift that was authored earlier and merely arr
 out-of-order delivery cannot resurrect an older state**. Because the two dimensions are independent, a trash and a
 revoke on one artifact do not fence each other out by serial.
 
-A replica advertises an **operation frontier** — the highest serial per epoch whose applied effect it has durably
+A replica advertises an **operation frontier** : the highest serial per epoch whose applied effect it has durably
 persisted. The projection persists the converged snapshot _before_ it advances that frontier, and a batch commits its
 whole effect or none of it: if the persist fails, the projection and its advertised frontier stay exactly where they
 were. A reader that trusts the frontier can therefore trust the served projection behind it, and a replica never
@@ -63,14 +63,14 @@ that cannot restore it refuses to start rather than serve a partial hidden set.
 Retention is bounded by frontier, never by wall-clock age. Compaction releases an artifact only once it has returned to
 the visible default _and_ a required-replica-and-backup frontier covers its operations, because the authority never
 resends an operation below a serial acknowledged everywhere. A still-trashed or still-revoked artifact is never released
-— its tombstone is the thing doing the hiding. An entry whose high-water sits in a later epoch is kept until every
+\: its tombstone is the thing doing the hiding. An entry whose high-water sits in a later epoch is kept until every
 earlier epoch has drained too, so a stale lower-epoch operation cannot resurrect an entry the compaction has forgotten.
 
 ## Failover
 
 A failover advances the authority epoch. Because the order compares epoch first, every operation the new home mints
-outranks every operation the prior home produced, whatever its serial. A late-arriving operation from the old epoch —
-still in flight when the transfer completed — is applied against the new epoch's high-water and dropped as stale. So
+outranks every operation the prior home produced, whatever its serial. A late-arriving operation from the old epoch :
+still in flight when the transfer completed : is applied against the new epoch's high-water and dropped as stale. So
 **failover preserves the delete, restore, revoke, and lift ordering**: the transition the new authority intends wins,
 and the old home cannot pull a dimension back to a value it already lost. The epoch a home stamps only ever moves
 upward, which is what fences a stale home that rejoins.
@@ -94,13 +94,13 @@ mode, and never waits on byte convergence.
 
 **Consistency across modes is the same:** a replica exposes the projection only up to its readable frontier, and it
 advertises the operation frontier only once the projection behind it is durable. A reader never sees a transition half
-applied — new metadata paired to an old visibility view — regardless of mode. The modes differ only in how much is at
+applied : new metadata paired to an old visibility view : regardless of mode. The modes differ only in how much is at
 risk when a failure domain is lost, not in what a served answer means.
 
 **Lag signals.** Each replica's advertised operation frontier, read against the home's current serial, is the lag of its
 visibility projection; a replica that has caught up serves the transitions the home has committed. The
 [readiness probe](@/core/high-availability.md#availability-health-and-readiness) reports whether a replica's derived
-views — the visibility projection among them — have reached the frontier it advertises. Compaction that stalls is itself
+views : the visibility projection among them : have reached the frontier it advertises. Compaction that stalls is itself
 a signal: a required replica or backup that has not acknowledged an epoch holds tombstones from being released, so a
 growing retained set points at a lagging or absent member rather than at the compaction.
 
@@ -113,5 +113,5 @@ objectives of its mode:
 | `dc`   | Zero within the datacenter; DC loss falls back to `none` | In-DC promotion of the synchronous copy, then catch-up    |
 | `ha`   | Zero across the loss of the writing datacenter           | Cross-DC failover to the remote copy, then catch-up       |
 
-A recovered replica restores its visibility snapshot — every retained tombstone — and resumes applying from its durable
+A recovered replica restores its visibility snapshot : every retained tombstone : and resumes applying from its durable
 cursor, so recovery reproduces the exact hidden set the member last persisted before it advertises a frontier again.

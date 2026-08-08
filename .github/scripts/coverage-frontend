@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+
+native_output="${1:-coverage-frontend-native.lcov}"
+wasm_output="${2:-coverage-frontend-wasm.lcov}"
+toolchain="$(.github/scripts/coverage-toolchain wasm)"
+stable_llvm="$(rustc -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')"
+nightly_llvm="$(rustc +"$toolchain" -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')"
+if [[ "$stable_llvm" != "$nightly_llvm" ]]; then
+  printf 'stable LLVM %s does not match %s LLVM %s\n' "$stable_llvm" "$toolchain" "$nightly_llvm" >&2
+  exit 1
+fi
+
+sysroot="$(rustc +"$toolchain" --print sysroot)"
+host="$(rustc +"$toolchain" -vV | awk '/^host:/ { print $2 }')"
+llvm_bin="$sysroot/lib/rustlib/$host/bin"
+if [[ -n "${CLANG:-}" ]]; then
+  clang="$(command -v "$CLANG")"
+elif clang="$(command -v "clang-$nightly_llvm" 2>/dev/null)"; then
+  :
+elif command -v brew >/dev/null; then
+  clang="$(brew --prefix llvm)/bin/clang"
+else
+  printf 'clang %s is required for Wasm coverage\n' "$nightly_llvm" >&2
+  exit 1
+fi
+clang_llvm="$($clang --version | sed -E -n '1s/.*version ([0-9]+).*/\1/p')"
+if [[ "$clang_llvm" != "$nightly_llvm" ]]; then
+  printf 'clang LLVM %s does not match %s LLVM %s\n' "$clang_llvm" "$toolchain" "$nightly_llvm" >&2
+  exit 1
+fi
+scratch="$(mktemp -d)"
+profiles="$scratch/profiles"
+objects="$scratch/objects"
+mkdir "$profiles" "$profiles/wasm" "$objects" "$scratch/bin"
+ln -s "$clang" "$scratch/bin/clang"
+export PATH="$scratch/bin:$PATH"
+trap 'rm -rf "$scratch"' EXIT
+
+eval "$(cargo llvm-cov show-env --sh --no-cfg-coverage)"
+if [[ "${COVERAGE_NO_CLEAN:-0}" != 1 ]]; then
+  cargo llvm-cov clean --workspace
+fi
+export LLVM_COV="$llvm_bin/llvm-cov"
+export LLVM_PROFDATA="$llvm_bin/llvm-profdata"
+export RUSTUP_TOOLCHAIN="$toolchain"
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-Zno-profiler-runtime --emit=llvm-ir --cfg=wasm_bindgen_unstable_test_coverage"
+unset RUSTFLAGS
+
+npm --prefix tests/frontend ci
+cargo leptos build --lib-features wasm-coverage --wasm-debug
+target="$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)"
+PERYX_FRONTEND_BINARY="$target/debug/peryx" PERYX_WASM_PROFRAW="$profiles/wasm" \
+  npm --prefix tests/frontend test
+cargo llvm-cov report --ignore-filename-regex '$^' --lcov --output-path "$native_output"
+
+profile="$profiles/wasm.profdata"
+"$LLVM_PROFDATA" merge -sparse "$profiles"/wasm/*.profraw -o "$profile"
+object_args=()
+while IFS= read -r source; do
+  object="$objects/$(basename "${source%.ll}").o"
+  "$clang" --target=x86_64-unknown-linux-gnu "$source" -Wno-override-module -c -o "$object"
+  object_args+=(--object "$object")
+done < <(
+  for package in $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name | gsub("-"; "_")'); do
+    for source in "$target/front/wasm32-unknown-unknown/debug/deps/$package-"*.ll; do
+      [[ -f "$source" ]] && printf '%s\n' "$source"
+    done
+  done
+  [[ -f "$target/front/wasm32-unknown-unknown/debug/deps/peryx_web.ll" ]] && \
+    printf '%s\n' "$target/front/wasm32-unknown-unknown/debug/deps/peryx_web.ll"
+)
+if ((${#object_args[@]} == 0)); then
+  printf 'no frontend LLVM IR found under %s\n' "$target/front" >&2
+  exit 1
+fi
+"$LLVM_COV" export --format=lcov --instr-profile "$profile" "${object_args[@]}" >"$wasm_output"

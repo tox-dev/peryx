@@ -333,7 +333,7 @@ fn reach_key(reach: &GrantScope) -> String {
 }
 
 /// The reach's index prefix. A NUL separates the reach from the id so no repository name is a prefix of
-/// another (`root` versus `root/pypi`), which a bare `/` boundary would allow.
+/// another (`root` versus `root/child`), which a bare `/` boundary would allow.
 fn reach_prefix(reach: &GrantScope) -> String {
     format!("{}\0", reach_key(reach))
 }

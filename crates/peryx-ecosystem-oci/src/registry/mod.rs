@@ -19,6 +19,7 @@
 use crate::error::{ErrorCode, error_response, gateway_error};
 use crate::name::{OciRoute, classify};
 use crate::settings::IndexSettings;
+use crate::upload_session::UploadStore as _;
 use crate::upstream::{Upstream, UpstreamError};
 use async_trait::async_trait;
 use axum::body::Body;
@@ -29,7 +30,10 @@ use futures_util::StreamExt as _;
 use parking_lot::RwLock;
 use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
-use peryx_driver::serving::{EcosystemDriver, RouteMount};
+use peryx_driver::serving::{
+    ArtifactMemberDriver, BlobReferenceDriver, BrowseDriver, DriverCapabilities, EcosystemDriver, IdleReclaimer,
+    MaintenanceCapabilities, MaintenanceDriver, ManifestDriver, MetricsDriver, RouteMount, TrashDriver,
+};
 use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
@@ -248,11 +252,19 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
 #[async_trait]
 impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRegistryWithHasher<S> {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
-        peryx_core::Ecosystem::Oci
+        crate::ECOSYSTEM
     }
 
-    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
-        crate::quota::QUOTA_FAMILIES
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            metrics: Some(self),
+            blob_references: Some(self),
+            trash: Some(self),
+            browse: Some(self),
+            manifest: Some(self),
+            artifact_members: Some(self),
+            ..DriverCapabilities::default()
+        }
     }
 
     fn mount(&self) -> RouteMount {
@@ -304,13 +316,30 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         crate::discovery::index_entry(index, base)
     }
 
+    fn client_endpoint(&self, route: &str) -> String {
+        let mut url = "/v2/".to_owned();
+        peryx_core::url_encoding::push_path(&mut url, route);
+        url.push('/');
+        url
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> MetricsDriver for OciRegistryWithHasher<S> {
+    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
+        crate::quota::QUOTA_FAMILIES
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> BlobReferenceDriver for OciRegistryWithHasher<S> {
     fn referenced_blob_digests(
         &self,
         meta: &peryx_storage::meta::MetaStore,
     ) -> Result<std::collections::BTreeSet<String>, String> {
         Ok(crate::referenced_blob_digests(meta).map_err(ServeError::from)?)
     }
+}
 
+impl<S: BuildHasher + Default + Send + Sync + 'static> TrashDriver for OciRegistryWithHasher<S> {
     fn trash_records(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -322,14 +351,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         }
         Ok(records)
     }
+}
 
-    fn client_endpoint(&self, route: &str) -> String {
-        let mut url = "/v2/".to_owned();
-        peryx_core::url_encoding::push_path(&mut url, route);
-        url.push('/');
-        url
-    }
-
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegistryWithHasher<S> {
     fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
         Ok(repositories(state, state.index_at(position)).map_err(ServeError::from)?)
     }
@@ -344,7 +369,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         let names = self.repository_tags(&state, index, &project).await?;
         Ok(Some(peryx_core::UiProjectView::References { names }))
     }
+}
 
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> ManifestDriver for OciRegistryWithHasher<S> {
     async fn manifest_view(
         &self,
         state: Arc<ServingState>,
@@ -363,9 +391,14 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
             return Ok(None);
         }
         let bytes = read_body(response.into_body(), MAX_MANIFEST_BYTES).await?;
-        crate::web::manifest_from_bytes(&bytes).map(Some)
+        let mut manifest = crate::web::manifest_from_bytes(&bytes)?;
+        manifest.client_command = Some(crate::web::pull_command(&name, &reference));
+        Ok(Some(manifest))
     }
+}
 
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> ArtifactMemberDriver for OciRegistryWithHasher<S> {
     async fn artifact_members(
         &self,
         state: Arc<ServingState>,
@@ -411,7 +444,27 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
             next_offset,
         })
     }
+}
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> MaintenanceDriver for OciRegistryWithHasher<S> {
+    fn ecosystem(&self) -> Ecosystem {
+        crate::ECOSYSTEM
+    }
 
+    fn maintenance_capabilities(&self) -> MaintenanceCapabilities<'_> {
+        MaintenanceCapabilities {
+            idle_reclaimer: Some(self),
+            ..MaintenanceCapabilities::default()
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/registry/maintenance_contract_tests.rs"]
+mod maintenance_contract_tests;
+
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> IdleReclaimer for OciRegistryWithHasher<S> {
     async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
         let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
         let expired = state
@@ -512,7 +565,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     }
 
     /// Every tag of `repo` on `index`, unioned across a virtual index's members and each proxy
-    /// member's upstream, sorted and distinct — the same union [`Self::serve_tags`] paginates.
+    /// member's upstream, sorted and distinct - the same union [`Self::serve_tags`] paginates.
     async fn repository_tags(
         &self,
         state: &ServingState,
@@ -700,7 +753,7 @@ pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a
 }
 /// A hosted index's own page serial: the whole-store serial the readable frontier governs. A proxied
 /// index reports upstream state the frontier does not govern, and a virtual index carries no serial of
-/// its own — [`holds_below_readable_frontier`] derives its effective serial from its hosted members — so
+/// its own - [`holds_below_readable_frontier`] derives its effective serial from its hosted members - so
 /// both report none here. Mirrors the `PyPI` hosted-page rule.
 fn hosted_last_serial(state: &ServingState, index: &Index) -> Result<Option<u64>, ServeError> {
     Ok(match index.kind {
@@ -810,7 +863,7 @@ fn flight_gate(state: &ServingState, key: &str) -> peryx_index::serving::FlightG
 fn resolve<'a, 'b>(indexes: &'a [Index], name: &'b str) -> Option<(&'a Index, &'b str)> {
     let mut best: Option<(&'a Index, &'b str)> = None;
     for index in indexes {
-        if index.ecosystem != Ecosystem::Oci {
+        if index.ecosystem != crate::ECOSYSTEM {
             continue;
         }
         let repo = if index.route.is_empty() {
@@ -905,115 +958,5 @@ fn absent_upstream(status: StatusCode) -> bool {
     matches!(status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN)
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_serve_error_maps_every_fault_to_a_gateway_error() {
-        let decode = serde_json::from_str::<u8>("nope").unwrap_err();
-        assert_eq!(
-            ServeError::from(MetaError::Decode(decode)).into_response().status(),
-            StatusCode::BAD_GATEWAY
-        );
-        assert_eq!(
-            ServeError::from(std::io::Error::other("disk")).into_response().status(),
-            StatusCode::BAD_GATEWAY
-        );
-        assert_eq!(
-            ServeError::Transport("reset".to_owned()).into_response().status(),
-            StatusCode::BAD_GATEWAY
-        );
-    }
-
-    #[test]
-    fn test_serve_error_message_describes_every_fault() {
-        let decode = serde_json::from_str::<u8>("nope").unwrap_err();
-        assert!(
-            ServeError::from(MetaError::Decode(decode))
-                .message()
-                .contains("metadata store error")
-        );
-        assert!(
-            ServeError::Io(std::io::Error::other("disk"))
-                .message()
-                .contains("blob io error")
-        );
-        assert!(
-            ServeError::Transport("reset".to_owned())
-                .message()
-                .contains("upstream transfer failed")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_serve_error_wraps_a_transport_failure() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let err = reqwest::Client::new()
-            .get("http://127.0.0.1:1/")
-            .send()
-            .await
-            .unwrap_err();
-        assert_eq!(ServeError::from(err).into_response().status(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[test]
-    fn test_classify_route_buckets_blob_pulls_as_artifacts() {
-        use peryx_driver::rate_limit::RouteClass;
-        use peryx_driver::serving::EcosystemDriver as _;
-        let registry = OciRegistry::default();
-        let digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
-        assert_eq!(
-            registry.classify_route(&format!("/v2/store/app/blobs/{digest}")),
-            RouteClass::Artifact
-        );
-        assert_eq!(
-            registry.classify_route("/v2/store/app/manifests/1.0"),
-            RouteClass::Listing
-        );
-        assert_eq!(registry.classify_route("/v2/store/app/tags/list"), RouteClass::Listing);
-        assert_eq!(
-            registry.classify_route(&format!("/v2/store/app/blobs/{digest}/contents")),
-            RouteClass::Listing
-        );
-    }
-
-    #[test]
-    fn test_serve_error_converts_to_its_message_string() {
-        assert_eq!(
-            String::from(ServeError::Io(std::io::Error::other("disk"))),
-            "blob io error: disk"
-        );
-        assert_eq!(
-            String::from(ServeError::Transport("reset".to_owned())),
-            "upstream transfer failed: reset"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_body_returns_bytes_within_the_cap_and_rejects_an_over_cap_body() {
-        assert_eq!(
-            read_body(Body::from(b"hello".to_vec()), 1 << 20).await.unwrap(),
-            "hello"
-        );
-        // A body larger than the cap is refused rather than buffered.
-        assert!(read_body(Body::from(vec![0u8; 2 << 20]), 1 << 20).await.is_err());
-    }
-
-    #[test]
-    fn test_decode_member_text_accepts_utf8_and_names_a_non_utf8_member() {
-        assert_eq!(
-            decode_member_text(b"name = \"peryx\"", "app/config.toml", "store/app", "sha256:x").unwrap(),
-            "name = \"peryx\""
-        );
-        let err = decode_member_text(&[0xff, 0xfe], "app/logo.bin", "store/app", "sha256:x").unwrap_err();
-        assert!(err.contains("app/logo.bin") && err.contains("not valid UTF-8"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_layer_error_message_reports_an_unreadable_error_body() {
-        // An error response whose body exceeds the read cap still yields a message carrying the status.
-        let response = (StatusCode::BAD_GATEWAY, Body::from(vec![0u8; 2 << 20])).into_response();
-        let message = layer_error_message("store/app", "sha256:x", response).await;
-        assert!(message.contains("502"), "{message}");
-    }
-}
+#[path = "../../tests/unit/registry/tests.rs"]
+mod tests;

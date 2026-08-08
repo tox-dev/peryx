@@ -4,12 +4,8 @@ description = "Recipes for the common access tasks: scope a token to some projec
 weight = 11
 +++
 
-Each task below is self-contained. They share one model, described in full under
-[authentication and access control](@/core/authentication.md); this page is the cookbook.
-
-Write and delete authorization runs through the model today, enforced as HTTP Basic auth on a PyPI upload and on a
-`docker push`. The read side (`anonymous_read`) is recorded now and enforced when the read challenge ships, so you can
-declare the policy ahead of the enforcement.
+These recipes use the model in [authentication and access control](@/core/authentication.md). Ecosystem implementations
+map their client credentials and routes onto the shared actions.
 
 ## Scope a token to some projects
 
@@ -28,10 +24,15 @@ projects = ["team-*", "shared/tools"]
 actions = ["write"]
 ```
 
-A client presents the secret as its Basic password (`-u __token__ -p ci-secret` for twine, `-p ci-secret` for
-`docker login`). The token may write any project matching `team-*` or the exact name `shared/tools`, and nothing else. A
-write to another name returns `403`. Give a token `actions = ["write", "delete"]` if the same credential should also
-remove releases. An index can carry several `[[index.access_token]]` tables; each needs a distinct `name`.
+The client presents the secret through its ecosystem authentication flow. The token may write a resource matching
+`team-*` or the exact name `shared/tools`. A write to another name returns the implementation's authorization denial.
+Give a token `actions = ["write", "delete"]` when the same credential may remove resources. An index can carry several
+`[[index.access_token]]` tables; each needs a distinct `name`.
+
+Supported client flows:
+
+- [PyPI](@/ecosystems/pypi/tutorials/access-token.md)
+- [OCI](@/ecosystems/oci/tutorials/scoped-token.md)
 
 ## Let one token write everywhere
 
@@ -69,9 +70,8 @@ projects = ["*"]
 actions = ["read"]
 ```
 
-The flag records that this index's reads are not open, and a read-granting token expresses who may still read it. Read
-enforcement arrives with the read challenge; until then the flag is recorded but reads are served openly, so treat this
-as declaring the policy ahead of the gate.
+The flag denies anonymous reads on routes the selected implementation protects. A token with the `read` action names the
+resources its principal may read. See the supported client flows above for route coverage.
 
 ## Close a whole server
 
@@ -116,10 +116,10 @@ trusted_proxies = ["127.0.0.1/32", "10.42.0.0/16"]
 
 Add proxy addresses and exclude client networks. The edge proxy must replace caller-supplied `X-Forwarded-For`,
 `X-Forwarded-Host`, and `X-Forwarded-Proto`; each later trusted proxy appends its own peer. Peryx starts at the socket
-peer and selects the nearest address outside the configured networks. It uses the forwarded host and protocol in API
-links and OCI token challenges. Requests from other peers use the request URI or `Host`; a relative URI defaults to
-HTTP. This check applies even when the rate limiter is disabled. Peryx uses the socket peer when a trusted
-client-address suffix contains malformed input.
+peer and selects the nearest address outside the configured networks. It uses the forwarded host and protocol in public
+links. Requests from other peers use the request URI or `Host`; a relative URI defaults to HTTP. This check applies even
+when the rate limiter is disabled. Peryx uses the socket peer when a trusted client-address suffix contains malformed
+input.
 
 Leave `trusted_proxies` empty when clients connect to peryx without a proxy. See
 [serve HTTPS](@/core/serve-https.md#terminate-tls-at-a-reverse-proxy) for an nginx configuration that overwrites the
@@ -151,12 +151,13 @@ actions = ["write"]
 
 peryx reads each file once at startup and trims trailing whitespace, so a file written by `echo` or mounted by an
 orchestrator works unchanged. An empty file is a startup error. Set a key or its `_file` sibling, never both. This
-composes with Docker and Kubernetes secret mounts under `/run/secrets`, systemd `LoadCredential`, and files rendered by
+composes with secret mounts under `/run/secrets`, systemd `LoadCredential`, and files rendered by
 [Vault](https://developer.hashicorp.com/vault) or [SOPS](https://github.com/getsops/sops), covered in
 [client auth versus upstream credentials](@/core/access-explained.md).
 
 ## Related
 
 - The full model and every key: [authentication and access control](@/core/authentication.md)
-- A start-to-finish walkthrough: [issue your first access token](@/core/first-token.md)
+- Supported implementations: [PyPI](@/ecosystems/pypi/tutorials/access-token.md),
+  [OCI](@/ecosystems/oci/tutorials/scoped-token.md)
 - The `[auth]` and `[[index.access_token]]` keys in context: [configuration](@/core/configuration.md)

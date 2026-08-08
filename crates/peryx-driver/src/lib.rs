@@ -1,7 +1,7 @@
 //! The seam an ecosystem plugs into.
 //!
 //! An ecosystem crate implements one [`EcosystemDriver`](serving::EcosystemDriver) and nothing else;
-//! where it mounts (per-index, or an absolute prefix like `OCI`'s `/v2/`) is data on the driver, not a
+//! where it mounts (per-index or at an absolute prefix) is data on the driver, not a
 //! second trait. Everything a driver needs to do that lives here: the process
 //! [`AppState`], the per-index route resolution it serves through, blob-download coordination, request
 //! classification for rate limiting, and the discovery envelope.
@@ -21,7 +21,6 @@ pub mod openapi;
 pub mod quota;
 pub mod range;
 pub mod rate_limit;
-pub mod read_through;
 pub mod retention;
 pub mod revocations;
 pub mod serving;
@@ -46,4 +45,5 @@ pub fn not_found() -> axum::response::Response {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

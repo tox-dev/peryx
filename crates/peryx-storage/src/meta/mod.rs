@@ -16,7 +16,8 @@ mod bootstrap;
 mod cross_dc_copy;
 mod error;
 mod external_identity;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../tests/unit/meta/fault.rs"]
 mod fault;
 mod finalize;
 mod frontier;
@@ -37,9 +38,11 @@ mod repository;
 mod revocation;
 mod role_grant;
 mod scoped_token;
+#[cfg(feature = "test-support")]
+#[path = "../../tests/unit/meta/test_support.rs"]
+pub mod test_support;
 mod transfer_attempt;
 mod transfer_audit;
-mod upload_session;
 mod user;
 mod visibility;
 mod webhook;
@@ -119,7 +122,6 @@ pub use transfer_attempt::{
     TransferPlan,
 };
 pub use transfer_audit::TransferAudit;
-pub use upload_session::UploadRecord;
 pub use user::UserStoreError;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
@@ -135,7 +137,7 @@ const OPERATION_OUTCOME: TableDefinition<&str, &[u8]> = TableDefinition::new("op
 /// admission is idempotent and a restart recovers the intents a home DC has yet to finalize.
 const INGRESS_INTENT: TableDefinition<&str, &[u8]> = TableDefinition::new("ingress_intent");
 const TRANSFER_AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("transfer_audit");
-/// Per-authority retained-usage counters — records and bytes each authority holds — so admission bounds
+/// Per-authority retained-usage counters - records and bytes each authority holds - so admission bounds
 /// and prunes a buffer per authority without scanning the whole ledger.
 const INGRESS_INTENT_COUNT: TableDefinition<&str, &[u8]> = TableDefinition::new("ingress_intent_count");
 /// The pending set keyed by durable admission sequence, so a restart resumes the drain in the exact order
@@ -163,7 +165,7 @@ const WRITER: TableDefinition<&str, &str> = TableDefinition::new("writer");
 const JOURNAL_MUTATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_mutations");
 const JOURNAL_BLOBS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_blobs");
 /// A neutral byte key-value table an ecosystem driver owns end to end: the store never interprets a
-/// key or value, so a format (OCI manifests and tags, say) serializes into its own namespace without
+/// key or value, so a format serializes into its own namespace without
 /// the store growing format-specific tables.
 const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 /// The persisted download-usage aggregates, held as one opaque snapshot blob the metrics aggregator
@@ -187,9 +189,6 @@ const BLOB_CHUNK_DIGEST: TableDefinition<&str, &[u8]> = TableDefinition::new("bl
 /// The durable transfer attempts populating blob placements: one current attempt and a bounded retry
 /// history per `(digest, backend, data center, location)`, keyed by placement then attempt sequence.
 const TRANSFER_ATTEMPT: TableDefinition<&str, &[u8]> = TableDefinition::new("transfer_attempt");
-/// In-progress chunked blob upload sessions, keyed by session id so a restart resumes an upload from its
-/// last staged offset.
-const UPLOAD_SESSION: TableDefinition<&str, &[u8]> = TableDefinition::new("upload_session");
 const RECLAMATION_TOMBSTONE: TableDefinition<&str, &[u8]> = TableDefinition::new("reclamation_tombstone");
 const BLOB_RECLAIM_GUARD: TableDefinition<&str, i64> = TableDefinition::new("blob_reclaim_guard");
 const REPOSITORY: TableDefinition<&str, &[u8]> = TableDefinition::new("repository");
@@ -288,7 +287,10 @@ impl MetaStore {
     /// # Errors
     /// Returns a store error if the database cannot be opened or initialized.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MetaError> {
-        let db = Database::create(path)?;
+        Self::initialize(Database::create(path)?)
+    }
+
+    fn initialize(db: Database) -> Result<Self, MetaError> {
         let txn = db.begin_write()?;
         {
             txn.open_table(SERIAL)?;
@@ -329,7 +331,6 @@ impl MetaStore {
             txn.open_table(BLOB_PLACEMENT)?;
             txn.open_table(BLOB_CHUNK_DIGEST)?;
             txn.open_table(TRANSFER_ATTEMPT)?;
-            txn.open_table(UPLOAD_SESSION)?;
             txn.open_table(RECLAMATION_TOMBSTONE)?;
             txn.open_table(BLOB_RECLAIM_GUARD)?;
             txn.open_table(OPERATION_OUTCOME)?;

@@ -330,7 +330,7 @@ fn decide(
             change(S::Failed { class: *class }, Some(record))
         }
         // A verified copy that fails an integrity re-check has bytes that no longer match its address, so
-        // it demotes to a digest-mismatch failure — the one failure a settled copy can develop on its own,
+        // it demotes to a digest-mismatch failure - the one failure a settled copy can develop on its own,
         // which makes it a re-copy candidate again rather than a served but corrupt placement.
         (
             Some(record),

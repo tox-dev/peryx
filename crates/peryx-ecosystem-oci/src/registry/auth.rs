@@ -10,7 +10,6 @@
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{
@@ -49,7 +48,7 @@ fn restricts(state: &ServingState) -> bool {
     state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Oci)
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
         .any(|index| !index.acl.anonymous_read || !index.acl.tokens.is_empty())
 }
 
@@ -115,7 +114,7 @@ fn named_requester<'a>(state: &'a ServingState, header: &'a str) -> Option<Token
     state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Oci)
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
         .find_map(|index| match index.acl.identify(Some(header), now).principal {
             Principal::Named { subject } => Some(TokenRequester {
                 principal: Principal::Named { subject },
@@ -280,7 +279,7 @@ pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Re
 }
 
 fn authorize_catalog_requester(state: &ServingState, requester: &TokenRequester<'_>) -> Result<(), Denial> {
-    for index in state.indexes.iter().filter(|index| index.ecosystem == Ecosystem::Oci) {
+    for index in state.indexes.iter().filter(|index| index.ecosystem == crate::ECOSYSTEM) {
         if index.acl.anonymous_read {
             continue;
         }
@@ -361,7 +360,7 @@ impl PresentedIdentity {
 }
 
 /// The response for a refused resource request: with a realm configured, a `401` Bearer challenge
-/// carrying the scope the request needed and an `error` a client acts on — `invalid_token` retries with
+/// carrying the scope the request needed and an `error` a client acts on - `invalid_token` retries with
 /// fresh credentials, `insufficient_scope` does not. Without a realm the registry keeps the Basic answers
 /// a pushing client already handles, so an existing `docker login -u _ -p <token>` flow is untouched.
 pub(super) fn resource_challenge(
@@ -455,28 +454,5 @@ fn authorization(headers: &HeaderMap) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Action, resource_scope, scope_actions};
-
-    #[test]
-    fn test_scope_actions_maps_each_verb() {
-        assert_eq!(scope_actions("pull"), &[Action::Read]);
-        assert_eq!(scope_actions("push"), &[Action::Write]);
-        assert_eq!(scope_actions("delete"), &[Action::Delete]);
-        assert_eq!(scope_actions("*"), &[Action::Read, Action::Write, Action::Delete]);
-        assert!(scope_actions("mystery").is_empty());
-    }
-
-    #[test]
-    fn test_resource_scope_advertises_the_verbs_for_each_action() {
-        assert_eq!(resource_scope("team/app", Action::Read), "repository:team/app:pull");
-        assert_eq!(
-            resource_scope("team/app", Action::Write),
-            "repository:team/app:pull,push"
-        );
-        assert_eq!(
-            resource_scope("team/app", Action::Delete),
-            "repository:team/app:pull,delete"
-        );
-    }
-}
+#[path = "../../tests/unit/registry/auth/tests.rs"]
+mod tests;

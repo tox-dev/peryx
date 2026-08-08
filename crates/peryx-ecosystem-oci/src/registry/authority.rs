@@ -4,8 +4,8 @@
 //! authority. A mutation snapshots the repository's committed epoch when it starts, then re-admits that
 //! epoch just before it commits: a mutation whose home did not move commits under the epoch it leased,
 //! while one whose home transferred mid-flight leased a superseded epoch and is turned away before it
-//! changes any tag or manifest. So a home that fails over yields one visible result — the survivor's —
-//! and a stale node's late write never exposes a second one.
+//! changes any tag or manifest. A home that fails over yields the survivor's result, and a stale node's
+//! late write never exposes a second one.
 //!
 //! A process with no ownership group, or a repository no group has homed (a committed epoch of `0`),
 //! holds no epoch and is never fenced, so a standalone deployment mutates exactly as it did before.

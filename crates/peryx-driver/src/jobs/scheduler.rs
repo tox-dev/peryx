@@ -396,8 +396,8 @@ impl RunFence {
 enum Acquired {
     /// The fence is held; the run may execute.
     Held(RunFence),
-    /// The cluster-singleton lease could not be claimed — a newer holder owns the term, or the store
-    /// could not be reached — so the run does not start and a later tick re-drives it. Carries the
+    /// The cluster-singleton lease could not be claimed - a newer holder owns the term, or the store
+    /// could not be reached - so the run does not start and a later tick re-drives it. Carries the
     /// reason for the durable run record.
     NotAcquired(String),
 }

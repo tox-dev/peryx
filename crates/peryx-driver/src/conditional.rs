@@ -60,8 +60,8 @@ pub fn applicable_range<'h>(headers: &'h HeaderMap, etag: &str) -> Option<&'h st
 ///
 /// An HTTP date counts whole seconds, so a sub-second timestamp is truncated rather than rounded up: a
 /// date later than the write it stands for would refuse the very `If-Modified-Since` it taught the
-/// client to send, and revalidation would never reach a `304`. A timestamp ahead of `now` — a clock
-/// that stepped back, an mtime restored from an archive — is clamped for the same reason, since no
+/// client to send, and revalidation would never reach a `304`. A timestamp ahead of `now` - a clock
+/// that stepped back, an mtime restored from an archive - is clamped for the same reason, since no
 /// stored copy can predate the response that carried it.
 #[must_use]
 pub fn last_modified(stored: SystemTime, now: SystemTime) -> SystemTime {
@@ -77,7 +77,7 @@ pub fn http_date(at: SystemTime) -> String {
 
 /// Does an `If-Modified-Since` field still cover a representation last modified at `modified`?
 ///
-/// RFC 9110 s13.1.3: the condition holds — the client's copy is current, so a `304` — while the
+/// RFC 9110 s13.1.3: the condition holds - the client's copy is current, so a `304` - while the
 /// representation is no newer than the date the request names. A field that is not a date states no
 /// condition and is ignored, leaving the full response a `304` would have replaced; the three date
 /// formats a recipient must accept all parse here, obsolete ones included, because the clients this

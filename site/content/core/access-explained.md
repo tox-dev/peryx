@@ -4,44 +4,42 @@ description = "Two separate questions peryx keeps apart: who a client is to pery
 weight = 13
 +++
 
-peryx handles two authentication questions that look alike and must stay apart. One faces the client: who are you, and
-may you read or write this index. The other faces the upstream: what credential does peryx present to
-[pypi.org](https://pypi.org/) or a private registry to fetch on your behalf. Conflating them is the mistake this design
-exists to avoid.
+peryx authenticates clients and authenticates itself to upstreams. Client authentication decides who may read or write
+an index. Upstream authentication determines which credential peryx presents to a configured upstream. Mixing these
+paths can expose cached private data.
 
 ## The two directions
 
-A client authenticates **to peryx**. It presents a token, peryx resolves it to a principal, and a grant decides whether
-the action is allowed. This is the [access model](@/core/authentication.md): principals, actions, and project-glob
-grants, configured per index.
+A client authenticates **to peryx**. It presents a token, peryx resolves it to a principal, and a grant permits or
+denies the action. The [access model](@/core/authentication.md) defines principals, actions, and project-glob grants per
+index.
 
-peryx authenticates **to an upstream**. A cached index carries its own stored `username`, `password`, or `token`, and
-peryx uses that one service credential for every fetch through that index. The client's identity plays no part. Whoever
-installs through a cached index reaches the upstream as peryx, not as themselves.
+peryx authenticates **to an upstream**. A cached index stores its own `username`, `password`, or `token`, which peryx
+uses for each fetch through that index. The upstream sees peryx's service identity for all clients of the cached index.
 
-These are different credentials pointing in opposite directions. Keeping them separate is why the per-index upstream
-secret is `token` while a client credential is an `access_token`: one is what peryx sends out, the other is what a
-client sends in.
+The per-index upstream secret is `token`; the client credential is `access_token`. peryx sends the first to the upstream
+and receives the second from a client.
 
 ## Why local rate limits use verified principals
 
-`Authorization` claims an identity. The driver for the route decides whether to accept it. Hashing the raw header before
-that check lets a client rotate invalid Basic or bearer values and receive a new rate-limit bucket for each value.
+`Authorization` claims an identity. The route's driver decides whether to accept it. If peryx hashed the raw header
+before verification, a client could rotate invalid Basic or bearer values to obtain a new rate-limit bucket for each
+value.
 
-peryx asks the driver that owns the route to verify the credential; after acceptance, peryx hashes the named principal
-with a process-random seed and groups invalid or anonymous traffic by client IP, storing neither the credential nor the
-principal name in the bounded bucket cache.
+peryx asks the route's driver to verify the credential. After acceptance, peryx hashes the named principal with a
+process-random seed. It groups invalid or anonymous traffic by client IP. The bounded bucket cache stores neither the
+credential nor the principal name.
 
 A caller can put any client address in a forwarding header, much as a caller can put an identity in `Authorization`.
 Accepting that address without a trusted intermediary would let the caller rotate buckets. Behind a reverse proxy,
 relying on the socket peer makes every anonymous client share the proxy's bucket.
 
 peryx requires the socket peer to match `[rate_limit].trusted_proxies` before it accepts forwarding headers. It walks
-`X-Forwarded-For` from the proxy end and selects the first address outside the trusted networks. Addresses farther
-toward the client came through an untrusted hop and cannot change the result. The same boundary gates `X-Forwarded-Host`
-and `X-Forwarded-Proto`, which supply absolute discovery links and the OCI token realm. Without the check, a direct
-caller could point clients or login flows at an origin it controls. If the trusted client-address suffix is malformed,
-peryx uses the socket peer to avoid a forged address. It treats IPv4-mapped IPv6 addresses as their IPv4 equivalents.
+`X-Forwarded-For` from the proxy end and selects the first address outside the trusted networks. Addresses closer to the
+client came through an untrusted hop and cannot change the result. The same boundary gates `X-Forwarded-Host` and
+`X-Forwarded-Proto`, which supply absolute discovery and authentication links. Without the check, a direct caller could
+point clients or login flows at an origin it controls. If the trusted client-address suffix is malformed, peryx uses the
+socket peer to avoid a forged address. It treats IPv4-mapped IPv6 addresses as their IPv4 equivalents.
 
 [RFC 7239 section 8.1](https://www.rfc-editor.org/rfc/rfc7239.html#section-8.1) describes why forwarding fields need a
 configured trust boundary. [Nginx's real-IP module](https://nginx.org/en/docs/http/ngx_http_realip_module.html) uses the
@@ -54,46 +52,40 @@ classifies invalid credentials as an authentication failure. Kubernetes
 split. Authenticated flows can use the requesting user, while unauthenticated requests belong to
 `system:unauthenticated`.
 
-Operators who enable the limiter pay credential verification on requests that carry `Authorization`. peryx keeps the
-existing route-classification path for requests without that header.
+Enabling the limiter adds credential verification to requests that carry `Authorization`. Requests without that header
+keep the existing route-classification path.
 
-## Why peryx never forwards a client's credential upstream
+## Why peryx keeps client credentials local
 
-A tempting shortcut is to take the credential a client presented and replay it against the upstream, so a private
-upstream repository or a rate limit keyed to the client's identity carries through. peryx does not do this, and a cache
-is the reason.
+Forwarding a client credential to the upstream would apply upstream access and rate limits to the cache miss. Cached
+responses would bypass those checks.
 
 A cache serves stored bytes to every authorized client. Suppose Alice's upstream credential fetched a private layer;
 peryx stores it. Bob then requests the same layer and gets it from the cache, having never held any upstream access.
-Forwarding looks like it preserves the upstream's access control, and it silently destroys it on the second request. The
-only way to preserve it would be to disable caching, which deletes the reason peryx exists.
+Forwarding preserves upstream access control for the first request but bypasses it for the cached response. Preserving
+that control would require disabling the cache.
 
-Two smaller problems compound the first. A token peryx minted for its own audience would be rejected upstream, so
-forwarding is not even mechanically free. And the client authenticates against a peryx-local name
-(`root/oci/library/postgres`) that only peryx knows maps to `library/postgres` upstream, so its peryx identity says
-nothing about its upstream one. The legitimate need behind forwarding, authenticated upstream pulls for a private
-repository or a rate limit, is served by the stored per-index credential instead.
+The upstream can also reject a token minted for the peryx audience. A client authenticates against a peryx-local name
+such as `<route>/<resource>`, which can map to a different upstream name. The stored per-index credential supports an
+authenticated upstream fetch without claiming that the client's peryx identity exists upstream.
 
 ## Where secrets live
 
-peryx needs several secrets in its configuration: the upstream `password` or `token`, a hosted index's upload token, and
-the signing key for its own token realm. Writing them inline in the TOML works and stays supported, but it is the lesser
-option: the file becomes secret material, so it cannot sit in version control or a config-management repository without
-care.
+peryx configuration can contain an upstream `password` or `token`, an index access token, and a signing key. Inline
+values make the TOML secret material and unsuitable for version control.
 
-Every secret key therefore has a `_file` sibling naming a path to read the value from. peryx reads the file once at
-startup and holds only the value, never the path's contents on disk beyond that read. This composes with the mechanisms
-a deployment already uses for secrets:
+Each secret key has a `_file` sibling naming a path to read. peryx reads the file once at startup and retains its value
+in memory. This works with common secret-management mechanisms:
 
-- Docker and Kubernetes mount secrets as files under `/run/secrets`, so an `[[index.access_token]]`
-  `secret_file = "/run/secrets/hosted-token"` reads a Kubernetes `Secret` with no plaintext in the manifest.
-- systemd `LoadCredential` places a credential in a per-service directory, optionally sealed to the TPM, that a `_file`
-  key points at.
+- Container orchestrators can mount secrets under `/run/secrets`, so an `[[index.access_token]]`
+  `secret_file = "/run/secrets/hosted-token"` keeps plaintext out of the workload definition.
+- systemd `LoadCredential` places a credential in a per-service directory, with optional TPM sealing, that a `_file` key
+  points at.
 - [Vault](https://developer.hashicorp.com/vault) Agent and [SOPS](https://github.com/getsops/sops) render a secret to a
   file that peryx reads the same way.
 
-The `_file` indirection needs no crypto inside peryx and no new secret store; it hands the job to the tool that already
-owns your secrets. Inline values remain for a quick local setup, documented as the option to move off of.
+The `_file` indirection requires no cryptography inside peryx or another secret store. Inline values remain available
+for local setup; deployments should use files.
 
 ## Related
 

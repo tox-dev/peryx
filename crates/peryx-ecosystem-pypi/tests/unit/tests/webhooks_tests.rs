@@ -1,0 +1,530 @@
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::StatusCode;
+use axum::http::{HeaderValue, header};
+use peryx_storage::blob::{BlobStorage, Digest};
+use peryx_storage::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryRecord, WebhookDeliveryStatus};
+use rstest::rstest;
+use serde_json::json;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::TcpListener;
+use tower::ServiceExt as _;
+
+use super::http::{fixture_wheel, multipart_body, request, upload_auth, upload_peryxpkg};
+use peryx_driver::state::AppState;
+use peryx_events::webhook::{self, WebhookRuntime, WebhookTargetConfig};
+use peryx_http::router;
+use peryx_index::{Index, IndexKind};
+use peryx_policy::Policy;
+
+const SECRET: &str = "hook-secret";
+
+struct Harness {
+    _dir: tempfile::TempDir,
+    state: Arc<AppState>,
+    clock: Arc<AtomicI64>,
+}
+
+impl Harness {
+    fn new(url: String, events: &[&str]) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+        let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+        let clock = Arc::new(AtomicI64::new(1000));
+        let ticks = clock.clone();
+        let webhooks = WebhookRuntime::new(vec![WebhookTargetConfig {
+            index: "hosted".to_owned(),
+            name: "ci".to_owned(),
+            url,
+            secret: SECRET.to_owned(),
+            events: events.iter().map(|event| (*event).to_owned()).collect(),
+        }])
+        .unwrap();
+        let state = super::wired(AppState::with_clock_and_webhooks(
+            meta,
+            blobs,
+            60,
+            vec![Index {
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
+                ecosystem: crate::ECOSYSTEM,
+                kind: IndexKind::Hosted { volatile: true },
+                policy: Policy::default(),
+                acl: crate::tests::writer_acl("s3cret".to_owned()),
+            }],
+            Arc::new(move || ticks.load(Ordering::Relaxed)),
+            webhooks,
+        ));
+        Self {
+            _dir: dir,
+            state,
+            clock,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CapturedRequest {
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct WebhookSink {
+    url: String,
+    requests: Arc<Mutex<Vec<CapturedRequest>>>,
+}
+
+impl WebhookSink {
+    async fn start(statuses: Vec<u16>) -> Self {
+        Self::start_with(statuses, None).await
+    }
+
+    async fn start_redirecting(statuses: Vec<u16>, location: String) -> Self {
+        Self::start_with(statuses, Some(location)).await
+    }
+
+    async fn start_with(statuses: Vec<u16>, location: Option<String>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        tokio::spawn(accept_webhooks(
+            listener,
+            Arc::new(Mutex::new(VecDeque::from(statuses))),
+            requests.clone(),
+            location,
+        ));
+        Self { url, requests }
+    }
+
+    async fn wait_for_requests(&self, count: usize) -> Vec<CapturedRequest> {
+        for _ in 0..200 {
+            let requests = self.requests.lock().expect("request lock").clone();
+            if requests.len() >= count {
+                return requests;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("expected {count} webhook requests");
+    }
+
+    fn request_count(&self) -> usize {
+        self.requests.lock().expect("request lock").len()
+    }
+}
+
+async fn accept_webhooks(
+    listener: TcpListener,
+    statuses: Arc<Mutex<VecDeque<u16>>>,
+    requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    location: Option<String>,
+) {
+    while let Ok((mut socket, _)) = listener.accept().await {
+        let request = read_request(&mut socket).await;
+        requests.lock().expect("request lock").push(request);
+        let status = statuses.lock().expect("status lock").pop_front().unwrap_or(200);
+        let location = location
+            .as_deref()
+            .map(|value| format!("location: {value}\r\n"))
+            .unwrap_or_default();
+        let response = format!(
+            "HTTP/1.1 {status} {}\r\n{location}content-length: 0\r\nconnection: close\r\n\r\n",
+            reason(status)
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    }
+}
+
+/// A second origin that a redirect Location would point at; it records every connection so a test can
+/// prove the delivery client never contacts it.
+async fn trap_origin() -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/captured", listener.local_addr().unwrap());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::Relaxed);
+            let _ = socket
+                .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await;
+        }
+    });
+    (url, hits)
+}
+
+async fn read_request(socket: &mut tokio::net::TcpStream) -> CapturedRequest {
+    let mut bytes = Vec::new();
+    let mut buf = [0_u8; 2048];
+    loop {
+        let read = socket.read(&mut buf).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..read]);
+        let Some(header_end) = header_end(&bytes) else {
+            continue;
+        };
+        let body_start = header_end + 4;
+        let content_length = content_length(&bytes[..header_end]);
+        if bytes.len() >= body_start + content_length {
+            let headers = headers(&bytes[..header_end]);
+            let body = bytes[body_start..body_start + content_length].to_vec();
+            return CapturedRequest { headers, body };
+        }
+    }
+    panic!("connection closed before request completed");
+}
+
+fn header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn content_length(headers: &[u8]) -> usize {
+    String::from_utf8_lossy(headers)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().unwrap())
+        })
+        .unwrap_or(0)
+}
+
+fn headers(bytes: &[u8]) -> HashMap<String, String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.to_ascii_lowercase(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
+const fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        204 => "No Content",
+        500 => "Internal Server Error",
+        _ => "Status",
+    }
+}
+
+async fn wait_for_delivery(state: &AppState, status: WebhookDeliveryStatus, attempts: u16) -> WebhookDeliveryRecord {
+    for _ in 0..200 {
+        let deliveries = state.meta.list_webhook_deliveries().unwrap();
+        if let Some(delivery) = deliveries
+            .into_iter()
+            .find(|delivery| delivery.status == status && delivery.attempts == attempts)
+        {
+            return delivery;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("expected delivery with status {status:?} and {attempts} attempts");
+}
+
+async fn wait_for_delivery_id(state: &AppState, id: &str, status: WebhookDeliveryStatus) -> WebhookDeliveryRecord {
+    for _ in 0..200 {
+        let deliveries = state.meta.list_webhook_deliveries().unwrap();
+        if let Some(delivery) = deliveries
+            .into_iter()
+            .find(|delivery| delivery.id == id && delivery.status == status)
+        {
+            return delivery;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("expected delivery {id} with status {status:?}");
+}
+
+#[tokio::test]
+async fn test_upload_webhook_is_signed_and_skips_duplicate_upload() {
+    let sink = WebhookSink::start(vec![200]).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+    let wheel = fixture_wheel();
+
+    assert_eq!(upload_peryxpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
+
+    let request = sink.wait_for_requests(1).await.remove(0);
+    let delivery = wait_for_delivery(&h.state, WebhookDeliveryStatus::Delivered, 1).await;
+    assert_eq!(delivery.event, "upload");
+    assert_signed(&request, &delivery.id, "upload", 1000);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),
+        json!({
+            "event": "upload",
+            "created_at": 1000,
+            "index": "hosted",
+            "route": "hosted",
+            "hosted_index": "hosted",
+            "project": "peryxpkg",
+            "version": "1.0",
+            "file": {
+                "filename": "peryxpkg-1.0-py3-none-any.whl",
+                "sha256": Digest::of(&wheel).as_str(),
+            },
+            "count": 1,
+            "actor": "__token__",
+        })
+    );
+
+    assert_eq!(upload_peryxpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
+    // Deduplication is at enqueue, so the store synchronously holds one delivery; with only one delivery
+    // ever queued the worker can send at most the one request the sink already captured. Asserting the
+    // store is exact and needs no sleep-and-hope that a second request has not yet arrived.
+    assert_eq!(h.state.meta.list_webhook_deliveries().unwrap().len(), 1);
+    assert_eq!(sink.request_count(), 1);
+}
+
+#[tokio::test]
+async fn test_upload_webhook_ignores_invalid_request_id() {
+    let sink = WebhookSink::start(vec![200]).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+
+    assert_eq!(
+        upload_with_request_id(&h.state, &fixture_wheel(), b"\xff").await,
+        StatusCode::OK
+    );
+
+    let request = sink.wait_for_requests(1).await.remove(0);
+    let body = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
+    assert_eq!(body.get("request_id"), None);
+}
+
+#[tokio::test]
+async fn test_webhook_worker_wakes_after_idle() {
+    let sink = WebhookSink::start(vec![200, 200]).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+    sink.wait_for_requests(1).await;
+    wait_for_delivery(&h.state, WebhookDeliveryStatus::Delivered, 1).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let id = h
+        .state
+        .meta
+        .enqueue_webhook_delivery(NewWebhookDelivery {
+            index: "hosted",
+            target: "ci",
+            event: "upload",
+            payload: r#"{"event":"upload"}"#,
+            created_at_unix: 1000,
+        })
+        .unwrap();
+    webhook::kick(h.state.serving.clone());
+
+    sink.wait_for_requests(2).await;
+    let delivered = wait_for_delivery_id(&h.state, &id, WebhookDeliveryStatus::Delivered).await;
+    assert_eq!(delivered.attempts, 1);
+    assert_eq!(delivered.response_status, Some(200));
+}
+
+#[tokio::test]
+async fn test_webhook_delivery_retries_failed_request() {
+    let sink = WebhookSink::start(vec![500, 204]).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+
+    sink.wait_for_requests(1).await;
+    let pending = wait_for_delivery(&h.state, WebhookDeliveryStatus::Pending, 1).await;
+    assert_eq!(pending.response_status, Some(500));
+    assert_eq!(pending.next_attempt_at_unix, Some(1005));
+
+    h.clock.store(1005, Ordering::Relaxed);
+    webhook::kick(h.state.serving.clone());
+    let requests = sink.wait_for_requests(2).await;
+    let delivered = wait_for_delivery(&h.state, WebhookDeliveryStatus::Delivered, 2).await;
+
+    assert_eq!(delivered.id, pending.id);
+    assert_eq!(delivered.response_status, Some(204));
+    assert_signed(&requests[1], &delivered.id, "upload", 1005);
+}
+
+#[tokio::test]
+async fn test_webhook_delivery_marks_terminal_failure() {
+    let sink = WebhookSink::start(vec![500; 5]).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+
+    sink.wait_for_requests(1).await;
+    for count in 2..=5 {
+        let pending = wait_for_delivery(&h.state, WebhookDeliveryStatus::Pending, count - 1).await;
+        h.clock.store(
+            pending.next_attempt_at_unix.expect("scheduled retry"),
+            Ordering::Relaxed,
+        );
+        webhook::kick(h.state.serving.clone());
+        sink.wait_for_requests(count as usize).await;
+    }
+
+    let failed = wait_for_delivery(&h.state, WebhookDeliveryStatus::Failed, 5).await;
+    assert_eq!(failed.response_status, Some(500));
+    assert_eq!(failed.next_attempt_at_unix, None);
+    assert_eq!(failed.last_error.as_deref(), Some("http status 500"));
+}
+
+#[rstest]
+#[case(301)]
+#[case(302)]
+#[case(307)]
+#[case(308)]
+#[tokio::test]
+async fn test_webhook_redirect_is_a_terminal_failure_and_never_reaches_the_redirect_target(#[case] status: u16) {
+    let (trap_url, trap_hits) = trap_origin().await;
+    let sink = WebhookSink::start_redirecting(vec![status], trap_url).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+
+    sink.wait_for_requests(1).await;
+    let failed = wait_for_delivery(&h.state, WebhookDeliveryStatus::Failed, 1).await;
+    assert_eq!(failed.response_status, Some(status));
+    assert_eq!(failed.next_attempt_at_unix, None);
+    assert_eq!(
+        failed.last_error,
+        Some(format!(
+            "webhook target returned redirect {status}; redirects are not followed"
+        ))
+    );
+    // The single signed POST reached only the configured origin, and the delivery never retries a
+    // redirect, so the Location the target advertised is never contacted.
+    assert_eq!(sink.request_count(), 1);
+    assert_eq!(trap_hits.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn test_webhook_delivery_records_request_error() {
+    let h = Harness::new(closed_url().await, &["upload"]);
+
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+
+    let pending = wait_for_delivery(&h.state, WebhookDeliveryStatus::Pending, 1).await;
+    assert_eq!(pending.response_status, None);
+    assert_eq!(pending.next_attempt_at_unix, Some(1005));
+    assert!(pending.last_error.as_deref().is_some_and(|err| !err.contains("/hook")));
+}
+
+#[tokio::test]
+async fn test_webhook_delivery_records_removed_target() {
+    let sink = WebhookSink::start(Vec::new()).await;
+    let h = Harness::new(sink.url.clone(), &["upload"]);
+    let id = h
+        .state
+        .meta
+        .enqueue_webhook_delivery(NewWebhookDelivery {
+            index: "hosted",
+            target: "removed",
+            event: "upload",
+            payload: r#"{"event":"upload"}"#,
+            created_at_unix: 1000,
+        })
+        .unwrap();
+
+    webhook::kick(h.state.serving.clone());
+
+    let pending = wait_for_delivery(&h.state, WebhookDeliveryStatus::Pending, 1).await;
+    assert_eq!(pending.id, id);
+    assert_eq!(pending.response_status, None);
+    assert_eq!(pending.next_attempt_at_unix, Some(1005));
+    assert_eq!(pending.last_error.as_deref(), Some("webhook target is not configured"));
+    assert_eq!(sink.request_count(), 0);
+}
+
+#[tokio::test]
+async fn test_delete_webhook_emits_index_change() {
+    let sink = WebhookSink::start(vec![200]).await;
+    let h = Harness::new(sink.url.clone(), &["delete"]);
+
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+    assert_eq!(sink.request_count(), 0);
+    assert_eq!(
+        request(&h.state, "DELETE", "/hosted/peryxpkg/", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+
+    let request = sink.wait_for_requests(1).await.remove(0);
+    let delivery = wait_for_delivery(&h.state, WebhookDeliveryStatus::Delivered, 1).await;
+    assert_eq!(delivery.event, "delete");
+    assert_signed(&request, &delivery.id, "delete", 1000);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),
+        json!({
+            "event": "delete",
+            "created_at": 1000,
+            "index": "hosted",
+            "route": "hosted",
+            "hosted_index": "hosted",
+            "project": "peryxpkg",
+            "count": 1,
+            "actor": "__token__",
+        })
+    );
+}
+
+async fn closed_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    drop(listener);
+    url
+}
+
+async fn upload_with_request_id(state: &Arc<AppState>, wheel: &[u8], request_id: &[u8]) -> StatusCode {
+    let fields = [
+        (":action", "file_upload"),
+        ("name", "peryxpkg"),
+        ("version", "1.0"),
+        ("pyversion", "py3"),
+        ("filetype", "bdist_wheel"),
+        ("requires_python", ">=3.8"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("peryxpkg-1.0-py3-none-any.whl", wheel)));
+    let mut request = axum::http::Request::builder()
+        .uri("/hosted/")
+        .method("POST")
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::AUTHORIZATION, upload_auth())
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("x-request-id", HeaderValue::from_bytes(request_id).unwrap());
+    router(state.clone()).oneshot(request).await.unwrap().status()
+}
+
+fn assert_signed(request: &CapturedRequest, delivery: &str, event: &str, timestamp: i64) {
+    assert_eq!(request.headers["content-type"], "application/json");
+    assert_eq!(request.headers["x-peryx-event"], event);
+    assert_eq!(request.headers["x-peryx-delivery"], delivery);
+    assert_eq!(request.headers["x-peryx-timestamp"], timestamp.to_string());
+    assert_eq!(
+        request.headers["x-peryx-signature"],
+        webhook::signature(SECRET, timestamp, delivery, &request.body)
+    );
+}

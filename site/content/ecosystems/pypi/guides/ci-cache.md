@@ -1,11 +1,11 @@
 +++
 title = "Cache packages for CI"
-description = "Put peryx between your runners and pypi.org: one environment variable, faster jobs, and one download per wheel instead of hundreds."
+description = "Put peryx between CI runners and pypi.org so runners share downloaded wheels."
 weight = 1
 +++
 
-CI rebuilds environments from scratch, so every job downloads the same wheels again. Run one peryx where your runners
-live and point the installers at it; the first job warms the cache and the rest install from local disk.
+CI jobs often rebuild environments and download the same wheels. Run peryx near the runners and point installers at it.
+The first job warms the cache; later jobs install from local disk.
 
 ## Run peryx next to the runners
 
@@ -15,34 +15,39 @@ On the CI host, or as a service in the runner network:
 peryx serve --host 0.0.0.0 --port 4433 --data-dir /var/lib/peryx
 ```
 
-The data directory is the cache; give it a persistent volume. Nothing else is stateful.
+The data directory is the cache. Mount it on a persistent volume.
 
-In [Kubernetes](https://kubernetes.io/) or [docker-compose](https://docs.docker.com/compose/), the same thing is one
-container with one volume. The image only needs the binary and the data mount; there is no database or sidecar.
+In [Kubernetes](https://kubernetes.io/) or [docker-compose](https://docs.docker.com/compose/), run one container with
+the binary and data volume. peryx needs no database or sidecar.
 
 ## Point the installers at it
 
-Installers pick up the index from an environment variable, so most setups change zero pipeline files: set it once at the
-runner or organization level:
+Set the index environment variable at the runner or organization level:
 
 {% tabs(names="uv, pip, project file") %}
+
 ```shell
 export UV_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/
 ```
+
 %%%
+
 ```shell
 export PIP_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/
 ```
+
 %%%
+
 ```toml
 # pyproject.toml, for uv-managed projects
 [[tool.uv.index]]
 url = "http://peryx.internal:4433/root/pypi/simple/"
 default = true
 ```
+
 {% end %}
 
-Jobs that already pass `--index-url` explicitly keep working; the flag and the variable point at the same place.
+Jobs that pass `--index-url` can use the same URL.
 
 ## Docker builds
 
@@ -57,11 +62,11 @@ RUN pip install -r requirements.txt
 docker build --build-arg PIP_INDEX_URL=http://peryx.internal:4433/root/pypi/simple/ .
 ```
 
-or run the build on a network where `peryx.internal` resolves (`--network` with
-[BuildKit](https://github.com/moby/buildkit)). BuildKit's own cache mounts still help per machine; peryx makes the cache
-shared across machines, tags, and projects.
+You can also run the build on a network where `peryx.internal` resolves by using `--network` with
+[BuildKit](https://github.com/moby/buildkit). BuildKit cache mounts serve one machine; peryx shares artifacts across
+machines, tags, and projects.
 
-## Verify it is working
+## Inspect usage and storage
 
 Watch a couple of jobs, then check what the cache absorbed:
 
@@ -73,10 +78,29 @@ curl -s -u operator:"$OPERATOR_PASSWORD" 'http://peryx.internal:4433/+stats?inde
 revalidations (`refreshes`, mostly `304`s with no body). The [dashboard](@/core/web-ui.md) shows the same numbers with
 per-project drill-down, and [`/metrics`](@/core/monitor.md) feeds [Prometheus](https://prometheus.io/).
 
-## Why this works as well as it does
+The cache CLI reads the shared content store and scopes metadata commands by the PyPI route:
 
-- Wheels are immutable and content-addressed: each crosses your uplink once, ever
+```shell
+peryx cache size --data-dir /var/lib/peryx
+peryx cache list --data-dir /var/lib/peryx --index root/pypi --stale
+peryx cache fsck --data-dir /var/lib/peryx
+```
+
+Purge uses a plan first. Add `--yes` after checking its row counts:
+
+```shell
+peryx cache purge project --data-dir /var/lib/peryx --index root/pypi --project flask
+peryx cache purge project --data-dir /var/lib/peryx --index root/pypi --project flask --yes
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx --yes
+```
+
+Project purge removes metadata rows and leaves shared blobs in place. Orphaned-blob purge removes content with no
+metadata reference. Rebuild the derived package search after a metadata restore with `peryx job reindex`.
+
+## Cache behavior
+
+- Wheels are immutable and content-addressed. Each wheel crosses the uplink once
   ([architecture](@/core/architecture.md)).
-- Cold misses stream through at upstream speed, so the warm-up phase costs nothing extra
-  ([measurements](@/core/performance.md)).
-- A pypi.org outage stops being a build outage: pages serve stale, artifacts serve from disk.
+- Cold misses stream through at upstream speed ([measurements](@/core/performance.md)).
+- During a pypi.org outage, peryx serves stale pages and artifacts from disk.

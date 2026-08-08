@@ -7,7 +7,26 @@ use std::path::Path;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use peryx_storage::archive::{self, ArchiveError, MemberChunk};
+use peryx_storage::archive::{
+    self, ArchiveError, ArchiveFormat, ArchiveProfile, MemberChunk, MemberKind, generic_format, generic_member_kind,
+};
+
+struct OciArchiveProfile;
+
+impl ArchiveProfile for OciArchiveProfile {
+    fn format(&self, name: &str) -> Option<ArchiveFormat> {
+        generic_format(name)
+    }
+
+    fn member_kind(&self, path: &str) -> MemberKind {
+        match path.rsplit('/').next().unwrap_or(path) {
+            "Dockerfile" | "Containerfile" => MemberKind::Text,
+            _ => generic_member_kind(path),
+        }
+    }
+}
+
+const PROFILE: OciArchiveProfile = OciArchiveProfile;
 
 /// The `member` (and its `offset`) a layer-contents request selects, or `None` to list the layer. A
 /// malformed `offset` is a client mistake, not a silent seek to zero, so it fails the request rather
@@ -47,12 +66,13 @@ fn layer_archive_name(path: &Path) -> &'static str {
 pub(super) fn layer_contents_response(path: &Path, selected: Option<(String, u64)>) -> Response {
     let filename = layer_archive_name(path);
     match selected {
-        None => match archive::list_members_path(filename, path) {
+        None => match archive::list_members_path(&PROFILE, filename, path) {
             Ok(members) => axum::Json(serde_json::json!({ "members": members })).into_response(),
             Err(err) => layer_error_response(&err),
         },
         Some((member, offset)) => {
             match archive::read_text_member_chunk_nested_path(
+                &PROFILE,
                 filename,
                 path,
                 &[],

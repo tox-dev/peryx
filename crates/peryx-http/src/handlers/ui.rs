@@ -2,7 +2,7 @@
 //!
 //! Each endpoint resolves the index route to its ecosystem driver and returns the driver-produced
 //! neutral view model as plain JSON, so the browser never links an ecosystem crate or parses a format
-//! API — it fetches these and deserializes into the shared view models.
+//! API - it fetches these and deserializes into the shared view models.
 
 use std::sync::Arc;
 
@@ -70,10 +70,19 @@ pub async fn ui_projects(
     {
         return super::denied(denial);
     }
+    let Some(driver) = driver.capabilities().browse else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match driver.project_names(&state.serving, position) {
         Ok(mut names) => {
             if let Some(access) = access {
-                names.retain(|project| access.authorize_project(project).is_ok());
+                let mut authorized = Vec::with_capacity(names.len());
+                for project in names {
+                    if access.authorize_project(&project).is_ok() {
+                        authorized.push(project);
+                    }
+                }
+                names = authorized;
             }
             private_json(names)
         }
@@ -93,6 +102,9 @@ pub async fn ui_project(
     if let Err(denial) = authorize_project(&state, &headers, position, &query.project) {
         return super::denied(denial);
     }
+    let Some(driver) = driver.capabilities().browse else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match driver
         .browse_project(state.serving.clone(), position, query.project)
         .await
@@ -116,6 +128,9 @@ pub async fn ui_manifest(
     if let Err(denial) = authorize_project(&state, &headers, position, &query.project) {
         return super::denied(denial);
     }
+    let Some(driver) = driver.capabilities().manifest else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match driver
         .manifest_view(state.serving.clone(), position, query.project, query.reference)
         .await
@@ -138,6 +153,9 @@ pub async fn ui_members(
     if let Err(denial) = authorize_project(&state, &headers, position, &query.project) {
         return super::denied(denial);
     }
+    let Some(driver) = driver.capabilities().artifact_members else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match driver
         .artifact_members(state.serving.clone(), position, query.project, query.digest)
         .await
@@ -160,6 +178,9 @@ pub async fn ui_member(
     if let Err(denial) = authorize_project(&state, &headers, position, &query.project) {
         return super::denied(denial);
     }
+    let Some(driver) = driver.capabilities().artifact_members else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match driver
         .artifact_member_chunk(
             state.serving.clone(),

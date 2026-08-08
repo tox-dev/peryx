@@ -3,7 +3,7 @@
 //!
 //! A repository is identified by an opaque [`RepositoryId`] that survives display-name changes, and
 //! addressed on the wire by a unique `route`. The `definition` is an ecosystem-agnostic JSON envelope
-//! the store never interprets — the format-specific shape and its validation live in the ecosystem
+//! the store never interprets - the format-specific shape and its validation live in the ecosystem
 //! crates, so this neutral store grows no per-ecosystem tables. Each mutation bumps a monotonic
 //! [`version`](RepositoryRecord::version), the strong validator an update or disable checks its
 //! precondition against, and the whole change commits in one redb transaction.

@@ -7,7 +7,7 @@ mod contents;
 use contents::{layer_contents_response, layer_query_member};
 use peryx_driver::conditional::applicable_range;
 use peryx_driver::range::unsatisfiable_range;
-use peryx_driver::read_through::fill_from_remote_placement;
+use peryx_ha::fill_from_remote_placement;
 
 use super::uploads::created;
 use super::*;
@@ -501,7 +501,7 @@ pub(super) fn authority_moved() -> Response {
 }
 
 /// Release a still-open quota reservation, a no-op when the push was unmetered or the digest was already a
-/// member. Every abandoned finalize — a rejected epoch, a commit fault, a superseded authority — returns
+/// member. Every abandoned finalize - a rejected epoch, a commit fault, a superseded authority - returns
 /// the momentary bytes it reserved so a fenced or failed upload leaves no phantom accounting behind.
 pub(super) fn release_reservation(
     state: &ServingState,
@@ -559,7 +559,7 @@ pub(super) async fn commit_blob(
             crate::quota::commit_blob_membership(&state.meta, &index.name, repo, digest, reservation, None, journal)?;
             state.record_home_placement(storage.as_str(), bytes, fence);
             state.finalize_admitted_write(&operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::OciPush, fence);
+            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(blob_created(name, digest))
         }
         Err(err) => {
@@ -581,7 +581,7 @@ fn blob_operation(index: &str, repo: &str, digest: &str) -> String {
 /// counterpart to [`commit_blob`].
 ///
 /// On success the session's durable record is closed. A rejected quota drops the stage and record. A
-/// commit fault — a digest mismatch, most likely — keeps both, so the client can retry the finalize
+/// commit fault - a digest mismatch, most likely - keeps both, so the client can retry the finalize
 /// with the right digest rather than re-upload every byte.
 #[allow(
     clippy::too_many_arguments,
@@ -634,7 +634,7 @@ pub(super) async fn commit_staged_upload(
             committed?;
             state.record_home_placement(storage.as_str(), bytes, fence);
             state.finalize_admitted_write(&operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::OciPush, fence);
+            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(blob_created(name, digest))
         }
         Err(err) => {
@@ -738,82 +738,5 @@ fn header_value(value: &str) -> HeaderValue {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_download_error_maps_mismatch_to_client_and_the_rest_to_gateway() {
-        let mismatch = DownloadError::Blob(BlobError::digest_mismatch(&Digest::of(b"a"), &Digest::of(b"b")));
-        assert_eq!(download_error_response(mismatch).status(), StatusCode::BAD_REQUEST);
-        let io = DownloadError::Blob(BlobError::io(std::io::Error::other("disk")));
-        assert_eq!(download_error_response(io).status(), StatusCode::BAD_GATEWAY);
-        assert_eq!(
-            download_error_response(DownloadError::Stream("reset".to_owned())).status(),
-            StatusCode::BAD_GATEWAY
-        );
-    }
-
-    #[test]
-    fn test_download_blob_error_reports_a_source() {
-        use std::error::Error as _;
-
-        assert!(
-            DownloadError::Blob(BlobError::io(std::io::Error::other("disk")))
-                .source()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn test_download_stream_error_has_no_source() {
-        use std::error::Error as _;
-
-        assert!(DownloadError::Stream("reset".to_owned()).source().is_none());
-    }
-
-    #[test]
-    fn test_blob_fault_is_a_transport_error() {
-        assert!(matches!(
-            blob_fault(BlobError::not_found(&Digest::of(b"x"))),
-            ServeError::Transport(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_join_layer_contents_returns_the_task_response() {
-        let task = tokio::task::spawn_blocking(|| error_response(ErrorCode::BlobUnknown, "blob unknown"));
-        assert_eq!(join_layer_contents(task).await.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn test_join_layer_contents_maps_a_panic_to_a_gateway_error() {
-        let task = tokio::task::spawn_blocking(|| -> Response { panic!("layer worker blew up") });
-        assert_eq!(join_layer_contents(task).await.status(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[tokio::test]
-    async fn test_ingest_blob_reports_a_stream_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
-        let storage = Digest::of(b"x");
-        let stream = futures_util::stream::iter(vec![Err("boom".to_owned())]);
-        let err = ingest_blob(&blobs, &storage, stream).await.unwrap_err();
-        assert!(matches!(err, DownloadError::Stream(message) if message == "boom"));
-    }
-
-    #[tokio::test]
-    async fn test_ingest_blob_reports_a_cleanup_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("blobs");
-        let blobs = BlobStorage::filesystem(&root);
-        let storage = Digest::of(b"x");
-        let stream = futures_util::stream::once(async move {
-            let stage = std::fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
-            std::fs::remove_file(&stage).unwrap();
-            std::fs::create_dir(&stage).unwrap();
-            Err("boom".to_owned())
-        });
-        let err = ingest_blob(&blobs, &storage, stream).await.unwrap_err();
-        assert!(matches!(err, DownloadError::Blob(_)));
-    }
-}
+#[path = "../../../tests/unit/registry/blobs/tests.rs"]
+mod tests;

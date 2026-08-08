@@ -155,6 +155,27 @@ curl -X PUT -u __token__:<secret> 'http://127.0.0.1:4433/root/pypi/promote/1.0/p
 
 A promote without a version answers `400` with `promotion requires a version`, the same as any other project.
 
+## Inspect trash
+
+`GET /+trash` lists soft-deleted distributions through the shared trash schema. A PyPI record uses the normalized
+project as `name`, the distribution filename as `reference`, and the file sha256 as `digest`.
+
+```shell
+curl -u __token__:$UPLOAD_TOKEN \
+  'http://127.0.0.1:4433/+trash?repository=root/pypi&ecosystem=pypi&state=restorable&limit=25'
+```
+
+Inspect one distribution by route, project, filename, and digest:
+
+```shell
+curl -u admin:$PERYX_ADMIN_PASSWORD \
+  'http://127.0.0.1:4433/+trash/record?ecosystem=pypi&repository=root/pypi&name=mypkg&reference=mypkg-1.2.0-py3-none-any.whl&digest=sha256:<hex>'
+```
+
+The record remains restorable while the recovery deadline is open and retained content exists. The
+[`/admin/trash`](@/core/web-ui.md) page exposes the same filters and omits the deleting actor for repository-scoped
+credentials.
+
 ## Related
 
 - Yank vs delete vs hide, and why all three exist: [the index model](@/core/indexes.md)

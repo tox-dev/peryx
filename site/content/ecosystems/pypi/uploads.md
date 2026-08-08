@@ -51,7 +51,7 @@ cost as releases accumulate and includes capacity held by uploads that have not 
 A failed or cancelled request releases its reservation. A same-content re-upload of an existing filename stays an
 idempotent success and does not consume more project bytes. `quota_audit = true` accepts a would-reject upload while
 recording the violation, which lets an operator observe the limit before enforcing it. See the
-[quota accounting model](@/core/quotas.md#pypi-upload-enforcement) and the
+[quota settings](@/ecosystems/pypi/reference/policy.md#upload-quotas) and the
 [exact response contract](@/ecosystems/pypi/reference/uploads.md#project-size-quota).
 
 ## Un-normalized wheels
@@ -258,15 +258,14 @@ in-toto subject has to carry the uploaded file's SHA-256 digest, and if it names
 one being uploaded. An attestation whose subject digest is for some other file, or whose subject names a different
 wheel, is a bundle issued for a different artifact, and peryx rejects it.
 
-That binding is the whole point of storing the attestation next to the file: a client that fetches the provenance knows
-it describes the bytes it downloaded, not a look-alike an attacker swapped in. Everything past the binding — the
-certificate chain, the log proofs, the predicate — peryx keeps verbatim and hands to the verifier without interpreting.
+Storing the attestation next to the file lets a client confirm that the provenance describes the downloaded bytes. peryx
+keeps the certificate chain, log proofs, and predicate intact for the verifier.
 
 ### Publish is all-or-nothing
 
 The attestation and the distribution publish in one transaction, so a bad bundle takes both down with it. A subject
 mismatch, a malformed envelope, a statement that is not valid base64 or not a valid in-toto statement, an unsupported
-version, a bundle nested past the JSON parser's depth limit, or a field over its size limit — any of these fails the
+version, a bundle nested past the JSON parser's depth limit, or a field over its size limit. Any of these fails the
 upload with a `400`, and neither the file nor its provenance becomes visible. There is no half-published state where the
 wheel is installable but its provenance is missing, or the reverse.
 
@@ -274,21 +273,21 @@ wheel is installable but its provenance is missing, or the reverse.
 
 The provenance follows the distribution's visibility, because it is only ever reachable through the file's advertised
 provenance URL. Yank a release and its files stay on the page (marked yanked) with their provenance URLs intact. Trash a
-file and it drops off every served page, and its provenance link goes with it. Restore it and both come back — the
-provenance blob is kept through the trash, keyed by the artifact's own digest, so a restore never has to re-derive it.
-The association a client sees always matches what the index is willing to serve.
+file and it drops off every served page with its provenance link. Restore it and both return. The provenance blob is
+kept through the trash, keyed by the artifact's own digest, so a restore never has to re-derive it. The association a
+client sees always matches what the index is willing to serve.
 
 ### Requiring an attestation
 
 Accepting attestations is one thing; requiring them is a policy. `required_attestations` on an index's `[index.policy]`
 table lists the [in-toto](https://slsa.dev/spec/v1.0/provenance) predicate types an upload must carry a PEP 740
-attestation for — for example `https://docs.pypi.org/attestations/publish/v1` from the
+attestation for, such as `https://docs.pypi.org/attestations/publish/v1` from the
 [PyPA index-hosted attestation specification](https://packaging.python.org/en/latest/specifications/index-hosted-attestations/).
 peryx evaluates the requirement at the upload boundary, after the same structural and subject-binding validation above
 and before the file and its provenance publish. An upload missing a required predicate type publishes neither object,
 and the `403` names the missing types without echoing bundle content. Matching predicates permit the same upload. The
-requirement reads only the predicate types the bound attestations already declared: no signature, certificate, or
-transparency-log verification, and no identity claim — a later verifier still owns those.
+requirement reads the predicate types declared by the bound attestations. A later verifier checks signatures,
+certificates, transparency logs, and identity claims.
 
 `attestation_mode` chooses what an unmet requirement does. `enforce`, the default, rejects the upload. `audit` records
 the same policy decision but publishes the upload anyway, so an operator can measure how much of a project's traffic
@@ -319,15 +318,13 @@ A control leases the authority's committed epoch when it starts, resolves the fi
 epoch before it writes. A control whose authority did not move commits under the epoch it leased. One whose home
 transferred while it ran leased a superseded epoch, so peryx rejects it with `409 Conflict` and writes nothing: a former
 home cannot change a serial or a file's visibility after the project has moved on. The rejection carries a retry hint
-and nothing else — no leader address, no datacenter, no membership — so a protocol client learns to retry without
-learning the cluster's shape.
+without topology details, so a protocol client learns to retry without learning the cluster's shape.
 
 ### Retrying a fenced control
 
 Reissue the same request. The retry leases the current epoch and, once the transfer has settled, commits against the new
-home. The operations are idempotent — a second yank of an already-yanked file, a second delete of an already-trashed one
-— so a retry after an ambiguous failure converges on one serial ordering and one visible result instead of doubling the
-change.
+home. A second yank of an already-yanked file and a second delete of an already-trashed file are idempotent. A retry
+after an ambiguous failure therefore converges on one serial ordering and one visible result.
 
 ### Single-node and ungrouped deployments
 

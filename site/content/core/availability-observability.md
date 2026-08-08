@@ -89,25 +89,19 @@ A replica serves reads only up to its [readable frontier](@/core/availability-de
 serial every required view has rebuilt to. A record the replica has stored but not yet reflected in its search index or
 rendered pages stays below that frontier, so a client never pairs new metadata with an old view. The frontier is durable
 and monotonic, so a restart never exposes a record a view had not applied. A replica exports how far its views trail the
-metadata it has committed as `peryx_replication_readable_serial`, which the placement and topology surfaces complement
-with per-node liveness.
+metadata it has committed as `peryx_ha_distributed_readable_serial`, which the placement and topology surfaces
+complement with per-node liveness.
 
 Send every mutation to the writer. A replica rejects an upload, a delete, or any other mutation with
 `503 Service Unavailable` and runs no upstream cache fills, webhook delivery, or background maintenance, so a client
 that writes to a replica gets a clear refusal rather than a silent divergence.
 
-## Not yet available
+## Mode scope
 
-Some availability behavior is selectable configuration whose runtime later work completes. Until it lands, do not
-operate against it:
+Availability surfaces exist only under `dc` or `ha`. Under `none`, the process registers no availability routes,
+metrics, listeners, or workers. General request, job, and storage metrics remain available because they are not part of
+distributed coordination.
 
-- **Live peer health.** A peer node's liveness and frontier stay `unknown` in the topology view until the consensus
-  layer reports them; today only this node's self-observation is live.
-- **Authority transfer.** Promoting a replica to writer is [operator-driven failover](@/core/high-availability.md)
-  through the CLI; an audited transfer API is not yet exposed.
-- **Rolling upgrade and rollback.** A tested version-to-version upgrade and rollback runbook is forthcoming; until then,
-  follow the single-node restore path in [Availability deployment and sizing](@/core/availability-deployment.md).
-- **Automatic failover.** Failover is operator-driven under the `none` contract; the `dc` and `ha` modes size for
-  automatic failover but their replicating runtime is not yet shipped.
-- **Distributed analytics completeness.** A query that marks an analytics range complete, delayed, or unavailable across
-  producers waits on the replicated analytics store; single-node usage counters are exact and need no completeness mark.
+Peer health, authority transfer, rolling upgrades, analytics replication, and recovery procedures are documented on
+their dedicated availability pages. Each surface reports only state its coordinator can prove; an absent or unknown peer
+observation never reads as healthy.

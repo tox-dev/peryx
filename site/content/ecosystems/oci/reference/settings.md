@@ -73,7 +73,7 @@ Everything on peryx's side keeps the spelling the client used:
 - The referrers index.
 - The name the image is served, listed, and browsed under, in the API and the [web UI](@/core/web-ui.md).
 
-`peryx mirror sync --index hub --image ubuntu:24.04` follows the same rule: it pulls `library/ubuntu` from Hub and
+`peryx mirror sync hub --option 'images=["ubuntu:24.04"]'` follows the same rule: it pulls `library/ubuntu` from Hub and
 stores it as `ubuntu`.
 
 ## Related

@@ -7,7 +7,7 @@
 //!
 //! # Read-only by construction
 //!
-//! Every method here reads. There is deliberately no create, update, or delete — not now and not by
+//! Every method here reads. There is deliberately no create, update, or delete - not now and not by
 //! extension. PQL is a read surface; writes stay in their existing dedicated, audited endpoints and
 //! never route through this trait. A future contributor tempted to add, say, a delete "just for
 //! trash" should add it to the trash endpoint, not here: a mutating method on this trait would break
@@ -24,8 +24,8 @@ use crate::value::{Row, Value};
 /// The gate admits an unbounded domain only when the query carries an equality or membership on a
 /// cheaply-indexed column (constraint 6). Passing that same filter here is what makes admission
 /// honest: a source that honors it reads an indexed slice instead of materializing the whole domain
-/// and filtering in memory. It stays advisory — the executor re-applies the full predicate over the
-/// returned rows — so a source that cannot use it may ignore it without affecting correctness.
+/// and filtering in memory. It stays advisory - the executor re-applies the full predicate over the
+/// returned rows - so a source that cannot use it may ignore it without affecting correctness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchFilter {
     /// The indexed column the filter narrows on.
@@ -47,8 +47,8 @@ pub trait DataSource: Send + Sync {
     ///
     /// When `filter` is `Some`, it is the cost gate's leading indexed filter (see [`FetchFilter`]): a
     /// source SHOULD honor it through its index so an admitted unbounded-domain query does not
-    /// materialize the whole domain. Honoring it is advisory — the executor re-applies the full
-    /// predicate regardless — so a source without a matching index may ignore it.
+    /// materialize the whole domain. Honoring it is advisory - the executor re-applies the full
+    /// predicate regardless - so a source without a matching index may ignore it.
     ///
     /// # Errors
     /// Returns [`PqlError::Backend`] when the underlying store cannot answer.

@@ -3,12 +3,67 @@
 //! A future ecosystem is a sibling `peryx-ecosystem-*` crate, so nothing here is tangled into shared
 //! code.
 
+use std::sync::Arc;
+
+use peryx_core::{Ecosystem, EcosystemInstaller, Lexicon};
+use peryx_driver::AppState;
+use peryx_driver::serving::{CompiledEcosystemSettings, EcosystemCapability, EcosystemDriver, EcosystemPlugin};
+
+/// Stable identity of the Python package ecosystem.
+pub const ECOSYSTEM: Ecosystem = Ecosystem::new("pypi");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorMode {
+    All,
+    Selected,
+    MetadataOnly,
+}
+
+pub const DEFAULT_INDEXES: &[peryx_core::DefaultIndex] = &[
+    peryx_core::DefaultIndex {
+        name: "pypi",
+        route: "pypi",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_core::DefaultIndexKind::Cached {
+            upstream: "https://pypi.org/simple/",
+        },
+    },
+    peryx_core::DefaultIndex {
+        name: "hosted",
+        route: "hosted",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_core::DefaultIndexKind::Hosted,
+    },
+    peryx_core::DefaultIndex {
+        name: "root/pypi",
+        route: "root/pypi",
+        ecosystem: ECOSYSTEM,
+        kind: peryx_core::DefaultIndexKind::Virtual {
+            layers: &["hosted", "pypi"],
+            upload: "hosted",
+        },
+    },
+];
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PypiPlugin;
+
+#[cfg(feature = "serving")]
+inventory::submit! {
+    peryx_plugin_registry::PluginRegistration {
+        plugin: &PypiPlugin,
+        priority: 0,
+    }
+}
+
 #[cfg(feature = "serving")]
 mod admin;
 #[cfg(feature = "serving")]
 pub mod archive;
 #[cfg(feature = "serving")]
 pub mod attestation;
+#[cfg(feature = "bench")]
+pub mod bench;
 #[cfg(feature = "serving")]
 pub mod cache;
 #[cfg(feature = "serving")]
@@ -32,6 +87,8 @@ mod legacy_json;
 #[cfg(feature = "serving")]
 mod license;
 mod metadata;
+#[cfg(feature = "serving")]
+mod mirror;
 mod name;
 #[cfg(feature = "serving")]
 pub mod openapi;
@@ -112,11 +169,82 @@ pub use version::{Version, VersionSpecifiers, parse_version, parse_version_speci
 /// dispatch through [`PypiServing`] and search indexes through [`PypiIndexer`].
 #[cfg(feature = "serving")]
 pub fn install(state: &mut peryx_driver::AppState) {
-    state.register_ecosystem(std::sync::Arc::new(PypiServing), std::sync::Arc::new(PypiIndexer));
-    // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
-    // lexicon is the neutral one; a future divergence would give this crate its own constant.
-    state.register_lexicon(peryx_core::Ecosystem::Pypi, &peryx_core::Lexicon::NEUTRAL);
+    PypiServing.install(state);
 }
+
+#[cfg(feature = "serving")]
+impl EcosystemInstaller<AppState> for PypiServing {
+    fn register_driver(&self, state: &mut AppState) {
+        let driver = Arc::new(*self);
+        state.register_ecosystem(driver.clone(), Arc::new(PypiIndexer));
+        state.register_maintenance_driver(ECOSYSTEM, driver.clone());
+        state.register_replicated_apply_driver(ECOSYSTEM, driver);
+        state.register_mirror_driver(ECOSYSTEM, Arc::new(Self));
+        // peryx's neutral vocabulary is Python's own (index, project, version, file), so the PyPI
+        // lexicon is the neutral one; a future divergence would give this crate its own constant.
+        state.register_lexicon(ECOSYSTEM, &Lexicon::NEUTRAL);
+    }
+}
+
+#[cfg(feature = "serving")]
+impl EcosystemPlugin for PypiPlugin {
+    fn ecosystem(&self) -> Ecosystem {
+        ECOSYSTEM
+    }
+
+    fn default_indexes(&self) -> &'static [peryx_core::DefaultIndex] {
+        DEFAULT_INDEXES
+    }
+
+    fn driver(&self) -> Arc<dyn EcosystemDriver> {
+        Arc::new(PypiServing)
+    }
+
+    fn compile_index_settings(
+        &self,
+        name: &str,
+        settings: &toml::Table,
+    ) -> Result<Option<CompiledEcosystemSettings>, String> {
+        settings.keys().next().map_or(Ok(None), |key| {
+            Err(format!(
+                "compile settings for {name}: unknown field `{key}` in `[index.settings]`"
+            ))
+        })
+    }
+
+    fn install(&self, state: &mut AppState, _: &[(&str, &CompiledEcosystemSettings)]) -> Result<(), String> {
+        PypiServing.install(state);
+        Ok(())
+    }
+
+    fn supports(&self, _capability: EcosystemCapability) -> bool {
+        true
+    }
+
+    fn openapi_paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
+        openapi::openapi_paths(paths)
+    }
+
+    fn snippet_text(
+        &self,
+        base: &peryx_driver::discovery::BaseUrl,
+        route: &str,
+        uploads: bool,
+        format: &str,
+    ) -> Result<Option<String>, String> {
+        let kind = match format {
+            "pip.conf" => discovery::SnippetKind::PipConf,
+            "uv.toml" => discovery::SnippetKind::UvToml,
+            ".pypirc" => discovery::SnippetKind::Pypirc,
+            _ => return Err(format!("unknown snippet format {format:?}")),
+        };
+        Ok(discovery::snippet_text(base, route, uploads, kind))
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/plugin_contract_tests.rs"]
+mod plugin_contract_tests;
 
 /// Render any error as the user-visible message a driver method returns, so the many `?`-adjacent
 /// store and io failures map through one function instead of a per-site `|err| err.to_string()`
@@ -127,16 +255,9 @@ pub(crate) fn error_message<E: std::fmt::Display>(err: E) -> String {
 }
 
 #[cfg(all(test, feature = "serving"))]
-mod error_message_tests {
-    use super::error_message;
-
-    #[test]
-    fn test_error_message_stringifies_io_and_store_faults() {
-        assert_eq!(error_message(std::io::Error::other("disk")), "disk");
-        let decode = serde_json::from_str::<u8>("x").unwrap_err();
-        assert!(!error_message(peryx_storage::meta::MetaError::Decode(decode)).is_empty());
-    }
-}
+#[path = "../tests/unit/error_message_tests.rs"]
+mod error_message_tests;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

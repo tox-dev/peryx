@@ -152,8 +152,8 @@ impl MetaStore {
     /// after `cursor` and reading at most `limit` rows.
     ///
     /// The integrity pass re-verifies each returned placement's stored bytes; a mismatch demotes the
-    /// verified copy so the copy backlog repairs it. The pass bounds work by rows read — not by matches —
-    /// and carries a `next_cursor` at its last read row until it reaches the end of the table, so a ledger
+    /// verified copy so the copy backlog repairs it. The pass bounds work by rows read and carries a
+    /// `next_cursor` at its last read row until it reaches the end of the table, so a ledger
     /// dominated by remote or non-verified rows still advances a bounded amount per pass.
     ///
     /// # Errors

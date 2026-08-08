@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+output="${1:?output directory is required}"
+shift
+if (($# == 0)); then
+  printf 'at least one package is required\n' >&2
+  exit 1
+fi
+mkdir -p "$output"
+
+for package in "$@"; do
+  cargo check -p "$package" --all-targets
+  cargo test -p "$package" --doc
+done
+
+cargo llvm-cov clean --workspace
+metadata="$(cargo metadata --no-deps --format-version 1)"
+target_dir="$(jq -r .target_directory <<<"$metadata")"
+for package in "$@"; do
+  find "$target_dir" -maxdepth 1 -name '*.profraw' -delete
+  report="$output/$package.lcov"
+  cargo llvm-cov nextest -p "$package" --lib --bins --tests --examples --no-report
+  if jq -e --arg package "$package" \
+    '.packages[] | select(.name == $package) | any(.targets[]; .kind | index("bench"))' \
+    <<<"$metadata" >/dev/null; then
+    cargo llvm-cov -p "$package" --benches --no-report
+  fi
+  cargo llvm-cov report -p "$package" --ignore-filename-regex '$^' --lcov --output-path "$report"
+  .github/scripts/check-lcov-functions.awk "$report"
+  .github/scripts/check-lcov-lines.awk "$report"
+done

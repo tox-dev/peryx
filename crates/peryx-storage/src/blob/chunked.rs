@@ -1,7 +1,7 @@
 //! A chunked content digest: the sha256 of each fixed-size span of a blob.
 //!
 //! The whole-blob digest verifies a blob only once every byte is reassembled and hashed, so a ranged
-//! fetch of a large blob cannot be trusted — and so cannot be forwarded to a client — until the whole
+//! fetch of a large blob cannot be trusted - and so cannot be forwarded to a client - until the whole
 //! arrives. A chunked digest records the sha256 of each fixed span, computed when the blob was staged and
 //! whole-verified, so a later incremental fetch verifies each chunk against its own digest and forwards it
 //! before the rest of the blob arrives.
@@ -138,4 +138,5 @@ impl ChunkedDigestBuilder {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/blob/chunked/tests.rs"]
 mod tests;

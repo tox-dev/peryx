@@ -1,17 +1,7 @@
 use peryx_core::url_encoding::{push_component, push_path};
 
-/// The Simple index URL for one route, shown in the `PyPI` project page's install snippet.
 #[must_use]
-pub(crate) fn simple_index_url(route: &str) -> String {
-    let mut url = String::with_capacity(route.len() + 9);
-    url.push('/');
-    push_path(&mut url, route);
-    url.push_str("/simple/");
-    url
-}
-
-#[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn browser_http_origin(protocol: &str, hostname: &str, port: &str) -> Option<String> {
     if hostname.is_empty() || !matches!(protocol, "http:" | "https:") {
         return None;
@@ -30,7 +20,7 @@ pub(crate) fn browser_http_origin(protocol: &str, hostname: &str, port: &str) ->
 
 /// The neutral browse-data endpoint for one index's project names: `/+ui/projects?index=<route>`.
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn ui_projects_url(route: &str) -> String {
     let mut url = "/+ui/projects".to_owned();
     QueryAppender::new(&mut url).push("index", route);
@@ -39,7 +29,7 @@ pub(crate) fn ui_projects_url(route: &str) -> String {
 
 /// The neutral browse-data endpoint for one project's view: `/+ui/project?index&project`.
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn ui_project_url(route: &str, project: &str) -> String {
     let mut url = "/+ui/project".to_owned();
     let mut query = QueryAppender::new(&mut url);
@@ -50,7 +40,7 @@ pub(crate) fn ui_project_url(route: &str, project: &str) -> String {
 
 /// The neutral browse-data endpoint for one manifest view: `/+ui/manifest?index&project&ref`.
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn ui_manifest_url(route: &str, repo: &str, reference: &str) -> String {
     let mut url = "/+ui/manifest".to_owned();
     let mut query = QueryAppender::new(&mut url);
@@ -62,7 +52,7 @@ pub(crate) fn ui_manifest_url(route: &str, repo: &str, reference: &str) -> Strin
 
 /// The neutral browse-data endpoint listing a nested item's members: `/+ui/members?index&project&digest`.
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn ui_members_url(route: &str, repo: &str, digest: &str) -> String {
     let mut url = "/+ui/members".to_owned();
     let mut query = QueryAppender::new(&mut url);
@@ -74,7 +64,7 @@ pub(crate) fn ui_members_url(route: &str, repo: &str, digest: &str) -> String {
 
 /// The neutral browse-data endpoint for one member chunk: `/+ui/member?index&project&digest&member&offset`.
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn ui_member_url(route: &str, repo: &str, digest: &str, member: &str, offset: u64) -> String {
     let mut url = "/+ui/member".to_owned();
     let mut query = QueryAppender::new(&mut url);
@@ -231,7 +221,7 @@ pub(crate) fn search_page_url(
 }
 
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn search_api_url(
     route: Option<&str>,
     query: &str,
@@ -274,7 +264,7 @@ fn append_search_query(
 }
 
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn inspect_url(
     route: &str,
     sha256: &str,
@@ -316,7 +306,7 @@ pub(crate) fn stats_project_url(route: &str, project: &str) -> String {
 }
 
 #[must_use]
-#[cfg(any(all(not(feature = "ssr"), feature = "hydrate"), test))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub(crate) fn stats_api_url(route: Option<&str>, project: Option<&str>) -> String {
     let mut url = "/+stats".to_owned();
     if let Some(route) = route {
@@ -383,133 +373,6 @@ fn push_query(url: &mut String, key: &str, value: &str) {
     QueryAppender::continuing(url).push(key, value);
 }
 
-#[cfg(test)]
-mod tests {
-    use rstest::rstest;
-
-    use super::{
-        admin_project_url, admin_version_url, browse_archive_listing_url, browse_archive_member_url,
-        browse_archive_url, browse_index_url, browse_project_file_search_url, browse_project_release_url,
-        browse_project_url, browser_http_origin, inspect_url, search_api_url, search_page_url, simple_index_url,
-        stats_api_url, stats_index_url, stats_project_url, ui_manifest_url, ui_member_url, ui_members_url,
-        ui_project_url, ui_projects_url,
-    };
-
-    #[rstest]
-    #[case("http:", "localhost", "", "http://localhost")]
-    #[case("http:", "localhost", "80", "http://localhost")]
-    #[case("https:", "packages.example", "443", "https://packages.example")]
-    #[case("https:", "packages.example", "8443", "https://packages.example:8443")]
-    fn test_browser_http_origin_formats_ports(
-        #[case] protocol: &str,
-        #[case] hostname: &str,
-        #[case] port: &str,
-        #[case] expected: &str,
-    ) {
-        assert_eq!(browser_http_origin(protocol, hostname, port).as_deref(), Some(expected));
-    }
-
-    #[rstest]
-    #[case("ftp:", "packages.example", "21")]
-    #[case("https:", "", "")]
-    fn test_browser_http_origin_rejects_unsupported_locations(
-        #[case] protocol: &str,
-        #[case] hostname: &str,
-        #[case] port: &str,
-    ) {
-        assert_eq!(browser_http_origin(protocol, hostname, port), None);
-    }
-
-    #[test]
-    fn test_package_urls_encode_paths_and_queries() {
-        assert_eq!(simple_index_url("root/pypi"), "/root/pypi/simple/");
-        assert_eq!(browse_index_url("root/pypi"), "/browse?index=root%2Fpypi");
-        assert_eq!(
-            browse_project_url("root/pypi", "pkg name"),
-            "/browse?index=root%2Fpypi&project=pkg%20name"
-        );
-        assert_eq!(
-            browse_archive_url("root/pypi", "pkg name", "aa", "pkg 1.0#x?.whl"),
-            "/browse?index=root%2Fpypi&project=pkg%20name&sha256=aa&file=pkg%201.0%23x%3F.whl"
-        );
-        assert_eq!(
-            browse_project_file_search_url("root/pypi", "pkg name", None, "cp313.*\\.whl", true),
-            "/browse?index=root%2Fpypi&project=pkg%20name&filename=cp313.%2A%5C.whl&filename_match=regex"
-        );
-        assert_eq!(
-            browse_project_release_url("root/pypi", "pkg name", "1!2+local.1", "cp313", false),
-            "/browse?index=root%2Fpypi&project=pkg%20name&version=1%212%2Blocal.1&filename=cp313"
-        );
-    }
-
-    #[test]
-    fn test_ui_endpoint_urls_encode_arguments() {
-        assert_eq!(ui_projects_url("root/oci"), "/+ui/projects?index=root%2Foci");
-        assert_eq!(
-            ui_project_url("root/oci", "team/app"),
-            "/+ui/project?index=root%2Foci&project=team%2Fapp"
-        );
-        assert_eq!(
-            ui_manifest_url("root/oci", "team/app", "1.0"),
-            "/+ui/manifest?index=root%2Foci&project=team%2Fapp&ref=1.0"
-        );
-        assert_eq!(
-            ui_members_url("root/oci", "team/app", "sha256:aa"),
-            "/+ui/members?index=root%2Foci&project=team%2Fapp&digest=sha256%3Aaa"
-        );
-        assert_eq!(
-            ui_member_url("root/oci", "team/app", "sha256:aa", "etc/os #1", 1024),
-            "/+ui/member?index=root%2Foci&project=team%2Fapp&digest=sha256%3Aaa&member=etc%2Fos%20%231&offset=1024"
-        );
-    }
-
-    #[test]
-    fn test_archive_urls_encode_nested_members() {
-        let containers = vec!["vendor/inner #1.zip".to_owned()];
-        assert_eq!(
-            browse_archive_listing_url("root/pypi", "pkg", "aa", "pkg.whl", &containers),
-            "/browse?index=root%2Fpypi&project=pkg&sha256=aa&file=pkg.whl&container=vendor%2Finner%20%231.zip"
-        );
-        assert_eq!(
-            browse_archive_member_url("root/pypi", "pkg", "aa", "pkg.whl", &containers, "pkg/mod #1.py", 1024),
-            "/browse?index=root%2Fpypi&project=pkg&sha256=aa&file=pkg.whl&container=vendor%2Finner%20%231.zip&member=pkg%2Fmod%20%231.py&offset=1024"
-        );
-        assert_eq!(
-            inspect_url(
-                "root/pypi",
-                "aa",
-                "pkg 1.0.whl",
-                &containers,
-                Some("pkg/mod #1.py"),
-                1024
-            ),
-            "/root/pypi/inspect/aa/pkg%201.0.whl?container=vendor%2Finner%20%231.zip&member=pkg%2Fmod%20%231.py&offset=1024"
-        );
-    }
-
-    #[test]
-    fn test_stats_and_admin_urls_encode_arguments() {
-        assert_eq!(
-            search_page_url("flask cache", "override", "local", 2, 50),
-            "/search?q=flask%20cache&type=override&availability=local&page=2&page_size=50"
-        );
-        assert_eq!(
-            search_api_url(Some("root/pypi"), "flask", "all", "all", 1, 25),
-            "/+search?route=root%2Fpypi&q=flask&page_size=25"
-        );
-        assert_eq!(stats_index_url("root/pypi"), "/stats?index=root%2Fpypi");
-        assert_eq!(
-            stats_project_url("root/pypi", "pkg name"),
-            "/stats?index=root%2Fpypi&project=pkg%20name"
-        );
-        assert_eq!(
-            stats_api_url(Some("root/pypi"), Some("pkg name")),
-            "/+stats?index=root%2Fpypi&project=pkg%20name"
-        );
-        assert_eq!(admin_project_url("root/pypi", "pkg name"), "/root/pypi/pkg%20name/");
-        assert_eq!(
-            admin_version_url("root/pypi", "pkg name", "1.0+local", Some("yank")),
-            "/root/pypi/pkg%20name/1.0%2Blocal/yank"
-        );
-    }
-}
+#[cfg(all(test, not(feature = "ssr"), feature = "hydrate"))]
+#[path = "../tests/unit/url/tests.rs"]
+mod tests;

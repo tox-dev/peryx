@@ -1,7 +1,7 @@
 //! The closed error set and its mapping to a transport-neutral status class.
 //!
-//! Errors carry a category and a short, safe clause description — never a parameter value and never
-//! the raw query text — so a denial or a diagnostic can be surfaced without echoing a secret the
+//! Errors carry a category and a short, safe clause description - never a parameter value and never
+//! the raw query text - so a denial or a diagnostic can be surfaced without echoing a secret the
 //! caller embedded in a predicate.
 
 /// A transport-neutral status class the HTTP layer maps to a concrete code.

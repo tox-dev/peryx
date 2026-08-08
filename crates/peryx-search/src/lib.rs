@@ -25,4 +25,5 @@ pub use params::{AvailabilityFilter, PackageSource, SearchParams, SourceFilter};
 pub use response::{SearchResponse, SearchResult};
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

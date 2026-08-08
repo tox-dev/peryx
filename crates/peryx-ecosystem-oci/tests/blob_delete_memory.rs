@@ -4,7 +4,6 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use base64::Engine as _;
-use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
@@ -44,7 +43,7 @@ async fn test_blob_delete_uses_bounded_memory() {
     let index = Index {
         name: "store".to_owned(),
         route: "store".to_owned(),
-        ecosystem: Ecosystem::Oci,
+        ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
         acl: writer_acl(TOKEN),

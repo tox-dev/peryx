@@ -22,10 +22,10 @@ pub(super) fn trash_paths(paths: PathsBuilder) -> PathsBuilder {
 
 fn trash_record_example() -> serde_json::Value {
     json!({
-        "ecosystem": "pypi",
+        "ecosystem": "example",
         "repository": "hosted",
         "name": "example",
-        "reference": "example-1.0-py3-none-any.whl",
+        "reference": "example-1.0.bin",
         "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "reason": "compromised build",
         "actor": "usr_550e8400e29b41d4a716446655440000",
@@ -41,7 +41,7 @@ fn list_trash() -> OperationBuilder {
         .tag("operations")
         .summary(Some("List trashed artifacts"))
         .description(Some(
-            "Soft-deleted PyPI and OCI artifacts across repositories, newest deletion first. An \
+            "Soft-deleted artifacts across repositories, newest deletion first. An \
              administrator inspects every repository and sees the deleting actor; a repository reader \
              inspects one repository they can read, with actor details redacted by the role filter. A \
              repository's legacy upload token retains access to that repository under the `__token__` \
@@ -56,7 +56,7 @@ fn list_trash() -> OperationBuilder {
             "200",
             api_json_response(
                 "The matching trash records, newest first",
-                json!({"trash": [trash_record_example()], "next_cursor": "0009223372036800000\u{1f}pypi\u{1f}hosted\u{1f}example\u{1f}example-1.0-py3-none-any.whl\u{1f}sha256:0123"}),
+                json!({"trash": [trash_record_example()], "next_cursor": "0009223372036800000\u{1f}example\u{1f}hosted\u{1f}example\u{1f}example-1.0.bin\u{1f}sha256:0123"}),
             ),
         )
         .response(
@@ -98,7 +98,7 @@ fn list_trash() -> OperationBuilder {
             "Repository route to inspect, at most 512 bytes",
             json!("hosted"),
         ),
-        ("ecosystem", "Filter by `pypi` or `oci`", json!("pypi")),
+        ("ecosystem", "Filter by registered ecosystem", json!("example")),
         ("state", "Filter by `restorable` or `expired`", json!("restorable")),
         (
             "deadline_before",
@@ -108,9 +108,7 @@ fn list_trash() -> OperationBuilder {
         (
             "cursor",
             "Exclusive cursor from the prior page",
-            json!(
-                "0009223372036800000\u{1f}pypi\u{1f}hosted\u{1f}example\u{1f}example-1.0-py3-none-any.whl\u{1f}sha256:0123"
-            ),
+            json!("0009223372036800000\u{1f}example\u{1f}hosted\u{1f}example\u{1f}example-1.0.bin\u{1f}sha256:0123"),
         ),
         ("limit", "Rows to return, from 1 through 100; defaults to 25", json!(25)),
     ] {
@@ -160,8 +158,8 @@ fn inspect_trash() -> OperationBuilder {
         (
             "ecosystem",
             true,
-            "The artifact's ecosystem, `pypi` or `oci`",
-            json!("pypi"),
+            "The artifact's registered ecosystem",
+            json!("example"),
         ),
         (
             "repository",
@@ -169,17 +167,12 @@ fn inspect_trash() -> OperationBuilder {
             "The repository route the artifact was deleted from",
             json!("hosted"),
         ),
-        (
-            "name",
-            true,
-            "The PyPI project or OCI repository path",
-            json!("example"),
-        ),
+        ("name", true, "The ecosystem artifact name", json!("example")),
         (
             "reference",
             false,
-            "The distribution filename or OCI tag, if any",
-            json!("example-1.0-py3-none-any.whl"),
+            "The ecosystem artifact reference, if any",
+            json!("example-1.0.bin"),
         ),
         (
             "digest",

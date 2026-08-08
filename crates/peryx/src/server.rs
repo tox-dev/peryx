@@ -4,26 +4,26 @@ use std::borrow::Cow;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read as _;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail, ensure};
 use axum::Router;
-use peryx_core::{Ecosystem, path};
+use peryx_core::path;
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, DriverSet, Index, IndexKind};
-use peryx_ecosystem_oci::IndexSettings;
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
+use peryx_ha_distributed::{
+    FrontierReply, HttpReceiptSource, HttpRemoteFrontierSource, MetadataFrontierProvider, ReceiptSource,
+    RemoteFrontierSource, frontier_router, receipt_router,
+};
 use peryx_http::router;
 use peryx_identity::{
     Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
     OidcProviderSettings, SessionSealer, Signer,
 };
+use peryx_plugin_registry as plugin_registry;
 use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
-use peryx_replication::{
-    FrontierReply, HttpReceiptSource, HttpRemoteFrontierSource, MetadataFrontierProvider, ReceiptSource,
-    RemoteFrontierSource, frontier_router, receipt_router,
-};
 use peryx_storage::blob::{BlobStorage, S3Config};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use peryx_upstream::{
@@ -41,11 +41,10 @@ use crate::config::{
 /// as the search view, so its readable frontier holds at the slower of the metadata and blob views;
 /// every other role gates on the search view alone.
 fn required_views(config: &Config) -> Arc<[&'static str]> {
-    match config.availability.replication() {
-        Some(ReplicationConfig::Replica { .. }) => {
-            Arc::from([peryx_driver::state::SEARCH_VIEW, peryx_replication::BLOB_VIEW])
-        }
-        _ => Arc::from([peryx_driver::state::SEARCH_VIEW]),
+    if config.availability.is_replica_mode() {
+        Arc::from([peryx_driver::state::SEARCH_VIEW, peryx_ha_distributed::BLOB_VIEW])
+    } else {
+        Arc::from([peryx_driver::state::SEARCH_VIEW])
     }
 }
 
@@ -74,15 +73,20 @@ pub(crate) fn build_blob_storage(config: &Config) -> anyhow::Result<BlobStorage>
 /// a virtual index references an unknown or non-hosted index.
 pub fn build_router(config: &Config) -> anyhow::Result<Router> {
     let state = build_state(config)?;
-    let replication = crate::replication::ReplicationRuntime::new(config, &state)?;
-    Ok(replication.mount(router_for(state)))
+    let router = router_for(state.clone());
+    Ok(
+        match crate::replication::ReplicationRuntime::from_config(config, &state)? {
+            Some(replication) => replication.mount(router),
+            None => router,
+        },
+    )
 }
 
 /// Validate a fully resolved configuration the way `serve` would accept it.
 ///
 /// It opens no metadata store, binds no socket, and reaches no upstream: it runs the cross-field
-/// [`Config::validate`] rules, the logging-sink check, and the full index assembly — topology,
-/// policy compilation, secret reads, and upstream-client construction — so an operator can confirm a
+/// [`Config::validate`] rules, the logging-sink check, and the full index assembly - topology,
+/// policy compilation, secret reads, and upstream-client construction - so an operator can confirm a
 /// config before a restart the way `nginx -t` confirms a server block.
 ///
 /// # Errors
@@ -108,10 +112,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
     let meta_path = config.data_dir.join("peryx.redb");
     let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
-    let configured_replica = matches!(
-        config.availability.replication(),
-        Some(ReplicationConfig::Replica { .. })
-    );
+    let configured_replica = config.availability.is_replica_mode();
     let read_only = config.read_only || configured_replica;
     if read_only {
         let active = meta.writer_identity().context("read metadata store writer identity")?;
@@ -156,7 +157,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     if !read_only {
         crate::config::reconcile_configured_repositories(&meta, &configs);
     }
-    let oci_settings = build_index_settings(&configs)?;
+    let ecosystem_settings = build_index_settings(&configs)?;
     let webhooks = build_webhooks(&configs)?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
@@ -177,34 +178,47 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         },
     )
     .context(format!("open search index {}", search_path.display()))?;
-    peryx_ecosystem_pypi::install(&mut state);
-    // A `dc` or `ha` node records authoritative OCI mutations in the replication outbox; single-node
-    // `none` carries no replica to reconcile them, so it journals nothing.
-    peryx_ecosystem_oci::install(&mut state, oci_settings, config.availability.replication().is_some());
+    configure_state(&mut state, config, &ecosystem_settings, read_only)?;
+    let state = Arc::new(state);
+    if config.availability.is_distributed_mode() {
+        crate::replication::install_read_through(config, &state)?;
+    }
+    if !state.read_only && !state.webhooks.is_empty() {
+        peryx_events::webhook::kick(state.serving.clone());
+    }
+    Ok(state)
+}
+
+fn configure_state(
+    state: &mut AppState,
+    config: &Config,
+    ecosystem_settings: &HashMap<String, peryx_driver::serving::CompiledEcosystemSettings>,
+    read_only: bool,
+) -> anyhow::Result<()> {
+    if config.availability.is_distributed_mode() {
+        plugin_registry::install_distributed_drivers(state, ecosystem_settings)
+    } else {
+        plugin_registry::install_drivers(state, ecosystem_settings)
+    }
+    .map_err(anyhow::Error::msg)?;
     state.set_ldap_logins(ldap_logins(&config.auth.ldap_providers, &state.meta)?);
-    let oidc_logins = oidc_logins(&config.auth.oidc_providers, &state.meta)?;
-    state.set_oidc_logins(oidc_logins);
+    state.set_oidc_logins(oidc_logins(&config.auth.oidc_providers, &state.meta)?);
     state.read_only = read_only;
-    configure_availability(&mut state, config, read_only)?;
+    configure_availability(state, config, read_only)?;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
         if key.trim().is_empty() {
             bail!("token realm signing key must not be empty");
         }
         state.set_session_sealer(SessionSealer::new(key.as_bytes()));
-        let signer = Signer::new(key.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE);
+        let signer = Signer::new(key.as_bytes(), peryx_identity::TOKEN_AUDIENCE);
         if let Some(runtime) = trusted_publishing(config, signer.clone())? {
             state.set_trusted_publishing(runtime);
         }
         state.set_token_realm(signer, config.auth.token_ttl_secs);
     }
     state.set_openapi(crate::api::openapi_json());
-    let state = Arc::new(state);
-    crate::replication::install_read_through(config, &state)?;
-    if !state.read_only && !state.webhooks.is_empty() {
-        peryx_events::webhook::kick(state.serving.clone());
-    }
-    Ok(state)
+    Ok(())
 }
 
 /// The authority role this node holds, from its configured replication role rather than its read-only
@@ -213,9 +227,10 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
 /// the topology snapshot's self-role aligned with the replication and control surfaces, which read the
 /// same configured role.
 const fn availability_role(config: &Config) -> peryx_core::NodeRole {
-    match config.availability.replication() {
-        Some(ReplicationConfig::Replica { .. }) => peryx_core::NodeRole::Replica,
-        Some(ReplicationConfig::Primary { .. }) | None => peryx_core::NodeRole::Writer,
+    if config.availability.is_replica_mode() {
+        peryx_core::NodeRole::Replica
+    } else {
+        peryx_core::NodeRole::Writer
     }
 }
 
@@ -227,11 +242,24 @@ const fn availability_role(config: &Config) -> peryx_core::NodeRole {
 /// Install the resolved availability posture on the state: the authority role, the topology snapshot the
 /// process serves, and the write-ack quorum and deadline hosted writes are acknowledged against.
 fn configure_availability(state: &mut AppState, config: &Config, read_only: bool) -> anyhow::Result<()> {
+    let Some(mode) = topology_mode(config.availability.mode()) else {
+        return Ok(());
+    };
     state.set_availability_role(availability_role(config));
-    state.set_availability_topology(availability_topology(config, read_only));
-    state.set_write_ack(config.write_ack.policy, config.write_ack.deadline);
-    state.set_receipt_sources(receipt_sources(config)?);
-    state.set_remote_frontier_sources(remote_frontier_sources(config)?);
+    let topology = availability_topology(config, read_only, mode);
+    state.set_availability_topology(topology.clone());
+    state.set_write_acknowledger(Arc::new(peryx_ha_distributed::DistributedWriteAcknowledger::new(
+        topology,
+        config.write_ack.policy,
+        receipt_sources(config)?,
+        remote_frontier_sources(config)?,
+        config.write_ack.deadline,
+        state
+            .dc_durability()
+            .expect("distributed metrics are initialized")
+            .clone(),
+    )));
+    state.set_analytics_completeness(Arc::new(peryx_ha_distributed::DistributedAnalyticsCompleteness));
     Ok(())
 }
 
@@ -241,7 +269,7 @@ fn configure_availability(state: &mut AppState, config: &Config, read_only: bool
 const RECEIPT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The replication bearer token a `dc` or `ha` role carries, which same-datacenter peers accept for
-/// receipt queries — the same credential their blob endpoints accept.
+/// receipt queries - the same credential their blob endpoints accept.
 const fn receipt_token(replication: &ReplicationConfig) -> &SecretSource {
     match replication {
         ReplicationConfig::Primary { token, .. } | ReplicationConfig::Replica { token, .. } => token,
@@ -251,8 +279,8 @@ const fn receipt_token(replication: &ReplicationConfig) -> &SecretSource {
 /// The same-datacenter peers an ingress write gathers placement receipts from: every rostered member in
 /// the local node's datacenter other than itself, each behind the shared replication credential.
 ///
-/// Yields an empty set when the node gathers from no peer — no membership, no node identity, no
-/// replication token, this node absent from the roster, or no same-datacenter peer — so a single-node or
+/// Yields an empty set when the node gathers from no peer - no membership, no node identity, no
+/// replication token, this node absent from the roster, or no same-datacenter peer - so a single-node or
 /// single-member-per-DC deployment proves its quorum from the local receipt alone and runs no gather.
 ///
 /// The local datacenter is the one holding the roster member this node names through `node_identity`;
@@ -346,8 +374,8 @@ pub(crate) fn remote_dc_roster(membership: &crate::config::DcMembership, local_d
 /// The eligible remote datacenters an `ha` write gathers metadata acknowledgements from: one address per
 /// remote datacenter, writer-preferred, behind the shared replication credential.
 ///
-/// Yields an empty set outside `ha` mode and whenever the node waits on no remote — no membership, no
-/// writer identity, this node absent from the roster, or a single-datacenter group — so a `none`/`dc`
+/// Yields an empty set outside `ha` mode and whenever the node waits on no remote - no membership, no
+/// writer identity, this node absent from the roster, or a single-datacenter group - so a `none`/`dc`
 /// node and a degenerate single-DC `ha` node run no remote gather.
 ///
 /// # Errors
@@ -436,12 +464,19 @@ pub fn frontier_endpoint_router(config: &Config, state: &Arc<AppState>) -> anyho
     Ok(Some(router))
 }
 
-fn availability_topology(config: &Config, read_only: bool) -> peryx_core::TopologyConfig {
-    let mode = match config.availability.mode() {
-        AvailabilityMode::None => peryx_core::TopologyMode::None,
-        AvailabilityMode::Dc => peryx_core::TopologyMode::Dc,
-        AvailabilityMode::Ha => peryx_core::TopologyMode::Ha,
-    };
+const fn topology_mode(mode: AvailabilityMode) -> Option<peryx_core::TopologyMode> {
+    match mode {
+        AvailabilityMode::None => None,
+        AvailabilityMode::Dc => Some(peryx_core::TopologyMode::Dc),
+        AvailabilityMode::Ha => Some(peryx_core::TopologyMode::Ha),
+    }
+}
+
+fn availability_topology(
+    config: &Config,
+    read_only: bool,
+    mode: peryx_core::TopologyMode,
+) -> peryx_core::TopologyConfig {
     let (group, members) = config.dc_membership.as_ref().map_or_else(
         || (None, Vec::new()),
         |membership| {
@@ -693,12 +728,7 @@ pub fn router_for(state: Arc<AppState>) -> Router {
 /// config-build and admin paths dispatch through it by an index's ecosystem, so no neutral code
 /// names an ecosystem.
 pub(crate) fn drivers() -> &'static DriverSet {
-    static DRIVERS: OnceLock<DriverSet> = OnceLock::new();
-    DRIVERS.get_or_init(|| {
-        DriverSet::default()
-            .with(Arc::new(peryx_ecosystem_pypi::PypiServing))
-            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::default()))
-    })
+    plugin_registry::drivers()
 }
 
 type CredentialProviders = HashMap<(String, String), CredentialProvider>;
@@ -734,15 +764,28 @@ fn build_indexes_with_providers(
             let driver = drivers()
                 .get(index.ecosystem)
                 .expect("every configured ecosystem has a registered driver");
-            let rules = driver
-                .compile_policy(&index.ecosystem_policy)
-                .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?;
+            let capabilities = driver.capabilities();
+            let policy = capabilities.policy;
+            let rules = match policy {
+                Some(driver) => driver.compile_policy(&index.ecosystem_policy),
+                None if index.ecosystem_policy.is_empty() => Ok(Vec::new()),
+                None => Err(format!(
+                    "the {} ecosystem does not support artifact policy",
+                    index.ecosystem
+                )),
+            }
+            .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?;
             Ok(Index {
                 name: index.name.clone(),
                 route: index.route.clone(),
                 ecosystem: index.ecosystem,
                 kind: build_kind(index, configs, &positions, offline, credential_providers)?,
-                policy: Policy::compile(&index.policy, |name| driver.normalize_name(name)).with_rules(rules),
+                policy: Policy::compile(&index.policy, |name| {
+                    capabilities
+                        .name
+                        .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
+                })
+                .with_rules(rules),
                 acl: index
                     .acl(auth)
                     .with_context(|| format!("read the access rules of index {}", index.name))?,
@@ -753,27 +796,19 @@ fn build_indexes_with_providers(
 
 /// Compile each index's `[index.settings]` table against the ecosystem it serves, keyed by index name.
 ///
-/// The settings vocabulary is a format's own — an OCI cache's `library_prefix` means nothing to a
-/// `PyPI` index — so the table travels raw through the neutral config and is compiled here, in the one
+/// Settings belong to their adapter, so the table travels raw through neutral config and is compiled here, in the one
 /// crate that names ecosystems. An ecosystem with no settings of its own claims no key, so a key on
 /// one of its indexes is configuration that would otherwise be silently ignored.
-pub(crate) fn build_index_settings(configs: &[IndexConfig]) -> anyhow::Result<HashMap<String, IndexSettings>> {
+pub(crate) fn build_index_settings(
+    configs: &[IndexConfig],
+) -> anyhow::Result<HashMap<String, peryx_driver::serving::CompiledEcosystemSettings>> {
     let mut settings = HashMap::new();
     for index in configs {
-        match index.ecosystem {
-            Ecosystem::Oci => {
-                let compiled = IndexSettings::compile(&index.ecosystem_settings)
-                    .map_err(|reason| anyhow::anyhow!("compile settings for {}: {reason}", index.name))?;
-                settings.insert(index.name.clone(), compiled);
-            }
-            Ecosystem::Pypi => {
-                if let Some(key) = index.ecosystem_settings.keys().next() {
-                    bail!(
-                        "compile settings for {}: unknown field `{key}` in `[index.settings]`",
-                        index.name
-                    );
-                }
-            }
+        if let Some(compiled) =
+            plugin_registry::compile_index_settings(index.ecosystem, &index.name, &index.ecosystem_settings)
+                .map_err(anyhow::Error::msg)?
+        {
+            settings.insert(index.name.clone(), compiled);
         }
     }
     Ok(settings)
@@ -994,12 +1029,18 @@ fn build_upstream_routes(
             let driver = drivers()
                 .get(index.ecosystem)
                 .expect("every configured ecosystem has a registered driver");
+            let normalize = |name: &str| {
+                driver
+                    .capabilities()
+                    .name
+                    .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
+            };
             let mut router = UpstreamRouter::new(upstreams)?.with_fallback(routing.fallback);
             for project in &routing.protected {
-                router = router.protect(driver.normalize_name(project))?;
+                router = router.protect(normalize(project))?;
             }
             for (project, upstream) in &routing.pins {
-                router = router.pin(driver.normalize_name(project), upstream)?;
+                router = router.pin(normalize(project), upstream)?;
             }
             Ok((index.name.clone(), router))
         })

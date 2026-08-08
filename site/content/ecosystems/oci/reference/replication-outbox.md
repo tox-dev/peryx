@@ -15,23 +15,21 @@ themselves, see the [distribution specification](https://github.com/opencontaine
 
 A hosted push or delete records one typed operation:
 
-- **publish-manifest** — a manifest stored under a repository, carrying the tag when the push named one. Manifests are
-  content-addressed and immutable, so publishing a manifest and repointing a tag are distinct operations: retargeting a
-  tag changes no bytes but is a mutation a replica applies in order.
-- **mount-blob** — a blob admitted to a repository's membership, whether pushed directly or mounted from another
+- **publish-manifest** records a manifest stored under a repository and includes the tag when the push named one.
+  Manifests are content-addressed and immutable, so publishing a manifest and repointing a tag are distinct operations:
+  retargeting a tag changes no bytes but is a mutation a replica applies in order.
+- **mount-blob** records a blob admitted to a repository's membership, whether pushed directly or mounted from another
   repository.
-- **trash-tag** and **trash-manifest** — a soft delete moving a tag, or a digest and every tag that pointed at it, into
-  repository trash. A `trash-manifest` entry names the captured tags so a replica trashes the same set.
-- **restore-tag** and **restore-manifest** — a restore, naming the tags it relit so a replica restores only those whose
+- **trash-tag** and **trash-manifest** record a soft delete moving a tag, or a digest and each tag that pointed at it,
+  into repository trash. A `trash-manifest` entry names the captured tags so a replica trashes the same set.
+- **restore-tag** and **restore-manifest** record a restore and name the tags it relit. A replica restores those whose
   live slot was free.
 
 ## What a node never journals
 
-Proxy cache state is derived, not authoritative: a replica reconstructs it by pulling upstream, so journaling it would
-replicate a copy of upstream's answer. A pull-through cache fill — the manifest and tag a proxy stores from an upstream
-response, its tag freshness, and a cache eviction after an upstream `404` — records no entry. Referrer descriptors are
-derived from a pushed manifest's bytes, so a replica rebuilds them from the `publish-manifest` entry rather than a
-separate one.
+A replica reconstructs proxy cache state by pulling upstream. The outbox omits cache fills, tag freshness, and cache
+evictions after an upstream `404`. A replica also rebuilds referrer descriptors from the pushed manifest bytes in the
+`publish-manifest` entry.
 
 ## none mode
 

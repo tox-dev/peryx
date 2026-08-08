@@ -1,6 +1,6 @@
 //! The availability safety-simulator seed campaign.
 //!
-//! `peryx_replication::sim` expands a `u64` seed into a fixed plan of authority handovers, deliveries,
+//! `peryx_ha_distributed::sim` expands a `u64` seed into a fixed plan of authority handovers, deliveries,
 //! and acknowledgements, runs it against a pure model of the replication plane, and checks five safety
 //! invariants after every step. A correct model holds every invariant for every seed, so a violation on
 //! any defect-free seed is a real regression. This runner sweeps a seed range across a topology matrix
@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use peryx_replication::sim::{Config, Defect, Outcome, Topology, Trace, execute, generate_plan, minimize};
+use peryx_ha_distributed::sim::{Config, Defect, Outcome, Topology, Trace, execute, generate_plan, minimize};
 
 /// The cluster shapes every seed is run against when no single topology is pinned.
 const MATRIX: &[(usize, usize)] = &[(2, 1), (3, 2), (4, 3), (5, 2)];

@@ -1,4 +1,4 @@
-//! The UI pages: a live dashboard and a pypi.org-style package browser.
+//! The UI dashboard and artifact browser.
 #![allow(
     clippy::must_use_candidate,
     reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
@@ -62,7 +62,7 @@ fn start_refresh(snapshot: Resource<UiSnapshot>) {
 }
 
 /// The per-ecosystem metric groups: one labelled block per ecosystem, so the reader can tell a
-/// PyPI-scoped counter (its listings, artifacts, and PEP 658 hits) from the global request count.
+/// ecosystem-scoped counter from the global request count.
 fn ecosystem_stats(data: &UiSnapshot) -> impl IntoView + use<> {
     let families = data.families.clone();
     data.ecosystems
@@ -118,7 +118,7 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Render a byte count like pypi.org: one decimal in the largest fitting unit.
+/// Render a byte count with one decimal in the largest fitting unit.
 fn human_size(bytes: u64) -> String {
     #[allow(
         clippy::cast_precision_loss,

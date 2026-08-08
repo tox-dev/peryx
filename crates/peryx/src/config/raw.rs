@@ -10,41 +10,21 @@ use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
 
-use super::model::{
-    AvailabilityMode, CredentialFailureMode, DcRole, JobsMode, LogFormat, LogSink, PrefetchConfig, PrefetchMode,
-};
+use peryx_ha::AvailabilityMode;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+use super::model::{CredentialFailureMode, DcRole, JobsMode, LogFormat, LogSink, PrefetchConfig};
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
 pub struct RawPrefetchConfig {
-    pub mode: Option<PrefetchMode>,
-    pub packages: Option<Vec<String>>,
-    pub requirements: Option<Vec<PathBuf>>,
-    pub include_wheels: Option<bool>,
-    pub include_sdists: Option<bool>,
-    pub python_tags: Option<Vec<String>>,
-    pub abi_tags: Option<Vec<String>>,
-    pub platform_tags: Option<Vec<String>>,
-    pub max_file_size_bytes: Option<u64>,
-    pub metadata_only: Option<bool>,
+    #[serde(flatten)]
+    pub options: Table,
 }
 
 impl RawPrefetchConfig {
     #[must_use]
     pub fn resolve(self) -> PrefetchConfig {
-        let mode = self.mode.unwrap_or(PrefetchMode::Selected);
-        PrefetchConfig {
-            mode,
-            packages: self.packages.unwrap_or_default(),
-            requirements: self.requirements.unwrap_or_default(),
-            include_wheels: self.include_wheels.unwrap_or(true),
-            include_sdists: self.include_sdists.unwrap_or(true),
-            python_tags: self.python_tags.unwrap_or_default(),
-            abi_tags: self.abi_tags.unwrap_or_default(),
-            platform_tags: self.platform_tags.unwrap_or_default(),
-            max_file_size_bytes: self.max_file_size_bytes,
-            metadata_only: self.metadata_only.unwrap_or(matches!(mode, PrefetchMode::MetadataOnly)),
-        }
+        PrefetchConfig { options: self.options }
     }
 }
 

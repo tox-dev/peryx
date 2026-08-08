@@ -91,7 +91,7 @@ pub struct CrossDcCopy {
 /// Choose the verified peer to copy a backlog entry from, then the local placement to publish it as.
 ///
 /// The source is the highest-generation verified peer, ties broken by ledger key order, mirroring how
-/// [`plan_blob_fetch`](../../peryx_replication/blob_placement/fn.plan_blob_fetch.html) prefers the
+/// [`plan_blob_fetch`](../../peryx_ha_distributed/blob_placement/fn.plan_blob_fetch.html) prefers the
 /// newest copy. An unassigned epoch (`fence == 0`) fences the work closed, and an entry with no source
 /// yields nothing to copy.
 #[must_use]

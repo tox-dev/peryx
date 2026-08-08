@@ -57,14 +57,13 @@ pub const DEFAULT_MAX_STALE_SECS: i64 = 300;
 
 /// How long a realm token lives when an operator configures no `[auth] token_ttl_secs`.
 ///
-/// One freshness window: long enough for a `docker pull`/`push` to run against it, short enough that a
+/// One freshness window: long enough for a client transfer, short enough that a
 /// revoked ACL takes hold soon after the token that was minted under it expires.
 pub const DEFAULT_TOKEN_TTL_SECS: i64 = 300;
 
 /// The transformed-page cache budget when an operator configures none.
 ///
-/// Sized for the working set of a busy `PyPI` index, whose transformed pages are the large ones
-/// (`boto3` and `numpy` run to megabytes of JSON). Today the `PyPI` driver is the only ecosystem that
+/// Sized for transformed index pages that can reach several megabytes. The driver that
 /// populates this cache; when a second one does, this becomes a budget per ecosystem, keyed like the
 /// lexicon and serving registries already are.
 pub const DEFAULT_HOT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
@@ -320,14 +319,8 @@ impl AppState {
                 max_stale_secs,
                 clock,
                 requests: AtomicU64::new(0),
-                dc_durability: std::sync::Arc::new(super::DcDurabilityMetrics::default()),
                 read_only: false,
-                availability_role: peryx_core::NodeRole::Writer,
-                availability_topology: peryx_core::TopologyConfig::default(),
-                write_ack_policy: peryx_replication::DurabilityPolicy::Local,
-                write_ack_deadline: std::time::Duration::from_secs(5),
-                receipt_sources: Vec::new(),
-                remote_frontier_sources: Vec::new(),
+                availability: std::sync::OnceLock::new(),
                 route_resolver: peryx_index::RouteResolver::new(&indexes),
                 indexes,
                 cache: peryx_index::ServingCache::new(hot_cache_bytes, ttl_secs),
@@ -347,14 +340,11 @@ impl AppState {
                 retention_gates: crate::retention::RetentionGates::new(RETENTION_PLANS_PER_REPOSITORY),
                 oidc_logins: HashMap::new(),
                 session_sealer: None,
-                ownership: std::sync::OnceLock::new(),
-                control: std::sync::OnceLock::new(),
-                cross_dc_copier: std::sync::OnceLock::new(),
-                blob_reclaimer: std::sync::OnceLock::new(),
-                read_through: std::sync::OnceLock::new(),
-                placement_reconciler: std::sync::OnceLock::new(),
             }),
-            drivers: std::array::from_fn(|_| None),
+            drivers: HashMap::new(),
+            maintenance_drivers: HashMap::new(),
+            replicated_apply_drivers: HashMap::new(),
+            mirror_drivers: HashMap::new(),
             absolute_prefixes: Vec::new(),
             lexicons: LexiconRegistry::default(),
             openapi: std::sync::Arc::from(STUB_OPENAPI),
@@ -377,3 +367,7 @@ const RETENTION_PLANS_PER_REPOSITORY: usize = 2;
 /// The minimal `OpenAPI` document a state serves until the binary installs the assembled one. It names
 /// no ecosystem; the real per-ecosystem paths are merged in by the binary at startup.
 const STUB_OPENAPI: &str = r#"{"openapi":"3.1.0","info":{"title":"peryx","version":"0"},"paths":{}}"#;
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/build/tests.rs"]
+mod tests;

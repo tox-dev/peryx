@@ -27,7 +27,10 @@ fn policy_dry_run(
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     writeln!(out, "action\tindex\tproject\tfilename\tversion\trule\tfield\treason")?;
-    for driver in server::drivers().present() {
+    for serving in server::drivers().present() {
+        let Some(driver) = serving.capabilities().policy else {
+            continue;
+        };
         driver
             .policy_dry_run(
                 &stores.meta,
@@ -36,7 +39,7 @@ fn policy_dry_run(
                 args.project.as_deref(),
                 out,
             )
-            .map_err(|reason| anyhow::anyhow!("preview {} policy: {reason}", driver.ecosystem().as_str()))?;
+            .map_err(|reason| anyhow::anyhow!("preview {} policy: {reason}", serving.ecosystem().as_str()))?;
     }
     Ok(())
 }

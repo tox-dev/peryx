@@ -9,20 +9,20 @@ logos = [ "logos/oci.svg"]
 logos_dark = [ "logos/oci-white.svg"]
 +++
 
-OCI is the container-image ecosystem: the format of container images and the HTTP protocol clients such as
-[Docker](https://docs.docker.com/) and [Podman](https://podman.io/) use to pull and push them. An image is a small tree,
-not one file: a **manifest** (a JSON document listing an image's parts), a **config** blob, and one or more **layer**
-blobs (the filesystem, gzip-compressed). Every part is a **blob** addressed by the sha256 of its bytes; a mutable
-**tag** (`latest`, `1.25`) points at a manifest's digest. peryx serves OCI over the
+OCI defines the container-image format and the HTTP protocol that clients such as [Docker](https://docs.docker.com/) and
+[Podman](https://podman.io/) use to pull and push them. An image is a small tree, not one file. It contains a
+**manifest** (a JSON document listing the image's parts), a **config** blob, and one or more **layer** blobs (the
+gzip-compressed filesystem). Each **blob** uses the sha256 of its bytes as its address; a mutable **tag** (`latest`,
+`1.25`) points at a manifest's digest. peryx serves OCI over the
 [distribution spec](https://github.com/opencontainers/distribution-spec) that registries
 ([Docker Hub](https://hub.docker.com/), [GHCR](https://docs.github.com/packages), [ECR](https://aws.amazon.com/ecr/),
 [Artifactory](https://jfrog.com/artifactory/)) implement.
 
 ## How OCI concepts map to peryx
 
-peryx describes every ecosystem with one neutral vocabulary; here is how the container terms you already know line up
-with it. In OCI contexts peryx uses the container term; the neutral name is what the same idea is called across
-ecosystems (see [the index model](@/core/indexes.md) and [glossary](@/core/glossary.md)).
+peryx describes each ecosystem with one neutral vocabulary. The table maps common container terms to it. In OCI
+contexts, peryx uses the container term; the neutral name identifies the same concept across ecosystems (see
+[the index model](@/core/indexes.md) and [glossary](@/core/glossary.md)).
 
 | Container term         | peryx concept    | What it is                                                           |
 | ---------------------- | ---------------- | -------------------------------------------------------------------- |
@@ -45,15 +45,18 @@ The three [index roles](@/core/indexes.md) map onto OCI like this:
 - **cached**: a read-through cache of an upstream registry. On a miss peryx pulls the manifest or blob from upstream
   (running the bearer-token handshake the registry requires), verifies its digest, stores it, and serves it; later pulls
   come from disk. Point one at Docker Hub, GHCR, or any `/v2/` registry.
-- **hosted**: a store you push your own images to. Blobs stream into the content-addressed store and are verified on
-  commit; manifests are kept byte-for-byte so their digest is stable. Pushing needs a token (below).
+- **hosted**: a store for your images. Peryx streams blobs into the content-addressed store and verifies them on commit;
+  it keeps manifests byte-for-byte so their digest remains stable. Pushing needs a token (below).
 - **virtual**: an ordered stack of members served under one name, where your hosted images shadow same-named upstream
   ones: a pull of a name you have published serves your image, and anything you have not published falls through to the
   upstream. This is the [dependency-confusion defense](@/core/glossary.md#shadowing), applied to containers.
 
+A cached route retries upstream server errors, timeouts, and `429` responses with bounded backoff. A valid `Retry-After`
+delay or HTTP date takes precedence, capped at 30 seconds.
+
 ## The wire protocol
 
-Container clients speak the **distribution spec** over a `/v2/` API. peryx serves it directly:
+Container clients speak the **distribution spec** over a `/v2/` API. peryx implements that API:
 
 - `GET /v2/`: the version check every client pings first; peryx answers `200` with
   `Docker-Distribution-API-Version: registry/2.0`, or a `401` Bearer challenge when an index restricts access.
@@ -103,9 +106,9 @@ actions = ["write", "delete"]
 Assume peryx is then running at `127.0.0.1:4433`.
 
 Docker and Podman trust a **loopback** registry (`localhost`, `127.0.0.0/8`) over plain HTTP with no configuration, so
-on the same host it just works. Reaching peryx over the network, or from Docker Desktop's VM, needs either
-[TLS](@/core/configuration.md#tls) (the production path: a real or ACME certificate, no client flag) or the client's
-insecure-registry setting. `crane` and `podman` take a per-command flag; the snippets below show it.
+on the same host it needs no client configuration. Reaching peryx over the network, or from Docker Desktop's VM, needs
+either [TLS](@/core/configuration.md#tls) (the production path: a real or ACME certificate, no client flag) or the
+client's insecure-registry setting. `crane` and `podman` take a per-command flag; the snippets below show it.
 
 ### Pull
 
@@ -157,6 +160,21 @@ crane push --insecure alpine.tar 127.0.0.1:4433/images/alpine:latest
 ```
 
 {% end %}
+
+## Web UI
+
+The OCI extension labels searchable entities as images. An index card opens its repository list. A repository page lists
+tags, and a tag page shows the resolved manifest, config, layer descriptors, digest, media type, and a copyable pull
+command.
+
+An image index lists its platform children. An image manifest lists config and layer blobs by digest and size. Tar layer
+rows expose a **contents** link that lists files and previews bounded text chunks through the layer browser endpoint.
+
+Each descriptor shows source and byte availability. The text distinguishes local bytes, upstream-only bytes, and
+unavailable bytes without relying on color. Manifest and blob deletion controls follow the OCI distribution routes and
+their trash recovery rules.
+
+{{ screen(alt="An OCI manifest with a pull command, config digest, and layer table", name="oci-manifest") }}
 
 ## In practice
 

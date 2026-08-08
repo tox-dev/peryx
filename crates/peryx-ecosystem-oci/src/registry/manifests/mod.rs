@@ -346,7 +346,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             // A `404` is upstream saying the tag is gone, which is an answer. Everything else is a
             // failure to get one, and a failure to confirm a tag is not a reason to forget it: an
             // expired token draws a `401` from Docker Hub, which must serve the cached image rather
-            // than report it unknown — and, with nothing cached, report the auth failure itself.
+            // than report it unknown - and, with nothing cached, report the auth failure itself.
             Err(UpstreamError::Status(StatusCode::NOT_FOUND)) => {
                 if store::delete_tag(&state.meta, index, repo, tag)? {
                     state.bump_search_epoch();
@@ -535,7 +535,7 @@ fn parse_media_range(entry: &str) -> Option<MediaRange<'_>> {
 }
 
 /// Whether `media_type` is acceptable under the combined `Accept` list per RFC 9110: its effective
-/// quality — the weight of the most specific matching range, exact over `type/*` over `*/*` — is
+/// quality - the weight of the most specific matching range, exact over `type/*` over `*/*` - is
 /// positive. A `q=0` on the most specific match rejects the type even when a broader range would
 /// accept it. An `Accept` with no parseable range expresses no preference and accepts anything.
 fn media_type_acceptable(accept: &str, media_type: &str) -> bool {

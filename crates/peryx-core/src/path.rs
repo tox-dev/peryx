@@ -27,8 +27,8 @@ pub enum PathSafetyError {
     InvalidEncoding(String),
 }
 
-/// Top-level path prefixes peryx's own router owns — the neutral API surface, the web UI's pages, and
-/// its static assets — that an index route would otherwise be shadowed by. Kept in step with the axum
+/// Top-level path prefixes peryx's own router owns - the neutral API surface, the web UI's pages, and
+/// its static assets - that an index route would otherwise be shadowed by. Kept in step with the axum
 /// router and the web UI's page table; a served path missing here lets an index route resolve to a
 /// built-in page instead. `_` is the machine-endpoint namespace (the `/_/oidc/*` trusted-publishing
 /// routes): a valid route segment, so a route claiming it would shadow those endpoints.
@@ -62,7 +62,7 @@ pub fn local_file_url(route: &str, sha256: &str, filename: &str) -> String {
 /// Whether `url` is a peryx-local file URL on `route`, the shape [`local_file_url`] produces.
 ///
 /// This is the marker for an already-rewritten cache record. A bare leading `/` is not enough: a
-/// PEP 691 upstream may serve a legitimate root-relative file URL (`/packages/x.whl`), which must
+/// An upstream may serve a legitimate root-relative artifact URL (`/artifacts/x.bin`), which must
 /// still resolve to a real blob rather than be mistaken for a local record.
 #[must_use]
 pub fn is_local_file_url(route: &str, url: &str) -> bool {
@@ -170,7 +170,7 @@ fn hex_byte(hex: &[u8]) -> Option<u8> {
 
 /// Percent-decode, borrowing when there is nothing to decode.
 ///
-/// An escape starts with `%`, and a project name, version, or wheel filename almost never carries
+/// An escape starts with `%`, and artifact coordinates seldom carry
 /// one. Copying every byte through a fresh buffer to discover that cost an allocation per segment on
 /// every request.
 fn decode_percent(input: &str) -> Result<Cow<'_, str>, PathSafetyError> {
@@ -210,122 +210,5 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        PathSafetyError, decode_path, decode_path_segment, is_local_file_url, local_file_url, validate_filename,
-        validate_path_segment, validate_route,
-    };
-
-    #[test]
-    fn test_path_segments_encode_reserved_characters() {
-        assert_eq!(
-            local_file_url("root/pypi", "aa", "pkg 1.0#x?.whl"),
-            "/root/pypi/files/aa/pkg%201.0%23x%3F.whl"
-        );
-    }
-
-    #[test]
-    fn test_is_local_file_url_matches_only_the_route_files_prefix() {
-        assert!(is_local_file_url("root/pypi", "/root/pypi/files/aa/pkg.whl"));
-        assert!(!is_local_file_url("root/pypi", "/packages/pkg.whl"));
-        assert!(!is_local_file_url("root/pypi", "/other/files/aa/pkg.whl"));
-        assert!(!is_local_file_url("root/pypi", "https://files.example/pkg.whl"));
-    }
-
-    #[test]
-    fn test_path_segments_decode_percent_encoding() {
-        assert_eq!(decode_path_segment("pkg%201.0%23x%3F.whl").unwrap(), "pkg 1.0#x?.whl");
-        assert_eq!(decode_path_segment("pkg%252Fname.whl").unwrap(), "pkg%2Fname.whl");
-        assert_eq!(
-            decode_path_segment("pkg%2"),
-            Err(PathSafetyError::InvalidEncoding("pkg%2".to_owned()))
-        );
-        assert_eq!(
-            decode_path_segment("pkg%xx"),
-            Err(PathSafetyError::InvalidEncoding("pkg%xx".to_owned()))
-        );
-        assert_eq!(
-            decode_path_segment("pkg%0x"),
-            Err(PathSafetyError::InvalidEncoding("pkg%0x".to_owned()))
-        );
-        assert_eq!(
-            decode_path_segment("pkg%ff"),
-            Err(PathSafetyError::InvalidEncoding("pkg%ff".to_owned()))
-        );
-    }
-
-    #[test]
-    fn test_paths_decode_member_separators() {
-        assert_eq!(
-            decode_path("peryxpkg-1.0.dist-info%2FMETADATA").unwrap(),
-            "peryxpkg-1.0.dist-info/METADATA"
-        );
-    }
-
-    #[test]
-    fn test_route_validation_accepts_nested_unreserved_routes() {
-        assert_eq!(validate_route("root/pypi-1.0_~"), Ok(()));
-    }
-
-    #[test]
-    fn test_route_validation_rejects_unsafe_or_reserved_routes() {
-        for route in [
-            "",
-            "/pypi",
-            "pypi/",
-            "root//pypi",
-            ".",
-            "root/..",
-            "root/pypi mirror",
-            "root/%70ypi",
-        ] {
-            assert_eq!(
-                validate_route(route),
-                Err(PathSafetyError::InvalidRoute(route.to_owned()))
-            );
-        }
-        for route in [
-            "browse/private",
-            "admin/status",
-            "search",
-            "upload/mine",
-            "favicon.svg",
-            "_",
-            "_/oidc",
-        ] {
-            assert_eq!(
-                validate_route(route),
-                Err(PathSafetyError::ReservedRoute(route.to_owned())),
-                "{route:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_filename_validation_rejects_path_inputs() {
-        for filename in [
-            "",
-            ".",
-            "..",
-            "../pkg.whl",
-            "pkg/name.whl",
-            "pkg\\name.whl",
-            "pkg\u{7}.whl",
-        ] {
-            assert!(validate_filename(filename).is_err(), "{filename:?}");
-        }
-        assert!(validate_filename("pkg 1.0#x?.whl").is_ok());
-    }
-
-    #[test]
-    fn test_path_segment_validation_rejects_decoded_separators() {
-        assert_eq!(validate_path_segment("version", "1.0+local"), Ok(()));
-        assert_eq!(
-            validate_path_segment("version", "1.0/local"),
-            Err(PathSafetyError::InvalidPathSegment {
-                kind: "version",
-                value: "1.0/local".to_owned()
-            })
-        );
-    }
-}
+#[path = "../tests/unit/path/tests.rs"]
+mod tests;

@@ -3,7 +3,7 @@
 //! One neutral query ([`AppState::query_shadowed`](peryx_driver::state::AppState::query_shadowed))
 //! replays a virtual repository's resolution of a project and returns the selected candidate for each
 //! filename plus every candidate a member shadowed. Repository authorization gates the whole response,
-//! so a caller who cannot read the repository learns nothing — not a member name, filename, or digest.
+//! so a caller who cannot read the repository learns nothing - not a member name, filename, or digest.
 //! The candidates carry no upstream URLs. Responses never enter a shared cache.
 
 use std::sync::Arc;
@@ -202,6 +202,18 @@ struct ShadowDecisionResponse {
 impl From<InspectedCandidate> for ShadowCandidateResponse {
     fn from(inspected: InspectedCandidate) -> Self {
         let candidate = inspected.candidate;
+        let decision = if let Some(decision) = inspected.decision {
+            Some(ShadowDecisionResponse {
+                state: decision.state,
+                rule: decision.rule,
+                reason: decision.reason,
+                evaluated_at_unix: decision.evaluated_at_unix,
+                next_eligible_at_unix: decision.next_eligible_at_unix,
+                fresh: decision.fresh,
+            })
+        } else {
+            None
+        };
         Self {
             member: candidate.member,
             source: candidate.source.as_str(),
@@ -209,14 +221,7 @@ impl From<InspectedCandidate> for ShadowCandidateResponse {
             digest: candidate.digest,
             selected: candidate.selected,
             reason: candidate.reason.map(ShadowReason::as_str),
-            decision: inspected.decision.map(|decision| ShadowDecisionResponse {
-                state: decision.state,
-                rule: decision.rule,
-                reason: decision.reason,
-                evaluated_at_unix: decision.evaluated_at_unix,
-                next_eligible_at_unix: decision.next_eligible_at_unix,
-                fresh: decision.fresh,
-            }),
+            decision,
         }
     }
 }

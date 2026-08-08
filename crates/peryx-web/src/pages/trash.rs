@@ -28,7 +28,7 @@ pub fn Trash() -> impl IntoView {
                 <span class="badge">"read-only"</span>
             </div>
             <p class="dim">
-                "Inspect soft-deleted PyPI and OCI artifacts and whether each can still be restored. Times are UTC. Credentials remain in this browser tab and are sent only in the authorization header."
+                "Inspect soft-deleted artifacts and whether each can still be restored. Times are UTC. Credentials remain in this browser tab and are sent only in the authorization header."
             </p>
             <form class="policy-filters" on:submit=move |event| {
                 event.prevent_default();
@@ -96,11 +96,11 @@ fn TrashFilterFields(
         <input
             id="trash-user"
             autocomplete="username"
-            placeholder="Administrator or __token__"
+            placeholder="Administrator or token user"
             required
             on:input:target=move |event| set_user.set(event.target().value())
         />
-        <label for="trash-password">"Password or upload token"</label>
+        <label for="trash-password">"Password or token"</label>
         <input
             id="trash-password"
             type="password"
@@ -116,14 +116,11 @@ fn TrashFilterFields(
             on:input:target=move |event| set_filters.update(|value| value.repository = event.target().value())
         />
         <label for="trash-ecosystem">"Ecosystem"</label>
-        <select
+        <input
             id="trash-ecosystem"
-            on:change:target=move |event| set_filters.update(|value| value.ecosystem = event.target().value())
-        >
-            <option value="">"Any ecosystem"</option>
-            <option value="pypi">"PyPI"</option>
-            <option value="oci">"OCI"</option>
-        </select>
+            placeholder="Any ecosystem"
+            on:input:target=move |event| set_filters.update(|value| value.ecosystem = event.target().value())
+        />
         <label for="trash-state">"State"</label>
         <select
             id="trash-state"
@@ -222,5 +219,5 @@ fn trash_row(record: UiTrashRecord) -> impl IntoView {
 }
 
 fn or_dash(value: Option<String>) -> String {
-    value.unwrap_or_else(|| "—".to_owned())
+    value.unwrap_or_else(|| "-".to_owned())
 }

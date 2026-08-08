@@ -85,8 +85,8 @@ pub struct ShadowPage {
 impl AppState {
     /// Replay one virtual repository's resolution of a project and page its shadowed candidates.
     ///
-    /// A repository the caller already authorized that resolves nothing — a non-virtual index, an
-    /// unknown project, or an ecosystem without a driver — yields an empty page rather than an error.
+    /// A repository the caller already authorized that resolves nothing - a non-virtual index, an
+    /// unknown project, or an ecosystem without a driver - yields an empty page rather than an error.
     ///
     /// # Errors
     /// Returns a validation error for a bad limit, cursor, or project, or a store error when the
@@ -94,7 +94,9 @@ impl AppState {
     pub fn query_shadowed(&self, query: &ShadowQuery) -> Result<ShadowPage, ShadowQueryError> {
         query.validate()?;
         let candidates = if let Some(position) = self.indexes.iter().position(|index| index.name == query.repository)
-            && let Some(driver) = self.driver_for(self.index_at(position).ecosystem)
+            && let Some(driver) = self
+                .driver_for(self.index_at(position).ecosystem)
+                .and_then(|driver| driver.capabilities().shadow)
         {
             driver
                 .shadowed_candidates(self.serving.as_ref(), position, &query.project)
@@ -123,147 +125,5 @@ fn paginate(mut candidates: Vec<ShadowCandidate>, query: &ShadowQuery) -> Shadow
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_core::{ShadowCandidate, ShadowReason, ShadowSource};
-
-    use super::{DEFAULT_LIMIT, ShadowQuery, ShadowQueryError, paginate};
-
-    fn candidate(filename: &str, member: &str, selected: bool) -> ShadowCandidate {
-        ShadowCandidate {
-            repository: "root/pypi".to_owned(),
-            project: "flask".to_owned(),
-            member: member.to_owned(),
-            source: if selected {
-                ShadowSource::Hosted
-            } else {
-                ShadowSource::Cached
-            },
-            filename: filename.to_owned(),
-            digest: Some("sha256:abc".to_owned()),
-            selected,
-            reason: (!selected).then_some(ShadowReason::Precedence),
-        }
-    }
-
-    fn query(limit: usize) -> ShadowQuery {
-        ShadowQuery {
-            limit,
-            ..ShadowQuery::new("root/pypi".to_owned(), "flask".to_owned())
-        }
-    }
-
-    #[test]
-    fn test_new_query_carries_the_default_page_size() {
-        assert_eq!(ShadowQuery::new(String::new(), String::new()).limit, DEFAULT_LIMIT);
-    }
-
-    #[test]
-    fn test_validate_rejects_bad_limit_cursor_and_project() {
-        assert_eq!(query(0).validate(), Err(ShadowQueryError::InvalidLimit));
-        assert_eq!(query(101).validate(), Err(ShadowQueryError::InvalidLimit));
-        assert_eq!(
-            ShadowQuery {
-                cursor: Some(String::new()),
-                ..query(25)
-            }
-            .validate(),
-            Err(ShadowQueryError::InvalidCursor)
-        );
-        assert_eq!(
-            ShadowQuery {
-                cursor: Some("x".repeat(1_025)),
-                ..query(25)
-            }
-            .validate(),
-            Err(ShadowQueryError::InvalidCursor)
-        );
-        assert_eq!(
-            ShadowQuery {
-                project: "p".repeat(513),
-                ..query(25)
-            }
-            .validate(),
-            Err(ShadowQueryError::ProjectTooLong)
-        );
-        assert_eq!(query(25).validate(), Ok(()));
-    }
-
-    #[test]
-    fn test_error_messages_are_actionable() {
-        assert_eq!(
-            ShadowQueryError::InvalidLimit.to_string(),
-            "limit must be between 1 and 100"
-        );
-        assert_eq!(ShadowQueryError::InvalidCursor.to_string(), "invalid shadow cursor");
-        assert_eq!(
-            ShadowQueryError::ProjectTooLong.to_string(),
-            "project filter exceeds 512 bytes"
-        );
-        assert_eq!(ShadowQueryError::Store("boom".to_owned()).to_string(), "boom");
-    }
-
-    #[test]
-    fn test_paginate_orders_by_filename_then_selection() {
-        let candidates = vec![
-            candidate("flask-1.0.whl", "pypi", false),
-            candidate("flask-1.0.whl", "hosted", true),
-            candidate("flask-2.0.whl", "hosted", true),
-        ];
-
-        let page = paginate(candidates, &query(25));
-
-        assert_eq!(page.next_cursor, None);
-        let rows: Vec<(&str, &str)> = page
-            .candidates
-            .iter()
-            .map(|candidate| (candidate.filename.as_str(), candidate.member.as_str()))
-            .collect();
-        assert_eq!(
-            rows,
-            vec![
-                ("flask-1.0.whl", "hosted"),
-                ("flask-1.0.whl", "pypi"),
-                ("flask-2.0.whl", "hosted")
-            ],
-            "the selected candidate leads its filename group"
-        );
-    }
-
-    #[test]
-    fn test_paginate_cursor_resumes_after_the_last_row_and_stays_stable() {
-        let candidates = vec![
-            candidate("a.whl", "hosted", true),
-            candidate("b.whl", "hosted", true),
-            candidate("c.whl", "hosted", true),
-        ];
-
-        let first = paginate(candidates.clone(), &query(2));
-        assert_eq!(
-            first
-                .candidates
-                .iter()
-                .map(|candidate| candidate.filename.clone())
-                .collect::<Vec<_>>(),
-            vec!["a.whl", "b.whl"]
-        );
-        let cursor = first.next_cursor.expect("a third row remains");
-
-        let second = paginate(
-            candidates,
-            &ShadowQuery {
-                cursor: Some(cursor),
-                ..query(2)
-            },
-        );
-        assert_eq!(
-            second
-                .candidates
-                .iter()
-                .map(|candidate| candidate.filename.clone())
-                .collect::<Vec<_>>(),
-            vec!["c.whl"],
-            "the resumed page holds without skipping or duplicating a candidate"
-        );
-        assert_eq!(second.next_cursor, None);
-    }
-}
+#[path = "../tests/unit/shadow/tests.rs"]
+mod tests;

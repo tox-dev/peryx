@@ -6,8 +6,8 @@ weight = 9
 
 This page walks an operator through upgrading a running `dc` or `ha` cluster to an adjacent build, and rolling it back,
 without dropping the service. It is the how-to counterpart to two reference pages and restates neither. Whether a target
-build may run at all — the versions two nodes negotiate, when a new command becomes safe to issue, and the boundary a
-downgrade may not cross — is fixed on the [version compatibility](@/core/availability-version-compatibility.md) page.
+build may run at all : the versions two nodes negotiate, when a new command becomes safe to issue, and the boundary a
+downgrade may not cross : is fixed on the [version compatibility](@/core/availability-version-compatibility.md) page.
 Why the roll drains replicas before the writer and how a failed step recovers is fixed on the
 [rolling upgrade and rollback](@/core/availability-rolling-upgrade.md) page. This page is the operator's task: which
 surface to read each go decision off, the order to replace nodes in, and how to confirm the client saw no gap. Stand the
@@ -41,11 +41,11 @@ group below its durability policy or strand it too far ahead of a promotable rep
   Proceed only when `ready` is `true` and `blocked` is `null`; a `writer_lost` or `insufficient_members` block names a
   group that cannot acknowledge a write right now, so draining a further node would take quorum, not remove a spare.
 - **Replication lag.** `group_readiness.durable_frontier` is the serial the policy's members have all applied; compare
-  it against the writer's own committed `serial` and against [`peryx_replication_lag`](@/core/metrics.md) per replica. A
-  replica the roll may promote mid-hop should trail by no more than your lag budget, so it starts almost current rather
-  than facing a long catch-up.
+  it against the writer's own committed `serial` and against [`peryx_ha_distributed_lag`](@/core/metrics.md) per
+  replica. A replica the roll may promote mid-hop should trail by no more than your lag budget, so it starts almost
+  current rather than facing a long catch-up.
 - **Backup currency.** A step that fails recovers from a backup no further behind than you accept, so confirm the backup
-  is current and reproven — `peryx backup verify` — before you drain (see
+  is current and reproven : `peryx backup verify` : before you drain (see
   [verify a backup](@/core/backup-restore.md#verify-a-backup)).
 
 ## Upgrade the cluster, one version at a time
@@ -59,7 +59,7 @@ configured roster in stable id order, independent of what each member currently 
 
 1. **Replace each read replica, one at a time.** For a replica in stable id order:
 
-   1. Drain it from the read pool by letting readiness pull it — point the pool at
+   1. Drain it from the read pool by letting readiness pull it : point the pool at
       [`GET /+replication/v1/ready`](@/core/availability-deployment.md#monitor-each-shape) so a node that stops
       answering `200` leaves rotation without a client change.
    1. Stop the process, deploy the target build against the same data directory, and start it.
@@ -69,8 +69,8 @@ configured roster in stable id order, independent of what each member currently 
       recovered its quorum, capacity, and currency.
 
 1. **Replace the writer last.** Move its home to a caught-up datacenter with a
-   [planned transfer](@/core/availability-planned-transfer.md#starting-a-transfer) — `POST /availability/v1/transfers`
-   with a stated `reason` and an `Idempotency-Key` — which commits only after the target has applied through the
+   [planned transfer](@/core/availability-planned-transfer.md#starting-a-transfer) : `POST /availability/v1/transfers`
+   with a stated `reason` and an `Idempotency-Key` : which commits only after the target has applied through the
    barrier, so the new home takes ownership holding every write the old home acknowledged. Then upgrade the drained
    former writer as a replica and let it rejoin. On a `none` deployment there is no group to transfer through; promote a
    caught-up replica with [`peryx writer promote`](@/core/high-availability.md#manual-promotion) instead, fencing the
@@ -82,8 +82,8 @@ configured roster in stable id order, independent of what each member currently 
 
 ## Roll back the cluster
 
-A downgrade rolls by the same order and the same two go decisions as an upgrade — replicas first, the writer last
-through a planned transfer — with one added boundary. A rollback is an ordinary target until a migration makes it
+A downgrade rolls by the same order and the same two go decisions as an upgrade : replicas first, the writer last
+through a planned transfer : with one added boundary. A rollback is an ordinary target until a migration makes it
 irreversible: once the state machine has crossed a version that rewrites persisted state into a form an older build
 cannot read, the cluster records that version as an irreversible-migration floor, and the version decision refuses any
 target below it because a snapshot taken past the floor cannot be restored by the older build (see

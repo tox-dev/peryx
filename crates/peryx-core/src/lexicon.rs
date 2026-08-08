@@ -1,19 +1,10 @@
-//! Each ecosystem's user-facing words for peryx's neutral concepts, and the registry surfaces look
-//! them up in.
+//! User-facing terms for neutral package concepts.
 
 use std::collections::HashMap;
 
 use crate::ecosystem::Ecosystem;
 
-/// One ecosystem's user-facing words for peryx's neutral concepts. The neutral name is in each
-/// field's doc comment; the value is what a user of that ecosystem calls the same thing.
-///
-/// peryx's internal model is one neutral vocabulary, but a reader arriving from Docker thinks
-/// "registry, repository, tag, blob, push, pull". Each ecosystem crate defines its own `Lexicon`
-/// value (this crate stays neutral and never names an ecosystem's words) and registers it, so
-/// user-facing surfaces localize a label by looking it up for an index's ecosystem rather than
-/// branching on the ecosystem to pick a word. [`Lexicon::NEUTRAL`] is the fallback before any
-/// ecosystem registers one.
+/// Ecosystem crates register their terms so shared surfaces do not branch on ecosystem IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lexicon {
     /// The endpoint a client points at (neutral: index).
@@ -75,40 +66,5 @@ impl LexiconRegistry {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Lexicon, LexiconRegistry};
-    use crate::ecosystem::Ecosystem;
-
-    const DOCKER: Lexicon = Lexicon {
-        server: "registry",
-        collection: "repository",
-        ..Lexicon::NEUTRAL
-    };
-
-    #[test]
-    fn test_neutral_lexicon_is_peryxs_own_words() {
-        let neutral = Lexicon::NEUTRAL;
-        assert_eq!(
-            (neutral.server, neutral.collection, neutral.release),
-            ("index", "project", "version")
-        );
-        assert_eq!(
-            (neutral.artifact, neutral.get, neutral.put),
-            ("file", "download", "upload")
-        );
-    }
-
-    #[test]
-    fn test_registry_falls_back_to_the_neutral_lexicon() {
-        let registry = LexiconRegistry::default();
-        assert_eq!(registry.get(Ecosystem::Oci).server, "index");
-    }
-
-    #[test]
-    fn test_registry_returns_the_registered_lexicon() {
-        let mut registry = LexiconRegistry::default();
-        registry.register(Ecosystem::Oci, &DOCKER);
-        assert_eq!(registry.get(Ecosystem::Oci).collection, "repository");
-        assert_eq!(registry.get(Ecosystem::Pypi).collection, "project");
-    }
-}
+#[path = "../tests/unit/lexicon/tests.rs"]
+mod tests;

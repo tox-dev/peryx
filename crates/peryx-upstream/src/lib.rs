@@ -1,5 +1,5 @@
 //! The upstream index client: fetch and conditionally revalidate simple pages and files from a
-//! PEP 503/691 index (pypi.org by default, or any configured upstream).
+//! HTTP transport for ecosystem-owned upstream clients.
 
 pub mod client;
 mod route;
@@ -14,4 +14,5 @@ pub use client::{
 pub use route::{ArtifactClient, NamedUpstream, RouteError, UpstreamHealth, UpstreamRouter};
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

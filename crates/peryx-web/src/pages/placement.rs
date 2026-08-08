@@ -223,7 +223,7 @@ fn datacenter_row(placement: &BlobDatacenterPlacement) -> AnyView {
         <tr>
             <td>{placement.data_center.clone()}</td>
             <td><span class=format!("badge {}", status.class)>{status.text}</span></td>
-            <td class="num">{placement.size.map_or_else(|| "—".to_owned(), |size| size.to_string())}</td>
+            <td class="num">{placement.size.map_or_else(|| "-".to_owned(), |size| size.to_string())}</td>
         </tr>
     }
     .into_any()

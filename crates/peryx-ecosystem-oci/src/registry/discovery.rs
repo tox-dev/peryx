@@ -6,7 +6,6 @@ use crate::store::{self};
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_upstream::UpstreamClient;
 
@@ -502,7 +501,7 @@ fn tag_list_response(name: &str, tags: &std::collections::BTreeSet<String>, quer
 pub(super) fn serve_catalog(state: &ServingState, query: &str) -> Result<Response, ServeError> {
     let mut repositories = std::collections::BTreeSet::new();
     for index in &state.indexes {
-        if index.ecosystem != Ecosystem::Oci {
+        if index.ecosystem != crate::ECOSYSTEM {
             continue;
         }
         for repo in store::list_repositories(&state.meta, &index.name)? {

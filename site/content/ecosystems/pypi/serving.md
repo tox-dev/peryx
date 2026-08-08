@@ -109,12 +109,10 @@ digest-addressed shape as the `.metadata` sibling.
 
 ### Served by digest, not by history
 
-The provenance route resolves the distribution's stored bundle from the artifact's SHA-256 alone, a single keyed lookup,
-never a scan of the project's releases. That keeps a provenance fetch as cheap as a metadata fetch no matter how many
-versions a project has, and it is why the provenance is keyed by the file's own digest rather than by project and
-version. The response is the provenance object — `{"version": 1, "attestation_bundles": [...]}` — served with the
-`application/vnd.pypi.integrity.v1+json` media type PEP 740 assigns it, and cached as immutable, because a digest names
-exactly one set of bytes.
+The provenance route finds a distribution's stored bundle by its SHA-256 digest in one keyed lookup. It does not scan
+the project's releases. The route serves `{"version": 1, "attestation_bundles": [...]}` with the
+`application/vnd.pypi.integrity.v1+json` media type and caches it as immutable because one digest names one byte
+sequence.
 
 An upstream provenance URL is mutable even though the distribution digest is not. Repository policy can leave that URL
 direct or replace it with a local route. The local route can proxy each request or retain and revalidate the body.
@@ -128,10 +126,10 @@ source and availability as described in the
 
 peryx wraps the attestations a publisher uploaded into one provenance object. The `publisher` field is `null`: peryx
 does not resolve the uploader to a Trusted Publisher identity, and PEP 740 makes the field nullable for exactly that
-case. The attestations themselves — envelope, signature, certificate, transparency entries, predicate — are served back
-verbatim, so a verifier sees precisely what was signed. peryx stores the bundle in its blob store, content-addressed,
-with a small digest-keyed pointer row, the way it stores a PEP 658 metadata sibling; the metadata store never buffers
-the whole bundle.
+case. peryx serves each attestation's envelope, signature, certificate, transparency entries, and predicate without
+changes, so a verifier sees the signed content. peryx stores the bundle in its content-addressed blob store, with a
+small digest-keyed pointer row, the way it stores a PEP 658 metadata sibling; the metadata store never buffers the whole
+bundle.
 
 For upstream provenance, peryx checks the media type, size, and version-1 document structure. It does not verify
 signatures or certificates. It neither resolves publisher identities nor consults transparency entries, and it does not

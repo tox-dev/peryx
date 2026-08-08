@@ -2,7 +2,7 @@
 //!
 //! The engine enforces the rules every ecosystem shares (project-name allow/block lists and byte-size
 //! limits) and runs any format-specific rules a driver supplies as [`ArtifactRule`] trait objects. A
-//! matcher that understands a package format (a `PyPI` version specifier, a wheel tag) is implemented
+//! matcher that understands an artifact format is implemented
 //! in that ecosystem's crate and attached through [`Policy::with_rules`], so this crate names no
 //! package format and depends on no format library.
 
@@ -274,8 +274,7 @@ impl Policy {
     /// Compile the neutral operator configuration once at startup. Format-specific rules are attached
     /// afterward with [`Policy::with_rules`].
     ///
-    /// `normalize` folds a configured project key into the form the ecosystem checks against. `PyPI`
-    /// applies [PEP 503](https://peps.python.org/pep-0503/) normalization; `OCI` leaves a repository
+    /// `normalize` folds a configured project key into the form the ecosystem checks against. Each adapter
     /// name untouched. The same function must key the incoming name at check time, so the engine holds
     /// no format assumption of its own. Pass the identity closure for a case-sensitive match.
     #[must_use]
@@ -470,7 +469,7 @@ impl Policy {
     }
 
     /// Check an upload's project name and byte size: the neutral rules an ecosystem with no
-    /// format-specific facts (an OCI blob or manifest) enforces without building full facts.
+    /// format-specific facts enforce without building full facts.
     ///
     /// # Errors
     /// Returns a denial when the project is disallowed or the size exceeds `max_file_size_bytes`.
@@ -637,3 +636,7 @@ pub fn retain_versions(versions: &mut Vec<String>, keep: BTreeSet<String>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
+mod tests;

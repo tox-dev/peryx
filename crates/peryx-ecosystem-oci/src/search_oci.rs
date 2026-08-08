@@ -7,7 +7,6 @@
 
 use std::collections::BTreeSet;
 
-use peryx_core::Ecosystem;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_search::{
@@ -24,7 +23,7 @@ impl PackageIndexer for OciIndexer {
     fn documents(&self, ctx: &IndexerCtx<'_>) -> Result<Vec<PackageDocument>, SearchError> {
         let mut documents = Vec::new();
         for index in ctx.indexes {
-            if index.ecosystem != Ecosystem::Oci {
+            if index.ecosystem != crate::ECOSYSTEM {
                 continue;
             }
             for repo in repositories(ctx, index)? {
@@ -40,7 +39,7 @@ impl PackageIndexer for OciIndexer {
     fn project_update(&self, ctx: &IndexerCtx<'_>, name: &str) -> Result<ProjectUpdate, SearchError> {
         let mut update = ProjectUpdate::default();
         for index in ctx.indexes {
-            if index.ecosystem != Ecosystem::Oci || !serves_repository(ctx, index, name)? {
+            if index.ecosystem != crate::ECOSYSTEM || !serves_repository(ctx, index, name)? {
                 continue;
             }
             update.keys.push(project_key(&index.route, name));

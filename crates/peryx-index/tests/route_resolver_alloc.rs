@@ -14,9 +14,9 @@ static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 #[test]
 fn test_route_resolver_lookup_allocates_nothing() {
     let routes = RouteResolver::new(&[Index {
-        name: "pypi".to_owned(),
-        route: "root/pypi".to_owned(),
-        ecosystem: Ecosystem::Pypi,
+        name: "alpha".to_owned(),
+        route: "root/alpha".to_owned(),
+        ecosystem: Ecosystem::new("example"),
         kind: IndexKind::Hosted { volatile: false },
         policy: Policy::default(),
         acl: IndexAcl::default(),
@@ -27,7 +27,7 @@ fn test_route_resolver_lookup_allocates_nothing() {
     // `resolve` for its line coverage without the unmeasurable assertion.
     #[cfg(not(coverage))]
     let region = Region::new(ALLOCATOR);
-    let result = routes.resolve("root/pypi/simple/project");
+    let result = routes.resolve("root/alpha/simple/project");
 
     assert_eq!(result, Some((0, "simple/project")));
     #[cfg(not(coverage))]

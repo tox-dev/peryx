@@ -24,8 +24,8 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use peryx_driver::authz::Decision;
 use peryx_driver::state::{AppState, ControlCommand, ControlError};
+use peryx_ha_distributed::{AuthorityKey, DatacenterId, TransferAudit, TransferRequest};
 use peryx_identity::{Resource, Scope, UserId, parse_basic};
-use peryx_replication::{AuthorityKey, DatacenterId, TransferAudit, TransferRequest};
 use serde::Deserialize;
 use serde_json::json;
 

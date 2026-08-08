@@ -39,8 +39,8 @@ Start peryx with `--config` and install through `http://<host>:<port>/corp/simpl
 
 ## Keep the token out of the config file
 
-A `password` or `token` can read from a `*_file` or `*_env` sibling instead of an inline value, so the secret lives in a
-mounted file or an injected environment variable rather than `peryx.toml`:
+Use a `*_file` or `*_env` sibling for a `password` or `token` to keep the secret in a mounted file or injected
+environment variable:
 
 ```toml
 [[index]]
@@ -53,9 +53,9 @@ username = "__token__"
 password_file = "/run/secrets/corp-token" # or password_env = "PERYX_CORP_TOKEN"
 ```
 
-peryx reads the source once at startup and reports a missing, empty, or oversized file or an unset variable without
-printing the value. The [configuration reference](@/core/configuration.md#upstream-credential-sources) covers systemd
-and Kubernetes secret layouts, precedence, redaction, and migrating an inline credential.
+peryx reads the source at startup. It reports missing, empty, or oversized files and unset variables without printing
+their values. The [configuration reference](@/core/configuration.md#upstream-credential-sources) covers systemd and
+Kubernetes secret layouts, precedence, redaction, and migration from inline credentials.
 
 ## Read Basic credentials from netrc
 
@@ -112,8 +112,7 @@ Set `offline = true` on the cached index when only that upstream should stay cac
 
 ### Sync every project name
 
-Set `mode = "all"` when the mirror must discover every project exposed by the upstream root rather than a configured
-working set:
+Set `mode = "all"` when the mirror must discover all projects exposed by the upstream root:
 
 ```toml
 [index.prefetch]
@@ -129,17 +128,17 @@ artifact files, and metadata siblings remain subject to the prefetch filters and
 shape this path targets: display names, canonical links, a last-serial extension, and a root large enough to require
 streaming.
 
-The root transfer completes into a temporary file before peryx changes catalog metadata. Parsing then writes batches of
-10,000 canonical/display-name pairs into a staging generation. A single pointer change publishes that generation after
-the parser reaches a valid end of document. A truncated transfer, malformed document, unsupported Simple API major,
-invalid name, or failed batch leaves the previous generation active. The next sync removes abandoned staging and retired
-generations in bounded batches. The server's persistent `writer_identity` claim provides cross-process single-writer
-exclusion; concurrent sync calls within one process share a per-index lock and one fetch. This keeps the failure
-behavior used by devpi's [`ProjectNamesCache`](https://github.com/devpi/devpi/blob/main/server/devpi_server/mirror.py),
-which retains its previous name set when refresh fails, while using the durable progress discipline in
-[bandersnatch's mirror](https://github.com/pypa/bandersnatch/blob/main/src/bandersnatch/mirror.py), which does not
-advance the completed serial after an errored synchronization. Peryx's generation pointer applies those rules to batched
-root parsing: durable staging work may be discarded, but readers see only the last complete generation.
+peryx writes the root transfer to a temporary file before changing catalog metadata. The parser writes batches of 10,000
+canonical/display-name pairs into a staging generation. After reaching a valid end of document, peryx publishes the
+generation with one pointer change. A truncated transfer, malformed document, unsupported Simple API major, invalid
+name, or failed batch leaves the previous generation active. The next sync removes abandoned staging and retired
+generations in bounded batches. The server's persistent `writer_identity` claim enforces one writer across processes;
+concurrent sync calls within one process share a per-index lock and fetch. devpi's
+[`ProjectNamesCache`](https://github.com/devpi/devpi/blob/main/server/devpi_server/mirror.py) also retains its previous
+name set after a refresh failure.
+[bandersnatch's mirror](https://github.com/pypa/bandersnatch/blob/main/src/bandersnatch/mirror.py) does not advance the
+completed serial after a synchronization error. Peryx applies both rules to batched root parsing: it may discard durable
+staging work, but readers see the last complete generation.
 
 Peryx sends `If-None-Match` on the next sync when the upstream supplied an ETag. `If-Modified-Since` is the fallback
 when only `Last-Modified` is available, matching the precedence in
@@ -148,20 +147,20 @@ the generation and name rows, updates the fetch time, and merges only validator 
 [HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) requires. Validators belong to the
 configured upstream source, so a routed fallback never receives another source's validator.
 
-The decompressed root is limited to 256 MiB and 2,000,000 entries. In July 2026, Warehouse's JSON and HTML roots are
-about 42–44 MiB and list fewer than one million projects, leaving substantial growth room while bounding local disk,
-parser work, and recovery. The existing redirect policy permits at most ten redirects. Persisted source and final URLs
-strip user information, query strings, and fragments.
+peryx limits the decompressed root to 256 MiB and 2,000,000 entries. In July 2026, Warehouse's JSON and HTML roots are
+about 42 to 44 MiB and list fewer than one million projects. The limit bounds disk use, parser work, and recovery while
+allowing the root to grow. The redirect policy permits at most ten redirects. peryx strips user information, query
+strings, and fragments from persisted source and final URLs.
 
 `/metrics` reports `peryx_catalog_syncs_total`, `peryx_catalog_published_total`, `peryx_catalog_not_modified_total`,
-`peryx_catalog_errors_total`, and the `peryx_catalog_projects` gauge. These series use only the bounded `ecosystem` and
-`role` labels; upstream names, URLs, index names, and project names never become Prometheus labels.
+`peryx_catalog_errors_total`, and the `peryx_catalog_projects` gauge. These series use the bounded `ecosystem` and
+`role` labels. They omit upstream names, URLs, index names, and project names from Prometheus labels.
 
 ### Sync project file metadata
 
-Discovering names populates the root; syncing a project's detail page records the files under it. This fetches each
-project's HTML or JSON Simple response and stores its remote file metadata without downloading a single distribution
-byte, so a mirror knows every file's identity, hash, and size before anything is transferred.
+Name discovery populates the root. A project-detail sync fetches its HTML or JSON Simple response and records remote
+file metadata without downloading distribution bytes. The mirror records each file's identity, hash, and size before
+fetching the artifact.
 
 Each admitted file records its filename, hashes, size, upload time, yank state, metadata-sibling link, provenance link,
 and upstream URL, parsed from the
@@ -172,27 +171,27 @@ per-file [PEP 700](https://peps.python.org/pep-0700/) `size` and `upload-time`,
 produced it, the `ETag`/`Last-Modified`/last-serial validators, the observation time, and a monotonic generation number.
 HTML and JSON responses parse into the same fields, so an upstream serving either form yields identical records.
 
-The configured repository policy runs before a file is admitted, so an installer never sees a file the policy denies; a
-file the response leaves without a `sha256` is skipped as well, because peryx cannot content-address it. Admitting a
-file registers its digest-keyed download source and metadata sibling, so a later cache-miss fetch resolves the bytes by
-digest — the metadata is remote-only until then, describing files that still live upstream.
+peryx applies the repository policy before admitting a file, so denied files do not reach installers. It also skips a
+file without a `sha256` because it cannot content-address that file. Admission registers the digest-keyed download
+source and metadata sibling. Until a cache miss fetches the bytes by digest, the metadata describes a file that remains
+upstream.
 
-The detail transfer completes into a bounded temporary file before any staging row is written, holding no metadata
-transaction open during the upstream request. Parsing streams the file array, committing batches of 10,000 records into
-a staging generation so a million-file generated project never materializes in memory or in one transaction. A single
-pointer change publishes the generation once the parser reaches a valid end of document, and the displaced generation is
-swept in bounded batches. A truncated transfer, malformed document, unsupported Simple API major, or failed publication
-leaves the previous generation active and serviceable — the same retain-on-failure discipline
+peryx writes the detail transfer to a bounded temporary file before creating staging rows, so the upstream request holds
+no metadata transaction open. The parser streams the file array and commits batches of 10,000 records into a staging
+generation; a generated project with one million files does not occupy memory or one transaction. After reaching a valid
+end of document, peryx publishes the generation with one pointer change and sweeps the displaced generation in bounded
+batches. A truncated transfer, malformed document, unsupported Simple API major, or failed publication leaves the
+previous generation active. The same retain-on-failure discipline appears in
 [bandersnatch](https://github.com/pypa/bandersnatch/blob/main/src/bandersnatch/mirror.py) applies to per-release
 metadata, and the reason [devpi](https://github.com/devpi/devpi/blob/main/server/devpi_server/mirror.py) keeps its last
 good project serial when a refresh errors.
 
 Peryx sends `If-None-Match` on the next sync when the active generation carried an `ETag`. A `304 Not Modified` reuses
-that generation without moving any artifact, advancing only the observation time and merging validators present on the
-response, as [HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) requires; a `404` leaves
-any prior generation in place. A detail response is limited to 256 MiB and 2,000,000 files, the redirect policy permits
-at most ten redirects, and concurrent syncs of one project inside a process share a lock and one fetch. Persisted source
-and final URLs strip user information, query strings, and fragments.
+that generation without moving an artifact. Peryx advances the observation time and merges validators present on the
+response, as [HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) requires. A `404` leaves
+the prior generation in place. Peryx limits a detail response to 256 MiB and 2,000,000 files. The redirect policy
+permits at most ten redirects, and concurrent syncs of one project inside a process share a lock and fetch. Peryx strips
+user information, query strings, and fragments from persisted source and final URLs.
 
 ### Schedule bounded metadata refreshes
 
@@ -215,20 +214,21 @@ Run the identical job once while validating an upstream or warming a new node:
 peryx job run --config peryx.toml --repository corp --max-projects 10000 --concurrency 4 --timeout-secs 900
 ```
 
-The root publishes before project work begins. Cancellation or timeout stops new project requests and drops in-flight
-transfers; each previously completed generation stays serviceable. A run admits projects in canonical-name order up to
-`max_projects`, bounds concurrent metadata requests separately from the node's job-worker limit, and emits at most 100
-progress updates. Named multi-source routes use their normal fallback rules unless `source` selects one configured
-upstream explicitly. Keep the interval longer than a typical run and place it outside peak request periods.
+peryx publishes the root before project work begins. Cancellation or timeout stops new project requests and drops
+in-flight transfers; completed generations remain available. A run admits projects in canonical-name order up to
+`max_projects`. It bounds concurrent metadata requests apart from the node's job-worker limit and emits at most 100
+progress updates. Named multi-source routes use their fallback rules unless `source` selects one configured upstream.
+Set an interval longer than a typical run and schedule it outside peak request periods.
 
 ## HTML upstreams
 
 Some upstreams, including [Artifactory](https://jfrog.com/artifactory/), serve the
 [PEP 503](https://peps.python.org/pep-0503/) HTML form instead of PEP 691 JSON. peryx requests
 [PEP 691](https://peps.python.org/pep-0691/) JSON first, parses HTML when the upstream returns it, and serves JSON to
-[pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/). You do not configure this; it happens per response.
-The upstream response must send a Simple API content type (`text/html`, `application/vnd.pypi.simple.v1+html`, or
-`application/vnd.pypi.simple.v1+json`); other content types return `502` with the upstream URL in the error body.
+[pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/). Content negotiation occurs per response and needs no
+configuration. The upstream response must send a Simple API content type (`text/html`,
+`application/vnd.pypi.simple.v1+html`, or `application/vnd.pypi.simple.v1+json`); other content types return `502` with
+the upstream URL in the error body.
 
 ## Notes
 

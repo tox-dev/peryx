@@ -16,4 +16,5 @@ pub use peryx_driver::state::{
 pub use router::router;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

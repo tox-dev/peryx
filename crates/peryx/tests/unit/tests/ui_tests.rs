@@ -1,0 +1,1873 @@
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+use std::io::Write as _;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use base64::Engine as _;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use http_body_util::BodyExt as _;
+use peryx_core::path::local_file_url;
+use peryx_ecosystem_pypi::store::{CachedIndex, PypiStore as _};
+use peryx_ecosystem_pypi::upload::Uploaded;
+use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
+use peryx_identity::{Action, Glob, Grant, GrantScope, Principal, Role, Signer};
+use peryx_storage::blob::Digest;
+use rstest::{fixture, rstest};
+use sha2::{Digest as _, Sha256};
+use tower::ServiceExt as _;
+
+use crate::config::{Config, IndexConfig, IndexKind, SecretSource, TokenConfig};
+use crate::server::{build_router, build_state, router_for};
+
+#[fixture]
+fn ui_router() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&ui_config(&dir)).unwrap();
+    (dir, router)
+}
+
+#[fixture]
+fn filter_router() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_filter_files(&state);
+    (dir, router_for(state))
+}
+
+#[fixture]
+fn private_oci_ui_router() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&private_oci_ui_config(&dir)).unwrap();
+    (dir, router)
+}
+
+fn ui_config(dir: &tempfile::TempDir) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![
+            IndexConfig {
+                name: "pypi".to_owned(),
+                route: "pypi".to_owned(),
+                policy: peryx_policy::PolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
+                webhooks: Vec::new(),
+                ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
+                anonymous_read: None,
+                tokens: Vec::new(),
+                kind: IndexKind::Cached {
+                    routing: crate::tests::single_route("http://127.0.0.1:9/simple/"),
+                    upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
+                    offline: false,
+                    prefetch: Box::default(),
+                },
+            },
+            IndexConfig {
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
+                policy: peryx_policy::PolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
+                webhooks: Vec::new(),
+                ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
+                anonymous_read: None,
+                tokens: vec![crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned()))],
+                kind: IndexKind::Hosted { volatile: true },
+            },
+            IndexConfig {
+                name: "root/pypi".to_owned(),
+                route: "root/pypi".to_owned(),
+                policy: peryx_policy::PolicyConfig::default(),
+                ecosystem_policy: toml::Table::new(),
+                ecosystem_settings: toml::Table::new(),
+                webhooks: Vec::new(),
+                ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
+                anonymous_read: None,
+                tokens: Vec::new(),
+                kind: IndexKind::Virtual {
+                    layers: vec!["hosted".to_owned(), "pypi".to_owned()],
+                    upload: Some("hosted".to_owned()),
+                },
+            },
+        ],
+        ..Config::default()
+    }
+}
+
+fn empty_ui_config(dir: &tempfile::TempDir) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: Vec::new(),
+        ..Config::default()
+    }
+}
+
+fn oci_ui_config(dir: &tempfile::TempDir) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![IndexConfig {
+            name: "images".to_owned(),
+            route: "images".to_owned(),
+            policy: peryx_policy::PolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
+            ecosystem_settings: toml::Table::new(),
+            webhooks: Vec::new(),
+            ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
+            anonymous_read: None,
+            tokens: vec![crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned()))],
+            kind: IndexKind::Hosted { volatile: true },
+        }],
+        ..Config::default()
+    }
+}
+
+/// Push a tagged image manifest through the `/v2/` API so the browse pages have an OCI repository.
+/// Upload a blob to the hosted `images/app` repo and return its OCI digest.
+async fn upload_blob(router: &axum::Router, bytes: &[u8]) -> String {
+    let digest = format!("sha256:{}", Digest::of(bytes).as_str());
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v2/images/app/blobs/uploads/?digest={digest}"))
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .body(Body::from(bytes.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    digest
+}
+
+/// Upload a config and a layer blob, then push a manifest referencing them, returning both digests.
+async fn push_oci_image(router: &axum::Router) -> (String, String) {
+    let config = upload_blob(router, b"{}").await;
+    let layer = upload_blob(router, b"layer-bytes").await;
+    let manifest = format!(
+        concat!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","#,
+            r#""config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config}","size":2}},"#,
+            r#""layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer}","size":11}}]}}"#,
+        ),
+        config = config,
+        layer = layer,
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v2/images/app/manifests/1.0")
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .header(header::CONTENT_TYPE, "application/vnd.oci.image.manifest.v1+json")
+                .body(Body::from(manifest))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    (config, layer)
+}
+
+/// A gzip-tar layer carrying one text and one binary member, plus its OCI digest.
+fn oci_layer() -> (Vec<u8>, String) {
+    let mut tar_bytes = Vec::new();
+    let mut builder = tar::Builder::new(&mut tar_bytes);
+    for (path, bytes) in [
+        ("etc/app.conf", b"debug = true\n".as_slice()),
+        ("bin/app", &[0x7f, 0x45, 0x4c, 0x46]),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, bytes).unwrap();
+    }
+    builder.into_inner().unwrap();
+    let mut gz = Vec::new();
+    let mut encoder = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+    encoder.write_all(&tar_bytes).unwrap();
+    encoder.finish().unwrap();
+    let digest = format!("sha256:{}", Digest::of(&gz).as_str());
+    (gz, digest)
+}
+
+/// Upload a real gzip layer blob and push a manifest referencing it, so the layer browser has a
+/// stored layer to open.
+async fn push_oci_image_with_layer(router: &axum::Router) -> String {
+    let (layer, digest) = oci_layer();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v2/images/app/blobs/uploads/?digest={digest}"))
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .body(Body::from(layer))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let config = upload_blob(router, b"{}").await;
+    let manifest = format!(
+        concat!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","#,
+            r#""config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config}","size":2}},"#,
+            r#""layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{digest}","size":42}}]}}"#,
+        ),
+        config = config,
+        digest = digest,
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v2/images/app/manifests/1.0")
+                .header(header::AUTHORIZATION, format!("Basic {}", STANDARD.encode("_:s3cret")))
+                .header(header::CONTENT_TYPE, "application/vnd.oci.image.manifest.v1+json")
+                .body(Body::from(manifest))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    digest
+}
+
+#[tokio::test]
+async fn test_ui_oci_manifest_links_layer_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let digest = push_oci_image_with_layer(&router).await;
+
+    let (status, body) = get(&router, "/browse?index=images&project=app&ref=1.0").await;
+    assert_eq!(status, StatusCode::OK);
+    // The layer row carries a contents link into the layer browser, keyed on the layer digest (its
+    // colon percent-encoded in the query).
+    assert!(body.contains("class=\"inspect\""), "contents link missing: {body}");
+    let hex = digest.strip_prefix("sha256:").unwrap();
+    assert!(
+        body.contains(&format!("layer=sha256%3A{hex}")),
+        "layer link missing: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ui_oci_layer_lists_and_previews_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let digest = push_oci_image_with_layer(&router).await;
+
+    let listing = format!("/browse?index=images&project=app&ref=1.0&layer={digest}");
+    let (status, body) = get(&router, &listing).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("etc/app.conf"), "text member missing: {body}");
+    assert!(body.contains("bin/app"), "binary member missing: {body}");
+
+    let member = format!("{listing}&member=etc%2Fapp.conf");
+    let (status, body) = get(&router, &member).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("debug = true"), "member preview missing: {body}");
+}
+
+#[tokio::test]
+async fn test_ui_oci_repository_lists_its_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    push_oci_image(&router).await;
+
+    let (status, body) = get(&router, "/browse?index=images&project=app").await;
+    assert_eq!(status, StatusCode::OK);
+    // The repository page shows the pushed tag, linking to its manifest.
+    assert!(body.contains("1.0"), "tag missing: {body}");
+    assert!(body.contains("ref=1.0"), "manifest link missing: {body}");
+}
+
+#[tokio::test]
+async fn test_ui_oci_manifest_shows_config_and_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&oci_ui_config(&dir)).unwrap();
+    let (config, layer) = push_oci_image(&router).await;
+
+    let (status, body) = get(&router, "/browse?index=images&project=app&ref=1.0").await;
+    assert_eq!(status, StatusCode::OK);
+    // The manifest page shows the config and layer blob digests.
+    assert!(body.contains(&config), "config blob missing: {body}");
+    assert!(body.contains(&layer), "layer blob missing: {body}");
+    assert!(body.contains("Layers"), "layer heading missing: {body}");
+}
+
+#[rstest]
+#[case::anonymous(String::new(), false)]
+#[case::reader(reader_authorization(), true)]
+#[tokio::test]
+async fn test_ui_private_oci_repository_rendering_follows_read_acl(
+    #[case] authorization: String,
+    #[case] expected: bool,
+    private_oci_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_oci_ui_router;
+    push_oci_image(&router).await;
+
+    let (status, body) = get_authorized(&router, "/browse?index=images&project=app", &authorization).await;
+    assert_eq!((status, body.contains("ref=1.0")), (StatusCode::OK, expected), "{body}");
+}
+
+#[rstest]
+#[case::projects("/+ui/projects?index=images")]
+#[case::project("/+ui/project?index=images&project=app")]
+#[case::manifest("/+ui/manifest?index=images&project=app&ref=1.0")]
+#[case::members("/+ui/members?index=images&project=app&digest=sha256:a")]
+#[case::member("/+ui/member?index=images&project=app&digest=sha256:a&member=f")]
+#[tokio::test]
+async fn test_ui_private_oci_data_routes_reject_anonymous_reads(
+    #[case] uri: &str,
+    private_oci_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_oci_ui_router;
+
+    let (status, _) = get(&router, uri).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_oci_data_route_challenges_for_basic_credentials(
+    private_oci_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_oci_ui_router;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/+ui/project?index=images&project=app")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            response.status(),
+            response.headers()[header::WWW_AUTHENTICATE].to_str().unwrap(),
+        ),
+        (StatusCode::UNAUTHORIZED, "Basic realm=\"peryx\"")
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_oci_data_api_accepts_its_bearer(private_oci_ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = private_oci_ui_router;
+    push_oci_image(&router).await;
+    let bearer = reader_bearer(&router).await;
+
+    let (status, body) = get_authorized(&router, "/+ui/manifest?index=images&project=app&ref=1.0", &bearer).await;
+    assert_eq!(
+        (status, body.contains("application/vnd.oci.image.manifest.v1+json")),
+        (StatusCode::OK, true),
+        "{body}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_oci_project_list_accepts_its_bearer(private_oci_ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = private_oci_ui_router;
+    push_oci_image(&router).await;
+    let bearer = reader_bearer(&router).await;
+
+    let (status, body) = get_authorized(&router, "/+ui/projects?index=images", &bearer).await;
+
+    assert_eq!(
+        (status, serde_json::from_str::<serde_json::Value>(&body).unwrap()),
+        (StatusCode::OK, serde_json::json!(["app"]))
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_oci_project_list_rejects_bearer_for_another_index(
+    private_oci_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_oci_ui_router;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .cast_signed();
+    let token = Signer::new(b"signing-secret", peryx_ecosystem_oci::TOKEN_SERVICE).mint(
+        &Principal::Named {
+            subject: "reader".to_owned(),
+        },
+        &[Grant {
+            projects: vec![Glob::new("other/app")],
+            actions: BTreeSet::from([Action::Read]),
+        }],
+        now,
+        300,
+    );
+
+    let (status, _) = get_authorized(&router, "/+ui/projects?index=images", &format!("Bearer {token}")).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_oci_search_follows_read_acl(private_oci_ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = private_oci_ui_router;
+    push_oci_image(&router).await;
+    for (case, authorization, expected) in [
+        ("anonymous", String::new(), (0, serde_json::Value::Null)),
+        ("basic", reader_authorization(), (1, serde_json::json!("app"))),
+        ("bearer", reader_bearer(&router).await, (1, serde_json::json!("app"))),
+    ] {
+        let (status, body) = get_authorized(&router, "/+search?q=app", &authorization).await;
+        let document = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        assert_eq!(
+            (
+                status,
+                document["total"].clone(),
+                document["results"][0]["normalized_name"].clone()
+            ),
+            (StatusCode::OK, serde_json::json!(expected.0), expected.1),
+            "{case}"
+        );
+    }
+}
+
+fn private_oci_ui_config(dir: &tempfile::TempDir) -> Config {
+    let mut config = oci_ui_config(dir);
+    config.indexes[0].anonymous_read = Some(false);
+    config.indexes[0].tokens.push(TokenConfig {
+        name: "reader".to_owned(),
+        secret: SecretSource::Literal("read-secret".to_owned()),
+        projects: vec!["app".to_owned()],
+        actions: BTreeSet::from([Action::Read]),
+        expires_at: None,
+    });
+    let mut public = config.indexes[0].clone();
+    public.name = "public".to_owned();
+    public.route = "public".to_owned();
+    public.anonymous_read = None;
+    public.tokens.clear();
+    config.indexes.push(public);
+    config.auth.signing_key = Some(SecretSource::Literal("signing-secret".to_owned()));
+    config
+}
+
+fn reader_authorization() -> String {
+    format!("Basic {}", STANDARD.encode("_:read-secret"))
+}
+
+#[fixture]
+fn private_pypi_ui_router() -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&private_pypi_ui_config(&dir)).unwrap();
+    (dir, router)
+}
+
+/// A hosted `PyPI` index that denies anonymous reads, with a writer token to seed it and a reader
+/// token that may read every project, so the archive-browser tests can separate the read ACL from the
+/// digest-membership check.
+fn private_pypi_ui_config(dir: &tempfile::TempDir) -> Config {
+    Config {
+        data_dir: dir.path().to_path_buf(),
+        indexes: vec![IndexConfig {
+            name: "vault".to_owned(),
+            route: "vault".to_owned(),
+            policy: peryx_policy::PolicyConfig::default(),
+            ecosystem_policy: toml::Table::new(),
+            ecosystem_settings: toml::Table::new(),
+            webhooks: Vec::new(),
+            ecosystem: peryx_core::Ecosystem::new("pypi"),
+            anonymous_read: Some(false),
+            tokens: vec![
+                crate::tests::writer_token(SecretSource::Literal("s3cret".to_owned())),
+                TokenConfig {
+                    name: "reader".to_owned(),
+                    secret: SecretSource::Literal("read-secret".to_owned()),
+                    projects: vec!["*".to_owned()],
+                    actions: BTreeSet::from([Action::Read]),
+                    expires_at: None,
+                },
+            ],
+            kind: IndexKind::Hosted { volatile: true },
+        }],
+        ..Config::default()
+    }
+}
+
+/// Upload the browsable `veloxdemo` wheel to the private `vault` index with its writer token, returning
+/// the file's sha256 hex.
+async fn upload_private_fixture(router: &axum::Router) -> String {
+    let wheel = include_bytes!("../../../../../tests/frontend/fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+    let boundary = "peryxuitest";
+    let sha256 = Digest::of(wheel);
+    let mut body = Vec::new();
+    for (name, value) in [
+        (":action", "file_upload"),
+        ("name", "veloxdemo"),
+        ("version", "1.0.0"),
+        ("filetype", "bdist_wheel"),
+        ("sha256_digest", sha256.as_str()),
+    ] {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        b"--peryxuitest\r\nContent-Disposition: form-data; name=\"content\"; \
+          filename=\"veloxdemo-1.0.0-py3-none-any.whl\"\r\n\r\n",
+    );
+    body.extend_from_slice(wheel);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let request = Request::builder()
+        .uri("/vault/")
+        .method("POST")
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(
+            header::AUTHORIZATION,
+            format!("Basic {}", STANDARD.encode("__token__:s3cret")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    sha256.as_str().to_owned()
+}
+
+async fn reader_bearer(router: &axum::Router) -> String {
+    let (status, body) = get_authorized(
+        router,
+        "/v2/token?service=peryx&scope=repository:images/app:pull",
+        &reader_authorization(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let token = serde_json::from_str::<serde_json::Value>(&body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    format!("Bearer {token}")
+}
+
+async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
+    get_authorized(router, uri, "").await
+}
+
+const ADMIN_PASSWORD: &str = "local password";
+
+/// Provision a server administrator on a built state and return the Basic header for it. Status and
+/// stats pages render at the caller's class, so a test seeing the topology must authenticate.
+async fn seed_administrator(state: &peryx_driver::AppState) -> String {
+    let user = state.users.create("Alice").unwrap();
+    state.users.set_password(&user.id, ADMIN_PASSWORD).await.unwrap();
+    state
+        .authorization
+        .grant(&user.id, Role::Administrator, GrantScope::Server)
+        .unwrap();
+    format!("Basic {}", STANDARD.encode(format!("Alice:{ADMIN_PASSWORD}")))
+}
+
+/// The `ui_router` fixture with a server administrator, returning the router and its Basic header.
+async fn ui_router_admin() -> (tempfile::TempDir, axum::Router, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    let authorization = seed_administrator(&state).await;
+    (dir, router_for(state), authorization)
+}
+
+/// [`ui_router_admin`] that also hands back the state, so a test can settle its metrics aggregator
+/// rather than poll the rendered page for an event applied on the aggregator's own thread.
+async fn ui_router_admin_stateful() -> (
+    tempfile::TempDir,
+    std::sync::Arc<peryx_driver::AppState>,
+    axum::Router,
+    String,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    let authorization = seed_administrator(&state).await;
+    (dir, state.clone(), router_for(state), authorization)
+}
+
+/// Leptos server rendering drives a per-thread reactive graph through process-global arenas, so two
+/// page renders at once in one process wedge on a lost wakeup. nextest runs each test in its own
+/// process and never hits this; `cargo test` runs a binary's tests as threads and would, so hold one
+/// render at a time. Route derivation is already serialized in `peryx_web` (`route_list`), which
+/// leaves rendering as the only shared step here.
+fn render_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(tokio::sync::Mutex::default)
+}
+
+async fn get_authorized(router: &axum::Router, uri: &str, authorization: &str) -> (StatusCode, String) {
+    let mut request = Request::builder().uri(uri);
+    if !authorization.is_empty() {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+    let _render = render_gate().lock().await;
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn first_files_table(body: &str) -> &str {
+    let table = body.find("<table class=\"files\"").unwrap();
+    let rest = &body[table..];
+    &rest[..rest.find("</table>").unwrap()]
+}
+
+fn files_table_containing<'a>(body: &'a str, marker: &str) -> &'a str {
+    let marker = body.find(marker).unwrap();
+    let table = body[..marker].rfind("<table class=\"files\"").unwrap();
+    let rest = &body[table..];
+    &rest[..rest.find("</table>").unwrap()]
+}
+
+fn rendered_main(body: &str) -> &str {
+    body.split_once("<main>")
+        .and_then(|(_, main)| main.split_once("</main>"))
+        .map(|(main, _)| main)
+        .expect("page renders one main element")
+}
+
+/// Upload the frontend fixture wheel through the router, so UI pages have a metadata-rich package.
+async fn upload_fixture(router: &axum::Router) {
+    let wheel = include_bytes!("../../../../../tests/frontend/fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+    upload_file(router, "veloxdemo-1.0.0-py3-none-any.whl", wheel).await;
+}
+
+async fn upload_file(router: &axum::Router, filename: &str, content: &[u8]) {
+    let boundary = "peryxuitest";
+    let mut body = Vec::new();
+    let filetype = if filename.ends_with(".tar.gz") {
+        "sdist"
+    } else {
+        "bdist_wheel"
+    };
+    let sha256 = Digest::of(content);
+    for (name, value) in [
+        (":action", "file_upload"),
+        ("name", "veloxdemo"),
+        ("version", "1.0.0"),
+        ("filetype", filetype),
+        ("sha256_digest", sha256.as_str()),
+    ] {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; \
+             filename=\"{filename}\"\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(content);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let request = Request::builder()
+        .uri("/root/pypi/")
+        .method("POST")
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(
+            header::AUTHORIZATION,
+            format!("Basic {}", STANDARD.encode("__token__:s3cret")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+fn put_file(state: &peryx_driver::AppState, filename: &str, content: &[u8], core_metadata: CoreMetadata) -> Digest {
+    let digest = Digest::of(content);
+    state.blobs.blocking().put_bytes_as(content, &digest).unwrap();
+    let uploaded = Uploaded {
+        version: "1.0.0".to_owned(),
+        file: File {
+            filename: filename.to_owned(),
+            url: local_file_url("hosted", digest.as_str(), filename),
+            hashes: std::collections::BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+            requires_python: None,
+            size: Some(content.len() as u64),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
+        },
+        trashed: None,
+    };
+    state
+        .meta
+        .put_upload("hosted", "veloxdemo", filename, &to_json(&uploaded).into_bytes())
+        .unwrap();
+    state.meta.put_project("hosted", "veloxdemo", "veloxdemo").unwrap();
+    digest
+}
+
+fn put_legacy_file(state: &peryx_driver::AppState, filename: &str, content: &[u8]) -> Digest {
+    put_file(state, filename, content, CoreMetadata::Absent)
+}
+
+fn put_filter_files(state: &peryx_driver::AppState) {
+    put_legacy_file(state, "veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", b"wheel 1");
+    put_legacy_file(state, "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl", b"wheel 2");
+    put_legacy_file(state, "veloxdemo-1.0.0.tar.gz", b"sdist");
+}
+
+#[tokio::test]
+async fn test_ui_dashboard_renders_indexes_and_counters() {
+    let (_dir, router, authorization) = ui_router_admin().await;
+    let (status, body) = get_authorized(&router, "/", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("change serial"));
+    assert!(body.contains("root/pypi"));
+    assert!(body.contains("badge kind-virtual"));
+    assert!(body.contains("badge uploads"));
+    // The virtual index renders its layers as an ordered stack with the upload target marked.
+    assert!(body.contains("layer-stack"));
+    assert!(body.contains("uploads land here"));
+    assert!(body.contains("resolves top to bottom"));
+    assert!(body.contains("/pkg/peryx_web.js"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_dashboard_withholds_counters_from_anonymous(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    // The basic index list stays public so the browser can navigate, but the operator-class
+    // per-ecosystem counters and metric families do not render.
+    assert!(body.contains("root/pypi"), "{body}");
+    assert!(!body.contains("PEP 658"), "{body}");
+    assert!(!body.contains("metadata hits"), "{body}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_header_marks_outbound_links_external(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    for url in ["https://peryx.readthedocs.io/", "https://github.com/tox-dev/peryx"] {
+        assert!(
+            body.contains(&format!("href=\"{url}\" rel=\"{EXTERNAL_LINK_REL}\"")),
+            "{url} lacks the external relationship: {body}"
+        );
+    }
+    assert!(body.contains("<a href=\"/admin/status\">"), "{body}");
+    assert!(body.contains("<a href=\"/admin/policy-decisions\">"), "{body}");
+}
+
+#[tokio::test]
+async fn test_ui_dashboard_shows_the_oci_registry_endpoint_not_simple() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&oci_ui_config(&dir)).unwrap();
+    let authorization = seed_administrator(&state).await;
+    let router = router_for(state);
+    let (status, body) = get_authorized(&router, "/", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    // An OCI index card advertises the `/v2/` registry endpoint, never a PyPI `/simple/` URL.
+    assert!(body.contains("/v2/images/"), "OCI endpoint missing: {body}");
+    assert!(
+        !body.contains("/images/simple/"),
+        "OCI card wrongly shows a Simple URL: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
+    let (_dir, router, authorization) = ui_router_admin().await;
+    let (status, body) = get_authorized(&router, "/admin/status", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Admin status"));
+    assert!(body.contains("read-only"));
+    assert!(body.contains("root/pypi"));
+    assert!(body.contains("/root/pypi/simple/"));
+    assert!(body.contains("/browse?index=hosted"));
+    assert!(body.contains("Usage and health"));
+    assert!(body.contains("Recent uploads"));
+    assert!(body.contains("No uploads recorded yet."));
+    assert!(body.contains("token configured"));
+    assert!(body.contains("redacted"));
+    assert!(body.contains("http://127.0.0.1:9/simple/"));
+    assert!(body.contains("upload-enabled"));
+    assert!(!body.contains("s3cret"));
+    assert!(!body.contains("type=\"password\""));
+    assert!(!body.contains("delete whole project"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_admin_status_withholds_sensitive_fields_from_anonymous(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/admin/status").await;
+    assert_eq!(status, StatusCode::OK);
+    // The basic topology renders, but the upstream host, upload-token state, and counters do not.
+    assert!(body.contains("Admin status"));
+    assert!(body.contains("root/pypi"), "{body}");
+    assert!(!body.contains("http://127.0.0.1:9/simple/"), "{body}");
+    assert!(!body.contains("token configured"), "{body}");
+    assert!(!body.contains("redacted"), "{body}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_policy_decisions_renders_inert_credential_form(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/admin/policy-decisions").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Policy decisions"));
+    assert!(body.contains("read-only"));
+    assert!(body.contains("type=\"password\""));
+    assert!(body.contains("id=\"policy-password\" type=\"password\" autocomplete=\"off\""));
+    assert!(body.contains("Enter credentials and search to load decisions."));
+    assert!(!body.contains("id=\"policy-user\" value="));
+    assert!(!body.contains("id=\"policy-password\" value="));
+}
+
+#[tokio::test]
+async fn test_ui_admin_status_empty_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = build_router(&empty_ui_config(&dir)).unwrap();
+    let (status, body) = get(&router, "/admin/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("No indexes configured."));
+    assert!(body.contains("No usage recorded yet."));
+    assert!(body.contains("No uploads recorded yet."));
+}
+
+#[tokio::test]
+async fn test_ui_admin_status_lists_counts_and_recent_uploads() {
+    let (_dir, router, authorization) = ui_router_admin().await;
+    upload_fixture(&router).await;
+    let (status, body) = get_authorized(&router, "/admin/status", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("uploads"));
+    assert!(body.contains("veloxdemo"));
+    assert!(body.contains("veloxdemo-1.0.0-py3-none-any.whl"));
+    assert!(body.contains("1.2 kB"));
+    assert!(!body.contains("A demonstration package"));
+}
+
+/// A datacenter roster: a local writer and a peer replica across two datacenters, so the topology page
+/// renders roles, per-node health, and the administrator-only peer addresses.
+fn topology_roster() -> peryx_core::TopologyConfig {
+    peryx_core::TopologyConfig {
+        mode: peryx_core::TopologyMode::Dc,
+        group: Some("east".to_owned()),
+        members: vec![
+            peryx_core::TopologyMember {
+                node: "writer-a".to_owned(),
+                dc: "east-1".to_owned(),
+                address: "writer-a.internal:8443".to_owned(),
+                role: peryx_core::NodeRole::Writer,
+            },
+            peryx_core::TopologyMember {
+                node: "replica-b".to_owned(),
+                dc: "east-2".to_owned(),
+                address: "replica-b.internal:8443".to_owned(),
+                role: peryx_core::NodeRole::Replica,
+            },
+        ],
+        local_node: Some("writer-a".to_owned()),
+    }
+}
+
+/// The `ui_router_admin` fixture with a datacenter availability roster installed on the state.
+async fn ui_router_topology() -> (tempfile::TempDir, axum::Router, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = build_state(&ui_config(&dir)).unwrap();
+    {
+        let state = std::sync::Arc::get_mut(&mut state).expect("a freshly built state is uniquely owned");
+        state.set_availability_role(peryx_core::NodeRole::Writer);
+        state.set_availability_topology(topology_roster());
+    }
+    let authorization = seed_administrator(&state).await;
+    (dir, router_for(state), authorization)
+}
+
+#[tokio::test]
+async fn test_ui_topology_renders_roster_health_and_addresses_for_administrator() {
+    let (_dir, router, authorization) = ui_router_topology().await;
+    let (status, body) = get_authorized(&router, "/admin/topology", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Availability topology"));
+    assert!(body.contains("read-only"));
+    assert!(body.contains("east"), "{body}");
+    assert!(body.contains("writer-a"), "{body}");
+    assert!(body.contains("replica-b"), "{body}");
+    assert!(body.contains("east-1") && body.contains("east-2"), "{body}");
+    assert!(body.contains("this node"), "{body}");
+    // The local node observes itself Live; the peer stays Unknown until a consensus layer reports it.
+    assert!(body.contains(">Live<"), "{body}");
+    assert!(body.contains(">Unknown<"), "{body}");
+    // Peer addresses are administrator-only, and the role filter is present.
+    assert!(body.contains("writer-a.internal:8443"), "{body}");
+    assert!(body.contains("replica-b.internal:8443"), "{body}");
+    assert!(body.contains("id=\"topology-role\""), "{body}");
+}
+
+#[tokio::test]
+async fn test_ui_topology_withholds_liveness_and_addresses_from_anonymous() {
+    let (_dir, router, _authorization) = ui_router_topology().await;
+    let (status, body) = get(&router, "/admin/topology").await;
+    assert_eq!(status, StatusCode::OK);
+    // The static roster stays public: identities, datacenters, and roles render.
+    assert!(body.contains("writer-a") && body.contains("replica-b"), "{body}");
+    assert!(body.contains("east-1"), "{body}");
+    assert!(body.contains("Writer"), "{body}");
+    // Liveness needs operator access and addresses need administrator access, so neither leaks.
+    assert!(body.contains("Restricted"), "{body}");
+    assert!(!body.contains(">Live<") && !body.contains(">Unknown<"), "{body}");
+    assert!(!body.contains("writer-a.internal:8443"), "{body}");
+    assert!(!body.contains("replica-b.internal:8443"), "{body}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_topology_reports_a_standalone_node_without_a_roster(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/admin/topology").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Availability topology"), "{body}");
+    assert!(body.contains("Single node"), "{body}");
+    assert!(body.contains("runs standalone"), "{body}");
+}
+
+/// The `ui_router_admin` fixture with one artifact of each byte-availability state recorded, so the
+/// placement page renders the health counts and a per-digest row for each source and availability.
+async fn ui_router_placements() -> (tempfile::TempDir, axum::Router, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = build_state(&ui_config(&dir)).unwrap();
+    {
+        let state = std::sync::Arc::get_mut(&mut state).expect("a freshly built state is uniquely owned");
+        state
+            .meta
+            .record_artifact_placement("sha256:aaa", peryx_storage::meta::ArtifactSource::Hosted, true)
+            .unwrap();
+        state
+            .meta
+            .record_artifact_placement("sha256:bbb", peryx_storage::meta::ArtifactSource::Proxy, false)
+            .unwrap();
+        state
+            .meta
+            .record_artifact_placement("sha256:ccc", peryx_storage::meta::ArtifactSource::Generated, false)
+            .unwrap();
+    }
+    let authorization = seed_administrator(&state).await;
+    (dir, router_for(state), authorization)
+}
+
+#[tokio::test]
+async fn test_ui_placements_renders_health_and_rows_for_administrator() {
+    let (_dir, router, authorization) = ui_router_placements().await;
+    let (status, body) = get_authorized(&router, "/admin/placements", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Artifact placement health"), "{body}");
+    assert!(body.contains("total artifacts"), "{body}");
+    assert!(body.contains("sha256:aaa") && body.contains("sha256:ccc"), "{body}");
+    // The per-digest chips reuse the package page's source and availability words.
+    assert!(
+        body.contains("src-hosted") && body.contains("src-proxy") && body.contains("src-generated"),
+        "{body}"
+    );
+    assert!(
+        body.contains("avail-local") && body.contains("avail-remote-only") && body.contains("avail-unavailable"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ui_placements_withholds_the_view_from_anonymous() {
+    let (_dir, router, _authorization) = ui_router_placements().await;
+    let (status, body) = get(&router, "/admin/placements").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("do not have access"),
+        "an anonymous caller reads no placement view: {body}"
+    );
+    assert!(
+        !body.contains("sha256:aaa"),
+        "no digest leaks to an anonymous caller: {body}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_browse_lists_projects_after_upload(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    upload_fixture(&router).await;
+    let (status, body) = get(&router, "/browse?index=hosted").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo"));
+    assert!(body.contains("Filter projects"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_browse_empty_index_hint(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/browse?index=hosted").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("No projects observed"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_project_page_renders_metadata(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    upload_fixture(&router).await;
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("A demonstration package for the velox web UI"));
+    assert!(body.contains("uv pip install --index-url /hosted/simple/ veloxdemo"));
+    assert!(body.contains("A demo package served by <strong>velox</strong>"));
+    assert!(body.contains("requests&gt;=2"));
+    assert!(body.contains("Development Status"));
+    assert!(body.contains("badge meta-badge"));
+    assert!(body.contains("Manage uploads"));
+    assert!(body.contains("1.2 kB"));
+    // A hosted upload reads as hosted and locally served, with each placement chip labelled.
+    assert!(body.contains(r#"class="badge placement-source src-hosted""#), "{body}");
+    assert!(body.contains(r#"aria-label="source: hosted""#), "{body}");
+    assert!(body.contains(r#"aria-label="availability: local""#), "{body}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_shows_source_and_availability_chips() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ui_config(&dir);
+    let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
+        panic!("pypi test index must be cached");
+    };
+    *offline = true;
+    let state = build_state(&config).unwrap();
+    let cached = Digest::of(b"a cached wheel");
+    // A proxied artifact fetched and verified projects local; the second file has no placement row,
+    // so it stays the default proxied remote-only catalog entry.
+    state
+        .meta
+        .record_artifact_placement(cached.as_str(), peryx_storage::meta::ArtifactSource::Proxy, true)
+        .unwrap();
+    let remote = Digest::of(b"a wheel this proxy has never fetched");
+    let detail = serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0"],
+        "files": [
+            {
+                "filename": "veloxdemo-1.0-py3-none-any.whl",
+                "url": "https://files.example/veloxdemo-1.0-py3-none-any.whl",
+                "hashes": {"sha256": cached.as_str()},
+            },
+            {
+                "filename": "veloxdemo-1.0.tar.gz",
+                "url": "https://files.example/veloxdemo-1.0.tar.gz",
+                "hashes": {"sha256": remote.as_str()},
+            },
+        ],
+    });
+    state
+        .meta
+        .put_index(
+            "pypi/veloxdemo",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 0,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: serde_json::to_vec(&detail).unwrap(),
+            },
+        )
+        .unwrap();
+    let router = router_for(state);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    // The cached file reads proxy + local; the never-fetched one reads proxy + remote-only.
+    assert!(body.contains(r#"class="badge placement-source src-proxy""#), "{body}");
+    assert!(body.contains(">local</span>"), "{body}");
+    assert!(
+        body.contains(r#"class="badge placement-avail avail-remote-only""#),
+        "{body}"
+    );
+    assert!(body.contains(r#"aria-label="availability: remote-only""#), "{body}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_selects_latest_pep440_version() {
+    let (_dir, router) = version_router(&["2.0", "1!1.0rc1", "10.0", "1!1.0.post01", "1!1.0.post1", "1.0"]);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<span class=\"version\">1!1.0.post1</span>"), "{body}");
+}
+
+#[rstest]
+#[case::ascending(&["legacy-a", "legacy-z"])]
+#[case::descending(&["legacy-z", "legacy-a"])]
+#[tokio::test]
+async fn test_ui_project_page_selects_stable_legacy_version(#[case] versions: &[&str]) {
+    let (_dir, router) = version_router(versions);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<span class=\"version\">legacy-z</span>"), "{body}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_marks_a_release_its_publisher_yanked_whole() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0"],
+        "files": [
+            {
+                "filename": "veloxdemo-1.0-py3-none-any.whl",
+                "url": "/pypi/files/veloxdemo-1.0-py3-none-any.whl",
+                "yanked": "<script>alert(1)</script> use 2.0",
+            },
+            {
+                "filename": "veloxdemo-2.0-py3-none-any.whl",
+                "url": "/pypi/files/veloxdemo-2.0-py3-none-any.whl",
+                "yanked": "superseded",
+            },
+            {
+                "filename": "veloxdemo-2.0.tar.gz",
+                "url": "/pypi/files/veloxdemo-2.0.tar.gz",
+                "yanked": false,
+            },
+        ],
+    }));
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.matches(r#"class="release yanked""#).count(),
+        1,
+        "only 1.0 lost every file; 2.0 keeps an active sdist: {body}"
+    );
+    assert!(
+        body.contains("&lt;script&gt;alert(1)&lt;/script&gt; use 2.0"),
+        "the publisher's reason renders as text: {body}"
+    );
+    assert!(!body.contains("<script>alert(1)"), "{body}");
+    // The 2.0 wheel carries "superseded", which the file row still shows; the release keeps an
+    // active sdist, so only its chip has to stay clear of the reason.
+    let releases = body
+        .split_once(r#"<ul class="releases">"#)
+        .and_then(|(_, rest)| rest.split_once("</ul>"))
+        .map(|(releases, _)| releases)
+        .expect("the version list renders");
+    assert!(
+        !releases.contains("superseded"),
+        "2.0 stays active, so its chip shows no reason: {releases}"
+    );
+}
+
+#[tokio::test]
+async fn test_ui_project_page_groups_each_file_under_one_ordered_release() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0rc1", "2.0", "2.0+local.1", "legacy"],
+        "files": [
+            {"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/1.0.whl"},
+            {"filename": "veloxdemo-2.0rc1-py3-none-any.whl", "url": "/files/2.0rc1.whl"},
+            {"filename": "veloxdemo-2.0-py3-none-any.whl", "url": "/files/2.0.whl"},
+            {"filename": "veloxdemo-2.0+local.1-py3-none-any.whl", "url": "/files/2.0-local.whl"},
+            {"filename": "veloxdemo-legacy-py3-none-any.whl", "url": "/files/legacy.whl"},
+            {"filename": "notes.txt", "url": "/files/notes.txt"},
+        ],
+    }));
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    let headings = [
+        "Release 2.0+local.1",
+        "Release 2.0",
+        "Release 2.0rc1",
+        "Release 1.0",
+        "Release legacy",
+        "Legacy or unassociated files",
+    ];
+    let positions: Vec<usize> = headings
+        .iter()
+        .map(|heading| {
+            main.find(&format!(">{heading}<!"))
+                .unwrap_or_else(|| panic!("{heading} missing: {main}"))
+        })
+        .collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{body}");
+    for filename in [
+        "veloxdemo-1.0-py3-none-any.whl",
+        "veloxdemo-2.0rc1-py3-none-any.whl",
+        "veloxdemo-2.0-py3-none-any.whl",
+        "veloxdemo-2.0+local.1-py3-none-any.whl",
+        "veloxdemo-legacy-py3-none-any.whl",
+        "notes.txt",
+    ] {
+        assert_eq!(
+            main.matches(&format!(">{filename}</a>")).count(),
+            1,
+            "{filename} did not render once: {main}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_ui_project_page_keeps_ambiguous_equivalent_releases_unassociated() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "1.0.0"],
+        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/demo.whl"}],
+    }));
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    assert_eq!(
+        main.matches("No files are associated with this release.").count(),
+        2,
+        "{main}"
+    );
+    let legacy = main.split_once("Legacy or unassociated files").unwrap().1;
+    assert!(legacy.contains("veloxdemo-1.0-py3-none-any.whl"), "{main}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_selects_an_empty_declared_release() {
+    let (_dir, router) = detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": ["1.0", "2.0"],
+        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/demo.whl"}],
+    }));
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo&version=2.0").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    assert!(main.contains("Release 2.0"), "{main}");
+    assert!(main.contains("No files are associated with this release."), "{main}");
+    assert!(!main.contains("veloxdemo-1.0-py3-none-any.whl"), "{main}");
+    assert!(!main.contains("is not listed for this project"), "{main}");
+}
+
+#[tokio::test]
+async fn test_ui_project_page_distinguishes_an_unknown_release() {
+    let (_dir, router) = version_router(&["1.0"]);
+
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo&version=missing").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let main = rendered_main(&body);
+    assert!(
+        main.contains("Release <code>missing</code> is not listed for this project."),
+        "{main}"
+    );
+    assert!(!main.contains("No files are associated with this release."), "{main}");
+}
+
+fn version_router(versions: &[&str]) -> (tempfile::TempDir, axum::Router) {
+    detail_router(&serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "veloxdemo",
+        "versions": versions,
+        "files": [],
+    }))
+}
+
+/// Serve `detail` as the cached Simple API page of `veloxdemo` on the offline `pypi` index, so the
+/// project page renders it without an upstream request.
+fn detail_router(detail: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ui_config(&dir);
+    let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
+        panic!("pypi test index must be cached");
+    };
+    *offline = true;
+    let state = build_state(&config).unwrap();
+    state
+        .meta
+        .put_index(
+            "pypi/veloxdemo",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 0,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: serde_json::to_vec(detail).unwrap(),
+            },
+        )
+        .unwrap();
+    (dir, router_for(state))
+}
+
+#[tokio::test]
+async fn test_ui_project_page_sanitizes_metadata_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    let metadata = concat!(
+        "Metadata-Version: 2.1\n",
+        "Name: veloxdemo\n",
+        "Version: 1.0.0\n",
+        "Project-URL: Documentation, https://example.com/docs\n",
+        "Project-URL: Unsafe, JaVaScRiPt:alert(1)\n",
+        "Description-Content-Type: text/markdown\n\n",
+        "[guide](https://example.com/guide) [unsafe](data:text/html;base64,PHNjcmlwdD4=)\n",
+    );
+    let metadata_digest = state.blobs.put_bytes(metadata.as_bytes()).await.unwrap();
+    put_file(
+        &state,
+        "veloxdemo-1.0.0-py3-none-any.whl",
+        &wheel_with_metadata(metadata),
+        CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+            "sha256".to_owned(),
+            metadata_digest.as_str().to_owned(),
+        )])),
+    );
+    let router = router_for(state);
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("href=\"https://example.com/docs\""));
+    assert!(body.contains("href=\"https://example.com/guide\""));
+    assert!(body.contains("rel=\"external nofollow noopener noreferrer\""));
+    assert!(body.contains("<li>Unsafe</li>"));
+    assert!(body.contains(">guide</a> unsafe</p>"));
+    assert!(!body.contains("href=\"JaVaScRiPt:"), "{body}");
+    assert!(!body.contains("href=\"data:text/html"), "{body}");
+}
+
+#[rstest]
+#[case::javascript("JaVaScRiPt:alert(1)", false)]
+#[case::data("data:text/html;base64,PHNjcmlwdD4=", false)]
+#[case::mailto("mailto:maintainer@example.com", false)]
+#[case::malformed("http://[invalid", false)]
+#[case::http("http://example.com/veloxdemo.whl", true)]
+#[case::https("https://example.com/veloxdemo.whl", true)]
+#[case::relative("/pypi/files/veloxdemo.whl", true)]
+#[tokio::test]
+async fn test_ui_project_page_sanitizes_artifact_links(#[case] url: &str, #[case] linked: bool) {
+    let (_dir, router) = artifact_router(url);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (
+            body.contains(&format!(">{ARTIFACT_FILENAME}<")),
+            body.contains(&format!("href=\"{url}\""))
+        ),
+        (true, linked),
+        "{body}"
+    );
+}
+
+#[rstest]
+#[case::http("http://example.com/veloxdemo.whl", true)]
+#[case::https("https://example.com/veloxdemo.whl", true)]
+#[case::local_route("/pypi/files/veloxdemo.whl", false)]
+#[tokio::test]
+async fn test_ui_project_page_marks_outbound_artifact_links_external(#[case] url: &str, #[case] external: bool) {
+    let (_dir, router) = artifact_router(url);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.contains(&format!("href=\"{url}\" rel=\"{EXTERNAL_LINK_REL}\"")),
+        external,
+        "{body}"
+    );
+}
+
+const EXTERNAL_LINK_REL: &str = "external nofollow noopener noreferrer";
+const ARTIFACT_FILENAME: &str = "veloxdemo-1.0.tar.bz2";
+const ARCHIVE_DIGEST: &str = "5a105e8b9d40e1329780d62ea2265d8a4d4ef6a0d4b2f6c0c1a5b9a0f0d1c2e3";
+
+#[rstest]
+#[case::wheel("veloxdemo-1.0-py3-none-any.whl", ARCHIVE_DIGEST, true)]
+#[case::zip("veloxdemo-1.0.zip", ARCHIVE_DIGEST, true)]
+#[case::egg("veloxdemo-1.0.egg", ARCHIVE_DIGEST, true)]
+#[case::tar("veloxdemo-1.0.tar", ARCHIVE_DIGEST, true)]
+#[case::tar_gz("veloxdemo-1.0.tar.gz", ARCHIVE_DIGEST, true)]
+#[case::tgz("veloxdemo-1.0.tgz", ARCHIVE_DIGEST, true)]
+#[case::unsupported_format("veloxdemo-1.0.tar.bz2", ARCHIVE_DIGEST, false)]
+#[case::digest_free_wheel("veloxdemo-1.0-py3-none-any.whl", "", false)]
+#[case::truncated_digest_wheel("veloxdemo-1.0-py3-none-any.whl", "5a105e8b9d40e132", false)]
+#[tokio::test]
+async fn test_ui_project_page_links_contents_only_for_browsable_archives(
+    #[case] filename: &str,
+    #[case] sha256: &str,
+    #[case] browsable: bool,
+) {
+    let hashes = if sha256.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({"sha256": sha256})
+    };
+    let (_dir, router) = file_router(&serde_json::json!({
+        "filename": filename,
+        "url": format!("https://example.com/{filename}"),
+        "hashes": hashes,
+    }));
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&format!(">{filename}</a>")), "{body}");
+    assert_eq!(body.contains("class=\"inspect\""), browsable, "{body}");
+}
+
+#[rstest]
+#[case::reason(
+    serde_json::json!("broken build"),
+    &["badge yanked-badge", "<span class=\"yank-reason\">broken build</span>"][..],
+    &[][..]
+)]
+#[case::without_reason(serde_json::json!(true), &["badge yanked-badge"][..], &["yank-reason"][..])]
+#[case::active(serde_json::json!(false), &[][..], &["yanked-badge", "yank-reason"][..])]
+#[tokio::test]
+async fn test_ui_project_page_shows_yank_state(
+    #[case] yanked: serde_json::Value,
+    #[case] present: &[&str],
+    #[case] absent: &[&str],
+) {
+    let (_dir, router) = yanked_router(&yanked);
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    let table = files_table_containing(&body, ARTIFACT_FILENAME);
+    for marker in present {
+        assert!(table.contains(marker), "{body}");
+    }
+    for marker in absent {
+        assert!(!table.contains(marker), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn test_ui_project_page_escapes_yank_reason() {
+    let (_dir, router) = yanked_router(&serde_json::json!("<script>alert(1)</script>"));
+    let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("<script>alert(1)"),
+        "a yank reason must not become markup: {body}"
+    );
+    assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{body}");
+}
+
+fn artifact_router(url: &str) -> (tempfile::TempDir, axum::Router) {
+    file_router(&serde_json::json!({"filename": ARTIFACT_FILENAME, "url": url, "hashes": {}}))
+}
+
+fn yanked_router(yanked: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
+    file_router(&serde_json::json!({
+        "filename": ARTIFACT_FILENAME,
+        "url": format!("https://example.com/{ARTIFACT_FILENAME}"),
+        "hashes": {},
+        "yanked": yanked,
+    }))
+}
+
+fn file_router(file: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ui_config(&dir);
+    let IndexKind::Cached { offline, .. } = &mut config.indexes[0].kind else {
+        panic!("pypi test index must be cached");
+    };
+    *offline = true;
+    let state = build_state(&config).unwrap();
+    state
+        .meta
+        .put_index(
+            "pypi/veloxdemo",
+            &CachedIndex {
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 0,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: serde_json::to_vec(&serde_json::json!({
+                    "meta": {"api-version": "1.1"},
+                    "name": "veloxdemo",
+                    "versions": ["1.0"],
+                    "files": [file],
+                }))
+                .unwrap(),
+            },
+        )
+        .unwrap();
+    (dir, router_for(state))
+}
+
+fn wheel_with_metadata(metadata: &str) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    let dist_info = "veloxdemo-1.0.0.dist-info";
+    let entries = [
+        (format!("{dist_info}/METADATA"), metadata.as_bytes().to_vec()),
+        (
+            format!("{dist_info}/WHEEL"),
+            b"Wheel-Version: 1.0\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n".to_vec(),
+        ),
+    ];
+    for (path, bytes) in &entries {
+        zip.start_file(path, options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    let record_path = format!("{dist_info}/RECORD");
+    zip.start_file(&record_path, options).unwrap();
+    zip.write_all(wheel_record(&entries, &record_path).as_bytes()).unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+#[rstest]
+#[case::substring(
+    "/browse?index=hosted&project=veloxdemo&filename=cp312",
+    &["1 of 3 files"][..],
+    &["veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"][..],
+    &["veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", "veloxdemo-1.0.0.tar.gz"][..]
+)]
+#[case::regex(
+    "/browse?index=hosted&project=veloxdemo&filename=cp31%5B12%5D.*whl&filename_match=regex",
+    &["2 of 3 files"][..],
+    &["veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl", "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl"][..],
+    &["veloxdemo-1.0.0.tar.gz"][..]
+)]
+#[case::invalid_regex(
+    "/browse?index=hosted&project=veloxdemo&filename=%5B&filename_match=regex",
+    &["Invalid regex", "3 files"][..],
+    &[
+        "veloxdemo-1.0.0-cp311-cp311-macosx_14_0_arm64.whl",
+        "veloxdemo-1.0.0-cp312-cp312-macosx_14_0_arm64.whl",
+        "veloxdemo-1.0.0.tar.gz",
+    ][..],
+    &[][..]
+)]
+#[tokio::test]
+async fn test_ui_project_page_filters_files(
+    filter_router: (tempfile::TempDir, axum::Router),
+    #[case] query: &str,
+    #[case] count_text: &[&str],
+    #[case] present: &[&str],
+    #[case] absent: &[&str],
+) {
+    let (_dir, router) = filter_router;
+    let (status, body) = get(&router, query).await;
+    assert_eq!(status, StatusCode::OK);
+    for text in count_text {
+        assert!(body.contains(text), "{body}");
+    }
+    let table = first_files_table(&body);
+    for file in present {
+        assert!(table.contains(file), "{body}");
+    }
+    for file in absent {
+        assert!(!table.contains(file), "{body}");
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_project_page_missing_project(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/browse?index=hosted&project=ghost").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Project not found on this index."));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_shows_contents_for_zipped_eggs() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    let mut egg = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut egg));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("EGG-INFO/PKG-INFO", options).unwrap();
+        zip.write_all(b"Metadata-Version: 1.2\nName: veloxdemo\nVersion: 1.0.0\n")
+            .unwrap();
+        zip.finish().unwrap();
+    }
+    let digest = put_legacy_file(&state, "veloxdemo-1.0.0.egg", &egg);
+    let router = router_for(state);
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo-1.0.0.egg"));
+    assert!(body.contains("class=\"inspect\""));
+
+    let url = format!(
+        "/browse?index=hosted&project=veloxdemo&sha256={}&file=veloxdemo-1.0.0.egg",
+        digest.as_str()
+    );
+    let (status, body) = get(&router, &url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("EGG-INFO/PKG-INFO"));
+}
+
+#[tokio::test]
+async fn test_ui_project_page_hides_contents_for_unsupported_legacy_tar() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&ui_config(&dir)).unwrap();
+    put_legacy_file(&state, "veloxdemo-1.0.0.tar.bz2", b"legacy tarball");
+    let router = router_for(state);
+    let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo-1.0.0.tar.bz2"));
+    assert!(!body.contains("class=\"inspect\""));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_archive_listing_and_member(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    upload_fixture(&router).await;
+    let (_, detail) = get(&router, "/hosted/simple/veloxdemo/").await;
+    let sha = detail
+        .split("files/")
+        .nth(1)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=hosted&project=veloxdemo&sha256={sha}&file={file}");
+    let (status, listing) = get(&router, &listing_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains("dist-info/METADATA"));
+    assert!(listing.contains("__init__.py"));
+
+    let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
+    let (status, content) = get(&router, &member).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("Metadata-Version: 2.1"));
+    assert!(content.contains("back to archive"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview(
+    ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = ui_router;
+    let mut inner = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut inner));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("pkg/mod.py", options).unwrap();
+        zip.write_all(b"x = 1\n").unwrap();
+        zip.finish().unwrap();
+    }
+    let mut wheel = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut wheel));
+        let options = zip::write::SimpleFileOptions::default();
+        let dist_info = "veloxdemo-1.0.0.dist-info";
+        let entries = vec![
+            ("veloxdemo/__init__.py".to_owned(), Vec::new()),
+            ("veloxdemo/data.bin".to_owned(), vec![0xff, 0xfe]),
+            ("vendor/inner.zip".to_owned(), inner),
+            (
+                format!("{dist_info}/METADATA"),
+                b"Metadata-Version: 2.1\nName: veloxdemo\nVersion: 1.0.0\n".to_vec(),
+            ),
+            (
+                format!("{dist_info}/WHEEL"),
+                b"Wheel-Version: 1.0\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n".to_vec(),
+            ),
+        ];
+        for (path, bytes) in &entries {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let record_path = format!("{dist_info}/RECORD");
+        zip.start_file(&record_path, options).unwrap();
+        zip.write_all(wheel_record(&entries, &record_path).as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    upload_file(&router, "veloxdemo-1.0.0-py3-none-any.whl", &wheel).await;
+    let (_, detail) = get(&router, "/hosted/simple/veloxdemo/").await;
+    let sha = detail
+        .split("files/")
+        .nth(1)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=hosted&project=veloxdemo&sha256={sha}&file={file}");
+    let (status, listing) = get(&router, &listing_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains("class=\"archive-tree\""));
+    assert!(listing.contains("vendor"));
+    assert!(listing.contains("inner.zip"));
+    assert!(listing.contains("container=vendor%2Finner.zip"));
+    assert!(listing.contains("data.bin"));
+    assert!(!listing.contains("member=veloxdemo%2Fdata.bin"));
+
+    let binary_url = format!("{listing_url}&member=veloxdemo%2Fdata.bin");
+    let (status, binary) = get(&router, &binary_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(binary.contains("archive member"));
+    assert!(binary.contains("cannot be previewed inline"));
+
+    let nested_url = format!("{listing_url}&container=vendor%2Finner.zip");
+    let (status, nested) = get(&router, &nested_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(nested.contains("pkg"));
+    assert!(nested.contains("mod.py"));
+
+    let member_url = format!("{nested_url}&member=pkg%2Fmod.py");
+    let (status, content) = get(&router, &member_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("x = 1"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_archive_listing_rejects_anonymous_reads(
+    private_pypi_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_pypi_ui_router;
+    let sha = upload_private_fixture(&router).await;
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=vault&project=veloxdemo&sha256={sha}&file={file}");
+
+    let (status, listing) = get(&router, &listing_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains("read access denied"), "{listing}");
+    assert!(!listing.contains("dist-info/METADATA"), "{listing}");
+
+    let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
+    let (status, content) = get(&router, &member).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("read access denied"), "{content}");
+    assert!(!content.contains("Metadata-Version"), "{content}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_archive_listing_serves_an_authorized_reader(
+    private_pypi_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_pypi_ui_router;
+    let sha = upload_private_fixture(&router).await;
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!("/browse?index=vault&project=veloxdemo&sha256={sha}&file={file}");
+
+    let (status, listing) = get_authorized(&router, &listing_url, &reader_authorization()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains("dist-info/METADATA"), "{listing}");
+
+    let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
+    let (status, content) = get_authorized(&router, &member, &reader_authorization()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("Metadata-Version"), "{content}");
+}
+
+/// A reader authorized for the named project cannot pair it with a foreign digest to reach a blob the
+/// project never published: the driver proves the digest belongs to the project before serving it.
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_archive_listing_rejects_a_foreign_digest(
+    private_pypi_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_pypi_ui_router;
+    upload_private_fixture(&router).await;
+    let foreign = Digest::of(b"another project's wheel");
+    let file = "veloxdemo-1.0.0-py3-none-any.whl";
+    let listing_url = format!(
+        "/browse?index=vault&project=veloxdemo&sha256={}&file={file}",
+        foreign.as_str()
+    );
+
+    let (status, listing) = get_authorized(&router, &listing_url, &reader_authorization()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains("is not a member of project"), "{listing}");
+    assert!(!listing.contains("dist-info/METADATA"), "{listing}");
+
+    let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
+    let (status, content) = get_authorized(&router, &member, &reader_authorization()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content.contains("is not a member of project"), "{content}");
+}
+
+fn wheel_record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {
+    let mut record = String::new();
+    for (path, bytes) in entries {
+        let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(bytes));
+        writeln!(record, "{path},sha256={digest},{}", bytes.len()).unwrap();
+    }
+    writeln!(record, "{record_path},,").unwrap();
+    record
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_unknown_route_falls_back(ui_router: (tempfile::TempDir, axum::Router)) {
+    let (_dir, router) = ui_router;
+    let (status, body) = get(&router, "/nosuchpage").await;
+    // The catch-all API dispatcher answers for non-UI paths.
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("not found"));
+}
+
+#[tokio::test]
+async fn test_ui_stats_drills_from_index_to_files() {
+    // The stats drill names repositories, so the page renders it only for an operator.
+    let (_dir, state, router, authorization) = ui_router_admin_stateful().await;
+    upload_fixture(&router).await;
+    // The aggregator applies the upload on its own thread; settle it so the page reflects the event
+    // deterministically instead of polling for it.
+    state.metrics.settle();
+    let (status, body) = get_authorized(&router, "/stats?index=root%2Fpypi", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("veloxdemo"));
+    assert!(body.contains("uploads"));
+    // Leptos escapes attribute ampersands in server output.
+    assert!(body.contains("/stats?index=root%2Fpypi&amp;project=veloxdemo"));
+
+    let (status, top) = get_authorized(&router, "/stats", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(top.contains("/stats?index=root%2Fpypi"));
+
+    let (status, files) = get_authorized(&router, "/stats?index=root%2Fpypi&project=veloxdemo", &authorization).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(files.contains("rejected downloads"));
+}
+
+#[tokio::test]
+async fn test_ui_stats_withholds_usage_from_anonymous() {
+    let (_dir, router) = ui_router();
+    upload_fixture(&router).await;
+    // Even after an upload, an anonymous caller sees no repository usage on the stats page.
+    let (status, body) = get(&router, "/stats?index=root%2Fpypi").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.contains("veloxdemo"), "{body}");
+}

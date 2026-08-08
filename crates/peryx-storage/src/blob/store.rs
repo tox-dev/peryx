@@ -30,7 +30,7 @@ fn publish(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -
 
 /// Reconcile a commit whose content-addressed `dest` is already occupied. Under a per-digest lock,
 /// stream-hash the resident file: a matching size and hash means the blob is already durable, so the
-/// redundant `source` is discarded. A mismatch means a corrupt blob squats the digest path — replace it
+/// redundant `source` is discarded. A mismatch means a corrupt blob squats the digest path - replace it
 /// atomically with the verified `source` so a later read returns the blob rather than the damage. The
 /// lock keeps a second writer of the same digest from racing the replacement, and the correct `source`
 /// is never dropped until the resident file has been validated.
@@ -92,8 +92,8 @@ fn absent_or_io(err: std::io::Error, digest: &Digest) -> BlobError {
 
 /// Drop an abandoned stage so a reader tailing it never faults on a half-deleted name.
 ///
-/// On Windows an unlink only flags the file for deletion while any handle stays open — a follower
-/// tailing the stage, or a reader the caller just closed — and the original name lingers in a
+/// On Windows an unlink only flags the file for deletion while any handle stays open - a follower
+/// tailing the stage, or a reader the caller just closed - and the original name lingers in a
 /// delete-pending state that answers openers with `PermissionDenied` until that handle releases.
 /// Renaming the stage aside frees its name at once (a rename tolerates open handles), so a tail sees
 /// it vanish instead; the moved file is then removed, retried briefly while a straggling handle lets
@@ -381,7 +381,7 @@ impl BlobStore {
     ///
     /// `offset` is the last committed length: the stage is truncated to it before writing, so a chunk
     /// that synced to disk before its offset was committed and was then lost to a restart is dropped and
-    /// the re-sent chunk lands exactly where the client resumes. Resume is therefore idempotent — the
+    /// the re-sent chunk lands exactly where the client resumes. Resume is therefore idempotent - the
     /// stage is always the committed prefix plus this chunk, never a duplicated region.
     ///
     /// `session` must be a single safe path component; the caller supplies a generated session id.
@@ -517,7 +517,7 @@ impl BlobStore {
 /// An in-progress blob write: bytes stream into a temp file while the digest accumulates; on
 /// success the file moves into the store only when the hash matches.
 pub struct PendingBlob {
-    /// Buffered so wheel-sized streams issue hundreds of large writes instead of one syscall per
+    /// Buffered so large artifact streams issue hundreds of writes instead of one syscall per
     /// network chunk.
     file: std::io::BufWriter<std::fs::File>,
     path: tempfile::TempPath,
@@ -683,57 +683,5 @@ impl StagedBlob {
 }
 
 #[cfg(test)]
-mod stage_tests {
-    #[cfg(unix)]
-    use std::time::Duration;
-
-    #[cfg(unix)]
-    use super::discard_stage;
-    use super::remove_pending;
-    #[cfg(unix)]
-    use super::remove_pending_with;
-
-    #[test]
-    fn test_remove_pending_treats_a_missing_stage_as_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(remove_pending(&dir.path().join("absent")).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_remove_pending_backs_off_then_reports_a_persistent_denial() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let locked = dir.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        let target = locked.join("stage");
-        std::fs::write(&target, b"x").unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-        // Record the backoff schedule instead of sleeping, so the retry stays deterministic and fast.
-        let mut waits = Vec::new();
-        let result = remove_pending_with(&target, |backoff| waits.push(backoff));
-
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(result.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
-        assert_eq!(
-            waits,
-            [1, 2, 4, 8, 16, 32].map(Duration::from_millis),
-            "a persistent denial doubles the backoff up to the 64ms ceiling"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_discard_stage_falls_back_when_rename_is_denied() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let locked = dir.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        let (_file, path) = tempfile::NamedTempFile::new_in(&locked).unwrap().into_parts();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let result = discard_stage(path);
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(result.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
-    }
-}
+#[path = "../../tests/unit/blob/store/stage_tests.rs"]
+mod stage_tests;

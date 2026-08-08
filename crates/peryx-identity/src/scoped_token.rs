@@ -1,8 +1,8 @@
 //! Scoped API tokens: a named, expiring credential carrying a fixed reach and action set, minted once
 //! and thereafter proven by a stored verifier the server checks without a database write.
 //!
-//! The secret is shown once, at creation or rotation, and never again; only its [`TokenVerifier`] — a
-//! SHA-256 digest — is persisted, so a leaked store discloses no usable credential. Verification hashes
+//! The secret is shown once, at creation or rotation, and never again; only its [`TokenVerifier`] - a
+//! SHA-256 digest - is persisted, so a leaked store discloses no usable credential. Verification hashes
 //! the presented secret and resolves the one token whose stored digest keys it, a single indexed read
 //! and no write. The secret carries 256 bits of entropy, so a fast digest is a sound verifier and a
 //! per-request check need not pay a memory-hard password derivation; the digest, not the secret, is
@@ -24,7 +24,7 @@ use sha2::{Digest as _, Sha256};
 const SECRET_BYTES: usize = 32;
 
 /// The prefix every token secret carries, so a leaked credential is recognizable to a human and to a
-/// secret scanner, the pypi.org `pypi-` convention.
+/// secret scanner without borrowing a client ecosystem's token prefix.
 const SECRET_PREFIX: &str = "peryx_";
 
 /// The longest a token name may be, in bytes; long enough to describe a use, short enough to bound a row.
@@ -42,7 +42,7 @@ impl TokenId {
         Self(format!("tok_{}", uuid::Uuid::new_v4().simple()))
     }
 
-    /// Adopt a client-supplied identifier verbatim for a lookup; an unknown value simply resolves to no
+    /// Adopt a client-supplied identifier verbatim for a lookup; an unknown value resolves to no
     /// token, so the value is never trusted beyond being a key.
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
@@ -147,7 +147,7 @@ impl fmt::Debug for TokenSecret {
 
 /// The persisted proof of a token secret: a SHA-256 digest a presented secret must reproduce.
 ///
-/// It is a credential secret in its own right — a preimage is the token — so its [`Debug`] redacts and
+/// It is a credential secret in its own right - a preimage is the token - so its [`Debug`] redacts and
 /// it never appears in an API view.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]

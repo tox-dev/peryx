@@ -21,14 +21,14 @@ fn shadow_example() -> serde_json::Value {
             {
                 "member": "hosted",
                 "source": "hosted",
-                "filename": "example-1.0-py3-none-any.whl",
+                "filename": "example-1.0.bin",
                 "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "selected": true
             },
             {
-                "member": "pypi",
+                "member": "example",
                 "source": "cached",
-                "filename": "example-1.0-py3-none-any.whl",
+                "filename": "example-1.0.bin",
                 "digest": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
                 "selected": false,
                 "reason": "precedence",
@@ -51,7 +51,7 @@ fn shadow_parameters(mut operation: OperationBuilder) -> OperationBuilder {
             "repository",
             true,
             "The virtual repository route to inspect",
-            json!("root/pypi"),
+            json!("root/packages"),
         ),
         (
             "project",
@@ -63,7 +63,7 @@ fn shadow_parameters(mut operation: OperationBuilder) -> OperationBuilder {
             "cursor",
             false,
             "Exclusive cursor from the prior page",
-            json!("example-1.0-py3-none-any.whl\u{1f}0\u{1f}hosted"),
+            json!("example-1.0.bin\u{1f}0\u{1f}hosted"),
         ),
         (
             "limit",
@@ -92,11 +92,11 @@ fn shadow_candidates() -> OperationBuilder {
             .description(Some(
                 "Explains how a virtual repository resolves one project: the selected candidate for each \
                  distribution filename and every candidate a member shadowed, with its configured member, \
-                 source class, digest, and the reason it lost — `precedence` when a higher-precedence \
+                 source class, digest, and the reason it lost - `precedence` when a higher-precedence \
                  member already supplied the filename, or `fallback` when the repository's fallback policy \
                  excluded a cached member. Each candidate also carries the recorded policy decision that \
-                 governs its filename when one exists — `allow`, `deny`, or `wait`, with the matched rule, \
-                 a reason already stripped of any upstream URL or credential, and a retry time for a wait — \
+                 governs its filename when one exists - `allow`, `deny`, or `wait`, with the matched rule, \
+                 a reason already stripped of any upstream URL or credential, and a retry time for a wait - \
                  so an operator sees blocked and held candidates beside the shadowed ones. A caller who can \
                  read the repository may inspect it; the server operator role, which carries no repository \
                  access, cannot. A repository's legacy upload token retains access under the `__token__` \

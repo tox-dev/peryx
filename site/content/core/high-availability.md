@@ -4,12 +4,17 @@ description = "Run one writer with read replicas and promote a replica during a 
 weight = 7
 +++
 
-peryx supports one writer with multiple read replicas. Send mutation traffic to the writer. Replicas serve data copied
-from the writer and reject mutation requests with `503 Service Unavailable`.
+One peryx binary contains local, data-center, and high-availability coordination. The resolved `[availability]`
+configuration selects the implementation. There is no runtime mode flag and no separate single-node build.
 
-This page operates the `none` [availability contract](@/core/availability-contracts.md): peryx provides local durability
-and leaves copying and failover to you. That contract also defines the `dc` and `ha` modes later work adds, and the
-normative meaning of every acknowledgement below.
+When availability is omitted or set to `none`, startup selects the local coordinator. It allocates no distributed state,
+registers no availability metrics or routes, and starts no replication, membership, heartbeat, topology, or
+reconciliation task. Configuring `dc` or `ha` constructs the distributed coordinator and only the workers required by
+that configuration.
+
+In distributed modes, send mutation traffic to the writer. Replicas serve copied data and reject mutation requests with
+`503 Service Unavailable`. The [availability contract](@/core/availability-contracts.md) defines what each
+acknowledgement proves.
 
 Give every writer a distinct, stable identity:
 
@@ -104,12 +109,12 @@ advance a replica toward its primary.
 `GET /+replication/v1/ready` is the availability readiness probe. It answers `200 OK` when the node can serve at its
 frontier and `503 Service Unavailable` otherwise, naming every cause in `reasons`:
 
-- `blob_store` — the mounted blob store failed its reachability check, so the mount cannot answer package requests.
-- `frontier_lag` — a replica has not yet reached the primary's latest observed serial.
-- `sync_error` — a replica's last poll of its primary failed.
-- `incompatible_schema` — a replica's primary speaks an unsupported replication protocol version, which a later poll
+- `blob_store` : the mounted blob store failed its reachability check, so the mount cannot answer package requests.
+- `frontier_lag` : a replica has not yet reached the primary's latest observed serial.
+- `sync_error` : a replica's last poll of its primary failed.
+- `incompatible_schema` : a replica's primary speaks an unsupported replication protocol version, which a later poll
   cannot resolve without upgrading the primary.
-- `worker_unhealthy` — a background availability task panicked. The node keeps answering the reads it can still satisfy,
+- `worker_unhealthy` : a background availability task panicked. The node keeps answering the reads it can still satisfy,
   but readiness reports the fault until the process restarts.
 
 Both documents are filtered to the caller's class, like `/+status`. Any caller reads `mode`, `role`, `ready`, and
@@ -144,7 +149,7 @@ it as not reporting.
 
 The field carries four values. `ready` is whether the group can acknowledge a new write under its durability policy.
 `durable_frontier` is the highest serial the policy's required number of members have all applied, the serial the group
-guarantees is durable. `policy` names the quorum rule, `majority` — a strict majority of the configured members.
+guarantees is durable. `policy` names the quorum rule, `majority` : a strict majority of the configured members.
 `blocked` is `null` when the group is ready, otherwise the reason it is not: `writer_lost` when no writer is reporting,
 or `insufficient_members` with the `reporting` and `required` counts when a writer is present but too few members are.
 
@@ -217,7 +222,7 @@ list is capped so one request cannot return an unbounded roster.
 
 `none` runs no availability subsystem. A single-node process builds no availability record, route, metric, background
 client, task, timer, queue, or thread. It mounts none of the `/+replication` routes, spawns no replica poll loop, and
-registers no `peryx_replication_*` or `peryx_availability_*` metric family. The omitted `[availability]` table and an
+registers no `peryx_ha_distributed_*` or `peryx_availability_*` metric family. The omitted `[availability]` table and an
 explicit `mode = "none"` resolve to the same process; neither builds the availability surface.
 
 Ordinary work keeps running. General request metrics such as `peryx_requests_total` and the node-local `peryx_jobs_*`
@@ -225,7 +230,22 @@ counters stay present, background maintenance still runs, and single-node writes
 acknowledgement. Turning availability off removes availability cost without disabling a running server's metrics or
 jobs.
 
-The availability subsystems that later work adds hold the same guarantee. Each builds nothing under `none`.
+Every distributed subsystem follows the same guarantee: it builds nothing under `none`.
+
+## Runtime ownership
+
+The `peryx` binary resolves configuration, mounts authenticated availability routes, and starts processes.
+`peryx-ha-distributed` owns the replica monitor and pull loops, consensus bridge, cross-datacenter copy, placement
+reconciliation, reclamation, authority transfer, worker metrics, and task lifecycles.
+
+## Blob reclamation
+
+Reclamation first records a tombstone at the current metadata serial. It marks that tombstone ready only after every
+configured durability plane covers the serial and a final reference check still finds the blob unused.
+
+The live replica frontier is the lowest serial reported by any configured replica. A missing replica report blocks
+finalization. A plane that is not configured contributes no frontier; it is absent rather than represented by zero.
+Future backup implementations provide their observed serial through the `ReclamationFrontiers` contract.
 
 ## Background worker runtime
 
@@ -256,13 +276,13 @@ Background jobs carry an authority fence so an old owner cannot mutate authorita
 state after ownership has moved. A job declares one of two ownership scopes, and the runner applies the matching fence
 before it runs the work and again before it counts the result.
 
-A **node-local** job — cache maintenance, a search rebuild, a per-repository sweep — runs on every node independently
+A **node-local** job : cache maintenance, a search rebuild, a per-repository sweep : runs on every node independently
 and takes no control-plane lease. A per-repository job is already fenced by its repository's authority epoch: the run
 leases the committed epoch when it starts and its success is rejected if the authority transferred while it ran, so a
 former home's late write loses to the new home's. A node-wide node-local job that names no repository holds the closed
 `0` sentinel and is never fenced, and it makes no control-plane call at all.
 
-A **cluster-singleton** job — one that must run on a single node cluster-wide — claims a durable control-plane lease on
+A **cluster-singleton** job : one that must run on a single node cluster-wide : claims a durable control-plane lease on
 its singleton key before it runs. The lease is minted under the ownership group's monotonic term: the run stamps that
 term as its fence, and a claim from a term below the recorded one is a superseded worker that is rejected without taking
 the lease. A partitioned former owner therefore mints a stale term and loses the claim, so its run never starts and is
@@ -278,8 +298,8 @@ admits.
 
 Fenced runs are visible through the ordinary `peryx_jobs_*` lifecycle counters: a fenced-before-start or superseded run
 increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held` or
-`authority_fenced` reason. Converting a node-local kind to a cluster singleton is a one-line change — return
-`LeaseScope::ClusterSingleton` with the singleton key from the job's `lease_scope` — after which the runner leases and
+`authority_fenced` reason. Converting a node-local kind to a cluster singleton is a one-line change : return
+`LeaseScope::ClusterSingleton` with the singleton key from the job's `lease_scope` : after which the runner leases and
 fences it with no further wiring.
 
 ## Manual promotion

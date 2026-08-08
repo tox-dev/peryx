@@ -1,13 +1,13 @@
 +++
 title = "Cache images for CI"
-description = "Put peryx between your runners and Docker Hub: pull base images through one cache, and stop hitting the anonymous pull-rate limit."
+description = "Put peryx between your runners and Docker Hub to cache base images and reduce anonymous upstream pulls."
 weight = 1
 +++
 
-CI jobs start from clean runners, so every build and test job pulls the same base images again.
-[Docker Hub](https://hub.docker.com/) caps anonymous pulls at 100 per six hours per IP, and a busy fleet behind one NAT
-egress burns through that in minutes. Run one peryx where your runners live, point their container clients at it, and
-the first job warms the cache while the rest pull layers from local disk.
+CI jobs start from clean runners and pull the same base images again. [Docker Hub](https://hub.docker.com/) caps
+anonymous pulls at 100 per six hours per IP, so a runner fleet behind one NAT egress can exhaust the quota. Run a peryx
+instance on the runner network and point container clients at it. The first job warms the cache; subsequent jobs pull
+layers from local disk.
 
 ## Run peryx next to the runners
 
@@ -31,17 +31,17 @@ name = "primary"
 url = "https://registry-1.docker.io"
 ```
 
-The data directory is the cache; give it a persistent volume. Nothing else is stateful (no database, no sidecar), so in
-[Kubernetes](https://kubernetes.io/) or [docker-compose](https://docs.docker.com/compose/) this is one container with
-one volume.
+The data directory is the cache; give it a persistent volume. peryx uses no database or sidecar, so
+[Kubernetes](https://kubernetes.io/) or [docker-compose](https://docs.docker.com/compose/) needs one container and one
+volume.
 
 ## Transport: HTTP on loopback, TLS over the network
 
 `docker` and `podman` trust a loopback registry (`localhost`, `127.0.0.0/8`) over plain HTTP with no configuration, so a
 runner on the same host as peryx works as written. Reaching peryx across the runner network (the usual CI shape) means a
-client demands HTTPS: give peryx a certificate ([serve HTTPS](@/core/serve-https.md), the production path) or set the
-client's insecure-registry option. `crane` and `podman` take a per-command flag; `docker` needs an `insecure-registries`
-entry in its daemon config. The rest of this guide assumes peryx answers at `peryx.internal:4433`.
+client demands HTTPS: give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's
+insecure-registry option. `crane` and `podman` take a per-command flag; `docker` needs an `insecure-registries` entry in
+its daemon config. The rest of this guide assumes peryx answers at `peryx.internal:4433`.
 
 ## Pull through the proxy
 
@@ -68,8 +68,8 @@ crane pull peryx.internal:4433/dockerhub/library/alpine:latest alpine.tar
 
 {% end %}
 
-The first pull runs the upstream's bearer-token handshake, verifies each digest, and caches every blob; later pulls come
-from disk. Because blobs are content-addressed, a layer shared across images crosses your uplink once, ever.
+The first pull runs the upstream's bearer-token handshake, verifies each digest, and caches all blobs; subsequent pulls
+come from disk. Content addressing lets images that share a layer use one cached copy.
 
 ## Rewrite images in a pipeline
 
@@ -85,10 +85,10 @@ jobs:
       - run: docker run --rm peryx.internal:4433/dockerhub/library/postgres:16
 ```
 
-## Or mirror Docker Hub transparently
+## Mirror Docker Hub without changing image names
 
-To leave every `docker pull alpine` unchanged, register peryx as a Docker Hub mirror in the daemon config. The daemon
-then routes Docker Hub pulls through peryx without any prefix in the image name:
+To leave `docker pull alpine` unchanged, register peryx as a Docker Hub mirror in the daemon config. The daemon then
+routes Docker Hub pulls through peryx without any prefix in the image name:
 
 ```json
 {
@@ -118,12 +118,12 @@ name. A routed pull (`peryx.internal:4433/dockerhub/alpine`) arrives as the shor
 index resolves it; see [mirror Docker Hub official images](@/ecosystems/oci/guides/hub-official-images.md).
 
 `registry-mirrors` covers Docker Hub only; images from [GHCR](https://docs.github.com/packages),
-[ECR](https://aws.amazon.com/ecr/), or a private registry still resolve directly. For those, front each with its own
-proxy index (point `cached` at `https://ghcr.io` and pull through that route) and rewrite the image reference.
+[ECR](https://aws.amazon.com/ecr/), or a private registry resolve through their original registry. Front each with its
+own proxy index (point `cached` at `https://ghcr.io` and pull through that route) and rewrite the image reference.
 
-## Verify it is working
+## Inspect usage and storage
 
-Watch a couple of jobs, then check what the cache absorbed:
+Run two jobs, then check the cache statistics:
 
 ```shell
 curl -s -u operator:"$OPERATOR_PASSWORD" 'http://peryx.internal:4433/+stats?index=dockerhub' | jq .totals
@@ -133,14 +133,33 @@ curl -s -u operator:"$OPERATOR_PASSWORD" 'http://peryx.internal:4433/+stats?inde
 revalidations while layer bytes come from disk. [`/metrics`](@/core/monitor.md) feeds the same numbers to
 [Prometheus](https://prometheus.io/).
 
-## Why this works as well as it does
+The cache CLI reads the shared content store and scopes metadata commands by the OCI route:
 
-- Blobs are immutable and content-addressed: each layer crosses your uplink once, and deduplicates across every image
-  and tag that shares it.
+```shell
+peryx cache size --data-dir /var/lib/peryx
+peryx cache list --data-dir /var/lib/peryx --index dockerhub --stale
+peryx cache fsck --data-dir /var/lib/peryx
+```
+
+Purge uses a plan first. Add `--yes` after checking its row counts:
+
+```shell
+peryx cache purge project --data-dir /var/lib/peryx --index dockerhub --project library/alpine
+peryx cache purge project --data-dir /var/lib/peryx --index dockerhub --project library/alpine --yes
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx
+peryx cache purge orphaned-blobs --data-dir /var/lib/peryx --yes
+```
+
+Project purge removes repository metadata and leaves shared blobs in place. Orphaned-blob purge removes content with no
+metadata reference. Rebuild the derived image search after a metadata restore with `peryx job reindex`.
+
+## Cache behavior
+
+- Blobs are immutable and content-addressed. Each layer uses one stored copy across images and tags.
 - Concurrent pulls of one uncached layer collapse to a single upstream fetch, so a fan-out of parallel jobs does not
   multiply the miss.
-- The anonymous pull-rate limit stops being the wall: after warm-up, peryx serves the fleet and Docker Hub sees
-  revalidations, not a hundred cold pulls an hour.
+- After warm-up, peryx serves cached layers to the fleet and Docker Hub receives manifest revalidations instead of cold
+  layer pulls.
 - How peryx compares to [distribution](https://distribution.github.io/distribution/) and [zot](https://zotregistry.dev/)
   as a Docker Hub cache: [OCI performance](@/ecosystems/oci/performance.md).
 - The full role walkthrough, hosted and virtual as well as proxy:

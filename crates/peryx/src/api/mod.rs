@@ -8,6 +8,7 @@ mod service;
 mod shadow;
 mod trash;
 
+use peryx_plugin_registry as plugin_registry;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
     ComponentsBuilder, ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, PathsBuilder,
@@ -36,12 +37,10 @@ pub fn openapi() -> OpenApi {
                 .title("peryx")
                 .version(env!("CARGO_PKG_VERSION"))
                 .description(Some(
-                    "Read-through cache and private index for multiple ecosystems. A PyPI index serves \
-                     the Simple API under `/{route}/`, where `{route}` is the index's route (for example \
-                     `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write \
-                     operations authenticate with HTTP Basic where the password is the target hosted \
-                     index's upload token and the username is ignored. Server administration uses a \
-                     local user's display name and password with role authorization.",
+                    "Read-through cache and private artifact service. Ecosystem adapters contribute their \
+                     protocol paths. Write operations authenticate with a token accepted by the target \
+                     hosted index. Server administration uses a local user's display name and password \
+                     with role authorization.",
                 ))
                 .contact(Some(
                     ContactBuilder::new()
@@ -65,8 +64,7 @@ pub fn openapi() -> OpenApi {
                         HttpBuilder::new()
                             .scheme(HttpAuthScheme::Basic)
                             .description(Some(
-                                "Any username; the password is a write-granting access token of the \
-                                 hosted index (the pypi.org `__token__` convention)",
+                                "The password is a write-granting access token of the hosted index.",
                             ))
                             .build(),
                     ),
@@ -92,7 +90,6 @@ pub fn openapi() -> OpenApi {
 /// Each ecosystem crate describes the protocol it serves; naming them here is the composition root's
 /// job, the same place their drivers are installed.
 fn paths() -> PathsBuilder {
-    let ecosystems =
-        peryx_ecosystem_oci::openapi::openapi_paths(peryx_ecosystem_pypi::openapi::openapi_paths(PathsBuilder::new()));
+    let ecosystems = plugin_registry::openapi_paths(PathsBuilder::new());
     shadow::shadow_paths(trash::trash_paths(service::service_paths(ecosystems)))
 }

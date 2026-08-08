@@ -5,7 +5,7 @@
 //! (they need the clients and are slower than unit tests). Two tiers:
 //!
 //! - **`e2e` (hermetic)**: peryx proxies a local fixture index that serves a couple of tiny, real, installable
-//!   wheels. No external network, so it is deterministic, flake-free, and fast — the fixed cost is peryx spawn
+//!   wheels. No external network, so it is deterministic, flake-free, and fast - the fixed cost is peryx spawn
 //!   (~0.1s) plus in-process fetches, not a pypi.org round trip. Run with `cargo test -p peryx --features e2e`.
 //! - **`e2e-live`**: the same client flows against the real pypi.org, to catch upstream drift. Run with `cargo test -p
 //!   peryx --features e2e-live` in a network-enabled job.
@@ -14,7 +14,7 @@
 //! - **Isolated**: every test owns its own peryx server (own temp data dir, own ephemeral port) and, for hermetic
 //!   tests, its own fixture upstream. No shared cache or counter state; any test runs alone.
 //! - **Parallel**: because state is per-test, the default multi-threaded runner just works.
-//! - **Proof, not assumption**: the PEP 658 fast path is asserted from peryx's own `/metrics` counter — observed at
+//! - **Proof, not assumption**: the PEP 658 fast path is asserted from peryx's own `/metrics` counter - observed at
 //!   the server, not inferred from the client exiting 0.
 #![cfg(feature = "e2e")]
 
@@ -228,7 +228,7 @@ fn respond(mut socket: TcpStream, routes: &Routes) {
         .and_then(|line| line.split_whitespace().nth(1))
         .map(|target| target.split('?').next().unwrap_or(target).to_owned())
         .unwrap_or_default();
-    // Body borrows straight from the route map — the wheel bytes are never copied per request.
+    // Body borrows straight from the route map - the wheel bytes are never copied per request.
     let (status, ctype, body): (&str, &str, &[u8]) = match routes.get(&path) {
         Some((ctype, body)) => ("200 OK", ctype.as_str(), body.as_slice()),
         None => ("404 Not Found", "text/plain", b"not found".as_slice()),
@@ -544,7 +544,7 @@ fn sum_labeled_counter(metrics: &str, name: &str) -> u64 {
 }
 
 /// Create an isolated, empty virtualenv with `uv venv` (~15ms, no seed packages). Both clients
-/// install into it by pointing at its interpreter — no activation, nothing shared between tests.
+/// install into it by pointing at its interpreter - no activation, nothing shared between tests.
 fn uv_venv() -> TempDir {
     let dir = TempDir::new().expect("venv dir");
     // Plain `uv` here: `uv venv` fetches nothing, and pointing UV_CACHE_DIR inside the target would
@@ -585,7 +585,7 @@ fn pip_install_fails(venv: &TempDir, peryx: &Peryx, spec: &str) {
     run_against_fails(&mut cmd, "pip install", peryx);
 }
 
-/// Install into `venv` with uv targeting that interpreter — faster than pip, still isolated.
+/// Install into `venv` with uv targeting that interpreter - faster than pip, still isolated.
 fn uv_install(venv: &TempDir, peryx: &Peryx, spec: &str) {
     let mut cmd = uv(venv);
     cmd.args(["pip", "install", "--python"])
@@ -602,7 +602,7 @@ fn uv_install_fails(venv: &TempDir, peryx: &Peryx, spec: &str) {
     run_against_fails(&mut cmd, "uv pip install", peryx);
 }
 
-/// Like [`run`], but a failure also dumps the peryx server's own log before panicking — the temp
+/// Like [`run`], but a failure also dumps the peryx server's own log before panicking - the temp
 /// data dir (and the log in it) is deleted during unwind, so it must be printed eagerly.
 fn run_against(cmd: &mut Command, what: &str, peryx: &Peryx) {
     let output = cmd.output().unwrap_or_else(|err| panic!("spawn {what}: {err}"));
@@ -622,7 +622,7 @@ fn run_against_fails(cmd: &mut Command, what: &str, peryx: &Peryx) {
 
 /// A uv command with a per-test cache directory inside `venv`. uv's global cache is shared across
 /// parallel tests, so a package another test already resolved would be served from cache and never
-/// hit peryx — making the PEP 658 metric assertions flaky. A private cache keeps each test's uv
+/// hit peryx - making the PEP 658 metric assertions flaky. A private cache keeps each test's uv
 /// fetching through its own peryx while still caching within the test.
 fn uv(venv: &TempDir) -> Command {
     let mut cmd = Command::new("uv");

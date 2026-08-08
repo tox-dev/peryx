@@ -54,8 +54,8 @@ pub struct StoredSnapshot {
 
 /// A rejected Raft log-store operation, always leaving the store unchanged.
 ///
-/// redb reports each failing operation as one of several sub-errors — opening the database, beginning a
-/// transaction, opening a table, a storage fault, a commit — that all fold into its own [`redb::Error`],
+/// redb reports each failing operation as one of several sub-errors - opening the database, beginning a
+/// transaction, opening a table, a storage fault, a commit - that all fold into its own [`redb::Error`],
 /// so this is that type. Distinguishing the sub-errors bought nothing here: the adapter above renders
 /// any store failure as a single fatal `openraft` storage error, and no deterministic test can tell one
 /// redb fault from another. Keeping one error keeps the one conversion on a tested path.

@@ -1,11 +1,8 @@
 //! The `mirror` command group: plan, sync, and verify a cached index's prefetch working set.
 
-use std::path::PathBuf;
-
 use clap::{Args, Subcommand};
 
 use super::RuntimeArgs;
-use crate::config::PrefetchMode;
 
 /// Prefetch synchronization commands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -44,50 +41,9 @@ pub struct PrefetchOptions {
     /// Configured index name or route to sync.
     pub index: String,
 
-    /// Add a package selector such as `requests>=2,<3`.
-    #[arg(long = "package", short = 'p')]
-    pub packages: Vec<String>,
-
-    /// Read package selectors from a requirements or constraints file.
-    #[arg(long = "requirements", short = 'r')]
-    pub requirements: Vec<PathBuf>,
-
-    /// Override the configured prefetch mode.
-    #[arg(long, value_enum)]
-    pub mode: Option<PrefetchMode>,
-
-    /// Fetch Simple pages and PEP 658 metadata, but skip artifacts.
-    #[arg(long)]
-    pub metadata_only: bool,
-
-    /// Exclude wheel artifacts.
-    #[arg(long)]
-    pub no_wheels: bool,
-
-    /// Exclude source distributions.
-    #[arg(long)]
-    pub no_sdists: bool,
-
-    /// Keep only wheels with this Python tag; repeat for more tags.
-    #[arg(long = "python-tag")]
-    pub python_tags: Vec<String>,
-
-    /// Keep only wheels with this ABI tag; repeat for more tags.
-    #[arg(long = "abi-tag")]
-    pub abi_tags: Vec<String>,
-
-    /// Keep only wheels with this platform tag; repeat for more tags.
-    #[arg(long = "platform-tag")]
-    pub platform_tags: Vec<String>,
-
-    /// Skip files larger than this many bytes when upstream reports a size.
-    #[arg(long)]
-    pub max_file_size_bytes: Option<u64>,
-
-    /// Add an OCI image reference to mirror, such as `library/alpine:latest`; repeat for more. Used
-    /// when the index is an OCI index instead of the `PyPI` package selectors above.
-    #[arg(long = "image")]
-    pub images: Vec<String>,
+    /// Override one ecosystem mirror setting as TOML `KEY=VALUE`.
+    #[arg(long = "option", value_name = "KEY=VALUE")]
+    pub overrides: Vec<String>,
 }
 
 /// Options for `peryx prefetch plan`.

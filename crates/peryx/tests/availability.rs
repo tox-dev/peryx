@@ -160,7 +160,7 @@ fn test_captures_a_failure_artifact() {
 
 #[test]
 fn test_validates_a_generated_ha_topology_config() {
-    // The embedded ownership node ([#498]) runs but a cluster cannot form yet — the inbound peer-RPC
+    // The embedded ownership node ([#498]) runs but a cluster cannot form yet - the inbound peer-RPC
     // router is unmounted, so bootstrap never reaches quorum. The reachable assertion is that the
     // topology builder generates config peryx accepts: a writer, a replica, the group, and the roster.
     let output = Topology::ha(
@@ -228,7 +228,7 @@ fn test_dc_replica_metrics_exposes_the_replication_series() {
 
     assert_eq!(code, 200);
     assert!(
-        body.contains("peryx_replication_"),
+        body.contains("peryx_ha_distributed_"),
         "a dc replica exports the replication series: {body}"
     );
 }
@@ -250,7 +250,7 @@ fn test_ha_replica_metrics_exposes_the_replication_series() {
 
     assert_eq!(code, 200);
     assert!(
-        body.contains("peryx_replication_"),
+        body.contains("peryx_ha_distributed_"),
         "an ha replica exports the replication series: {body}"
     );
 }
@@ -272,7 +272,7 @@ fn await_sync_error(node: &Node) {
             node.is_ready(),
             "the replica keeps serving read-only through the metadata outage"
         );
-        if metric(node, "peryx_replication_sync_errors_total ") > 0 {
+        if metric(node, "peryx_ha_distributed_sync_errors_total ") > 0 {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -283,7 +283,7 @@ fn await_sync_error(node: &Node) {
 fn await_caught_up(node: &Node) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if metric(node, "peryx_replication_caught_up ") == 1 {
+        if metric(node, "peryx_ha_distributed_caught_up ") == 1 {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -352,7 +352,7 @@ fn test_publishes_a_wheel_and_downloads_it_by_content_address() {
 #[test]
 fn test_with_oci_serves_the_distribution_v2_mutation_surface() {
     // The opt-in OCI seam: a node built with `with_oci` answers the distribution-spec `/v2/` handshake,
-    // opens a blob upload session, commits a blob, and publishes a manifest — the mutating surface the
+    // opens a blob upload session, commits a blob, and publishes a manifest - the mutating surface the
     // OCI-failover tier drives. The PyPI `hosted` index keeps working on the same node, so the seam is
     // additive.
     let cluster = Topology::single().with_oci().start().expect("cluster starts");

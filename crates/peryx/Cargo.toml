@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "PyPI-compatible read-through cache and private-index overlay."
+description = "Multi-ecosystem artifact cache and private registry."
 default-run = "peryx"
 
 [[bin]]
@@ -43,13 +43,13 @@ required-features = ["availability-e2e"]
 # faults, and observe them over HTTP. Off by default (they need the toxiproxy-server binary and are
 # not part of the coverage gate); CI runs them in a dedicated job.
 availability-e2e = []
-# The availability safety-simulator seed campaign: sweeps `peryx_replication::sim` over a seed range
+# The availability safety-simulator seed campaign: sweeps `peryx_ha_distributed::sim` over a seed range
 # and topology matrix looking for an invariant break. Off by default (not part of the coverage gate);
 # CI runs a bounded set per pull request and a large sharded campaign on a schedule.
 sim-campaign = []
 # End-to-end tests that drive real pip/uv/twine against a spawned peryx binary. Off by default
 # (they need the clients and are not part of the coverage gate); CI runs them explicitly. `e2e` is
-# the fast, hermetic matrix (peryx proxies a local fixture index — no external network, no flake);
+# the fast, hermetic matrix (peryx proxies a local fixture index - no external network, no flake);
 # `e2e-live` adds smoke tests against the real pypi.org.
 e2e = []
 e2e-live = ["e2e"]
@@ -64,13 +64,15 @@ peryx-core.workspace = true
 peryx-driver.workspace = true
 peryx-events.workspace = true
 peryx-index.workspace = true
-peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }
+peryx-plugin-registry.workspace = true
 peryx-ecosystem-oci.workspace = true
+peryx-ecosystem-pypi = { workspace = true, features = ["serving"] }
+peryx-ha.workspace = true
 async-trait.workspace = true
 openraft.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true
-peryx-replication.workspace = true
+peryx-ha-distributed.workspace = true
 peryx-storage.workspace = true
 peryx-upstream.workspace = true
 peryx-http.workspace = true

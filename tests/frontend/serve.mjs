@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const target = resolve(repo, process.env.CARGO_TARGET_DIR ?? "target");
-const binary = ["debug", "release"].map((profile) => join(target, profile, "peryx")).find(existsSync);
+const binary =
+  process.env.PERYX_FRONTEND_BINARY ?? ["debug", "release"].map((profile) => join(target, profile, "peryx")).find(existsSync);
 if (!binary) {
   console.error("build the server and web bundle first: cargo leptos build");
   process.exit(1);
@@ -182,13 +183,21 @@ process.on("exit", () => {
   upstream.close();
   ready?.close();
 });
+let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-  // A plain signal skips the exit handler, which leaks peryx on the port; forward and quit.
   process.on(signal, () => {
-    peryx.kill();
-    upstream.close();
-    ready?.close();
-    process.exit(0);
+    if (stopping) return;
+    stopping = true;
+    peryx.kill(signal);
+    peryx.once("close", () => {
+      upstream.close();
+      ready?.close();
+      process.exit(0);
+    });
+    setTimeout(() => {
+      peryx.kill("SIGKILL");
+      process.exit(1);
+    }, 10_000).unref();
   });
 }
 
@@ -305,6 +314,20 @@ const manifestResponse = await fetch(`${base}/v2/images/app/manifests/1.0`, {
 });
 if (!manifestResponse.ok) {
   console.error(`manifest push rejected: ${manifestResponse.status} ${await manifestResponse.text()}`);
+  process.exit(1);
+}
+
+let searchable = false;
+for (let attempt = 0; attempt < 600; attempt += 1) {
+  const response = await fetch(`${base}/+search?q=veloxdemo&page_size=1`);
+  if (response.ok && (await response.text()).includes("veloxdemo")) {
+    searchable = true;
+    break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+if (!searchable) {
+  console.error("search index did not publish the fixture");
   process.exit(1);
 }
 

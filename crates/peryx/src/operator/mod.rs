@@ -21,7 +21,7 @@ mod verify;
 mod writer;
 
 #[cfg(test)]
-#[path = "parent_tests.rs"]
+#[path = "../../tests/unit/operator/parent_tests.rs"]
 mod parent_tests;
 
 pub use backup::backup_create;

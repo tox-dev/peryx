@@ -56,11 +56,12 @@ route; omit it and peryx picks the first hosted layer. A virtual index of only p
 
 ## A note on transport
 
-`docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http) registry (`localhost`, `127.0.0.0/8`) over
-plain HTTP with no configuration, so on the same host the commands below work as written. Over the network (or from
-Docker Desktop, whose engine runs in a VM where the host's `localhost` is not the engine's), a client demands HTTPS.
-Give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option. `crane`
-and `podman` take a per-command flag, shown below; `docker` needs `insecure-registries` in its daemon config.
+`docker` and `podman` trust a [loopback](@/ecosystems/oci/guides/local-transport.md) registry (`localhost`,
+`127.0.0.0/8`) over plain HTTP with no configuration, so on the same host the commands below work as written. Over the
+network (or from Docker Desktop, whose engine runs in a VM where the host's `localhost` is not the engine's), a client
+demands HTTPS. Give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry
+option. `crane` and `podman` take a per-command flag, shown below; `docker` needs `insecure-registries` in its daemon
+config.
 
 ## Pull through the virtual route
 
@@ -69,13 +70,13 @@ A pull of `reg` walks the members hosted-first. The name decides the source:
 ```shell
 # your build if you pushed `my-app` to the hosted layer, otherwise Docker Hub's:
 docker pull 127.0.0.1:4433/reg/my-app:1.0
-# always Docker Hub — you have not published nginx, so it falls through:
+# Docker Hub because you have not published nginx, so it falls through:
 docker pull 127.0.0.1:4433/reg/library/nginx:latest
 ```
 
-Once you push `my-app` to the hosted layer, the name is shadowed: every pull of `reg/my-app` serves your image, and a
-same-named image appearing on Docker Hub can never take its place. Publishing privately is what turns a name off
-upstream; there is no separate deny-list to maintain.
+Once you push `my-app` to the hosted layer, the name is shadowed: each pull of `reg/my-app` serves your image, and a
+same-named image on Docker Hub cannot take its place. Publishing to the hosted layer turns the name off upstream; there
+is no separate deny-list to maintain.
 
 {% tabs(names="docker, podman, crane") %}
 
@@ -100,8 +101,8 @@ crane pull --insecure 127.0.0.1:4433/reg/my-app:1.0 my-app.tar
 ## Push into the stack
 
 A push to `reg` lands in the layer named by `upload` (here `images`), so one route reads and writes. peryx accepts any
-username; the token is the Basic-auth password. Blobs stream into the content-addressed store and are verified on
-commit:
+username; the token is the Basic-auth password. Peryx streams blobs into the content-addressed store and verifies them
+on commit:
 
 {% tabs(names="docker, podman, crane") %}
 
@@ -128,12 +129,12 @@ crane push --insecure my-app.tar 127.0.0.1:4433/reg/my-app:1.0
 {% end %}
 
 The pushed image is now visible on both routes: `reg/my-app` (through the stack) and `images/my-app` (the hosted store
-directly). The proxy at `dockerhub` is untouched; shadowing is a resolution rule, not a copy.
+through its own route). The proxy at `dockerhub` is untouched; shadowing is a resolution rule, not a copy.
 
 ## Failure behavior
 
-A member that cannot answer (a down upstream with a cold cache) is skipped with a warning rather than failing the pull,
-so images you host stay pullable during a Docker Hub outage. A proxy with a warm cache serves its cached copy instead.
+If a member cannot answer, as with a down upstream and cold cache, peryx logs a warning and tries the next member.
+Images you host remain pullable during a Docker Hub outage. A proxy with a warm cache serves its cached copy.
 
 ## Related
 

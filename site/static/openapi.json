@@ -7,7 +7,7 @@
         "type": "http"
       },
       "uploadToken": {
-        "description": "Any username; the password is a write-granting access token of the hosted index (the pypi.org `__token__` convention)",
+        "description": "The password is a write-granting access token of the hosted index.",
         "scheme": "basic",
         "type": "http"
       }
@@ -18,7 +18,7 @@
       "name": "tox-dev",
       "url": "https://github.com/tox-dev/peryx"
     },
-    "description": "Read-through cache and private index for multiple ecosystems. A PyPI index serves the Simple API under `/{route}/`, where `{route}` is the index's route (for example `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write operations authenticate with HTTP Basic where the password is the target hosted index's upload token and the username is ignored. Server administration uses a local user's display name and password with role authorization.",
+    "description": "Read-through cache and private artifact service. Ecosystem adapters contribute their protocol paths. Write operations authenticate with a token accepted by the target hosted index. Server administration uses a local user's display name and password with role authorization.",
     "license": {
       "name": "MIT"
     },
@@ -118,7 +118,7 @@
         "parameters": [
           {
             "description": "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": false
@@ -254,7 +254,7 @@
         "parameters": [
           {
             "description": "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": false
@@ -307,8 +307,8 @@
                       "bytes": 60000000,
                       "downloads": 40,
                       "project": "pandas",
-                      "repository": "root/pypi",
-                      "source": "pypi"
+                      "repository": "root/packages",
+                      "source": "example"
                     }
                   ]
                 }
@@ -366,7 +366,7 @@
         "parameters": [
           {
             "description": "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": false
@@ -478,7 +478,7 @@
         "parameters": [
           {
             "description": "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": false
@@ -531,7 +531,7 @@
                       "bytes": 64733247,
                       "downloads": 42,
                       "project": "pandas",
-                      "repository": "root/pypi"
+                      "repository": "root/packages"
                     }
                   ]
                 }
@@ -589,7 +589,7 @@
         "parameters": [
           {
             "description": "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": false
@@ -641,7 +641,7 @@
                     {
                       "lifetime_downloads": 7,
                       "project": "legacy-tool",
-                      "repository": "root/pypi"
+                      "repository": "root/packages"
                     }
                   ]
                 }
@@ -699,7 +699,7 @@
         "parameters": [
           {
             "description": "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": false
@@ -752,7 +752,7 @@
                       "bytes": 48000000,
                       "downloads": 30,
                       "project": "pandas",
-                      "repository": "root/pypi",
+                      "repository": "root/packages",
                       "version": "2.2.0"
                     }
                   ]
@@ -1088,7 +1088,7 @@
           },
           {
             "description": "Filter to one reach: `server` or `repository/<name>`",
-            "example": "repository/root/pypi",
+            "example": "repository/root/packages",
             "in": "query",
             "name": "resource",
             "required": false
@@ -1121,7 +1121,7 @@
                       "role": "repository_reader",
                       "scope": {
                         "kind": "repository",
-                        "name": "root/pypi"
+                        "name": "root/packages"
                       },
                       "user": "usr_550e8400e29b41d4a716446655440000",
                       "version": 1
@@ -1182,7 +1182,7 @@
                 "role": "repository_reader",
                 "scope": {
                   "kind": "repository",
-                  "name": "root/pypi"
+                  "name": "root/packages"
                 },
                 "user": "usr_550e8400e29b41d4a716446655440000"
               }
@@ -1201,7 +1201,7 @@
                   "role": "repository_reader",
                   "scope": {
                     "kind": "repository",
-                    "name": "root/pypi"
+                    "name": "root/packages"
                   },
                   "user": "usr_550e8400e29b41d4a716446655440000",
                   "version": 1
@@ -1220,7 +1220,7 @@
                   "role": "repository_reader",
                   "scope": {
                     "kind": "repository",
-                    "name": "root/pypi"
+                    "name": "root/packages"
                   },
                   "user": "usr_550e8400e29b41d4a716446655440000",
                   "version": 1
@@ -1368,7 +1368,7 @@
                   "role": "repository_reader",
                   "scope": {
                     "kind": "repository",
-                    "name": "root/pypi"
+                    "name": "root/packages"
                   },
                   "user": "usr_550e8400e29b41d4a716446655440000",
                   "version": 1
@@ -1514,7 +1514,7 @@
           },
           {
             "description": "Filter by routed source, at most 512 bytes",
-            "example": "pypi",
+            "example": "example",
             "in": "query",
             "name": "source",
             "required": false
@@ -1557,7 +1557,7 @@
                     {
                       "action": "serve",
                       "evaluated_at_unix": 1800000000,
-                      "filename": "example-1.0-py3-none-any.whl",
+                      "filename": "example-1.0.bin",
                       "fresh": true,
                       "id": "550e8400-e29b-41d4-a716-446655440000",
                       "input_generation": {
@@ -1570,7 +1570,7 @@
                       "reason": "project is blocked",
                       "repository": "private",
                       "rule": "blocked-project",
-                      "source": "pypi",
+                      "source": "example",
                       "state": "deny",
                       "version": "1.0"
                     }
@@ -1637,14 +1637,14 @@
     },
     "/+query": {
       "post": {
-        "description": "Runs one read-only Peryx Query Language (PQL) query over a typed domain and returns a bounded page of rows. The `query` is a small textual DSL — `from <domain> [join <domain> on <keys>] [where ...] [select ...] [aggregate ... by ...] [order by ...] [limit n]` — and `params` binds `:name` placeholders out of band, so a value never changes the query's structure. Two domains are served: `policy.decisions` and `usage.downloads`, and a bounded declared join correlates them on their shared `repository` and `project` keys. The caller's authorized scope is injected by the evaluator and cannot be named or widened; columns above the caller's classification are dropped, and operator-classified results are never cached. `next_cursor`, presented back, resumes the next page and is refused if the caller's scope has changed. Authenticate with a repository token to read one repository, or a local administrator to read operator-wide.",
+        "description": "Runs one read-only Peryx Query Language (PQL) query over a typed domain and returns a bounded page of rows. The `query` is a small textual DSL - `from <domain> [join <domain> on <keys>] [where ...] [select ...] [aggregate ... by ...] [order by ...] [limit n]` - and `params` binds `:name` placeholders out of band, so a value never changes the query's structure. Two domains are served: `policy.decisions` and `usage.downloads`, and a bounded declared join correlates them on their shared `repository` and `project` keys. The caller's authorized scope is injected by the evaluator and cannot be named or widened; columns above the caller's classification are dropped, and operator-classified results are never cached. `next_cursor`, presented back, resumes the next page and is refused if the caller's scope has changed. Authenticate with a repository token to read one repository, or a local administrator to read operator-wide.",
         "requestBody": {
           "content": {
             "application/json": {
               "example": {
                 "cursor": null,
                 "params": {
-                  "repo": "pypi-proxy"
+                  "repo": "package-proxy"
                 },
                 "query": "from policy.decisions where repository == :repo and state == \"deny\" order by evaluated_at desc limit 25"
               }
@@ -1664,7 +1664,7 @@
                       "evaluated_at": 1800000000,
                       "fresh": true,
                       "project": "requests",
-                      "repository": "pypi-proxy",
+                      "repository": "package-proxy",
                       "state": "deny"
                     }
                   ]
@@ -1750,7 +1750,7 @@
                         "remaining": 7515144192,
                         "reserved": 1048576
                       },
-                      "ecosystem": "pypi",
+                      "ecosystem": "example",
                       "file_bytes": {
                         "committed": 4294967296,
                         "limit": null,
@@ -1771,7 +1771,7 @@
                         "remaining": 371,
                         "reserved": 1
                       },
-                      "repository": "root/pypi"
+                      "repository": "root/packages"
                     }
                   ]
                 }
@@ -1826,7 +1826,7 @@
         "parameters": [
           {
             "description": "Index route to inspect, at most 512 bytes",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": true
@@ -1843,7 +1843,7 @@
                     "remaining": 7515144192,
                     "reserved": 1048576
                   },
-                  "ecosystem": "pypi",
+                  "ecosystem": "example",
                   "file_bytes": {
                     "committed": 4294967296,
                     "limit": null,
@@ -1864,7 +1864,7 @@
                     "remaining": 371,
                     "reserved": 1
                   },
-                  "repository": "root/pypi"
+                  "repository": "root/packages"
                 }
               }
             },
@@ -1988,10 +1988,10 @@
                       "created_at_unix": 1700000000,
                       "created_by": "usr_550e8400e29b41d4a716446655440000",
                       "definition": {},
-                      "display_name": "PyPI mirror",
-                      "ecosystem": "pypi",
+                      "display_name": "Package mirror",
+                      "ecosystem": "example",
                       "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-                      "route": "root/pypi",
+                      "route": "root/packages",
                       "state": "enabled",
                       "updated_at_unix": 1700000000,
                       "updated_by": "usr_550e8400e29b41d4a716446655440000",
@@ -2047,9 +2047,9 @@
             "application/json": {
               "example": {
                 "definition": {},
-                "display_name": "PyPI mirror",
-                "ecosystem": "pypi",
-                "route": "root/pypi"
+                "display_name": "Package mirror",
+                "ecosystem": "example",
+                "route": "root/packages"
               }
             }
           },
@@ -2063,10 +2063,10 @@
                   "created_at_unix": 1700000000,
                   "created_by": "usr_550e8400e29b41d4a716446655440000",
                   "definition": {},
-                  "display_name": "PyPI mirror",
-                  "ecosystem": "pypi",
+                  "display_name": "Package mirror",
+                  "ecosystem": "example",
                   "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-                  "route": "root/pypi",
+                  "route": "root/packages",
                   "state": "enabled",
                   "updated_at_unix": 1700000000,
                   "updated_by": "usr_550e8400e29b41d4a716446655440000",
@@ -2086,7 +2086,7 @@
             "content": {
               "application/json": {
                 "example": {
-                  "error": "a repository already serves route \"root/pypi\""
+                  "error": "a repository already serves route \"root/packages\""
                 }
               }
             },
@@ -2147,10 +2147,10 @@
                   "created_at_unix": 1700000000,
                   "created_by": "usr_550e8400e29b41d4a716446655440000",
                   "definition": {},
-                  "display_name": "PyPI mirror",
-                  "ecosystem": "pypi",
+                  "display_name": "Package mirror",
+                  "ecosystem": "example",
                   "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-                  "route": "root/pypi",
+                  "route": "root/packages",
                   "state": "enabled",
                   "updated_at_unix": 1700000000,
                   "updated_by": "usr_550e8400e29b41d4a716446655440000",
@@ -2203,7 +2203,7 @@
             "application/json": {
               "example": {
                 "definition": {},
-                "display_name": "PyPI mirror"
+                "display_name": "Package mirror"
               }
             }
           },
@@ -2217,10 +2217,10 @@
                   "created_at_unix": 1700000000,
                   "created_by": "usr_550e8400e29b41d4a716446655440000",
                   "definition": {},
-                  "display_name": "PyPI mirror",
-                  "ecosystem": "pypi",
+                  "display_name": "Package mirror",
+                  "ecosystem": "example",
                   "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-                  "route": "root/pypi",
+                  "route": "root/packages",
                   "state": "enabled",
                   "updated_at_unix": 1700000000,
                   "updated_by": "usr_550e8400e29b41d4a716446655440000",
@@ -2321,10 +2321,10 @@
                   "created_at_unix": 1700000000,
                   "created_by": "usr_550e8400e29b41d4a716446655440000",
                   "definition": {},
-                  "display_name": "PyPI mirror",
-                  "ecosystem": "pypi",
+                  "display_name": "Package mirror",
+                  "ecosystem": "example",
                   "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-                  "route": "root/pypi",
+                  "route": "root/packages",
                   "state": "enabled",
                   "updated_at_unix": 1700000000,
                   "updated_by": "usr_550e8400e29b41d4a716446655440000",
@@ -2412,10 +2412,10 @@
                   "created_at_unix": 1700000000,
                   "created_by": "usr_550e8400e29b41d4a716446655440000",
                   "definition": {},
-                  "display_name": "PyPI mirror",
-                  "ecosystem": "pypi",
+                  "display_name": "Package mirror",
+                  "ecosystem": "example",
                   "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-                  "route": "root/pypi",
+                  "route": "root/packages",
                   "state": "enabled",
                   "updated_at_unix": 1700000000,
                   "updated_by": "usr_550e8400e29b41d4a716446655440000",
@@ -2504,7 +2504,7 @@
                   }
                 ],
                 "limit": 100,
-                "repository": "root/pypi"
+                "repository": "root/packages"
               }
             }
           },
@@ -2514,7 +2514,7 @@
           "200": {
             "content": {
               "application/x-ndjson": {
-                "example": "{\"summary\":{\"policy_version\":42,\"frontier\":{\"repository\":7,\"catalog\":3,\"policy\":2}}}\n{\"project\":\"example\",\"version\":\"1.0\",\"artifact\":\"example-1.0-py3-none-any.whl\",\"digest\":\"sha256:0123\",\"class\":\"hosted\",\"visibility\":\"active\",\"bytes\":20480,\"outcome\":\"remove\",\"rule\":\"age\"}\n"
+                "example": "{\"summary\":{\"policy_version\":42,\"frontier\":{\"repository\":7,\"catalog\":3,\"policy\":2}}}\n{\"project\":\"example\",\"version\":\"1.0\",\"artifact\":\"example-1.0.bin\",\"digest\":\"sha256:0123\",\"class\":\"hosted\",\"visibility\":\"active\",\"bytes\":20480,\"outcome\":\"remove\",\"rule\":\"age\"}\n"
               }
             },
             "description": "The plan as JSON Lines, the identity first"
@@ -2617,7 +2617,7 @@
                   }
                 ],
                 "limit": 100,
-                "repository": "root/pypi"
+                "repository": "root/packages"
               }
             }
           },
@@ -2630,7 +2630,7 @@
                 "example": {
                   "candidates": [
                     {
-                      "artifact": "example-1.0-py3-none-any.whl",
+                      "artifact": "example-1.0.bin",
                       "bytes": 20480,
                       "class": "hosted",
                       "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -3135,9 +3135,9 @@
                     {
                       "available": true,
                       "display_name": "Flask",
-                      "index": "root/pypi",
+                      "index": "team/packages",
                       "normalized_name": "flask",
-                      "route": "root/pypi",
+                      "route": "team/packages",
                       "summary": "A simple framework for building complex web applications.",
                       "type": "cached"
                     }
@@ -3168,11 +3168,11 @@
     },
     "/+shadow/candidates": {
       "get": {
-        "description": "Explains how a virtual repository resolves one project: the selected candidate for each distribution filename and every candidate a member shadowed, with its configured member, source class, digest, and the reason it lost — `precedence` when a higher-precedence member already supplied the filename, or `fallback` when the repository's fallback policy excluded a cached member. Each candidate also carries the recorded policy decision that governs its filename when one exists — `allow`, `deny`, or `wait`, with the matched rule, a reason already stripped of any upstream URL or credential, and a retry time for a wait — so an operator sees blocked and held candidates beside the shadowed ones. A caller who can read the repository may inspect it; the server operator role, which carries no repository access, cannot. A repository's legacy upload token retains access under the `__token__` username. The query reads stored records only and never changes member order, installer responses, or policy evaluation, so shadowed candidates stay absent from HTML and JSON installer selection.",
+        "description": "Explains how a virtual repository resolves one project: the selected candidate for each distribution filename and every candidate a member shadowed, with its configured member, source class, digest, and the reason it lost - `precedence` when a higher-precedence member already supplied the filename, or `fallback` when the repository's fallback policy excluded a cached member. Each candidate also carries the recorded policy decision that governs its filename when one exists - `allow`, `deny`, or `wait`, with the matched rule, a reason already stripped of any upstream URL or credential, and a retry time for a wait - so an operator sees blocked and held candidates beside the shadowed ones. A caller who can read the repository may inspect it; the server operator role, which carries no repository access, cannot. A repository's legacy upload token retains access under the `__token__` username. The query reads stored records only and never changes member order, installer responses, or policy evaluation, so shadowed candidates stay absent from HTML and JSON installer selection.",
         "parameters": [
           {
             "description": "The virtual repository route to inspect",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "repository",
             "required": true
@@ -3186,7 +3186,7 @@
           },
           {
             "description": "Exclusive cursor from the prior page",
-            "example": "example-1.0-py3-none-any.whl\u001f0\u001fhosted",
+            "example": "example-1.0.bin\u001f0\u001fhosted",
             "in": "query",
             "name": "cursor",
             "required": false
@@ -3207,7 +3207,7 @@
                   "candidates": [
                     {
                       "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                      "filename": "example-1.0-py3-none-any.whl",
+                      "filename": "example-1.0.bin",
                       "member": "hosted",
                       "selected": true,
                       "source": "hosted"
@@ -3221,8 +3221,8 @@
                         "state": "deny"
                       },
                       "digest": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
-                      "filename": "example-1.0-py3-none-any.whl",
-                      "member": "pypi",
+                      "filename": "example-1.0.bin",
+                      "member": "example",
                       "reason": "precedence",
                       "selected": false,
                       "source": "cached"
@@ -3290,11 +3290,11 @@
     },
     "/+stats": {
       "get": {
-        "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. The tree names repositories and projects, so it needs operator authority and is never cached; a repository token reads its own usage through `/+analytics/*` instead. Counters are grouped by the role that owns them: a neutral `base` group every index reports, a `cached` group only a caching index fills, a `hosted` group only an upload store fills, and an `ecosystem` map of the driver's own counters (PyPI's PEP 658 sibling under `metadata`).",
+        "description": "Counters aggregated off the request path, drillable: no parameters for per-index totals, `?index={route}` for one index's projects, `&project={name}` for one project's files. The tree names repositories and projects, so it needs operator authority and is never cached; a repository token reads its own usage through `/+analytics/*` instead. Counters are grouped by the role that owns them: a neutral `base` group every index reports, a `cached` group only a caching index fills, a `hosted` group only an upload store fills, and an `ecosystem` map of the driver's own counters (an adapter-specific metadata family under `metadata`).",
         "parameters": [
           {
             "description": "Drill into one index's projects",
-            "example": "root/pypi",
+            "example": "root/packages",
             "in": "query",
             "name": "index",
             "required": false
@@ -3312,7 +3312,7 @@
             "content": {
               "application/json": {
                 "example": {
-                  "root/pypi": {
+                  "root/packages": {
                     "base": {
                       "bytes": 64733247,
                       "downloads": 6,
@@ -3377,7 +3377,7 @@
                     {
                       "bytes": 64733247,
                       "downloads": 6,
-                      "ecosystem": "pypi",
+                      "ecosystem": "example",
                       "families": {
                         "metadata": 37
                       },
@@ -3403,10 +3403,10 @@
                       "hosted": null,
                       "kind": "cached",
                       "layers": [],
-                      "name": "pypi",
+                      "name": "example",
                       "project_count": 128,
                       "recent_uploads": [],
-                      "route": "pypi",
+                      "route": "example",
                       "upload_count": 0,
                       "upload_to": null,
                       "uploads": false,
@@ -3417,7 +3417,7 @@
                         },
                         "offline": false,
                         "status": "configured",
-                        "url": "https://pypi.org/simple/"
+                        "url": "https://upstream.example/artifacts/"
                       },
                       "volatile_deletes": false
                     },
@@ -3454,12 +3454,12 @@
                       "kind": "virtual",
                       "layers": [
                         "hosted",
-                        "pypi"
+                        "example"
                       ],
-                      "name": "root/pypi",
+                      "name": "root/packages",
                       "project_count": 0,
                       "recent_uploads": [],
-                      "route": "root/pypi",
+                      "route": "root/packages",
                       "upload_count": 0,
                       "upload_to": "hosted",
                       "uploads": true,
@@ -3470,7 +3470,7 @@
                   "metric_families": [
                     {
                       "key": "metadata",
-                      "label": "PEP 658 metadata hits",
+                      "label": "metadata hits",
                       "roles": [
                         "cached",
                         "hosted",
@@ -3883,7 +3883,7 @@
     },
     "/+trash": {
       "get": {
-        "description": "Soft-deleted PyPI and OCI artifacts across repositories, newest deletion first. An administrator inspects every repository and sees the deleting actor; a repository reader inspects one repository they can read, with actor details redacted by the role filter. A repository's legacy upload token retains access to that repository under the `__token__` username. `restorable` and its `state` are derived from whether the content is still retained and the recovery window is open; a record leaves the window after its `deadline_unix`. Responses carry no credentials or request headers and never enter a shared cache.",
+        "description": "Soft-deleted artifacts across repositories, newest deletion first. An administrator inspects every repository and sees the deleting actor; a repository reader inspects one repository they can read, with actor details redacted by the role filter. A repository's legacy upload token retains access to that repository under the `__token__` username. `restorable` and its `state` are derived from whether the content is still retained and the recovery window is open; a record leaves the window after its `deadline_unix`. Responses carry no credentials or request headers and never enter a shared cache.",
         "parameters": [
           {
             "description": "Repository route to inspect, at most 512 bytes",
@@ -3893,8 +3893,8 @@
             "required": false
           },
           {
-            "description": "Filter by `pypi` or `oci`",
-            "example": "pypi",
+            "description": "Filter by registered ecosystem",
+            "example": "example",
             "in": "query",
             "name": "ecosystem",
             "required": false
@@ -3915,7 +3915,7 @@
           },
           {
             "description": "Exclusive cursor from the prior page",
-            "example": "0009223372036800000\u001fpypi\u001fhosted\u001fexample\u001fexample-1.0-py3-none-any.whl\u001fsha256:0123",
+            "example": "0009223372036800000\u001fexample\u001fhosted\u001fexample\u001fexample-1.0.bin\u001fsha256:0123",
             "in": "query",
             "name": "cursor",
             "required": false
@@ -3933,17 +3933,17 @@
             "content": {
               "application/json": {
                 "example": {
-                  "next_cursor": "0009223372036800000\u001fpypi\u001fhosted\u001fexample\u001fexample-1.0-py3-none-any.whl\u001fsha256:0123",
+                  "next_cursor": "0009223372036800000\u001fexample\u001fhosted\u001fexample\u001fexample-1.0.bin\u001fsha256:0123",
                   "trash": [
                     {
                       "actor": "usr_550e8400e29b41d4a716446655440000",
                       "deadline_unix": 1802592000,
                       "deleted_at_unix": 1800000000,
                       "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                      "ecosystem": "pypi",
+                      "ecosystem": "example",
                       "name": "example",
                       "reason": "compromised build",
-                      "reference": "example-1.0-py3-none-any.whl",
+                      "reference": "example-1.0.bin",
                       "repository": "hosted",
                       "restorable": true,
                       "state": "restorable"
@@ -4013,8 +4013,8 @@
         "description": "One soft-deleted artifact identified by its ecosystem, repository, and name, with the same role-filtered actor visibility as the list. Returns the current derived state without changing package yank, trash, retention, or policy state.",
         "parameters": [
           {
-            "description": "The artifact's ecosystem, `pypi` or `oci`",
-            "example": "pypi",
+            "description": "The artifact's registered ecosystem",
+            "example": "example",
             "in": "query",
             "name": "ecosystem",
             "required": true
@@ -4027,15 +4027,15 @@
             "required": true
           },
           {
-            "description": "The PyPI project or OCI repository path",
+            "description": "The ecosystem artifact name",
             "example": "example",
             "in": "query",
             "name": "name",
             "required": true
           },
           {
-            "description": "The distribution filename or OCI tag, if any",
-            "example": "example-1.0-py3-none-any.whl",
+            "description": "The ecosystem artifact reference, if any",
+            "example": "example-1.0.bin",
             "in": "query",
             "name": "reference",
             "required": false
@@ -4058,10 +4058,10 @@
                     "deadline_unix": 1802592000,
                     "deleted_at_unix": 1800000000,
                     "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                    "ecosystem": "pypi",
+                    "ecosystem": "example",
                     "name": "example",
                     "reason": "compromised build",
-                    "reference": "example-1.0-py3-none-any.whl",
+                    "reference": "example-1.0.bin",
                     "repository": "hosted",
                     "restorable": true,
                     "state": "restorable"
@@ -4197,7 +4197,7 @@
             "description": "The OpenAPI 3.1 description of this server"
           }
         },
-        "summary": "This document",
+        "summary": "OpenAPI schema",
         "tags": [
           "operations"
         ]
@@ -4209,7 +4209,7 @@
           "200": {
             "content": {
               "text/plain; version=0.0.4": {
-                "example": "# HELP peryx_requests_total Total HTTP requests served.\n# TYPE peryx_requests_total counter\nperyx_requests_total 128\n# HELP peryx_metadata_served_total PEP 658 metadata siblings served.\n# TYPE peryx_metadata_served_total counter\nperyx_metadata_served_total{ecosystem=\"pypi\",role=\"virtual\"} 37\n"
+                "example": "# HELP peryx_requests_total Total HTTP requests served.\n# TYPE peryx_requests_total counter\nperyx_requests_total 128\n# HELP peryx_metadata_served_total Metadata responses served.\n# TYPE peryx_metadata_served_total counter\nperyx_metadata_served_total{ecosystem=\"example\",role=\"virtual\"} 37\n"
               }
             },
             "description": "Prometheus text exposition"
@@ -4737,8 +4737,8 @@
         "description": "The legacy PyPI upload API, as sent by `twine upload` and `uv publish`. The multipart form's `content` part carries a wheel or a `.tar.gz` or `.zip` sdist. peryx streams the bytes to a staged blob, verifies declared `sha256_digest` and `blake2_256_digest` values, then checks filename, archive, wheel `.dist-info` structure, RECORD hashes, and sdist top-level structure before the file lands in the index's local layer. Uploaded wheels and sdists get PEP 658/714 `.metadata` siblings from verified core metadata. The upload shadows any upstream file of the same name.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -4817,8 +4817,8 @@
         "description": "A compact index document with URLs and client configuration snippets. Snippets appear only when the request has enough host context to render absolute URLs.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -4922,8 +4922,8 @@
             "required": false
           },
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -4942,9 +4942,9 @@
                     {
                       "available": true,
                       "display_name": "Flask",
-                      "index": "root/pypi",
+                      "index": "team/packages",
                       "normalized_name": "flask",
-                      "route": "root/pypi",
+                      "route": "team/packages",
                       "summary": "A simple framework for building complex web applications.",
                       "type": "cached"
                     }
@@ -4978,8 +4978,8 @@
         "description": "Serves the blob if cached; otherwise fetches it from its upstream cache, verifies the sha256, caches it, and serves it. The `{filename}` segment is display context and must be percent-encoded as one path segment. Responses are immutable (`Cache-Control: max-age=31536000`) and carry the quoted sha256 as their `ETag`. A cached blob honors a single byte range, so an interrupted download can resume; a range this server cannot read is ignored and the whole artifact served, as is a range whose `If-Range` no longer names the artifact. A cached blob also carries the date the store wrote it as its `Last-Modified`, which an older client revalidates on when it kept no entity tag.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5083,8 +5083,8 @@
         "description": "The `.metadata` sibling of an artifact: advertised upstream metadata verified against the index-page digest, or metadata generated from a wheel `METADATA`/sdist `PKG-INFO` when upstream omits the sibling. pip and uv resolve through this instead of downloading whole artifacts.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5144,8 +5144,8 @@
         "description": "The file members of a cached wheel, zip, zipped egg, plain tarball, or gzip tarball (`.tar.gz` and `.tgz`). Nested archives are not expanded unless the request names them with repeated `container` query parameters. Pass `member` to read one bounded text chunk.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5257,8 +5257,8 @@
         "description": "Legacy path form for reading one root archive member as bounded text chunks. Prefer the query form when member names contain slashes or when inspecting nested archives.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5314,8 +5314,8 @@
         "description": "The projects peryx has observed on this index: everything uploaded, plus every mirrored project a client has asked for. A virtual index unions its layers. Index policy filters denied projects before serialization. JSON or HTML by `Accept`.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5364,8 +5364,8 @@
         "description": "All files of one project, merged across virtual-index layers (first match per filename wins, versions union). File URLs point back at peryx's own `files/` route; `core-metadata` advertises the PEP 658 sibling. Index policy filters denied files and their versions before serialization.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5458,8 +5458,8 @@
         "description": "Removes every uploaded file of the project. Requires the local layer to be `volatile`.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5517,8 +5517,8 @@
         "description": "PyPI's legacy project JSON shape, built from the resolved Simple API detail page. The `releases` and `urls` file entries preserve hashes, yanked markers, upload time, size, and `requires_python`; metadata that Simple pages do not expose is null, empty, or `-1`.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5622,8 +5622,8 @@
         "description": "Removes the version's uploaded files outright. Requires the local layer to be `volatile`; for a virtual index, the upstream files become visible again.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5681,8 +5681,8 @@
         "description": "Version-specific legacy JSON. This has the same `info`, `urls`, `vulnerabilities`, and `ownership` shape as the project endpoint, without the deprecated `releases` map.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5770,8 +5770,8 @@
         "description": "Copies uploaded file records for one release from the source route's local upload layer into this route's local upload layer. Promotion reuses content-addressed blob digests and preserves sha256, size, upload time, yank state, and metadata sibling hashes. The target route's upload token authenticates the request. Archived and quarantined target projects reject promotion through the same project-status policy used for uploads.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5842,8 +5842,8 @@
         "description": "Clears the hidden marker a DELETE leaves on files served from a read-only cache, making them visible on the virtual index again. Omit `{version}/` to restore the whole project.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5898,8 +5898,8 @@
         "description": "Clears the PEP 592 yank marker set by the PUT form of this path.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true
@@ -5952,8 +5952,8 @@
         "description": "Marks the version's files yanked (PEP 592): resolvers skip them, exact-pin installs still succeed. Uploaded files get their record updated; files served from a read-only cache get a reversible override on the virtual index's hosted layer, so upstream releases can be yanked too. Omit `{version}/` (i.e. `PUT /{route}/{project}/yank`) to yank the whole project. Add `?reason=...` to preserve a resolver-visible reason.",
         "parameters": [
           {
-            "description": "The index route, for example `root/pypi`",
-            "example": "root/pypi",
+            "description": "The index route, for example `team/packages`",
+            "example": "team/packages",
             "in": "path",
             "name": "route",
             "required": true

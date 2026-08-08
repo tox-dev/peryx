@@ -4,20 +4,20 @@ description = "The peryx-bench harness: comparison runs, per-ecosystem runs, and
 weight = 5
 +++
 
-`peryx-bench` produces the tables the documentation publishes and gates a change against a regression. Every command
-below assumes a checked-out repository and a release build. A debug build times unoptimized code, so its numbers say
-nothing about peryx.
+`peryx-bench` produces the tables in the documentation and checks a change for regressions. Each command below assumes a
+checked-out repository and a release build. A debug build measures unoptimized code.
 
 ## Compare peryx against the other tools
 
-The published comparison tables come from this form, which runs every server on one machine, in one run, against the
-same workload:
+Select one ecosystem for each run. The harness runs that ecosystem's servers on one machine against the same workload:
 
 ```shell
-cargo run --release -p peryx-bench                       # every ecosystem
-cargo run --release -p peryx-bench -- --ecosystem pypi   # one ecosystem
+cargo run --release -p peryx-bench -- --ecosystem pypi
 cargo run --release -p peryx-bench -- --ecosystem oci
 ```
+
+The harness defines common options such as `--ecosystem`, `--rounds`, and `--only`. Each selected implementation crate
+defines its ecosystem-specific options. For example, `peryx-ecosystem-oci` defines `--mirror`.
 
 ## Check a change against a base commit
 
@@ -26,8 +26,8 @@ prints a per-metric verdict aggregated with the geometric mean and gates only th
 peryx does not control dominates any row that fetches from a real upstream:
 
 ```shell
-cargo run --release -p peryx-bench -- --rounds 7 ab <base-commit>
-cargo run --release -p peryx-bench -- --rounds 7 ab <base-commit> --head-first
+cargo run --release -p peryx-bench -- --ecosystem pypi --rounds 7 ab <base-commit>
+cargo run --release -p peryx-bench -- --ecosystem pypi --rounds 7 ab <base-commit> --head-first
 ```
 
 Run both orders on the same machine. A result that changes with the order is thermal or background-load drift, not a
@@ -43,24 +43,24 @@ through a comparison, so export `DOCKERHUB_USERNAME` and a read-only
 [access token](https://docs.docker.com/security/for-developers/access-tokens/) in `DOCKERHUB_TOKEN`; the harness threads
 them into every registry and into [crane](https://github.com/google/go-containerregistry).
 
-Under `--mirror` the harness stands a local pull-through cache in front of Docker Hub and points every registry at it,
-so the run is rate-limit-free and repeatable. Without it the cold rows carry the real upstream fetch, so the harness
-marks them network-bound and keeps them out of the regression gate:
+The OCI implementation's `--mirror` option starts a local pull-through cache in front of Docker Hub and points each
+registry at it. This avoids rate limits and gives each run the same upstream state. Without it the cold rows carry the
+real upstream fetch, so the harness marks them network-bound and keeps them out of the regression gate:
 
 ```shell
 cargo run --release -p peryx-bench -- --ecosystem oci --mirror
 ```
 
-## Run the same CPU benchmarks locally and in CI
+## Run the same CPU benchmarks on a workstation and in CI
 
 GitHub Actions uses CodSpeed's CPU simulation because shared-runner wall time changes with host load and CPU model. The
 simulation counts the work performed by the benchmark on a simulated CPU. It runs once, excludes time spent inside
 system calls, and is therefore suited to the in-process parser, renderer, and router benchmarks rather than the
 end-to-end network workloads above.
 
-The local runner uses the immutable CI image when its Dockerfile definition has been published. The image pins Ubuntu,
-Rust, cargo-codspeed, the CodSpeed CLI, and CodSpeed's Valgrind fork; the runner also uses the CI workspace path, thin
-LTO, generic glibc CPU routines, and one malloc arena. On an ARM64 host with Docker:
+The workstation runner uses the immutable CI image after the project publishes its Dockerfile definition. The image pins
+Ubuntu, Rust, cargo-codspeed, the CodSpeed CLI, and CodSpeed's Valgrind fork; the runner also uses the CI workspace
+path, thin LTO, generic glibc CPU routines, and one malloc arena. On an ARM64 host with Docker:
 
 ```shell
 ci/run-codspeed-local.sh login
@@ -69,8 +69,8 @@ ci/run-codspeed-local.sh peryx-ecosystem-oci
 ```
 
 `login` is needed once and stores the CodSpeed credential in a Docker volume. Build artifacts use a separate volume
-keyed by the image definition. If the current Dockerfile has not been published, the runner builds it locally; compare
-those results only with another run using the same definition.
+keyed by the image definition. If the project has not published the current Dockerfile, the runner builds it on the
+host; compare those results only with another run using the same definition.
 
 Pull requests publish affected benchmarks after the exact base commit produces a compatible baseline. Pushes to `main`
 publish every target and refresh the shared baseline.

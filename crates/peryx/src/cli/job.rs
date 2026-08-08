@@ -11,7 +11,7 @@ pub enum JobCommand {
     List(JobListArgs),
     /// Show one job run in detail.
     Show(JobShowArgs),
-    /// Refresh a remote `PyPI` project catalog and bounded project metadata set.
+    /// Refresh a remote project catalog and bounded project metadata set.
     Run {
         #[command(flatten)]
         runtime: RuntimeArgs,

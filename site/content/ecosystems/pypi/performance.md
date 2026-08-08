@@ -55,13 +55,13 @@ against. The servers overlap on features. They diverge on two things the benchma
 miss, and what happens when many clients miss the same thing at once. The rest of this section reads each server's
 source for those two axes, so the tables that follow are readable in advance rather than in hindsight.
 
-| Server                                                 | Stack                                                                                                                                                                | On a miss                                                  | Persisted cache                                                     | Private uploads   |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- | ----------------- |
-| [peryx](@/core/architecture.md)                        | one static Rust binary, async ([tokio](https://tokio.rs/)/[axum](https://github.com/tokio-rs/axum)), one process                                                     | streams the bytes through, teeing into the store           | content-addressed, on disk ([redb](https://www.redb.org/) + blobs)  | token per index   |
-| [devpi](https://devpi.net/docs/)                       | Python/[Pyramid](https://docs.pylonsproject.org/projects/pyramid/) on [waitress](https://docs.pylonsproject.org/projects/waitress/) (~50 threads); primary + replica | pages: fetch, parse, store, render; files: stream and tee  | [SQLite](https://www.sqlite.org/) keyfs plus sha256-addressed files | per-user, per-ACL |
-| [proxpi](https://github.com/EpicWink/proxpi)           | Python/[Flask](https://flask.palletsprojects.com/) under [gunicorn](https://gunicorn.org/) (4 worker processes here)                                                 | download to a disk temp dir in a thread; client waits      | index in RAM (per worker), files on disk                            | none              |
-| [pypiserver](https://github.com/pypiserver/pypiserver) | Python/[Bottle](https://bottlepy.org/docs/dev/), serves a directory of files                                                                                         | `302` redirect to pypi.org, caching nothing                | none for upstream content                                           | htpasswd on a dir |
-| [pypicloud](https://pypicloud.readthedocs.io/)         | Python/Pyramid on waitress (8 threads); archived since 2023                                                                                                          | buffer the whole file to a temp file, store it, then serve | SQLite (or S3/GCS/DB) plus named-path files                         | user/group access |
+| Server                                                 | Stack                     | On a miss                          | Persisted cache                          | Private uploads        |
+| ------------------------------------------------------ | ------------------------- | ---------------------------------- | ---------------------------------------- | ---------------------- |
+| [peryx](@/core/architecture.md)                        | Rust, Tokio, Axum         | Streams to the client and store    | redb plus content-addressed blobs        | Token per index        |
+| [devpi](https://devpi.net/docs/)                       | Python, Pyramid, waitress | Parses pages; streams files        | SQLite keyfs plus sha256-addressed files | Per-user ACL           |
+| [proxpi](https://github.com/EpicWink/proxpi)           | Python, Flask, gunicorn   | Downloads to a temporary directory | In-memory index and files on disk        | None                   |
+| [pypiserver](https://github.com/pypiserver/pypiserver) | Python, Bottle            | Redirects to pypi.org              | None                                     | htpasswd per directory |
+| [pypicloud](https://pypicloud.readthedocs.io/)         | Python, Pyramid, waitress | Buffers, stores, then serves       | SQLite or remote metadata plus files     | User and group access  |
 
 ### Where the bytes go on a miss
 
@@ -147,7 +147,7 @@ participant S as SQLite
 C->>+P: GET the same wheel ×4
 Note over P: no dedup, each client<br/>downloads the whole file
 P->>+S: INSERT the same filename ×4
-S-->>-P: 2nd–4th: UNIQUE constraint / database is locked
+S-->>-P: 2nd-4th: UNIQUE constraint / database is locked
 P-->>-C: HTTP 500
 {% end %}
 
@@ -199,7 +199,7 @@ configuration rather than a package, and [Artifactory](https://jfrog.com/artifac
 of them can be measured this way.
 
 The install workload is the top 51 most-downloaded PyPI packages
-([the snapshot](https://github.com/tox-dev/peryx/blob/main/crates/peryx-bench/src/ecosystems/pypi/packages.rs), torch
+([the snapshot](https://github.com/tox-dev/peryx/blob/main/crates/peryx-ecosystem-pypi/src/bench/packages.rs), torch
 included for one large wheel), installed with uv into a fresh virtualenv with a fresh client cache. **Cold** is the
 first install against a server with empty state; **warm** reruns it with the server's cache full and only the client
 reset.

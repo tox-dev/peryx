@@ -1,17 +1,16 @@
 +++
 title = "Serve a restricted or air-gapped network"
-description = "peryx as the one approved path to PyPI, or as a warm-then-carry partial mirror when there is no path at all."
+description = "Use peryx as the approved path to PyPI or carry a warmed partial mirror into an isolated network."
 weight = 2
 +++
 
-A full PyPI mirror is double-digit terabytes, almost all of which nobody on your network will ever install. A
-read-through cache is the practical alternative: a partial mirror containing exactly the packages your users have asked
-for. Two topologies cover the common cases.
+A full PyPI mirror consumes tens of terabytes. Most networks use a fraction of its packages. A read-through cache holds
+the packages that users request. Choose a controlled-egress or isolated topology.
 
 ## Controlled egress: peryx as the choke point
 
-The network allows outbound traffic only from approved hosts. Run peryx on one of them; everything else installs through
-it and needs no internet route:
+The network allows outbound traffic from approved hosts. Run peryx on one of them. Other hosts install through peryx
+without an internet route:
 
 ```toml
 # peryx.toml on the egress host
@@ -20,9 +19,9 @@ port = 4433
 data_dir = "/var/lib/peryx"
 ```
 
-Clients set `PIP_INDEX_URL`/`UV_INDEX_URL` to `http://<egress-host>:4433/root/pypi/simple/` and are done. You get one
-place to firewall, one place to [watch](@/core/monitor.md) (every download is counted per project and file), and one
-place where [private packages shadow upstream](@/core/indexes.md).
+Set `PIP_INDEX_URL` or `UV_INDEX_URL` to `http://<egress-host>:4433/root/pypi/simple/`. The egress host becomes the
+firewall boundary and [monitoring point](@/core/monitor.md). peryx counts downloads per project and file, and
+[private packages shadow upstream packages](@/core/indexes.md).
 
 If the egress host itself must go through a corporate proxy, standard `HTTPS_PROXY` environment variables apply to
 peryx's upstream client.
@@ -34,14 +33,13 @@ requirements-bounded mirror:
 
 ```shell
 # connected side
-peryx mirror plan root/pypi --data-dir ./peryx-data --requirements requirements.txt
-peryx mirror sync root/pypi --data-dir ./peryx-data --requirements requirements.txt
-peryx mirror verify root/pypi --data-dir ./peryx-data --requirements requirements.txt
+peryx mirror plan root/pypi --data-dir ./peryx-data --option 'requirements=["requirements.txt"]'
+peryx mirror sync root/pypi --data-dir ./peryx-data --option 'requirements=["requirements.txt"]'
+peryx mirror verify root/pypi --data-dir ./peryx-data --option 'requirements=["requirements.txt"]'
 ```
 
-Everything selected (pages, [PEP 658](https://peps.python.org/pep-0658/) metadata, wheels, and sdists) now sits under
-`./peryx-data`. Create a backup, verify it, carry the backup directory across the gap, restore it, and serve it in
-offline mode:
+peryx stores the selected pages, [PEP 658](https://peps.python.org/pep-0658/) metadata, wheels, and sdists under
+`./peryx-data`. Create and verify a backup, carry it across the gap, restore it, and enable offline mode:
 
 ```shell
 # connected side
@@ -53,23 +51,22 @@ peryx restore ./peryx-backup --data-dir ./peryx-data
 peryx serve --data-dir ./peryx-data --offline
 ```
 
-The backup includes the metadata store, a config snapshot, and only the blob files referenced by metadata records.
-Offline mode never tries the upstream. Artifacts and cached project pages serve straight from the store; a project or
-file that was not carried over returns a resolver-visible miss. Repeat the warm-and-carry cycle whenever the requirement
-set changes.
+The backup includes the metadata store, a configuration snapshot, and the blob files referenced by metadata records.
+Offline mode blocks upstream requests. peryx serves artifacts and cached project pages from the store; requests for
+content absent from the backup return a resolver-visible miss. Repeat the cycle after the requirement set changes.
 
-Resolve against a lock file (`uv.lock`, `requirements.txt` with hashes) on the connected side, so the isolated side asks
-only for things the carry-over contains.
+Resolve a lock file (`uv.lock` or `requirements.txt` with hashes) on the connected side. The isolated side will then
+request content from that lock.
 
-For a full upstream walk, use `--mode all` instead of a requirements file:
+Use `mode="all"` for a full upstream walk:
 
 ```shell
-peryx mirror sync pypi --data-dir ./peryx-data --mode all
-peryx mirror verify pypi --data-dir ./peryx-data --mode all
+peryx mirror sync pypi --data-dir ./peryx-data --option 'mode="all"'
+peryx mirror verify pypi --data-dir ./peryx-data --option 'mode="all"'
 ```
 
-Full PyPI consumes many terabytes. Use `--python-tag`, `--abi-tag`, `--platform-tag`, and `--max-file-size-bytes` when
-your clients need a bounded wheel set.
+Full PyPI consumes many terabytes. Set `python_tags`, `abi_tags`, `platform_tags`, and `max_file_size_bytes` to limit
+the wheel set.
 
 ## What to check
 

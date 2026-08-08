@@ -21,3 +21,7 @@ pub fn unsatisfiable_range(size: u64) -> Response {
         .body(Body::empty())
         .expect("range response builds from validated header parts")
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/range/tests.rs"]
+mod tests;

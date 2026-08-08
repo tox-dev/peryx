@@ -55,6 +55,9 @@ struct PlanResponse {
 }
 
 /// One page of ordered removal candidates for a repository.
+///
+/// # Panics
+/// Panics if request resolution returns a driver without retention support.
 pub async fn retention_plan(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
     let request = match Prepared::from_request(&state, request).await {
         Ok(prepared) => prepared,
@@ -73,7 +76,12 @@ pub async fn retention_plan(State(state): State<Arc<AppState>>, request: Request
         limit: Some(request.limit),
         expect: request.expect,
     };
-    match plan(request.driver.as_ref(), &state.meta, &query, &mut |decision| {
+    let driver = request
+        .driver
+        .capabilities()
+        .retention
+        .expect("request resolution requires retention support");
+    match plan(driver, &state.meta, &query, &mut |decision| {
         candidates.push(decision.clone());
         Ok(())
     }) {
@@ -164,6 +172,9 @@ impl Prepared {
         // cannot probe which routes exist by the shape of the failure.
         let index = super::index_by_route(state, &request.repository).ok_or_else(not_found)?;
         let driver = state.driver_for(index.ecosystem).ok_or_else(not_found)?.clone();
+        if driver.capabilities().retention.is_none() {
+            return Err(not_found());
+        }
         let (after, expect) = match &request.cursor {
             Some(cursor) => {
                 let resume = decode_cursor(cursor).map_err(|reason| problem(StatusCode::BAD_REQUEST, &reason))?;
@@ -228,7 +239,6 @@ fn plan_etag(summary: RetentionSummary) -> HeaderValue {
 
 fn plan_error(error: &RetentionPlanError) -> Response {
     match error {
-        RetentionPlanError::Unsupported => not_found(),
         RetentionPlanError::Stale { .. } => stale(),
         // A buffered page never interrupts its own sink, and an export interruption means the client
         // already left; both remaining cases are a failed read the caller cannot act on.

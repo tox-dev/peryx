@@ -4,7 +4,7 @@ description = "How an operator deliberately moves a healthy authority's home to 
 weight = 8
 +++
 
-An authority — a repository's write ownership — has one home datacenter. The
+An authority : a repository's write ownership : has one home datacenter. The
 [failover transfer](@/core/availability-authority-transfer.md) moves a home the tracker has confirmed `Dead`, an
 involuntary move a control quorum commits to a survivor. A planned transfer is the deliberate counterpart: an
 administrator moves a *healthy* home to another datacenter on purpose, for a data-center drain, a rebalance, or a
@@ -43,8 +43,8 @@ order never un-readies a move.
 
 A target that cannot be reached, or one absent from the roster, reads as no frontier, which never advances the plan, so
 an unreachable target leaves the move waiting rather than committing to a home that has not caught up. The node
-re-probes on a bounded schedule, and a target that has not reached the barrier within that budget — roughly five minutes
-by default — times out with `504 Gateway Timeout` rather than waiting forever. No audit is written, so the transfer can
+re-probes on a bounded schedule, and a target that has not reached the barrier within that budget : roughly five minutes
+by default : times out with `504 Gateway Timeout` rather than waiting forever. No audit is written, so the transfer can
 be retried once the target catches up.
 
 ## States and cancellation

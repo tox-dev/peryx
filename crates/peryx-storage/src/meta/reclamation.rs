@@ -4,16 +4,16 @@
 //! reference snapshot and deletes it. In a replicated topology that snapshot is not enough: a lagging
 //! replica or backup can still be replaying the very metadata that names the blob, so deleting its
 //! bytes now would strand a plane that has not yet caught up. This module records a durable
-//! *reclamation tombstone* per digest that gates deletion behind three proofs — no live reference, no
-//! placement a replica can still serve, and every plane advanced past the selection frontier — all
+//! *reclamation tombstone* per digest that gates deletion behind three proofs - no live reference, no
+//! placement a replica can still serve, and every plane advanced past the selection frontier - all
 //! under a fencing epoch so a superseded worker cannot regress the decision.
 //!
 //! It is a pure decision core. The fence epoch and the observed replica and backup frontiers are
 //! supplied by the caller; this module never sources them, because the cluster authority that mints
 //! the fence and the replication loop that reports the frontiers live above it and are still being
 //! built. The reference verdict likewise crosses the driver boundary and is passed in. What lives here
-//! is only the durable tombstone, its fenced transitions, and the bounded queries an operator reads —
-//! the executors that delete the bytes and the orchestrator that drives this to completion sit above.
+//! is only the durable tombstone, its fenced transitions, and the bounded queries an operator reads.
+//! Executors delete the bytes; the orchestrator drives the process to completion.
 
 use std::ops::Bound::{Excluded, Included};
 
@@ -89,22 +89,28 @@ pub struct ReclamationTombstone {
     pub updated_at_unix: i64,
 }
 
-/// The frontier each replication plane has observably applied, as the caller measured it. Deletion
-/// waits until both have reached the tombstone's required frontier.
+/// The frontier each configured replication plane has observably applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedFrontier {
     /// The lowest serial any live replica has applied.
-    pub replica: u64,
+    pub replica: Option<u64>,
     /// The lowest serial any configured backup has captured.
-    pub backup: u64,
+    pub backup: Option<u64>,
 }
 
 impl ObservedFrontier {
-    /// Whether both planes have applied through `required`, the condition for a candidate to be safe to
-    /// delete on the frontier axis.
+    /// An absent plane imposes no frontier requirement.
     #[must_use]
     pub const fn covers(&self, required: u64) -> bool {
-        self.replica >= required && self.backup >= required
+        let replica = match self.replica {
+            Some(frontier) => frontier >= required,
+            None => true,
+        };
+        let backup = match self.backup {
+            Some(frontier) => frontier >= required,
+            None => true,
+        };
+        replica && backup
     }
 }
 
@@ -161,7 +167,7 @@ impl MetaStore {
     /// digest; serveability is read in the same transaction and mirrors
     /// [`route_blob_placements`](Self::route_blob_placements)'s `is_serveable`, so a placement a replica
     /// can serve blocks selection atomically. An eligible digest is armed at
-    /// [`Pending`](ReclamationState::Pending) with `required_frontier` — a re-selection raises the
+    /// [`Pending`](ReclamationState::Pending) with `required_frontier` - a re-selection raises the
     /// frontier bar and re-arms even a candidate that had reached [`Ready`](ReclamationState::Ready), so
     /// a reference or frontier that changed after it was marked ready is re-proven before deletion. A
     /// digest that is referenced or serveable abandons an existing tombstone to

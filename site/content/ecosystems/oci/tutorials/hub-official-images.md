@@ -38,7 +38,7 @@ peryx serve --config peryx.toml
 
 peryx listens on `127.0.0.1:4433`. Leave it running and open a second terminal.
 
-`docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http) registry over plain HTTP with no
+`docker` and `podman` trust a [loopback](@/ecosystems/oci/guides/local-transport.md) registry over plain HTTP with no
 configuration, so the commands below work as written on the same host. Over the network, serve
 [TLS](@/core/serve-https.md) or set the client's insecure-registry option.
 

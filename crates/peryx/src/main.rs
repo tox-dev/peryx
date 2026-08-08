@@ -15,7 +15,7 @@ use peryx::cli::{Cli, ConfigSnippetArgs};
 use peryx::config::{self, Config, LogConfig, LogFormat, LogSink};
 use peryx::{app, logging, operator};
 
-// Requests alternate small JSON pages with wheel-sized streams; mimalloc keeps the
+// Requests alternate small JSON pages with large artifact streams; mimalloc keeps the
 // allocation-heavy transform path off the system allocator's locks.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -113,13 +113,21 @@ fn availability_coordinator(
                 .collect()
         })
         .unwrap_or_default();
-    let token = match config.availability.replication() {
-        Some(config::ReplicationConfig::Primary { token, .. } | config::ReplicationConfig::Replica { token, .. }) => {
-            token
-                .read()
-                .context("read the replication token for authority transfers")?
-        }
-        None => String::new(),
+    let token = if config.availability.is_distributed_mode() {
+        let replication = config
+            .availability
+            .replication()
+            .expect("replication role guarantees config");
+        let token = match replication {
+            config::ReplicationConfig::Primary { token, .. } | config::ReplicationConfig::Replica { token, .. } => {
+                token
+            }
+        };
+        token
+            .read()
+            .context("read the replication token for authority transfers")?
+    } else {
+        String::new()
     };
     let frontier: std::sync::Arc<dyn peryx::availability::FrontierSource> =
         std::sync::Arc::new(peryx::availability::RosterFrontierSource::new(peers, token));
@@ -132,26 +140,40 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async {
         let state = peryx::server::build_state(config)?;
-        let replication = peryx::replication::ReplicationRuntime::new(config, &state)?;
-        // Held for the process lifetime: dropping the handle shuts the ownership Raft runtime down. The
-        // mutation path reaches the same group through the state registration.
-        let consensus = replication.ignite_consensus().await?;
-        if let Some(consensus) = &consensus {
-            state.set_ownership_authority(consensus.authority.clone());
-            state.set_control_plane(std::sync::Arc::new(peryx_driver::state::ControlPlane::new(
-                consensus.control.clone(),
-                state.clock.clone(),
-            )));
-        }
-        register_availability_services(config, &state)?;
-        if !replication.is_replica() {
-            for index in &state.indexes {
-                if let peryx_driver::IndexKind::Cached { client, offline: false } = &index.kind {
-                    let client = client.clone();
-                    tokio::spawn(async move { client.warm().await });
-                }
+        let mut is_replica = false;
+        let mut router = peryx::server::router_for(state.clone());
+        let mut raft_peer_router: Option<axum::Router> = None;
+        let _replication_handle = if config.availability.is_distributed_mode() {
+            let replication = peryx::replication::ReplicationRuntime::new(config, &state)?;
+            // Held for the process lifetime: dropping the handle shuts the ownership Raft runtime down. The
+            // mutation path reaches the same group through the state registration.
+            let consensus = replication.ignite_consensus().await?;
+            if let Some(consensus) = &consensus {
+                state.set_ownership_authority(consensus.authority.clone());
+                state.set_control_plane(std::sync::Arc::new(peryx_driver::state::ControlPlane::new(
+                    consensus.control.clone(),
+                    state.clock.clone(),
+                )));
+                raft_peer_router = Some(consensus.peer_router.clone());
             }
-        }
+            is_replica = replication.is_replica();
+            register_availability_services(config, &state, replication.reclamation_frontiers())?;
+            router = replication.mount(router);
+
+            // Same-datacenter peers query this node for its placement receipts on the token-gated replication
+            // surface, alongside the blob endpoint, so a write elsewhere in the DC can gather it into quorum.
+            if let Some(receipts) = peryx::server::receipt_endpoint_router(config, &state.serving.blobs)? {
+                router = router.merge(receipts);
+            }
+            // Remote datacenters query this node for how far it has durably applied an authority's metadata,
+            // so an `ha` write elsewhere can prove its operation remote-durable.
+            if let Some(frontiers) = peryx::server::frontier_endpoint_router(config, &state)? {
+                router = router.merge(frontiers);
+            }
+            replication.start()?
+        } else {
+            None
+        };
         peryx::server::recover_job_attempts(&state)?;
         if !state.read_only && config.jobs.mode == config::JobsMode::Local {
             let scheduler = std::sync::Arc::new(peryx_driver::jobs::JobScheduler::new(
@@ -177,23 +199,19 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
             // Peers dial this node's advertised address for raft RPCs, so the receive-side router rides
             // the peer-facing availability listener, not the public package routes. Without it a voter
             // sends RPCs but answers none and the group never reaches quorum.
-            if let Some(consensus) = &consensus {
-                listener_router = listener_router.merge(consensus.peer_router.clone());
+            if let Some(peer_router) = &raft_peer_router {
+                listener_router = listener_router.merge(peer_router.clone());
             }
             tokio::spawn(serve_availability_listener(listener_config, listener_router));
         }
-        let mut router = replication.mount(peryx::server::router_for(state.clone()));
-        // Same-datacenter peers query this node for its placement receipts on the token-gated replication
-        // surface, alongside the blob endpoint, so a write elsewhere in the DC can gather it into quorum.
-        if let Some(receipts) = peryx::server::receipt_endpoint_router(config, &state.serving.blobs)? {
-            router = router.merge(receipts);
+        if !state.read_only && !is_replica {
+            for index in &state.indexes {
+                if let peryx_driver::IndexKind::Cached { client, offline: false } = &index.kind {
+                    let client = client.clone();
+                    tokio::spawn(async move { client.warm().await });
+                }
+            }
         }
-        // Remote datacenters query this node for how far it has durably applied an authority's metadata,
-        // so an `ha` write elsewhere can prove its operation remote-durable.
-        if let Some(frontiers) = peryx::server::frontier_endpoint_router(config, &state)? {
-            router = router.merge(frontiers);
-        }
-        let _replication = replication.start();
         let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
             .parse()
             .with_context(|| format!("parse listen address {}:{}", config.host, config.port))?;
@@ -236,21 +254,25 @@ fn run_server(config: &Config) -> anyhow::Result<()> {
 /// Register the background availability services this node's scheduled jobs drive: the cross-datacenter
 /// blob copier and the filesystem placement reconciler both need the local content store, and the blob
 /// reclamation selector needs only the roster. Each returns `None` when this node does that work nowhere.
-fn register_availability_services(config: &Config, state: &peryx_driver::AppState) -> anyhow::Result<()> {
+fn register_availability_services(
+    config: &Config,
+    state: &std::sync::Arc<peryx_driver::AppState>,
+    frontiers: std::sync::Arc<dyn peryx_ha::ReclamationFrontiers>,
+) -> anyhow::Result<()> {
     if let Some(store) = state.blobs.filesystem_store() {
         if let Some(copier) =
             peryx::availability::CrossDcBlobCopier::from_config(config, store.clone(), state.blobs.backend_id())?
         {
-            state.set_cross_dc_copier(std::sync::Arc::new(copier));
+            state.set_cross_dc_copier(copier.bind(state.serving.clone()));
         }
         if let Some(reconciler) =
             peryx::availability::FilesystemPlacementReconciler::from_config(config, store.clone())?
         {
-            state.set_placement_reconciler(std::sync::Arc::new(reconciler));
+            state.set_placement_reconciler(reconciler.bind(state.serving.clone()));
         }
     }
-    if let Some(reclaimer) = peryx::availability::BlobReclamationSelector::from_config(config)? {
-        state.set_blob_reclaimer(std::sync::Arc::new(reclaimer));
+    if let Some(reclaimer) = peryx::availability::BlobReclamationSelector::from_config(config, frontiers) {
+        state.set_blob_reclaimer(reclaimer.bind(state.serving.clone()));
     }
     Ok(())
 }
@@ -371,7 +393,7 @@ fn print_config_snippet(args: &ConfigSnippetArgs) -> anyhow::Result<()> {
     let config = resolve_config_file(args.config.as_deref())?;
     print!(
         "{}",
-        app::config_snippet(&config, &args.index, &args.base_url, args.format.into())?
+        app::config_snippet(&config, &args.index, &args.base_url, &args.format)?
     );
     Ok(())
 }

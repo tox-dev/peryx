@@ -178,12 +178,9 @@ has never published routes its first write to the datacenter that stored it.
 
 ### Stale-epoch responses and retries
 
-A write fenced by the epoch answers `503 UNAVAILABLE`. The response is deliberately blank about topology: it names no
-leader, datacenter, or peer address, so a client learns only that the authority moved and the request should be retried,
-never where the control plane lives. A retry lands once the node has applied the new epoch — it is a transient
-condition, not a rejection of the request. A fenced push holds nothing back: its manifest bytes are content-addressed
-and stay unpublished, and any quota reservation it took is released, so a retry accounts the write exactly once rather
-than twice.
+A write fenced by the epoch answers `503 UNAVAILABLE` without topology details. The client learns that the authority
+moved and should retry after the node applies the new epoch. A fenced push leaves its content-addressed manifest bytes
+unpublished and releases its quota reservation, so a retry accounts for the write once.
 
 ### Standalone deployments
 

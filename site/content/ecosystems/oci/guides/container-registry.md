@@ -51,11 +51,12 @@ Run it with `peryx serve --config peryx.toml`.
 
 ## A note on transport
 
-`docker` and `podman` trust a [loopback](@/core/glossary.md#loopback-http) registry (`localhost`, `127.0.0.0/8`) over
-plain HTTP with no configuration, so on the same host the commands below work as written. Over the network (or from
-Docker Desktop, whose engine runs in a VM where the host's `localhost` is not the engine's), a client demands HTTPS. For
-that, give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's insecure-registry option.
-`crane` and `podman` take a per-command flag, shown below; `docker` needs `insecure-registries` in its daemon config.
+`docker` and `podman` trust a [loopback](@/ecosystems/oci/guides/local-transport.md) registry (`localhost`,
+`127.0.0.0/8`) over plain HTTP with no configuration, so on the same host the commands below work as written. Over the
+network (or from Docker Desktop, whose engine runs in a VM where the host's `localhost` is not the engine's), a client
+demands HTTPS. For that, give peryx a certificate ([serve HTTPS](@/core/serve-https.md)) or set the client's
+insecure-registry option. `crane` and `podman` take a per-command flag, shown below; `docker` needs
+`insecure-registries` in its daemon config.
 
 ## Pull through the proxy
 
@@ -95,7 +96,7 @@ when to override it.
 ## Push your own images
 
 Pushing needs a write-granting `[[index.access_token]]` on the hosted index; peryx accepts any username, and the token's
-secret is the Basic-auth password. Blobs stream into the content-addressed store and are verified on commit:
+secret is the Basic-auth password. Peryx streams blobs into the content-addressed store and verifies them on commit:
 
 {% tabs(names="docker, podman, crane") %}
 
@@ -133,7 +134,7 @@ same-named one on Docker Hub, and anything you have not published falls through 
 ```shell
 # your own build of `my-app` if you pushed it, otherwise Docker Hub's:
 docker pull 127.0.0.1:4433/reg/my-app:1.0
-# always Docker Hub (you have not published nginx):
+# Docker Hub because you have not published nginx:
 docker pull 127.0.0.1:4433/reg/library/nginx:latest
 ```
 
@@ -152,6 +153,6 @@ crane delete --insecure 127.0.0.1:4433/images/my-app@sha256:<digest>
 
 - The protocol, roles, and every client snippet: [OCI ecosystem](@/ecosystems/oci/_index.md)
 - Serve trusted HTTPS so clients need no insecure flag: [serve HTTPS](@/core/serve-https.md)
-- What ships per ecosystem: [capability matrix](@/core/capabilities.md)
+- What ships per ecosystem: [capability matrix](@/ecosystems/capabilities.md)
 - Why Hub needs the `library/` namespace, and what an upstream `401` means:
   [Docker Hub names and upstream auth](@/ecosystems/oci/hub-names-and-auth.md)

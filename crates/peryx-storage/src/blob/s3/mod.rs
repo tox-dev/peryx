@@ -7,6 +7,7 @@
 mod client;
 mod config;
 #[cfg(test)]
+#[path = "../../../tests/unit/blob/s3/public_tests.rs"]
 mod public_tests;
 
 use std::collections::HashMap;
@@ -455,19 +456,8 @@ fn blob_error(error: S3Error, digest: Option<&Digest>) -> BlobError {
 }
 
 #[cfg(test)]
-mod error_tests {
-    use super::{BlobError, S3Error};
-    use crate::blob::BlobErrorKind;
-
-    #[test]
-    fn test_blob_error_from_s3_error() {
-        assert_eq!(BlobError::from(S3Error::NotFound).kind(), BlobErrorKind::Io);
-        assert_eq!(
-            BlobError::from(S3Error::Request("reset".to_owned())).kind(),
-            BlobErrorKind::Io
-        );
-    }
-}
+#[path = "../../../tests/unit/blob/s3/error_tests.rs"]
+mod error_tests;
 
 impl BlobBackend for S3Backend {
     fn capabilities(&self) -> BlobCapabilities {

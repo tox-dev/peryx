@@ -168,8 +168,8 @@ enum Escape {
 /// Escape into the page buffer, copying each run between entities whole.
 ///
 /// The escapees are all ASCII, so a byte index into `text` is always a char boundary. Rendering a
-/// 400-file page calls this a few thousand times and almost nothing it is handed — a URL, a wheel
-/// filename, `>=3.8` — needs escaping at all, so returning a `String` per field allocated one buffer
+/// 400-file page calls this a few thousand times and almost nothing it is handed - a URL, a wheel
+/// filename, `>=3.8` - needs escaping at all, so returning a `String` per field allocated one buffer
 /// and copied it twice for nothing.
 fn push_escaped(out: &mut String, text: &str, escape: Escape) {
     let mut run = 0;

@@ -11,8 +11,8 @@
 //! They observe only the public `/v2/` HTTP surface and the admin-gated availability resources, the way a
 //! registry client and an operator would, and they wait on asserted state (readiness, a served blob, an
 //! agreed leader) rather than sleeping a fixed span, so the outcome is deterministic. An OCI hosted write
-//! commits home-locally and replicates asynchronously in this harness — no remote datacenter acknowledges
-//! its cross-DC durability — so the terminal contract under test is that a committed blob, manifest, and tag
+//! commits home-locally and replicates asynchronously in this harness - no remote datacenter acknowledges
+//! its cross-DC durability - so the terminal contract under test is that a committed blob, manifest, and tag
 //! stay home-durable and idempotent across the failover, not that the write reaches a cross-DC-durable ack.
 
 use std::collections::HashMap;
@@ -53,6 +53,7 @@ fn home_oci_group() -> Cluster {
     )
     .with_admin()
     .with_oci()
+    .with_write_ack_deadline(1)
     .start()
     .expect("the ha group starts")
 }

@@ -26,10 +26,7 @@ use super::{MetaError, MetaStore, TRANSFER_ATTEMPT};
 /// history and its per-placement scan.
 pub const MAX_ATTEMPTS_PER_PLACEMENT: usize = 32;
 
-#[cfg(not(test))]
 const RETENTION_BATCH: usize = 128;
-#[cfg(test)]
-const RETENTION_BATCH: usize = 4;
 
 /// Where one transfer attempt stands.
 ///

@@ -1,6 +1,6 @@
 +++
 title = "How-to guides"
-description = "Task-oriented recipes for the PyPI ecosystem: publish, cache for CI, compose virtual indexes, yank and delete."
+description = "Recipes for publishing, CI caches, virtual indexes, yanking, and deletion in the PyPI ecosystem."
 sort_by = "weight"
 template = "section.html"
 weight = 2

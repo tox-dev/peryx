@@ -28,7 +28,7 @@ use crate::model::{
 use crate::url::browser_http_origin;
 use crate::url::{
     admin_project_url, admin_version_url, browse_archive_url, browse_index_url, browse_project_file_search_url,
-    browse_project_release_url, browse_ref_url, simple_index_url,
+    browse_project_release_url, browse_ref_url,
 };
 
 type ProjectPage = Result<Option<UiProjectView>, String>;
@@ -126,6 +126,7 @@ fn ProjectBody(
         status,
         versions,
         files,
+        client_command,
     } = ui;
     let latest = meta
         .version
@@ -139,11 +140,11 @@ fn ProjectBody(
     view! {
         <header class="project-head">
             <h1>
-                {name.clone()} <span class="version">{latest.clone()}</span>
+                {name.clone()} <span class="version">{latest}</span>
                 {status.map(|status| project_status_badge(*status))}
             </h1>
             {summary.map(|summary| view! { <p class="summary">{summary}</p> })}
-            <InstallSnippet index_url=simple_index_url(&route) project=name.clone() version=latest />
+            {client_command.map(|template| view! { <ClientCommand template /> })}
         </header>
         <div class="project-grid">
             <div class="project-main">
@@ -178,8 +179,8 @@ fn project_status_badge(status: UiProjectStatus) -> impl IntoView {
 }
 
 #[component]
-fn InstallSnippet(index_url: String, project: String, version: String) -> impl IntoView {
-    let (install, set_install) = signal(install_command("", &index_url, &project, &version));
+fn ClientCommand(template: String) -> impl IntoView {
+    let (command, set_command) = signal(template.replace("<origin>", ""));
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         Effect::new(move |_| {
@@ -189,58 +190,18 @@ fn InstallSnippet(index_url: String, project: String, version: String) -> impl I
                 && let Ok(port) = location.port()
                 && let Some(origin) = browser_http_origin(&protocol, &hostname, &port)
             {
-                set_install.set(install_command(&origin, &index_url, &project, &version));
+                set_command.set(template.replace("<origin>", &origin));
             }
         });
     }
     #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    let _ = set_install;
+    let _ = set_command;
     view! {
         <div class="install">
-            <code>{move || install.get()}</code>
-            <button class="copy" title="Copy" on:click=move |_| install.with_untracked(|command| copy_to_clipboard(command))>"copy"</button>
+            <code>{move || command.get()}</code>
+            <button class="copy" title="Copy" on:click=move |_| command.with_untracked(|value| copy_to_clipboard(value))>"copy"</button>
         </div>
     }
-}
-
-fn install_command(origin: &str, index_url: &str, project: &str, version: &str) -> String {
-    let spec = if version.is_empty() {
-        shell_quote(project)
-    } else {
-        shell_quote(&format!("{project}=={version}"))
-    };
-    let mut command = String::with_capacity(origin.len() + index_url.len() + spec.len() + 32);
-    command.push_str("uv pip install --index-url ");
-    command.push_str(origin);
-    command.push_str(index_url);
-    command.push(' ');
-    command.push_str(&spec);
-    command
-}
-
-/// Single-quote a pip install target when it holds a shell-special character, the way pip and
-/// Warehouse render copyable snippets. A normalized name such as `flask`, or a pinned `flask==1.2`,
-/// stays bare; anything else (extras, epoch versions, whitespace) is quoted, with an embedded quote
-/// escaped as `'\''` so the copied command survives a paste into `sh`.
-fn shell_quote(spec: &str) -> String {
-    if spec.bytes().all(is_shell_safe) {
-        return spec.to_owned();
-    }
-    let mut quoted = String::with_capacity(spec.len() + 2);
-    quoted.push('\'');
-    for ch in spec.chars() {
-        if ch == '\'' {
-            quoted.push_str(r"'\''");
-        } else {
-            quoted.push(ch);
-        }
-    }
-    quoted.push('\'');
-    quoted
-}
-
-fn is_shell_safe(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'=' | b'+' | b':' | b'@' | b'/' | b',')
 }
 
 #[component]
@@ -374,7 +335,7 @@ struct FileGroup {
     indexes: Vec<usize>,
 }
 
-/// The `PyPI` adapter resolves version parsing and ambiguity; this layer follows only explicit release labels.
+/// The adapter resolves version parsing and ambiguity; this layer follows explicit release labels.
 fn group_file_indexes(releases: &[UiRelease], files: &[UiFile]) -> Vec<FileGroup> {
     let mut groups: Vec<FileGroup> = releases
         .iter()
@@ -544,7 +505,7 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
     } else {
         filename.into_any()
     };
-    let inspect = (supports_archive_browser(&file.filename) && is_sha256_hex(&file.sha256))
+    let inspect = (file.browsable && is_sha256_hex(&file.sha256))
         .then(|| browse_archive_url(route, project, &file.sha256, &file.filename));
     let provenance = provenance_panel(file);
     let short_hash = file.sha256.get(..12).unwrap_or_default().to_owned();
@@ -558,8 +519,8 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
                 })}
                 {provenance}
             </td>
-            <td>{file.size.map_or_else(|| "—".to_owned(), human_size)}</td>
-            <td>{file.upload_time.clone().map_or_else(|| "—".to_owned(), |time| time.chars().take(10).collect())}</td>
+            <td>{file.size.map_or_else(|| "-".to_owned(), human_size)}</td>
+            <td>{file.upload_time.clone().map_or_else(|| "-".to_owned(), |time| time.chars().take(10).collect())}</td>
             <td><code title=file.sha256.clone()>{short_hash}</code></td>
             <td>
                 {placement_badges(file.source, file.availability)}
@@ -574,7 +535,7 @@ fn file_row(route: &str, project: &str, file: &UiFile) -> impl IntoView {
     }
 }
 
-/// The provenance panel for one file, when it advertises PEP 740 provenance. A keyboard-operable
+/// The provenance panel for one file, when it advertises provenance. A keyboard-operable
 /// `<details>` states the source and validation result in its summary and, when expanded, lists each
 /// attestation's predicate type and subject binding. Everything is plain, escaped data derived from
 /// stored metadata: peryx never verifies a Sigstore signature, and the full document is reachable
@@ -753,21 +714,6 @@ fn matching_files(files: &[UiFile], pattern: &str, mode: FileSearchMode) -> Resu
     }
 }
 
-fn supports_archive_browser(filename: &str) -> bool {
-    let path = std::path::Path::new(filename);
-    path.extension().is_some_and(|ext| {
-        ext.eq_ignore_ascii_case("whl")
-            || ext.eq_ignore_ascii_case("zip")
-            || ext.eq_ignore_ascii_case("egg")
-            || ext.eq_ignore_ascii_case("tar")
-    }) || filename
-        .get(filename.len().saturating_sub(7)..)
-        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
-        || filename
-            .get(filename.len().saturating_sub(4)..)
-            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tgz"))
-}
-
 /// The archive route addresses an artifact by digest, so a Simple API file that omits its sha256 has
 /// nothing to browse.
 fn is_sha256_hex(sha256: &str) -> bool {
@@ -864,8 +810,8 @@ fn ReleaseRow(route: String, project: String, release: UiRelease) -> impl IntoVi
     }
 }
 
-/// Render one neutral metadata block. The catch-all keeps an unrecognized block — a variant added to
-/// [`UiBlock`] that this renderer does not yet know — from breaking the page.
+/// Render one neutral metadata block. The catch-all keeps an unrecognized block - a variant added to
+/// [`UiBlock`] that this renderer does not yet know - from breaking the page.
 fn block_view(block: UiBlock) -> AnyView {
     match block {
         UiBlock::KeyValue { label, value } => view! {
@@ -977,301 +923,5 @@ fn run_admin(
 }
 
 #[cfg(test)]
-mod tests {
-    use leptos::prelude::*;
-    use rstest::rstest;
-
-    use peryx_core::{
-        UiArtifactSource, UiAttestation, UiByteAvailability, UiFile, UiProvenance, UiProvenanceSource, UiSubjectMatch,
-    };
-
-    use super::{
-        UiProjectStatus, file_row, install_command, placement_badges, project_status_badge, provenance_panel,
-        shell_quote,
-    };
-
-    fn file(filename: &str) -> UiFile {
-        UiFile {
-            filename: filename.to_owned(),
-            release: Some("1.0".to_owned()),
-            url: format!("/pypi/files/aa/{filename}"),
-            sha256: "aa".repeat(32),
-            size: None,
-            upload_time: None,
-            yanked: false,
-            yanked_reason: None,
-            has_metadata: false,
-            upstream: None,
-            provenance: None,
-            provenance_detail: None,
-            source: UiArtifactSource::Hosted,
-            availability: UiByteAvailability::Local,
-        }
-    }
-
-    fn hosted_provenance(predicate_type: Option<&str>, subject: UiSubjectMatch) -> UiProvenance {
-        UiProvenance {
-            source: UiProvenanceSource::Hosted,
-            attestations: vec![UiAttestation {
-                predicate_type: predicate_type.map(str::to_owned),
-                subject,
-            }],
-            malformed: false,
-        }
-    }
-
-    #[rstest]
-    #[case::plain("flask", "flask")]
-    #[case::normalized("ruamel.yaml-clib", "ruamel.yaml-clib")]
-    #[case::pinned_stays_bare("flask==1.2", "flask==1.2")]
-    #[case::extras("flask[async]", "'flask[async]'")]
-    #[case::whitespace("bad name", "'bad name'")]
-    #[case::epoch("pkg==1!2.0", "'pkg==1!2.0'")]
-    #[case::embedded_quote("o'hara", r"'o'\''hara'")]
-    fn test_shell_quote_wraps_only_targets_that_need_it(#[case] spec: &str, #[case] expected: &str) {
-        assert_eq!(shell_quote(spec), expected);
-    }
-
-    #[rstest]
-    #[case::bare_unpinned(
-        "http://host:8000",
-        "flask",
-        "",
-        "uv pip install --index-url http://host:8000/simple/ flask"
-    )]
-    #[case::pinned("", "flask", "1.2.3", "uv pip install --index-url /simple/ flask==1.2.3")]
-    #[case::quoted_and_pinned(
-        "",
-        "flask[async]",
-        "1.2.3",
-        "uv pip install --index-url /simple/ 'flask[async]==1.2.3'"
-    )]
-    fn test_install_command_quotes_and_pins_the_target(
-        #[case] origin: &str,
-        #[case] project: &str,
-        #[case] version: &str,
-        #[case] expected: &str,
-    ) {
-        assert_eq!(install_command(origin, "/simple/", project, version), expected);
-    }
-
-    #[rstest]
-    #[case::archived("archived")]
-    #[case::quarantined("quarantined")]
-    #[case::deprecated("deprecated")]
-    fn test_project_status_badge_renders_each_marker(#[case] marker: &str) {
-        let status = UiProjectStatus {
-            marker: marker.to_owned(),
-            reason: None,
-        };
-        let html = project_status_badge(status).to_html();
-        assert!(
-            html.contains(&format!(r#"<span class="badge status-{marker}">{marker}</span>"#)),
-            "{html}"
-        );
-        assert!(!html.contains("status-reason"), "{html}");
-    }
-
-    #[test]
-    fn test_project_status_badge_escapes_a_package_supplied_reason() {
-        let status = UiProjectStatus {
-            marker: "quarantined".to_owned(),
-            reason: Some(r"<script>pwn</script>".to_owned()),
-        };
-        let html = project_status_badge(status).to_html();
-        assert!(html.contains(r#"class="status-reason""#), "{html}");
-        assert!(html.contains("&lt;script&gt;pwn&lt;/script&gt;"), "{html}");
-        assert!(!html.contains("<script>"), "{html}");
-    }
-
-    #[test]
-    fn test_file_row_names_the_routed_upstream() {
-        let mut file = file("flask-1.0.whl");
-        file.upstream = Some("corporate".to_owned());
-        file.source = UiArtifactSource::Proxy;
-        file.availability = UiByteAvailability::RemoteOnly;
-        let html = file_row("pypi", "flask", &file).to_html();
-        assert!(html.contains(r#"title="Upstream source""#), "{html}");
-        assert!(html.contains(">corporate</span>"), "{html}");
-    }
-
-    #[rstest]
-    #[case::hosted(
-        UiArtifactSource::Hosted,
-        UiByteAvailability::Local,
-        ">hosted</span>",
-        ">local</span>"
-    )]
-    #[case::cached(UiArtifactSource::Proxy, UiByteAvailability::Local, ">proxy</span>", ">local</span>")]
-    #[case::remote_only(
-        UiArtifactSource::Proxy,
-        UiByteAvailability::RemoteOnly,
-        ">proxy</span>",
-        ">remote-only</span>"
-    )]
-    #[case::unavailable(
-        UiArtifactSource::Hosted,
-        UiByteAvailability::Unavailable,
-        ">hosted</span>",
-        ">unavailable</span>"
-    )]
-    #[case::generated(
-        UiArtifactSource::Generated,
-        UiByteAvailability::Local,
-        ">generated</span>",
-        ">local</span>"
-    )]
-    fn test_placement_badges_render_distinct_labelled_text(
-        #[case] source: UiArtifactSource,
-        #[case] availability: UiByteAvailability,
-        #[case] source_text: &str,
-        #[case] availability_text: &str,
-    ) {
-        let html = placement_badges(source, availability).to_html();
-        assert!(html.contains(source_text), "{html}");
-        assert!(html.contains(availability_text), "{html}");
-        // Each chip names its dimension for a screen reader and carries no colour-only meaning.
-        assert!(html.contains(r#"aria-label="source:"#), "{html}");
-        assert!(html.contains(r#"aria-label="availability:"#), "{html}");
-    }
-
-    #[test]
-    fn test_file_row_keeps_both_yank_reason_and_availability() {
-        let mut file = file("flask-1.0.whl");
-        file.source = UiArtifactSource::Proxy;
-        file.availability = UiByteAvailability::RemoteOnly;
-        file.yanked = true;
-        file.yanked_reason = Some("broken build".to_owned());
-        let html = file_row("pypi", "flask", &file).to_html();
-        assert!(html.contains("yanked-badge"), "{html}");
-        assert!(html.contains(">broken build</span>"), "{html}");
-        assert!(html.contains(">remote-only</span>"), "{html}");
-        assert!(html.contains(r#"class="badge placement-source src-proxy""#), "{html}");
-    }
-
-    #[test]
-    fn test_provenance_panel_summarizes_a_hosted_document() {
-        let mut file = file("flask-1.0.whl");
-        file.provenance = Some("/pypi/files/aa/flask-1.0.whl.provenance".to_owned());
-        file.provenance_detail = Some(UiProvenance {
-            source: UiProvenanceSource::Hosted,
-            attestations: vec![
-                UiAttestation {
-                    predicate_type: Some("https://docs.pypi.org/attestations/publish/v1".to_owned()),
-                    subject: UiSubjectMatch::Matched,
-                },
-                UiAttestation {
-                    predicate_type: Some("https://slsa.dev/provenance/v1".to_owned()),
-                    subject: UiSubjectMatch::Matched,
-                },
-            ],
-            malformed: false,
-        });
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(html.contains("<details class=\"provenance-panel\">"), "{html}");
-        assert!(html.contains(r#"aria-label="provenance source: hosted""#), "{html}");
-        assert!(html.contains(">binding verified</span>"), "{html}");
-        assert!(html.contains(">subject matched</span>"), "{html}");
-        assert!(html.contains(">2 attestations</p>"), "{html}");
-        assert!(
-            html.contains(">https://docs.pypi.org/attestations/publish/v1</code>"),
-            "{html}"
-        );
-        assert!(html.contains(">https://slsa.dev/provenance/v1</code>"), "{html}");
-    }
-
-    #[test]
-    fn test_provenance_panel_links_a_hosted_document_without_the_external_relationship() {
-        let mut file = file("flask-1.0.whl");
-        file.provenance = Some("/pypi/files/aa/flask-1.0.whl.provenance".to_owned());
-        file.provenance_detail = Some(hosted_provenance(None, UiSubjectMatch::Matched));
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(
-            html.contains(
-                r#"<a href="/pypi/files/aa/flask-1.0.whl.provenance" class="provenance-doc">provenance document</a>"#
-            ),
-            "{html}"
-        );
-        assert!(!html.contains("nofollow"), "{html}");
-        assert!(html.contains(">no predicate type</span>"), "{html}");
-    }
-
-    #[test]
-    fn test_provenance_panel_reports_a_mirrored_claim_as_unverified() {
-        let mut file = file("flask-1.0.whl");
-        file.source = UiArtifactSource::Proxy;
-        file.provenance = Some("https://pypi.example/flask-1.0.whl.provenance".to_owned());
-        file.provenance_detail = Some(UiProvenance {
-            source: UiProvenanceSource::Mirrored,
-            attestations: Vec::new(),
-            malformed: false,
-        });
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(html.contains(r#"aria-label="provenance source: mirrored""#), "{html}");
-        assert!(html.contains(">unverified claim</span>"), "{html}");
-        assert!(html.contains("neither fetched nor verified"), "{html}");
-        assert!(
-            html.contains(r#"rel="external nofollow noopener noreferrer" class="provenance-doc""#),
-            "{html}"
-        );
-        assert!(!html.contains("<li class=\"attestation\">"), "{html}");
-    }
-
-    #[test]
-    fn test_provenance_panel_reports_an_unreadable_document() {
-        let mut file = file("flask-1.0.whl");
-        file.provenance = Some("/pypi/files/aa/flask-1.0.whl.provenance".to_owned());
-        file.provenance_detail = Some(UiProvenance {
-            source: UiProvenanceSource::Hosted,
-            attestations: Vec::new(),
-            malformed: true,
-        });
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(html.contains(">unreadable</span>"), "{html}");
-        assert!(html.contains("could not read the stored provenance document"), "{html}");
-    }
-
-    #[rstest]
-    #[case::mismatched(UiSubjectMatch::Mismatched, ">subject mismatch</span>")]
-    #[case::unknown(UiSubjectMatch::Unknown, ">subject unknown</span>")]
-    fn test_provenance_panel_labels_each_subject_binding(#[case] subject: UiSubjectMatch, #[case] expected: &str) {
-        let mut file = file("flask-1.0.whl");
-        file.provenance = Some("/pypi/files/aa/flask-1.0.whl.provenance".to_owned());
-        file.provenance_detail = Some(hosted_provenance(Some("https://slsa.dev/provenance/v1"), subject));
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(html.contains(expected), "{html}");
-        assert!(html.contains(r#"aria-label="subject binding:"#), "{html}");
-    }
-
-    #[test]
-    fn test_provenance_panel_escapes_an_untrusted_predicate_type() {
-        let mut file = file("flask-1.0.whl");
-        file.provenance = Some("/pypi/files/aa/flask-1.0.whl.provenance".to_owned());
-        file.provenance_detail = Some(hosted_provenance(
-            Some(r"<script>pwn()</script>"),
-            UiSubjectMatch::Matched,
-        ));
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(!html.contains("<script>"), "{html}");
-        assert!(html.contains("&lt;script&gt;pwn()&lt;/script&gt;"), "{html}");
-    }
-
-    #[test]
-    fn test_provenance_panel_drops_an_unsafe_document_url_but_keeps_the_panel() {
-        let mut file = file("flask-1.0.whl");
-        file.provenance = Some("javascript:alert(1)".to_owned());
-        file.provenance_detail = Some(hosted_provenance(None, UiSubjectMatch::Matched));
-        let html = provenance_panel(&file).unwrap().to_html();
-        assert!(html.contains("provenance-panel"), "{html}");
-        assert!(!html.contains("provenance-doc"), "{html}");
-        assert!(!html.contains("javascript:"), "{html}");
-    }
-
-    #[test]
-    fn test_file_row_renders_no_provenance_panel_without_a_detail() {
-        let file = file("flask-1.0.whl");
-        let html = file_row("pypi", "flask", &file).to_html();
-        assert!(!html.contains("provenance-panel"), "{html}");
-        assert!(html.contains("flask-1.0.whl"), "{html}");
-    }
-}
+#[path = "../../tests/unit/pages/project/tests.rs"]
+mod tests;

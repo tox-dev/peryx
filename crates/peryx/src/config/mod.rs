@@ -12,20 +12,21 @@ mod repository_migration;
 
 use std::path::PathBuf;
 
-#[cfg(test)]
-pub(crate) use load::from_env_source;
 pub use load::{from_env, from_file, from_toml};
-#[cfg(test)]
-pub(crate) use merge::classify_tls;
 pub use model::{
-    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, AvailabilityMode,
-    BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
+    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, BlobStorageConfig,
+    Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig, LogConfig, LogFormat, LogSink,
-    OidcProviderConfig, PrefetchConfig, PrefetchMode, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig,
-    TokenConfig, TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig,
-    WebhookSecret, WriteAckConfig,
+    OidcProviderConfig, PrefetchConfig, ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig,
+    TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
+    WriteAckConfig,
 };
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/config/mod.rs"]
+mod tests;
+pub use peryx_ha::AvailabilityMode;
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
     RawAcme, RawAvailability, RawBlobStorage, RawCredentialExec, RawDcMember, RawExternalGroupGrant, RawIndex,

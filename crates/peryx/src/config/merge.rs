@@ -4,15 +4,14 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use peryx_core::Ecosystem;
 use peryx_driver::jobs::{
     CatalogSyncParameters, DcCopyParameters, MAX_CATALOG_CONCURRENCY, MAX_CATALOG_PROJECTS_PER_RUN,
     MAX_CATALOG_TIMEOUT, MAX_DC_COPY_CONCURRENCY, PlacementReconcileParameters, ReclamationParameters, Schedule,
     ScheduledJob,
 };
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use peryx_ha_distributed::DurabilityPolicy;
 use peryx_identity::{ExternalGroup, ExternalGroupGrant, GrantScope, ProviderId};
-use peryx_replication::DurabilityPolicy;
 use peryx_upstream::{CredentialFailure, ExecCredentialConfig, ExecCredentialConfigError};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -22,8 +21,8 @@ use std::collections::HashSet;
 
 use super::ConfigError;
 use super::model::{
-    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, AvailabilityMode,
-    BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
+    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, BlobStorageConfig,
+    Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, MAX_TOKEN_TTL_SECS, OidcProviderConfig,
     ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig, UpstreamConfig,
@@ -35,8 +34,9 @@ use super::raw::{
     RawExternalGroupGrant, RawIndex, RawJobSchedule, RawLdapMode, RawLdapProvider, RawOidcProvider, RawReadThrough,
     RawReplication, RawScheduledJob, RawTls, RawToken, RawUpstream, RawWebhook, RawWriteAck, RawWriteAckPolicy,
 };
-use peryx_driver::read_through::{DEFAULT_READ_THROUGH_LIMITS, ReadThroughLimits};
-use peryx_replication::{CircuitConfig, ReconnectPolicy};
+use peryx_ha::AvailabilityMode;
+use peryx_ha_distributed::read_through::{DEFAULT_READ_THROUGH_LIMITS, ReadThroughLimits};
+use peryx_ha_distributed::{CircuitConfig, ReconnectPolicy};
 
 impl Config {
     /// Overlay a partial source on top of these values, returning the merged config.
@@ -277,10 +277,14 @@ fn validate_schedules(indexes: &[IndexConfig], schedules: &[Schedule]) -> Result
                 reason: "catalog sync `repository` must name a cached index",
             });
         };
-        if repository.ecosystem != Ecosystem::Pypi || *offline {
+        if !peryx_plugin_registry::supports(
+            repository.ecosystem,
+            peryx_driver::serving::EcosystemCapability::CatalogSync,
+        ) || *offline
+        {
             return Err(ConfigError::Jobs {
                 index: position,
-                reason: "catalog sync needs an online PyPI repository",
+                reason: "catalog sync needs an online repository with catalog support",
             });
         }
         if let Some(source) = &parameters.source
@@ -432,7 +436,7 @@ fn classify_replication(raw: RawReplication) -> Result<ReplicationConfig, Config
                     reason: "`page_size` must be positive",
                 });
             };
-            if page_size.get() > peryx_replication::DEFAULT_MAX_CHANGE_PAGE_SIZE {
+            if page_size.get() > peryx_ha_distributed::DEFAULT_MAX_CHANGE_PAGE_SIZE {
                 return Err(ConfigError::Replication {
                     reason: "`page_size` exceeds the primary limit",
                 });
@@ -646,11 +650,20 @@ fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
     let mut raw = raw;
     let route = raw.route.clone().unwrap_or_else(|| raw.name.clone());
     let ecosystem = match &raw.ecosystem {
-        Some(value) => value.parse().map_err(|_| ConfigError::Index {
-            name: raw.name.clone(),
-            reason: "unknown ecosystem",
-        })?,
-        None => Ecosystem::default(),
+        Some(value) => {
+            let ecosystem = value.parse().map_err(|_| ConfigError::Index {
+                name: raw.name.clone(),
+                reason: "unknown ecosystem",
+            })?;
+            if !peryx_plugin_registry::is_installed(ecosystem) {
+                return Err(ConfigError::Index {
+                    name: raw.name.clone(),
+                    reason: "unknown ecosystem",
+                });
+            }
+            ecosystem
+        }
+        None => peryx_plugin_registry::default_ecosystem(),
     };
     let kind = classify_index_kind(&mut raw)?;
     let tokens = classify_tokens(&raw.name, raw.tokens)?;

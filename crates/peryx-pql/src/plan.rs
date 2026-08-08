@@ -47,7 +47,7 @@ pub fn plan(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
 /// Cost-bound a two-domain join before either side is read.
 ///
 /// The probe (build) side is materialized whole to index it, so it must be a bounded domain; the
-/// outer side is streamed, so it must be affordable on its own — bounded, or narrowed by a cheap
+/// outer side is streamed, so it must be affordable on its own - bounded, or narrowed by a cheap
 /// leading filter, which is the single-domain gate applied over the outer schema. The join-key index
 /// the validator checks does not bound this cost, because the executor materializes the whole probe
 /// domain rather than doing a per-key lookup.

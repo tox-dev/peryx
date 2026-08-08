@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+cargo llvm-cov clean --workspace
+eval "$(cargo llvm-cov show-env --sh)"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+export CARGO_PROFILE_TEST_DEBUG=0
+test_targets=(--lib --bins --tests --examples)
+cargo test --workspace --exclude peryx --exclude peryx-web "${test_targets[@]}"
+cargo nextest run -p peryx -p peryx-web "${test_targets[@]}"
+cargo test --workspace --bench '*'
+cargo llvm-cov report --ignore-filename-regex '$^' --lcov --output-path "${1:-coverage-native.lcov}"

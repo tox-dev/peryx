@@ -1,0 +1,23 @@
+[package]
+name = "peryx-bench-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ecosystem-neutral benchmark measurement and reporting for peryx."
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+statrs.workspace = true
+sysinfo.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

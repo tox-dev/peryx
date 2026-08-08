@@ -120,17 +120,15 @@ and revalidates once its freshness window elapses, and zot re-checks its sync. T
 be up to one freshness window stale, which is the trade a caching proxy exists to make. A manifest **by digest** is
 immutable, and there the comparison is clean.
 
-The revalidation itself is cheap: peryx asks what the tag points at with a `HEAD`, which answers with a digest and no
-body, and only fetches the manifest when that digest has moved. So the freshness window is not buying a round trip, it
-is buying the absence of one — and a burst of pulls of the same stale tag collapses into a single upstream check through
-the single-flight gate. The window is [`cache_ttl_secs`](@/core/configuration.md), five minutes by default.
+For revalidation, peryx sends a `HEAD` request that returns the tag's digest without a body. It fetches the manifest
+only when that digest changes. The freshness window removes this request from fresh reads, and the single-flight gate
+reduces a burst of stale-tag pulls to one upstream check. [`cache_ttl_secs`](@/core/configuration.md) sets the window
+and defaults to five minutes.
 
-`tag list` used to be the one row peryx lost, and it lost it for a structural reason: a single-member proxy passed the
-request straight to its upstream on every request, so the row measured a round trip to Docker Hub rather than a registry
-serving something it holds. A tag list is mutable, which is why it asked — but that is what a freshness window is for.
-It is now cached like a tag: trusted for [`cache_ttl_secs`](@/core/configuration.md), revalidated after, and answered
-from the last list when the upstream cannot be reached, bounded by `max_stale_secs`. A burst of listings costs the
-upstream one request, not one per client.
+`tag list` used to send each request from a single-member proxy to its upstream, so the benchmark measured a Docker Hub
+round trip. peryx now caches this mutable list for [`cache_ttl_secs`](@/core/configuration.md), revalidates it after the
+window, and answers from the last list when the upstream cannot be reached, bounded by `max_stale_secs`. A burst of
+listings costs the upstream one request, not one per client.
 
 ## Reproducing
 

@@ -32,12 +32,12 @@ an unbounded history.
 A placement moves through an evidence-based lifecycle. A staged temporary file is never treated as serveable; only a
 backend-confirmed digest is.
 
-- **Pending** — a transfer is in flight or a file is staged. No serving evidence exists.
-- **Verified** — the backend confirmed the object with a matching digest and byte size. This is the only state routing
+- **Pending** : a transfer is in flight or a file is staged. No serving evidence exists.
+- **Verified** : the backend confirmed the object with a matching digest and byte size. This is the only state routing
   serves from.
-- **Failed** — a transfer attempt failed for a classified reason: the source was unavailable, the transferred bytes
+- **Failed** : a transfer attempt failed for a classified reason: the source was unavailable, the transferred bytes
   hashed to a different digest, or the backend refused the write. A digest mismatch can never serve.
-- **Revoked** — the placement was withdrawn from serving, for reclamation or an administrative decision.
+- **Revoked** : the placement was withdrawn from serving, for reclamation or an administrative decision.
 
 Verifying a digest that does not match the key records a digest-mismatch failure rather than a verified placement. A
 failure on one placement never erases a verified placement in another location, because each
@@ -55,11 +55,11 @@ transition also advances a generation counter, so a reader can detect a concurre
 A routing query for one digest, given the querying node's own data center, splits the digest's placements into the
 choices a router picks between:
 
-- **local** — verified placements in this data center, served without a network hop;
-- **verified remote** — verified placements a peer data center can stream;
-- **pending** — transfers still in flight;
-- **failed** — candidates that cannot serve until retried;
-- **revoked** — placements withdrawn from serving.
+- **local** : verified placements in this data center, served without a network hop;
+- **verified remote** : verified placements a peer data center can stream;
+- **pending** : transfers still in flight;
+- **failed** : candidates that cannot serve until retried;
+- **revoked** : placements withdrawn from serving.
 
 A digest is serveable when it has any verified placement, local or remote. A digest with only pending or failed
 placements is present in the ledger but not yet serveable, which a router distinguishes from a digest with no placement

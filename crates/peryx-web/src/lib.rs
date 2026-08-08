@@ -78,7 +78,7 @@ pub fn App() -> impl IntoView {
                 // These pages read runtime state through a `Suspense`. `SsrMode::Async` resolves those
                 // resources before the server emits the document, instead of streaming the `loading`
                 // fallback first and swapping the content in. Out-of-order streaming truncates that
-                // fallback into the response under load — on the live server, not only in tests — so a
+                // fallback into the response under load on the live server, so a
                 // full resolve is both deterministic to assert on and correct for no-JS and slow clients.
                 <Routes fallback=|| view! { <p class="dim">"not found"</p> }>
                     <Route path=path!("/") view=Dashboard ssr=SsrMode::Async />
@@ -283,5 +283,20 @@ pub fn hydrate() {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "wasm-coverage"))]
+#[allow(
+    unsafe_code,
+    reason = "each page owns one single-threaded Wasm instance while minicov snapshots its counters"
+)]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn capture_coverage() -> Vec<u8> {
+    let mut profile = Vec::new();
+    unsafe {
+        minicov::capture_coverage(&mut profile).expect("coverage profile must serialize");
+    }
+    profile
+}
+
 #[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
 mod tests;

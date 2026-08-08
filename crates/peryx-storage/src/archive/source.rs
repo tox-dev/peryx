@@ -3,17 +3,18 @@ use std::path::{Path, PathBuf};
 
 use super::model::ArchiveError;
 use super::{
-    MAX_CONTAINER_DEPTH, MAX_DECOMPRESSED_INSPECT_BYTES, MAX_NESTED_ARCHIVE_SIZE, is_supported_archive, is_tar,
-    is_tar_gz, is_zip, read_error, safe_member_name,
+    ArchiveFormat, ArchiveProfile, MAX_CONTAINER_DEPTH, MAX_DECOMPRESSED_INSPECT_BYTES, MAX_NESTED_ARCHIVE_SIZE,
 };
+use super::{read_error, safe_member_name};
 
 pub(super) struct ResolvedArchive {
-    pub(super) filename: String,
+    pub(super) format: ArchiveFormat,
     pub(super) source: ArchiveSource,
     _temps: Vec<tempfile::TempPath>,
 }
 
 pub(super) fn resolve_container_stack(
+    profile: &dyn ArchiveProfile,
     filename: &str,
     path: &Path,
     containers: &[String],
@@ -25,37 +26,33 @@ pub(super) fn resolve_container_stack(
         });
     }
     let mut source = ArchiveSource::new(path.to_path_buf());
-    let mut filename = filename.to_owned();
+    let mut format = profile.format(filename).ok_or(ArchiveError::Unsupported)?;
     let mut temps = Vec::new();
     for container in containers {
         let container = safe_member_name(container)?;
-        if !is_supported_archive(&container) {
-            return Err(ArchiveError::UnsupportedNestedArchive(container));
-        }
-        source = nested_archive_source(&filename, &source, &container, &mut temps)?;
-        filename = container;
+        let nested_format = profile
+            .format(&container)
+            .ok_or_else(|| ArchiveError::UnsupportedNestedArchive(container.clone()))?;
+        source = nested_archive_source(format, &source, &container, &mut temps)?;
+        format = nested_format;
     }
     Ok(ResolvedArchive {
-        filename,
+        format,
         source,
         _temps: temps,
     })
 }
 
 fn nested_archive_source(
-    filename: &str,
+    format: ArchiveFormat,
     source: &ArchiveSource,
     member: &str,
     temps: &mut Vec<tempfile::TempPath>,
 ) -> Result<ArchiveSource, ArchiveError> {
-    if is_zip(filename) {
-        nested_zip_source(source, member, temps)
-    } else if is_tar(filename) {
-        nested_tar_source(source.open()?, member, temps)
-    } else if is_tar_gz(filename) {
-        nested_tar_source(flate2::read::GzDecoder::new(source.open()?), member, temps)
-    } else {
-        Err(ArchiveError::Unsupported)
+    match format {
+        ArchiveFormat::Zip => nested_zip_source(source, member, temps),
+        ArchiveFormat::Tar => nested_tar_source(source.open()?, member, temps),
+        ArchiveFormat::TarGz => nested_tar_source(flate2::read::GzDecoder::new(source.open()?), member, temps),
     }
 }
 
@@ -69,9 +66,6 @@ fn nested_zip_source(
         return Err(ArchiveError::MemberNotFound);
     };
     safe_member_name(entry.name())?;
-    if !entry.is_file() {
-        return Err(ArchiveError::MemberNotFound);
-    }
     reject_large_nested_archive(member, entry.size())?;
     if entry.compression() == zip::CompressionMethod::Stored
         && !entry.encrypted()
@@ -93,14 +87,13 @@ fn nested_tar_source(
     let mut archive = tar::Archive::new(reader.take(MAX_DECOMPRESSED_INSPECT_BYTES));
     for entry in archive.entries().map_err(read_error)? {
         let entry = entry.map_err(read_error)?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-        let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
-        let path = safe_member_name(&path)?;
-        if path == member {
-            reject_large_nested_archive(member, entry.size())?;
-            return copy_nested_archive(entry, temps);
+        if entry.header().entry_type().is_file() {
+            let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
+            let path = safe_member_name(&path)?;
+            if path == member {
+                reject_large_nested_archive(member, entry.size())?;
+                return copy_nested_archive(entry, temps);
+            }
         }
     }
     Err(ArchiveError::MemberNotFound)

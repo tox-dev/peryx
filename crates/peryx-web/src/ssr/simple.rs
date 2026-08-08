@@ -14,6 +14,10 @@ use super::{authorize_project, resolve};
 pub async fn projects(route: &str) -> Result<Vec<String>, String> {
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
+    let driver = driver
+        .capabilities()
+        .browse
+        .ok_or_else(|| format!("index {route:?} does not support project browsing"))?;
     if app.index_at(position).acl.anonymous_read {
         return driver.project_names(&app.serving, position);
     }
@@ -34,6 +38,10 @@ pub async fn project_view(route: &str, project: &str) -> Result<Option<UiProject
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
     authorize_project(&app, position, project).await?;
+    let driver = driver
+        .capabilities()
+        .browse
+        .ok_or_else(|| format!("index {route:?} does not support project browsing"))?;
     driver
         .browse_project(app.serving.clone(), position, project.to_owned())
         .await
@@ -47,6 +55,10 @@ pub async fn manifest(route: &str, repo: &str, reference: &str) -> Result<Option
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
     authorize_project(&app, position, repo).await?;
+    let driver = driver
+        .capabilities()
+        .manifest
+        .ok_or_else(|| format!("index {route:?} does not expose manifests"))?;
     driver
         .manifest_view(app.serving.clone(), position, repo.to_owned(), reference.to_owned())
         .await
@@ -60,6 +72,10 @@ pub async fn layer_members(route: &str, repo: &str, digest: &str) -> Result<Vec<
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
     authorize_project(&app, position, repo).await?;
+    let driver = driver
+        .capabilities()
+        .artifact_members
+        .ok_or_else(|| format!("index {route:?} does not expose artifact members"))?;
     driver
         .artifact_members(app.serving.clone(), position, repo.to_owned(), digest.to_owned())
         .await
@@ -79,6 +95,10 @@ pub async fn layer_chunk(
     let app = expect_context::<Arc<AppState>>();
     let (position, driver) = resolve(&app, route)?;
     authorize_project(&app, position, repo).await?;
+    let driver = driver
+        .capabilities()
+        .artifact_members
+        .ok_or_else(|| format!("index {route:?} does not expose artifact members"))?;
     driver
         .artifact_member_chunk(
             app.serving.clone(),

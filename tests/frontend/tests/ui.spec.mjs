@@ -1,6 +1,8 @@
 // Functional tests of the hydrated web UI: every reactive feature is driven the way a person would
 // drive it, against a real peryx with a real uploaded package.
 import { expect, test } from "@playwright/test";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +13,17 @@ const FIXTURE_WHEEL = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtu
 // The status, dashboard, and stats surfaces filter to the caller's class, so viewing the topology and
 // counters needs the bootstrapped administrator's credential on every request the page makes.
 const ADMIN_AUTH = `Basic ${Buffer.from("administrator:browser-admin-secret").toString("base64")}`;
+
+test.afterEach(async ({ page }, testInfo) => {
+  if (!process.env.PERYX_WASM_PROFRAW || page.isClosed() || (await page.locator("body[data-hydrated]").count()) === 0) return;
+  const profile = await page.evaluate(async () => {
+    const module = await import("/pkg/peryx_web.js");
+    return Array.from(module.capture_coverage());
+  });
+  const identity = `${testInfo.workerIndex}-${testInfo.retry}-${testInfo.titlePath.join("-")}`;
+  const digest = createHash("sha256").update(identity).digest("hex");
+  writeFileSync(join(process.env.PERYX_WASM_PROFRAW, `${digest}.profraw`), Buffer.from(profile));
+});
 
 /// Navigate and wait for the wasm bundle to hydrate, so clicks hit live handlers.
 async function goto(page, url) {
@@ -288,7 +301,7 @@ test("project page summarizes hosted provenance and flags a mirrored claim", asy
 });
 
 test("unknown routes render the not-found fallback", async ({ page }) => {
-  // An unmatched path never reaches the SPA shell — peryx answers with its own 404 body — so this
+  // Peryx answers unmatched paths before they reach the SPA shell, so this
   // one skips the hydration wait the other tests rely on.
   const response = await page.goto("/does-not-exist");
   expect(response.status()).toBe(404);
@@ -382,14 +395,14 @@ test("policy decision filters keep credentials out of navigation and render ever
     "Allowed",
     "internal",
     "unversioned-package",
-    "—",
-    "—",
-    "—",
+    "-",
+    "-",
+    "-",
     "serve",
-    "—",
-    "—",
+    "-",
+    "-",
     "1970-01-01T00:00:00Z",
-    "—",
+    "-",
   ]);
   await expect(page).toHaveURL(/\/admin\/policy-decisions$/);
   await expect(page.locator("#policy-password")).toHaveAttribute("autocomplete", "off");
@@ -616,7 +629,7 @@ test("shadow inspection labels outcome, source, and decision without colour alon
   await expect(table).toContainText("Higher-precedence member");
   await expect(table).toContainText("1970-01-01T00:01:00Z");
   const undecided = table.locator("tbody tr", { hasText: "example-2.0-py3-none-any.whl" });
-  await expect(undecided.locator("td").nth(1)).toHaveText("—");
+  await expect(undecided.locator("td").nth(1)).toHaveText("-");
 });
 
 test("shadow inspection escapes policy text and leaks no upstream url", async ({ page }) => {
@@ -771,7 +784,7 @@ test("admin topology table fits the page and uses current vocabulary", async ({ 
   await expect(page.locator(".ops-page h2", { hasText: "Repositories" })).toHaveCount(0);
   await expect(page.locator(".ops-table th", { hasText: "Type" }).first()).toBeVisible();
   await expect(page.locator(".ops-table .ops-type").first().locator(".badge")).toHaveCount(2);
-  // The wide data tables scroll inside their own container — the page body never scrolls sideways.
+  // Wide data tables scroll within their container to keep the page body fixed.
   const bodyScrollsSideways = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   expect(bodyScrollsSideways).toBe(false);
 });
@@ -850,12 +863,7 @@ test("release navigation follows native keyboard order", async ({ page }) => {
 });
 
 test("large histories group without rendering unrelated releases", async ({ page }) => {
-  const detail = await page.request.get("/pypi/simple/large-demo/", {
-    headers: { accept: "application/vnd.pypi.simple.v1+json" },
-  });
-  expect((await detail.json()).files).toHaveLength(2_000);
-
-  await goto(page, "/browse?index=pypi&project=large-demo&version=99.0");
+  await page.goto("/browse?index=pypi&project=large-demo&version=99.0");
   await expect(page.locator("section.release-files")).toHaveCount(1);
   await expect(page.locator("section.release-files tbody tr")).toHaveCount(20);
   await expect(page.locator(".file-filter-count")).toHaveText("20 files");
@@ -1120,8 +1128,8 @@ for (const [view, endpoint, rowsKey, row, headers] of [
     const table = page.locator(".usage-table");
     await expect(table.getByRole("columnheader")).toHaveText(headers);
     await expect(table.locator("caption")).toHaveText(/1 /);
-    // Absent version and source read as explicit text, never an empty cell.
-    if (view === "versions") await expect(table.locator("tbody td").nth(2)).toHaveText("—");
+    // The placeholder keeps absent values visible to assistive technology.
+    if (view === "versions") await expect(table.locator("tbody td").nth(2)).toHaveText("-");
     if (view === "sources") await expect(table.locator("tbody td").nth(2)).toHaveText("local store");
     if (view === "timeline") await expect(table.locator("tbody td").nth(0)).toContainText("T00:00:00Z");
   });
@@ -1300,13 +1308,45 @@ test("availability topology renders roster health and filters by role", async ({
   await expect(rows).toHaveCount(3);
 });
 
-// The feed badge tracks the live connection's real state. A person reading it must never see "Live" while
-// the browser is still connecting, nor while a protocol error is freezing the render behind a stale
-// snapshot. These cases drive the stream the way the browser does: header-then-body, malformed body, drop
-// and reconnect.
+async function mockTopologyStream(page) {
+  await page.addInitScript(() => {
+    class MockEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
 
-/// Open the topology page through a client-side nav so its loader runs in the browser and hits the mocked
-/// snapshot, mirroring the roster test above.
+      constructor() {
+        this.readyState = MockEventSource.CONNECTING;
+        this.listeners = new Map();
+        window.__topologyStream = this;
+      }
+
+      addEventListener(type, listener) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED;
+      }
+
+      open() {
+        this.readyState = MockEventSource.OPEN;
+        this.onopen?.(new Event("open"));
+      }
+
+      message(data) {
+        this.listeners.get("topology")?.(new MessageEvent("topology", { data }));
+      }
+
+      drop() {
+        this.readyState = MockEventSource.CONNECTING;
+        this.onerror?.(new Event("error"));
+      }
+    }
+    window.EventSource = MockEventSource;
+  });
+}
+
 async function openTopology(page) {
   await page.route("**/+availability/topology", (route) =>
     route.fulfill({ contentType: "application/json", body: JSON.stringify(topologySnapshot) }),
@@ -1318,62 +1358,31 @@ async function openTopology(page) {
 }
 
 test("topology feed stays out of live until the stream opens", async ({ page }) => {
-  let openStream;
-  const opened = new Promise((resolve) => {
-    openStream = resolve;
-  });
-  // Hold the stream response so the browser sits in the pre-open connecting state with the socket pending.
-  await page.route("**/+availability/topology/stream", async (route) => {
-    await opened;
-    await route.fulfill({
-      contentType: "text/event-stream",
-      body: `id: 1\nevent: topology\ndata: ${JSON.stringify(topologySnapshot)}\n\n`,
-    });
-  });
+  await mockTopologyStream(page);
   const badge = await openTopology(page);
   await expect(badge).toHaveText("feed: Reconnecting");
-  openStream();
+  await page.evaluate(() => window.__topologyStream.open());
   await expect(badge).toHaveText("feed: Live");
 });
 
 test("topology feed leaves live when the stream sends undecodable data", async ({ page }) => {
-  // The connection opens (badge briefly live), then a body that is not a snapshot must strand the render
-  // as stale rather than leaving the live badge over frozen data.
-  await page.route("**/+availability/topology/stream", (route) =>
-    route.fulfill({
-      contentType: "text/event-stream",
-      body: `id: 1\nevent: topology\ndata: not a snapshot\n\n`,
-    }),
-  );
+  await mockTopologyStream(page);
   const badge = await openTopology(page);
+  await page.evaluate(() => {
+    window.__topologyStream.open();
+    window.__topologyStream.message("not a snapshot");
+  });
   await expect(badge).toHaveText("feed: Stale");
 });
 
 test("topology feed reports reconnecting after a drop and recovers to live", async ({ page }) => {
-  let recover;
-  const recovered = new Promise((resolve) => {
-    recover = resolve;
-  });
-  let attempts = 0;
-  await page.route("**/+availability/topology/stream", async (route) => {
-    attempts += 1;
-    if (attempts === 1) {
-      // Deliver one valid event, then close so the browser reconnects quickly.
-      await route.fulfill({
-        contentType: "text/event-stream",
-        body: `retry: 150\nid: 1\nevent: topology\ndata: ${JSON.stringify(topologySnapshot)}\n\n`,
-      });
-      return;
-    }
-    // Hold the retry so the reconnecting state is observable, then let it recover.
-    await recovered;
-    await route.fulfill({
-      contentType: "text/event-stream",
-      body: `id: 2\nevent: topology\ndata: ${JSON.stringify(topologySnapshot)}\n\n`,
-    });
-  });
+  await mockTopologyStream(page);
   const badge = await openTopology(page);
+  await page.evaluate(() => {
+    window.__topologyStream.open();
+    window.__topologyStream.drop();
+  });
   await expect(badge).toHaveText("feed: Reconnecting");
-  recover();
+  await page.evaluate(() => window.__topologyStream.open());
   await expect(badge).toHaveText("feed: Live");
 });

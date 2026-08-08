@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+output="${1:-.tox/coverage}"
+rm -rf "$output"
+mkdir -p "$output"
+export CARGO_TARGET_DIR="$output/target"
+.github/scripts/coverage-native "$output/native.lcov"
+.github/scripts/coverage-e2e "$output/e2e.lcov"
+.github/scripts/coverage-availability "$output/availability.lcov"
+.github/scripts/coverage-frontend "$output/frontend-native.lcov" "$output/frontend-wasm.lcov"
+.github/scripts/coverage-merge "$output/lcov.info" "$output"/*.lcov

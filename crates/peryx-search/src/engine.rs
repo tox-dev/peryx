@@ -313,7 +313,7 @@ impl PackageSearch {
             .map(|(_sort, address)| {
                 searcher.doc::<TantivyDocument>(address).map(|doc| {
                     let mut result = self.result_from_doc(&doc);
-                    let ecosystem = result.ecosystem.parse().unwrap_or_default();
+                    let ecosystem = result.ecosystem.parse().expect("indexed ecosystem identity is valid");
                     ctx.lexicon(ecosystem).search_noun.clone_into(&mut result.type_label);
                     result
                 })
@@ -403,7 +403,7 @@ impl PackageSearch {
         }
     }
 
-    /// Replace one project's document on one index — the record keyed by [`project_key`] — with `docs`,
+    /// Replace one project's document on one index - the record keyed by [`project_key`] - with `docs`,
     /// leaving every other project untouched.
     ///
     /// A replica calls this as it applies a metadata page: it retires the project's stale document by

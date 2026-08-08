@@ -33,7 +33,7 @@ layers = ["hosted", "pypi"]
 upload = "hosted"
 ```
 
-Then publish to the virtual index's route. peryx accepts any username; the token is the password, matching the pypi.org
+Publish to the virtual index's route. peryx accepts any username; the token is the password, matching the pypi.org
 `__token__` convention:
 
 ```shell
@@ -42,11 +42,11 @@ twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <
 uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
 ```
 
-peryx accepts wheels and both source-distribution forms [PEP 527](https://peps.python.org/pep-0527/) defines, a
+peryx accepts wheels and both source-distribution forms [PEP 527](https://peps.python.org/pep-0527/) defines: a
 `.tar.gz` and a `.zip`. It rejects `.egg` and the older compressed-tar formats such as `.tar.bz2` on upload; those files
 can still be mirrored if an upstream index lists them. During upload, peryx checks the declared sha256 and blake2b-256
 digests while streaming the artifact into a staged blob. When `md5_digest` is the only digest a client declares, peryx
-computes and verifies it too, the way [Warehouse](https://pypi.org/) does, so a legacy MD5-only upload is accepted; see
+computes and verifies it as [Warehouse](https://pypi.org/) does, so it accepts a legacy MD5-only upload. See
 [upload with a single digest](#upload-with-a-single-digest).
 
 Before publishing the staged blob, peryx validates the project name, [PEP 440](https://peps.python.org/pep-0440/)
@@ -74,24 +74,23 @@ without a colon, a line with no field name, or a document opening with a folded 
 `email.parser` stops reading headers at that line, and every field below it disappears. peryx rejects the upload rather
 than reading past the defect, the same as pypi.org.
 
-Accepted files are stored content-addressed and served from `/root/pypi/simple/<project>/` alongside the cached index's
-packages. Your file shadows an upstream file of the same name. For wheels, peryx extracts `METADATA`; for sdists, it
-extracts the verified `PKG-INFO`. Both are served as [PEP 658/714](https://peps.python.org/pep-0658/) `.metadata`
-siblings, so resolvers get the fast path for your uploads and the web UI can show the full package page.
+peryx stores accepted files by content digest and serves them from `/root/pypi/simple/<project>/` alongside the cached
+index's packages. Your file shadows an upstream file of the same name. For wheels, peryx extracts `METADATA`; for
+sdists, it extracts the verified `PKG-INFO`. peryx serves both as [PEP 658/714](https://peps.python.org/pep-0658/)
+`.metadata` siblings, giving resolvers the metadata path and the web UI the full package data.
 
 ## Publishing a `.zip` sdist
 
-Most build backends emit a `.tar.gz` sdist, but some still produce a zip one (`python setup.py sdist --formats=zip`, or
-a backend configured that way). A `.zip` uploads through the same command as any other artifact, so `dist/*` covers it
-and needs no extra flag:
+Most build backends emit a `.tar.gz` sdist. Some produce a zip through `python setup.py sdist --formats=zip` or backend
+configuration. Upload a `.zip` with the same command as other artifacts; `dist/*` needs no extra flag:
 
 ```shell
 twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/example_pkg-1.0.zip
 ```
 
-peryx validates the zip against the sdist rules above: the `{name}-{version}/PKG-INFO`, the `pyproject.toml`, the
-`Metadata-Version` floor, and the name/version identity cross-checks all apply, and the stored file gets its `PKG-INFO`
-served as a PEP 658 `.metadata` sibling like a `.tar.gz` sdist does.
+peryx applies the sdist rules above to the zip, including `{name}-{version}/PKG-INFO`, `pyproject.toml`, the
+`Metadata-Version` floor, and name/version identity checks. It serves the stored file's `PKG-INFO` as a PEP 658
+`.metadata` sibling.
 
 peryx takes the zip form because [PEP 527](https://peps.python.org/pep-0527/) lists it as a valid source distribution,
 and [Warehouse](https://pypi.org/) (pypi.org), [devpi](https://devpi.net/), and pypiserver all accept it. Refusing a
@@ -100,11 +99,11 @@ not publish the same file to the index in front of it. Accepting it keeps peryx 
 
 ## Publish a wheel from older tooling
 
-You have a wheel built by older tooling, or restored from a backup, whose `.dist-info` directory is not spelled the
-normalized way current build backends write it, say `Flask-0.12.dist-info` for a `flask-0.12` filename, or a version
-written `1.0.0` where the filename says `1.0`. peryx accepts it, the same way pip and pypi.org do.
+A wheel from older tooling or a backup may use a non-normalized `.dist-info` directory, such as `Flask-0.12.dist-info`
+for a `flask-0.12` filename or version `1.0.0` for a filename with `1.0`. peryx accepts the same equivalent spellings as
+pip and pypi.org.
 
-Nothing special is required. Upload the wheel as you would any other:
+Upload the wheel with the standard command:
 
 ```shell
 twine upload --repository-url http://127.0.0.1:4433/root/pypi/ \
@@ -121,7 +120,7 @@ compares them to the filename by [PEP 503](https://peps.python.org/pep-0503/) na
 
 ### Check the directory before you upload
 
-If you want to know what peryx will compare, read the directory name out of the archive:
+Read the directory name from the archive to inspect the value that peryx compares:
 
 ```shell
 unzip -l dist/your_pkg-1.0-py3-none-any.whl | grep dist-info
@@ -134,26 +133,24 @@ separators.
 ### When a legacy wheel is rejected
 
 A `400` with `invalid wheel: .dist-info directory <dir> does not match expected <expected>` means the directory names a
-genuinely different release, not merely a different spelling. peryx builds `<expected>` from the filename, so the
-message shows both:
+different release. peryx builds `<expected>` from the filename, so the message shows both values:
 
 - **Different project.** `other-1.0.dist-info` in a `flask-1.0` wheel. The wheel was mislabeled or repackaged wrong;
   rebuild it or rename the file to match its contents.
 - **Different version.** `flask-2.0.dist-info` in a `flask-1.0` wheel. The filename and the metadata disagree on the
   version; fix whichever is wrong.
 - **No version segment.** `flask.dist-info`, with no hyphen to split, has no version to compare. The archive is
-  malformed; rebuild it.
+  malformed. Rebuild it.
 
 peryx also rejects an archive with no `.dist-info` directory (`missing .dist-info directory`) or more than one
 (`multiple .dist-info directories found: ...`). These are structural faults in the wheel, not spelling differences, so
-normalization does not change the outcome. Repacking a wheel by hand is the usual cause; rebuild it with a real backend
-instead.
+normalization does not change the outcome. Hand repacking often causes these faults. Rebuild the wheel with a package
+backend.
 
 ## Upload with a single digest
 
-You have an upload path that declares a single content digest rather than the full SHA-256, BLAKE2, and MD5 that twine
-sends, often a legacy tool or a CI script that computes only `md5_digest`. peryx accepts it, the same way pypi.org does,
-as long as the digest matches the bytes.
+Legacy tools and CI scripts may declare one content digest, such as `md5_digest`, while twine sends SHA-256, BLAKE2, and
+MD5. peryx and pypi.org accept a single declared digest when it matches the uploaded bytes.
 
 The upload form needs the file in a `content` part, the project `name`, `version`, and `filetype`, and whichever digest
 your client computes. Declare only that digest and leave the others off. With `curl`:
@@ -168,9 +165,9 @@ curl -sS -u __token__:<secret> https://peryx.example/root/pypi/ \
     -F "content=@dist/<project>-<version>-py3-none-any.whl"
 ```
 
-Swap `md5_digest` for `sha256_digest` or `blake2_256_digest` if that is the one your client produces; any single field
-is enough. peryx verifies whichever you declared against the content it staged and stores the file on a `200`. Declaring
-no digest at all is also accepted, because peryx computes the SHA-256 it addresses the file by regardless.
+Use `sha256_digest` or `blake2_256_digest` when the client produces that field. peryx verifies the declared digest
+against the staged content and stores the file on a `200`. It also accepts an upload without a declared digest because
+it computes the SHA-256 used to address the file.
 
 ### Compute the digest your client sends
 
@@ -181,16 +178,15 @@ python3 -c "import hashlib,sys;print(hashlib.md5(open(sys.argv[1],'rb').read()).
     dist/<project>-<version>-py3-none-any.whl
 ```
 
-Use `hashlib.sha256` or `hashlib.blake2b(..., digest_size=32)` for the other two. The value must be lowercase hex of the
-field's length: 32 characters for MD5, 64 for SHA-256 and BLAKE2b-256.
+Use `hashlib.sha256` or `hashlib.blake2b(..., digest_size=32)` for the other two. The value must be lowercase
+hexadecimal with 32 characters for MD5 or 64 for SHA-256 and BLAKE2b-256.
 
 ### When only MD5 is declared
 
 peryx computes MD5 over the staged content only when `md5_digest` is the sole digest on the form. If your client also
 sends `sha256_digest` or `blake2_256_digest`, peryx verifies the stronger one and leaves the declared MD5 unchecked,
-since the stronger digest already covers the same bytes. Either way the upload succeeds when the digest peryx verifies
-matches. You do not need to strip the extra fields to get an MD5-only upload accepted; you need them only if MD5 is all
-your client can produce.
+since the stronger digest covers the same bytes. The upload succeeds when the digest peryx verifies matches. Keep
+stronger digest fields when the client provides them; use MD5 alone when that is the client's available digest.
 
 ### Read a digest rejection
 
@@ -202,8 +198,8 @@ A digest that does not match the content is a `400` naming the field that disagr
 - `<field> value "<value>" is not lowercase hex with the expected length`: the digest is malformed, uppercase, or the
   wrong length. Emit lowercase hex of the right width: 32 for MD5, 64 for SHA-256 and BLAKE2b-256.
 
-A wrong `md5_digest` only surfaces when MD5 is the sole declared digest; when a stronger digest is present peryx checks
-that one, and a bad MD5 alongside it goes unnoticed.
+peryx reports a wrong `md5_digest` when MD5 is the sole declared digest. With a stronger digest present, peryx checks
+that digest and does not inspect MD5.
 
 ## In `.pypirc`
 
@@ -233,8 +229,8 @@ peryx config-snippet --base-url http://127.0.0.1:4433 --index root/pypi .pypirc
 ## Publish with attestations
 
 peryx accepts [PEP 740](https://peps.python.org/pep-0740/) attestations attached to a hosted upload, binds each one to
-the distribution, and serves it as provenance on the Simple API. The attestations are generated where the build runs;
-peryx stores and serves what you signed, without holding any signing material.
+the distribution, and serves it as provenance on the Simple API. The build system generates the attestations; peryx
+stores and serves the signed data without holding signing material.
 
 ### From GitHub Actions
 
@@ -279,9 +275,9 @@ curl -s https://peryx.example/root/pypi/files/<sha256>/mypkg-1.0-py3-none-any.wh
 # 1
 ```
 
-An attestation whose subject digest or filename does not match the distribution fails the upload with `400`, and neither
-the file nor its provenance is published. The [upload rules](@/ecosystems/pypi/reference/uploads.md#attestations) list
-every check and limit.
+An attestation whose subject digest or filename does not match the distribution fails the upload with `400`; peryx
+publishes neither the file nor its provenance. The [upload rules](@/ecosystems/pypi/reference/uploads.md#attestations)
+list each check and limit.
 
 ## Upload failures
 

@@ -2,7 +2,7 @@
 //!
 //! [`UpstreamClient`] is ecosystem-neutral HTTP: it sends conditional `GET`s and streams files, and
 //! knows nothing about PEP 503/691. This module is the seam where those neutral sends become
-//! Simple-API document fetches — the `Accept` negotiation, the content-type validation, and the
+//! Simple-API document fetches - the `Accept` negotiation, the content-type validation, and the
 //! `x-pypi-last-serial`/`Cache-Control` parsing that only the `PyPI` ecosystem cares about. Status is
 //! kept agnostic: `304` and `404` come back to the caller rather than raised, so the cache layer
 //! decides what to do.
@@ -82,7 +82,7 @@ impl SimpleHead {
     }
 }
 
-/// Fetch a project's index document, then the project list, then a file's bytes — the `PyPI` Simple
+/// Fetch a project's index document, then the project list, then a file's bytes - the `PyPI` Simple
 /// protocol layered over an [`UpstreamClient`] as an extension trait so call sites keep method syntax.
 pub trait SimpleClientExt {
     /// Fetch a project's simple page, optionally revalidating with `If-None-Match`.
@@ -239,8 +239,7 @@ fn fallback_result<T: SimpleStatus>(result: &Result<T, UpstreamError>) -> bool {
         Err(
             UpstreamError::Credential(_)
             | UpstreamError::Url(_)
-            | UpstreamError::MissingContentType { .. }
-            | UpstreamError::UnsupportedContentType { .. }
+            | UpstreamError::InvalidResponse { .. }
             | UpstreamError::ResponseTooLarge { .. }
             | UpstreamError::BlockedDestination { .. },
         ) => false,
@@ -352,7 +351,9 @@ fn simple_head(response: reqwest::Response) -> Result<SimpleHead, UpstreamError>
 
 fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result<(), UpstreamError> {
     let Some(content_type) = content_type else {
-        return Err(UpstreamError::MissingContentType { url: url.clone() });
+        return Err(UpstreamError::InvalidResponse {
+            reason: format!("missing Simple API Content-Type from {url}"),
+        });
     };
     let media_type = content_type
         .split_once(';')
@@ -365,9 +366,8 @@ fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result
     ) {
         return Ok(());
     }
-    Err(UpstreamError::UnsupportedContentType {
-        url: url.clone(),
-        content_type: content_type.to_owned(),
+    Err(UpstreamError::InvalidResponse {
+        reason: format!("unsupported Simple API Content-Type {content_type:?} from {url}"),
     })
 }
 
@@ -477,43 +477,5 @@ impl UpstreamProtocol for UpstreamClient {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use bytes::Bytes;
-    use futures_util::{Stream, StreamExt as _, stream};
-    use peryx_upstream::UpstreamError;
-
-    use super::{MAX_SIMPLE_PAGE_BYTES, read_capped};
-
-    fn body(sizes: Vec<usize>) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
-        stream::iter(sizes.into_iter().map(|size| Ok(Bytes::from(vec![b'a'; size]))))
-    }
-
-    #[tokio::test]
-    async fn test_read_capped_returns_a_body_within_the_limit() {
-        let read = read_capped(body(vec![8, 8]), 64).await.unwrap();
-
-        assert_eq!(read.len(), 16);
-    }
-
-    #[tokio::test]
-    async fn test_read_capped_stops_at_the_first_chunk_past_the_limit() {
-        let polled = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&polled);
-        let stream = body(vec![20, 20]).inspect(move |_| {
-            counter.fetch_add(1, Ordering::SeqCst);
-        });
-
-        let error = read_capped(stream, 8).await.unwrap_err();
-
-        assert!(matches!(error, UpstreamError::ResponseTooLarge { limit: 8 }));
-        assert_eq!(polled.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_simple_page_cap_matches_the_project_sync_cap() {
-        assert_eq!(MAX_SIMPLE_PAGE_BYTES as u64, crate::cache::MAX_PROJECT_BYTES);
-    }
-}
+#[path = "../tests/unit/simple_client/tests.rs"]
+mod tests;

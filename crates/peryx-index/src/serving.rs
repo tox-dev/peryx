@@ -2,10 +2,10 @@
 //! bound.
 //!
 //! Every cached (proxy) role does the same two things around an upstream fetch, whatever it caches.
-//! It coalesces concurrent misses for one key so a cold page is fetched once, not once per waiter —
-//! the difference between a warm cache and a thundering herd on a popular project. And it decides how
+//! It coalesces concurrent misses for one key so a cold page is fetched once, not once per waiter.
+//! This prevents a thundering herd on a popular project. It also decides how
 //! long a page past its freshness window may still answer while the upstream is unreachable. Both live
-//! here so a `PyPI` page and an `OCI` manifest share one implementation rather than drifting apart.
+//! here so ecosystem representations share one implementation.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -109,7 +109,7 @@ pub fn flight_gate(inflight: &Inflight, key: &str) -> FlightGate {
 impl Inflight {
     /// The number of callers currently registered on `key`'s gate, or `0` when no gate exists for it.
     ///
-    /// A test observes this to know a racing request has reached the gate — a deterministic replacement
+    /// A test observes this to know a racing request has reached the gate - a deterministic replacement
     /// for sleeping and hoping the request has parked, since [`flight_gate`] bumps the count before the
     /// caller awaits the lock.
     #[must_use]
@@ -131,7 +131,7 @@ pub fn release_flight(inflight: &Inflight, key: &str, guard: FlightGuard) {
 /// cache that answers with whatever it last saw, forever, has stopped being a cache and become a
 /// fork. `max_stale_secs` bounds the outage a stale page papers over; `0` removes the bound, which is
 /// what an operator deliberately mirroring an unreliable upstream asks for. `freshness_secs` is the
-/// lifetime the page was fresh for — an ecosystem passes the upstream-granted lifetime, or its own
+/// lifetime the page was fresh for - an ecosystem passes the upstream-granted lifetime, or its own
 /// fallback.
 #[must_use]
 pub const fn within_stale_bound(now: i64, max_stale_secs: i64, fetched_at: i64, freshness_secs: i64) -> bool {
@@ -172,9 +172,7 @@ impl ServingCache {
                 .weigher(|key: &String, (value, _, _): &(bytes::Bytes, i64, Option<u64>)| {
                     u32::try_from(key.len() + value.len()).unwrap_or(u32::MAX)
                 })
-                .time_to_live(std::time::Duration::from_secs(
-                    u64::try_from(ttl_secs.max(1)).unwrap_or(1800),
-                ))
+                .time_to_live(std::time::Duration::from_secs(ttl_secs.max(1).unsigned_abs()))
                 .build(),
             negative: moka::sync::Cache::builder().max_capacity(65_536).build(),
             hot_epochs: Mutex::new(BTreeMap::new()),
@@ -214,7 +212,7 @@ impl ServingCache {
 
     /// The hot-cache key for one representation of a page as served on `route` right now.
     ///
-    /// `variant` separates the representations a page has (PEP 691 JSON, PEP 503 HTML, legacy JSON):
+    /// `variant` separates the representations a page has:
     /// different bytes. The project's epoch makes a mutation to it retire them all at once, while
     /// leaving other projects' keys unchanged.
     ///
@@ -267,83 +265,5 @@ impl ServingCache {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Inflight, flight_gate, within_stale_bound};
-
-    #[tokio::test]
-    async fn test_same_key_waiters_share_one_gate() {
-        let inflight = Inflight::default();
-        let first = flight_gate(&inflight, "digest").lock_owned().await;
-        assert!(flight_gate(&inflight, "digest").try_lock_owned().is_err());
-
-        drop(first);
-        drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_distinct_keys_lock_independently() {
-        let inflight = Inflight::default();
-        let first = flight_gate(&inflight, "first").lock().await;
-        let second = flight_gate(&inflight, "second").try_lock_owned().unwrap();
-
-        drop((first, second));
-    }
-
-    #[tokio::test]
-    async fn test_cancelled_waiter_retires_its_registration() {
-        let inflight = Inflight::default();
-        let producer = flight_gate(&inflight, "digest").lock_owned().await;
-        let mut waiting = tokio::spawn(flight_gate(&inflight, "digest").lock_owned());
-        tokio::task::yield_now().await;
-
-        waiting.abort();
-        let cancelled = (&mut waiting).await.unwrap_err().is_cancelled();
-        drop(waiting);
-        assert!(cancelled);
-
-        drop(producer);
-        drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
-    }
-
-    #[test]
-    fn test_active_counts_registered_callers() {
-        let inflight = Inflight::default();
-        assert_eq!(inflight.active("digest"), 0, "no gate exists for an unseen key");
-        let first = flight_gate(&inflight, "digest");
-        assert_eq!(inflight.active("digest"), 1);
-        let second = flight_gate(&inflight, "digest");
-        assert_eq!(inflight.active("digest"), 2, "a second caller shares the one gate");
-        drop(second);
-        assert_eq!(inflight.active("digest"), 1);
-        drop(first);
-        assert_eq!(
-            inflight.active("digest"),
-            0,
-            "the gate retires when its last caller leaves"
-        );
-    }
-
-    #[test]
-    fn test_zero_max_stale_serves_any_age() {
-        assert!(within_stale_bound(1_000_000, 0, 0, 60));
-    }
-
-    #[test]
-    fn test_stale_within_the_bound_serves_and_past_it_does_not() {
-        // fresh for 60s, tolerate 300s past that: servable up to 360s after fetch.
-        assert!(within_stale_bound(1_359, 300, 1_000, 60));
-        assert!(!within_stale_bound(1_360, 300, 1_000, 60));
-    }
-
-    #[test]
-    fn test_a_future_fetch_time_does_not_underflow() {
-        assert!(within_stale_bound(1_000, 300, 5_000, 60));
-    }
-
-    #[test]
-    fn test_a_stale_window_at_the_i64_ceiling_does_not_overflow() {
-        // freshness_secs + max_stale_secs exceeds i64::MAX; the bound saturates rather than
-        // overflowing (a panic in debug builds, a wrap to a negative window in release).
-        assert!(within_stale_bound(1_000, 1, 0, i64::MAX));
-    }
-}
+#[path = "../tests/unit/serving/tests.rs"]
+mod tests;

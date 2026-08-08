@@ -228,8 +228,8 @@ fn token_end(text: &str, start: usize) -> usize {
     cursor
 }
 
-/// One deeper into the predicate, refusing a query whose boolean nesting — `and`, `or`, `not`, or
-/// parentheses — would recurse past the cap, so parsing, binding, validation, and evaluation stay
+/// One deeper into the predicate, refusing a query whose boolean nesting - `and`, `or`, `not`, or
+/// parentheses - would recurse past the cap, so parsing, binding, validation, and evaluation stay
 /// within a bounded stack.
 fn deepen(depth: usize) -> Result<usize, PqlError> {
     if depth >= MAX_PREDICATE_DEPTH {

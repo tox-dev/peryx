@@ -35,17 +35,10 @@ pub use mutate::{
     TrashContext, download_status, project_status, promote_release, remove_files, restore_files, set_yanked,
 };
 pub(crate) use mutate::{store_upload, upload_exists};
-#[cfg(test)]
-pub(crate) use page_stream::settle_revalidations;
 pub use page_stream::{PageOutcome, materialize_detail, stream_detail};
 pub use provenance::{ProvenanceBody, provenance_bytes};
 pub use resolve::{DetailPage, list_serial, resolve_detail, resolve_detail_page, resolve_list};
 pub use shadow::shadowed_candidates;
-
-#[cfg(test)]
-pub(crate) use download::tail_download;
-#[cfg(test)]
-pub(crate) use fetch::persist_page;
 
 const NEGATIVE_TTL_SECS: i64 = 30;
 
@@ -189,13 +182,6 @@ fn release_flight(state: &ServingState, key: &str, guard: peryx_index::serving::
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
 }
 
-/// How many callers are registered on `key`'s flight gate, so a test can wait for a racing request to
-/// reach the gate deterministically instead of sleeping.
-#[cfg(test)]
-pub(crate) fn flight_users(state: &ServingState, key: &str) -> usize {
-    state.cache.inflight.active(key)
-}
-
 /// The stored cached record for `key`, or `None` when there is none or when its bytes no longer decode.
 ///
 /// Corrupt bytes (a torn write, a format from a version that never shipped) leave a cache entry the
@@ -227,7 +213,7 @@ pub(crate) fn fresh_cached(state: &ServingState, key: &str) -> Result<Option<Cac
 ///
 /// Reached only after [`fresh_cached`] has returned `None`, so a present record is already stale and
 /// the bound is all that is left to check. `None` when nothing is cached, its bytes no longer decode,
-/// or the copy has aged past `max_stale_secs` — a miss hard enough to fetch synchronously instead.
+/// or the copy has aged past `max_stale_secs` - a miss hard enough to fetch synchronously instead.
 pub(crate) fn stale_servable(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
     Ok(cached_record(state, key)?.filter(|record| servable_stale(state, record)))
 }
@@ -277,7 +263,7 @@ pub(crate) fn servable_stale(state: &ServingState, record: &CachedIndex) -> bool
 
 /// How long a page stays fresh: the lifetime upstream granted, never longer than the configured one.
 ///
-/// `Cache-Control` is the upstream's opinion, and an upstream — or any CDN that fronts it — answering
+/// `Cache-Control` is the upstream's opinion, and an upstream - or any CDN that fronts it - answering
 /// `max-age=31536000` would otherwise pin a page for a year with no revalidation. `ttl_secs` is both
 /// the fallback when no lifetime is granted and the ceiling when too much is: a shorter upstream
 /// lifetime is honoured, a longer one is not.
@@ -390,35 +376,9 @@ fn source_artifact_client(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "../../tests/unit/cache/tests.rs"]
+mod tests;
 
-    #[test]
-    fn test_cache_error_converts_to_its_user_message_string() {
-        assert_eq!(
-            String::from(CacheError::Unavailable),
-            "upstream is unavailable and no cached page exists"
-        );
-    }
-
-    #[test]
-    fn test_cache_error_archive_message_is_user_visible() {
-        assert_eq!(
-            CacheError::Archive(crate::archive::ArchiveError::Unsupported).user_message(),
-            "unsupported archive type; accepted formats are .whl, .zip, .egg, .tar, .tar.gz, and .tgz"
-        );
-    }
-
-    #[test]
-    fn test_cache_error_maps_upload_store_errors() {
-        let err = upload::UploadStoreError::Meta(peryx_storage::meta::MetaError::Decode(
-            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
-        ));
-        assert!(matches!(CacheError::from(err), CacheError::Meta(_)));
-
-        let err = upload::UploadStoreError::Blob(peryx_storage::blob::BlobError::not_found(
-            &peryx_storage::blob::Digest::of(b"missing"),
-        ));
-        assert!(matches!(CacheError::from(err), CacheError::Blob(_)));
-    }
-}
+#[cfg(test)]
+#[path = "../../tests/unit/cache/test_support.rs"]
+pub(crate) mod test_support;

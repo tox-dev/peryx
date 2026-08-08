@@ -7,9 +7,8 @@ weight = 10
 When a node fails, the first job is to name the failure, because the four failures peryx can suffer recover along
 different paths and the wrong path can turn a recoverable outage into data loss. This guide is symptom-driven: start
 from what you observe, classify it into one of four failure classes, run the procedure for that class, and validate
-service before you route traffic back. It operates the `none` [availability contract](@/core/availability-contracts.md)
-that peryx ships today, one writer with read replicas and operator-driven failover, and points to the contract where the
-`dc` and `ha` modes later work adds change a recovery bound.
+service before you route traffic back. The selected [availability contract](@/core/availability-contracts.md) determines
+the recovery bound and whether recovery is local, same-datacenter, or cross-datacenter.
 
 The procedures below reuse the commands and probes defined on their reference pages rather than restate them: the
 [high availability](@/core/high-availability.md) page for the writer-and-replica model,
@@ -36,18 +35,11 @@ Recovery depends on state you prepare while healthy, so confirm these before you
 
 ## Classify the failure
 
-{% mermaid() %}
-flowchart TB
-sym["node not serving correctly"] --> disk{"is the durable disk intact?"}
-disk -->|"yes, process is down or wedged"| proc["process loss"]
-disk -->|"no, disk or bucket state is gone"| store["storage loss"]
-sym --> link{"nodes healthy but cannot reach each other?"}
-link -->|"replica cannot follow the writer"| part["network partition"]
-sym --> quorum{"a dc or ha mutation refuses with 503?"}
-quorum -->|"required failure domain unreachable"| cq["control-quorum loss"]
-class proc,part good
-class store,cq warn
-{% end %}
+{% mermaid() %} flowchart TB; sym["node not serving correctly"] --> disk{"is the durable disk intact?"}; disk -->|"yes,
+process is down or wedged"| proc["process loss"]; disk -->|"no, disk or bucket state is gone"| store["storage loss"];
+sym --> link{"nodes healthy but cannot reach each other?"}; link -->|"replica cannot follow the writer"| part\["network
+partition"\]; sym --> quorum{"a dc or ha mutation refuses with 503?"}; quorum -->|"required failure domain unreachable"|
+cq["control-quorum loss"]; class proc,part good; class store,cq warn {% end %}
 
 The four classes are distinct because the contract distinguishes
 [crash from storage loss](@/core/availability-contracts.md#crash-versus-storage-loss) and a
@@ -129,11 +121,11 @@ keeps serving the state it holds, bounded by its
 Inspect the gap rather than guess at it. On a `dc` or `ha` node, `GET /+replication/v1/ready` names why a replica is not
 current in `reasons`:
 
-- `frontier_lag` — the replica has not yet reached the writer's latest serial. Compare its `lag` against the writer's
+- `frontier_lag` : the replica has not yet reached the writer's latest serial. Compare its `lag` against the writer's
   write rate; a lag that never reaches zero is a stalled poll, not a slow one.
-- `sync_error` — the replica's last poll of the writer failed, the direct symptom of the partition.
-- `blob_store` — the mounted blob store failed its reachability check.
-- `incompatible_schema` — the writer speaks a replication protocol version the replica cannot apply; this one a later
+- `sync_error` : the replica's last poll of the writer failed, the direct symptom of the partition.
+- `blob_store` : the mounted blob store failed its reachability check.
+- `incompatible_schema` : the writer speaks a replication protocol version the replica cannot apply; this one a later
   poll cannot resolve without upgrading the writer.
 
 The `serial`, `lag`, and peer origin those responses carry are filtered to `operator:read` and `administration:read`, so

@@ -4,6 +4,7 @@
 )]
 
 use leptos::prelude::*;
+use peryx_core::UiUploadSpec;
 
 use crate::data::load_snapshot;
 use crate::model::{UiIndex, UiSnapshot};
@@ -14,7 +15,7 @@ pub fn Upload() -> impl IntoView {
     let snapshot = Resource::new(|| (), |()| load_snapshot());
     view! {
         <section class="page upload-page">
-            <h1>"Upload a Python package"</h1>
+            <h1>"Upload artifact"</h1>
             <Suspense fallback=|| view! { <p class="dim">"Loading upload targets..."</p> }>
                 {move || Suspend::new(async move { upload_form(snapshot.await) })}
             </Suspense>
@@ -26,12 +27,12 @@ fn upload_form(snapshot: UiSnapshot) -> AnyView {
     let indexes = snapshot
         .indexes
         .into_iter()
-        .filter(|index| index.ecosystem == "pypi" && index.uploads)
+        .filter(|index| index.upload.is_some())
         .collect::<Vec<_>>();
     let Some(first) = indexes.first() else {
-        return view! { <p class="dim">"No PyPI index accepts uploads."</p> }.into_any();
+        return view! { <p class="dim">"No index exposes a browser upload."</p> }.into_any();
     };
-    let (route, set_route) = signal(first.route.clone());
+    let (spec, set_spec) = signal(first.upload.clone().expect("filtered upload target"));
     let (token, set_token) = signal(String::new());
     let (filename, set_filename) = signal(String::new());
     let (outcome, set_outcome) = signal(String::new());
@@ -43,6 +44,7 @@ fn upload_form(snapshot: UiSnapshot) -> AnyView {
         uploading: set_uploading,
     };
     let file_input = NodeRef::<leptos::html::Input>::new();
+    let selectable = indexes.clone();
     let targets = indexes.into_iter().map(upload_target).collect_view();
     on_cleanup(cancel_active_upload);
     view! {
@@ -50,17 +52,26 @@ fn upload_form(snapshot: UiSnapshot) -> AnyView {
             event.prevent_default();
             begin_upload(
                 file_input,
-                route.get_untracked(),
                 &token.get_untracked(),
                 &filename.get_untracked(),
+                spec.get_untracked(),
                 ui,
             );
         }>
             <label for="upload-route">"Index"</label>
-            <select id="upload-route" on:change:target=move |event| set_route.set(event.target().value())>
+            <select id="upload-route" on:change:target=move |event| {
+                let selected = event.target().value();
+                if let Some(upload) = selectable
+                    .iter()
+                    .find(|index| index.route == selected)
+                    .and_then(|index| index.upload.clone())
+                {
+                    set_spec.set(upload);
+                }
+            }>
                 {targets}
             </select>
-            <label for="upload-token">"Upload token"</label>
+            <label for="upload-token">{move || spec.get().token_label}</label>
             <input
                 id="upload-token"
                 class="token"
@@ -69,16 +80,16 @@ fn upload_form(snapshot: UiSnapshot) -> AnyView {
                 required
                 on:input:target=move |event| set_token.set(event.target().value())
             />
-            <label for="upload-file">"Distribution"</label>
+            <label for="upload-file">{move || spec.get().file_label}</label>
             <input
                 id="upload-file"
                 node_ref=file_input
                 type="file"
-                accept=".whl,.tar.gz"
+                accept=move || spec.get().accept
                 required
                 on:change=move |_| set_filename.set(selected_filename(file_input))
             />
-            <p class="dim">"Choose one wheel or .tar.gz source distribution. The index's configured size limit applies."</p>
+            <p class="dim">{move || spec.get().help}</p>
             <div class="upload-actions">
                 <button type="submit" disabled=move || uploading.get()>"Upload"</button>
                 <button
@@ -127,29 +138,30 @@ struct UploadUi {
     uploading: WriteSignal<bool>,
 }
 
-fn begin_upload(input: NodeRef<leptos::html::Input>, route: String, token: &str, filename: &str, ui: UploadUi) {
+fn begin_upload(input: NodeRef<leptos::html::Input>, token: &str, filename: &str, spec: UiUploadSpec, ui: UploadUi) {
     if token.is_empty() {
         ui.outcome.set("Enter an upload token.".to_owned());
         return;
     }
     if filename.is_empty() {
-        ui.outcome.set("Choose a distribution.".to_owned());
+        ui.outcome.set("Choose an artifact.".to_owned());
         return;
     }
-    if !accepted_filename(filename) {
-        ui.outcome
-            .set(format!("{filename}: choose a .whl or .tar.gz distribution"));
+    if !accepted_filename(filename, &spec.allowed_suffixes) {
+        ui.outcome.set(format!("{filename}: unsupported artifact type"));
         return;
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-    browser_upload(input, route, token.to_owned(), filename.to_owned(), ui);
+    browser_upload(input, spec, token.to_owned(), filename.to_owned(), ui);
     #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    let _ = (input, route, ui.progress, ui.uploading);
+    let _ = (input, spec, ui.progress, ui.uploading);
 }
 
-fn accepted_filename(filename: &str) -> bool {
+fn accepted_filename(filename: &str, suffixes: &[String]) -> bool {
     let filename = filename.to_ascii_lowercase();
-    filename.strip_suffix(".whl").is_some() || filename.strip_suffix(".tar.gz").is_some()
+    suffixes
+        .iter()
+        .any(|suffix| filename.ends_with(&suffix.to_ascii_lowercase()))
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
@@ -159,7 +171,13 @@ thread_local! {
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-fn browser_upload(input: NodeRef<leptos::html::Input>, route: String, token: String, filename: String, ui: UploadUi) {
+fn browser_upload(
+    input: NodeRef<leptos::html::Input>,
+    spec: UiUploadSpec,
+    token: String,
+    filename: String,
+    ui: UploadUi,
+) {
     use base64::Engine as _;
     use wasm_bindgen::JsCast as _;
 
@@ -168,7 +186,7 @@ fn browser_upload(input: NodeRef<leptos::html::Input>, route: String, token: Str
         .and_then(|input| input.files())
         .and_then(|files| files.get(0))
     else {
-        ui.outcome.set("Choose a distribution.".to_owned());
+        ui.outcome.set("Choose an artifact.".to_owned());
         return;
     };
     let Some(window) = web_sys::window() else {
@@ -183,7 +201,10 @@ fn browser_upload(input: NodeRef<leptos::html::Input>, route: String, token: Str
         browser_unavailable(ui, &filename);
         return;
     };
-    if form.append_with_blob_and_filename("content", &file, &filename).is_err() {
+    if form
+        .append_with_blob_and_filename(&spec.form_field, &file, &filename)
+        .is_err()
+    {
         browser_unavailable(ui, &filename);
         return;
     }
@@ -191,19 +212,20 @@ fn browser_upload(input: NodeRef<leptos::html::Input>, route: String, token: Str
         browser_unavailable(ui, &filename);
         return;
     };
-    let url = format!("/{}/", route.trim_matches('/'));
-    if request.open_with_async("POST", &url, true).is_err()
-        || request
-            .set_request_header(
-                "authorization",
-                &format!(
-                    "Basic {}",
-                    base64::engine::general_purpose::STANDARD.encode(format!("__token__:{token}"))
-                ),
-            )
-            .is_err()
-        || request.set_request_header("x-peryx-csrf", &origin).is_err()
-    {
+    let open_failed = request.open_with_async("POST", &spec.endpoint, true).is_err();
+    let authorization_failed = !open_failed
+        && spec.authorization_username.as_ref().is_some_and(|username| {
+            request
+                .set_request_header(
+                    "authorization",
+                    &format!(
+                        "Basic {}",
+                        base64::engine::general_purpose::STANDARD.encode(format!("{username}:{token}"))
+                    ),
+                )
+                .is_err()
+        });
+    if open_failed || authorization_failed || request.set_request_header("x-peryx-csrf", &origin).is_err() {
         browser_unavailable(ui, &filename);
         return;
     }
@@ -255,7 +277,7 @@ fn browser_unavailable(ui: UploadUi, filename: &str) {
     ui.outcome.set(format!("{filename}: browser upload is unavailable"));
 }
 
-#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 fn upload_outcome(filename: &str, status: u16, body: &str, cancelled: bool) -> String {
     if cancelled {
         return format!("{filename}: upload cancelled");
@@ -289,132 +311,6 @@ fn cancel_active_upload() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use leptos::prelude::*;
-    use rstest::rstest;
-
-    use crate::model::{UiIndex, UiSnapshot};
-
-    use super::{
-        UploadUi, accepted_filename, begin_upload, cancel_active_upload, selected_filename, upload_form, upload_outcome,
-    };
-
-    #[rstest]
-    #[case::wheel("pkg-1.0-py3-none-any.whl")]
-    #[case::wheel_uppercase("pkg-1.0-py3-none-any.WHL")]
-    #[case::source("pkg-1.0.tar.gz")]
-    fn test_accepted_filename_allows_browser_formats(#[case] filename: &str) {
-        assert!(accepted_filename(filename));
-    }
-
-    #[rstest]
-    #[case::zip("pkg-1.0.zip")]
-    #[case::egg("pkg-1.0.egg")]
-    #[case::bare("pkg")]
-    fn test_accepted_filename_rejects_other_formats(#[case] filename: &str) {
-        assert!(!accepted_filename(filename));
-    }
-
-    #[rstest]
-    #[case::success(200, "upload accepted", false, "pkg.whl: uploaded")]
-    #[case::denial(
-        403,
-        "token does not grant this action",
-        false,
-        "pkg.whl: token does not grant this action"
-    )]
-    #[case::empty_denial(403, "", false, "pkg.whl: request rejected (403)")]
-    #[case::store_failure(500, "temporary path /secret", false, "pkg.whl: server could not store the upload")]
-    #[case::network(0, "", false, "pkg.whl: connection ended before the upload completed")]
-    #[case::cancelled(0, "", true, "pkg.whl: upload cancelled")]
-    fn test_upload_outcome_bounds_browser_messages(
-        #[case] status: u16,
-        #[case] body: &str,
-        #[case] cancelled: bool,
-        #[case] expected: &str,
-    ) {
-        assert_eq!(upload_outcome("pkg.whl", status, body, cancelled), expected);
-    }
-
-    #[rstest]
-    #[case::missing_token("", "pkg-1.0-py3-none-any.whl", "Enter an upload token.")]
-    #[case::missing_file("secret", "", "Choose a distribution.")]
-    #[case::unsupported("secret", "pkg-1.0.zip", "pkg-1.0.zip: choose a .whl or .tar.gz distribution")]
-    #[case::valid("secret", "pkg-1.0-py3-none-any.whl", "")]
-    fn test_begin_upload_validates_browser_input(#[case] token: &str, #[case] filename: &str, #[case] expected: &str) {
-        Owner::new().with(|| {
-            let (outcome, set_outcome) = signal(String::new());
-            let (_, set_progress) = signal(0.0_f64);
-            let (_, set_uploading) = signal(false);
-            begin_upload(
-                NodeRef::new(),
-                "root/pypi".to_owned(),
-                token,
-                filename,
-                UploadUi {
-                    outcome: set_outcome,
-                    progress: set_progress,
-                    uploading: set_uploading,
-                },
-            );
-            assert_eq!(outcome.get_untracked(), expected);
-        });
-    }
-
-    #[test]
-    fn test_server_side_file_selection_and_cancel_are_inert() {
-        Owner::new().with(|| assert_eq!(selected_filename(NodeRef::new()), ""));
-        cancel_active_upload();
-    }
-
-    #[test]
-    fn test_upload_form_lists_only_writable_pypi_indexes() {
-        Owner::new().with(|| {
-            let mut virtual_index = index("root/pypi", "pypi", true);
-            virtual_index.upload_to = Some("hosted".to_owned());
-            let html = upload_form(UiSnapshot {
-                indexes: vec![
-                    virtual_index,
-                    index("internal", "pypi", true),
-                    index("cache", "pypi", false),
-                    index("images", "oci", true),
-                ],
-                ..UiSnapshot::default()
-            })
-            .to_html();
-
-            assert!(
-                html.contains(r#"<option value="root/pypi">root/pypi (stores in hosted)</option>"#),
-                "{html}"
-            );
-            assert!(html.contains(r#"<option value="internal">internal</option>"#), "{html}");
-            assert!(!html.contains(r#"value="cache""#), "{html}");
-            assert!(!html.contains(r#"value="images""#), "{html}");
-        });
-    }
-
-    #[test]
-    fn test_upload_form_reports_no_writable_pypi_index() {
-        let html = upload_form(UiSnapshot::default()).to_html();
-        assert!(html.contains("No PyPI index accepts uploads."), "{html}");
-    }
-
-    fn index(route: &str, ecosystem: &str, uploads: bool) -> UiIndex {
-        UiIndex {
-            name: route.to_owned(),
-            route: route.to_owned(),
-            ecosystem: ecosystem.to_owned(),
-            endpoint: format!("/{route}/simple/"),
-            kind: "hosted".to_owned(),
-            layers: Vec::new(),
-            uploads,
-            upload_to: None,
-            upstream: None,
-            hosted: None,
-            project_count: 0,
-            upload_count: 0,
-            recent_uploads: Vec::new(),
-        }
-    }
-}
+#[cfg(all(test, not(feature = "ssr"), feature = "hydrate"))]
+#[path = "../../tests/unit/pages/upload/tests.rs"]
+mod tests;

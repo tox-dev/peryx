@@ -20,8 +20,8 @@ use peryx_identity::{Resource, Scope, parse_basic};
 ///
 /// Cancellation is cooperative: the run observes the signal and unwinds within its grace period, so a
 /// delivered signal answers `202 Accepted` rather than a completed stop. A run this node is not
-/// currently running answers `409 Conflict`, and an unknown run — or a caller without the
-/// administration-write scope — a `404`.
+/// currently running answers `409 Conflict`, and an unknown run - or a caller without the
+/// administration-write scope - a `404`.
 pub async fn cancel_job(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(rejection) = authorize_administrator(&state, &headers).await {
         return rejection.response();

@@ -32,12 +32,10 @@ uuid.workspace = true
 test-util = []
 
 [dev-dependencies]
-rstest.workspace = true
-wiremock.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 rcgen = "0.13.2"
+rstest.workspace = true
 testcontainers.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

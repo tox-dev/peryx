@@ -2,7 +2,7 @@
 //!
 //! Evaluation is total and side-effect-free: every predicate reduces to a boolean over one row in
 //! linear time, with no loops the caller controls and no function the caller can name. An
-//! incomparable pair — a null cell, or two values of different kinds — simply does not match, so the
+//! incomparable pair - a null cell, or two values of different kinds - does not match, so the
 //! evaluator never panics on unexpected data.
 
 use std::cmp::Ordering;

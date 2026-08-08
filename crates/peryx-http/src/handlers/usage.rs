@@ -62,15 +62,24 @@ pub fn ecosystem_summaries(state: &AppState) -> Vec<peryx_events::metrics::Ecosy
 /// ecosystem's vocabulary.
 #[must_use]
 pub fn family_descriptors(state: &AppState) -> Vec<peryx_events::metrics::FamilyDescriptor> {
-    state
-        .drivers()
-        .flat_map(|serving| serving.metric_families())
-        .map(|family| peryx_events::metrics::FamilyDescriptor {
-            key: family.key.to_owned(),
-            label: family.ui_label.to_owned(),
-            roles: family.roles.iter().map(|role| role.as_str().to_owned()).collect(),
-        })
-        .collect()
+    let mut descriptors = Vec::new();
+    for driver in state.drivers() {
+        let Some(driver) = driver.capabilities().metrics else {
+            continue;
+        };
+        for family in driver.metric_families() {
+            let mut roles = Vec::with_capacity(family.roles.len());
+            for role in family.roles {
+                roles.push(role.as_str().to_owned());
+            }
+            descriptors.push(peryx_events::metrics::FamilyDescriptor {
+                key: family.key.to_owned(),
+                label: family.ui_label.to_owned(),
+                roles,
+            });
+        }
+    }
+    descriptors
 }
 
 /// The `/+stats` drill-down selectors.
@@ -289,13 +298,22 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
         }
     }
     for driver in state.drivers() {
+        let driver_ecosystem = driver.ecosystem();
+        let Some(driver) = driver.capabilities().metrics else {
+            continue;
+        };
         for family in driver.metric_families() {
             let _ = writeln!(body, "# HELP {} {}", family.prom_name, family.help);
             let _ = writeln!(body, "# TYPE {} counter", family.prom_name);
             for ((ecosystem, role), counters) in &totals {
-                if *ecosystem == driver.ecosystem().as_str()
-                    && family.roles.iter().any(|family_role| family_role.as_str() == *role)
-                {
+                let mut supports_role = false;
+                for family_role in family.roles {
+                    if family_role.as_str() == *role {
+                        supports_role = true;
+                        break;
+                    }
+                }
+                if *ecosystem == driver_ecosystem.as_str() && supports_role {
                     let value = counters.ecosystem.get(family.key).copied().unwrap_or(0);
                     write_metric(&mut body, family.prom_name, ecosystem, role, value);
                 }

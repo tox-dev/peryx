@@ -15,7 +15,7 @@ peryx-index.workspace = true
 peryx-identity.workspace = true
 peryx-policy.workspace = true
 peryx-pql.workspace = true
-peryx-replication.workspace = true
+peryx-ha.workspace = true
 peryx-search.workspace = true
 peryx-storage.workspace = true
 axum = { workspace = true, features = ["multipart"] }
@@ -29,6 +29,7 @@ tokio = { workspace = true, features = ["sync", "rt", "fs", "time"] }
 
 [dev-dependencies]
 async-trait.workspace = true
+peryx-ha-distributed.workspace = true
 base64.workspace = true
 jsonwebtoken.workspace = true
 peryx-identity = { workspace = true, features = ["test-util"] }

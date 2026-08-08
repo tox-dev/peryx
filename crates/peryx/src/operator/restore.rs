@@ -13,7 +13,7 @@ use super::{Access, BackupCheck, BackupManifest, backup_blob_path, copy_hashed, 
 use crate::config::{self, Config};
 
 #[cfg(test)]
-#[path = "restore_publish_tests.rs"]
+#[path = "../../tests/unit/operator/restore_publish_tests.rs"]
 mod restore_publish_tests;
 
 /// Restore a backup into a data directory.

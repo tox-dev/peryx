@@ -48,7 +48,7 @@ impl UiPolicyDecision {
 
     #[must_use]
     pub fn next_eligible_at(&self) -> String {
-        self.next_eligible_at_unix.map_or_else(|| "—".to_owned(), format_unix)
+        self.next_eligible_at_unix.map_or_else(|| "-".to_owned(), format_unix)
     }
 }
 

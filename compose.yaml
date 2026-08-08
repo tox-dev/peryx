@@ -1,0 +1,48 @@
+name: peryx-test
+
+services:
+  docker:
+    profiles: ["test"]
+    image: docker:29-dind
+    privileged: true
+    command: ["--host=tcp://0.0.0.0:2375", "--tls=false"]
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - docker-data:/var/lib/docker
+
+  test:
+    profiles: ["test"]
+    cap_drop: ["DAC_OVERRIDE", "DAC_READ_SEARCH"]
+    build:
+      context: tests
+      dockerfile: Dockerfile
+    init: true
+    depends_on:
+      docker:
+        condition: service_healthy
+    network_mode: "service:docker"
+    working_dir: /workspace
+    environment:
+      CARGO_HOME: /cargo
+      CARGO_TARGET_DIR: /target
+      CLANG: clang-22
+      DOCKER_HOST: tcp://docker:2375
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    volumes:
+      - .:/workspace
+      - cargo:/cargo
+      - node-modules:/workspace/tests/frontend/node_modules
+      - target:/target
+    entrypoint: ["just"]
+
+volumes:
+  cargo:
+  docker-data:
+  node-modules:
+  target:

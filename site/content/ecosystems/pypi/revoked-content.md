@@ -8,6 +8,9 @@ An active [digest revocation](@/core/digest-revocations.md) blocks the matching 
 role. Peryx keeps the artifact and its metadata records as incident evidence. The decision is server-wide, so another
 index route or cached source cannot make the same SHA-256 readable.
 
+The revocation API and CLI accept the canonical key `sha256:<64 lowercase hex>`. JSON records represent that digest as
+`{"sha256":"<hex>"}`. PyPI file routes resolve their stored SHA-256 to this key before checking the decision.
+
 ## Discovery and download behavior
 
 Peryx removes the distribution from Simple HTML, Simple JSON, legacy JSON, and the package inspection page. This is

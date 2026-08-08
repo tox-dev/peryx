@@ -31,7 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(Extension(runtime.clone())),
         );
     }
-    // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
+    // An absolute-mount ecosystem owns the top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.
     for (prefix, driver) in state.absolute_mounts() {
         let driver = driver.clone();
@@ -177,11 +177,17 @@ async fn reject_replica_mutation(State(state): State<Arc<AppState>>, request: Re
 /// which is read-only by construction, or a driver-classified service read.
 fn is_read_only_post(state: &AppState, request: &Request) -> bool {
     let path = request.uri().path();
-    path == "/+query"
-        || path == "/_/logout"
-        || state.drivers().any(|driver| {
-            driver
+    if path == "/+query" || path == "/_/logout" {
+        return true;
+    }
+    for driver in state.drivers() {
+        if let Some(driver) = driver.capabilities().service
+            && driver
                 .classify_service_post(path.trim_start_matches('/'), request.headers())
                 .is_some()
-        })
+        {
+            return true;
+        }
+    }
+    false
 }

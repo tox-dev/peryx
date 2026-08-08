@@ -38,6 +38,7 @@ fn home_dc_group() -> Cluster {
         ],
     )
     .with_admin()
+    .with_write_ack_deadline(1)
     .start()
     .expect("the ha group starts")
 }

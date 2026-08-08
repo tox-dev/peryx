@@ -7,8 +7,8 @@
 //! enforces that with a fencing epoch: a claim at an epoch at or above the recorded one wins and names
 //! its holder, and a claim from a superseded epoch is rejected without touching the lease.
 //!
-//! The epoch is supplied by the caller. The cluster authority that mints it — the ownership state
-//! machine and its leadership term — lives above this layer and is still being built, so this module
+//! The epoch is supplied by the caller. The cluster authority that mints it - the ownership state
+//! machine and its leadership term - lives above this layer and is still being built, so this module
 //! stays a pure decision core over a `u64`, indifferent to whether that authority ends up Raft-based
 //! or bespoke. It reads no clock and opens no socket: every time bound arrives as a parameter, so a
 //! test drives the whole lifecycle deterministically. The scheduler that decides which jobs to claim
@@ -228,5 +228,5 @@ fn write_lease(txn: &redb::WriteTransaction, lease: &JobLease) -> Result<(), Met
 }
 
 #[cfg(test)]
-#[path = "job_lease_fault_tests.rs"]
+#[path = "../../tests/unit/meta/job_lease_fault_tests.rs"]
 mod fault_tests;

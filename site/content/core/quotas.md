@@ -1,172 +1,104 @@
 +++
 title = "Repository quotas"
-description = "Reserve repository capacity and recover pending writes with durable accounting."
+description = "Reserve repository capacity and repair pending reservations with durable accounting."
 weight = 9
 +++
 
-Repository quotas account for content before a writer publishes package metadata. The storage API reserves capacity,
-then the caller commits the reservation with its metadata transaction or releases it after an error. The PyPI and OCI
-hosted write paths enforce their limits through this API.
-
-The OCI registry enforces these limits on every hosted push: a blob upload, a cross-repository mount, and a manifest
-publication each reserve capacity before the content becomes discoverable, commit that reservation in the same
-transaction that records the metadata, and release it when the write fails. PyPI uploads reserve project bytes before
-blob storage, then commit with the visible file record. An index that configures no quota keeps its original write path.
+Repository quotas reserve capacity before an ecosystem driver publishes metadata. The driver commits the reservation
+with its metadata transaction or releases it after a failed write. Repositories without quotas use the direct write
+path.
 
 ## Limits
 
-Each reservation admits against a `QuotaLimits` set the caller supplies. Every limit is optional and unset means
-unlimited:
+Each reservation checks an optional `QuotaLimits` value:
 
-| Limit                      | Bounds                                                |
-| -------------------------- | ----------------------------------------------------- |
-| `max_file_bytes`           | The logical size of one artifact                      |
-| `max_accounted_bytes`      | Deduplicated bytes stored in the repository           |
-| `max_projects`             | Distinct project identities in the repository         |
-| `max_versions_per_project` | Versions within a single project                      |
-| `audit`                    | Records a would-reject decision instead of denying it |
+| Limit                      | Bounds                                      |
+| -------------------------- | ------------------------------------------- |
+| `max_file_bytes`           | Logical size of one content item            |
+| `max_accounted_bytes`      | Deduplicated bytes charged to a repository  |
+| `max_projects`             | Distinct driver subjects                    |
+| `max_versions_per_project` | Versions associated with one subject        |
+| `audit`                    | Records a denial without refusing the write |
 
-`max_file_bytes` bounds one artifact, so keep it within the
-[S3 object limit](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html) of 50,000,000,000,000 bytes; a
-reservation an object store cannot hold serves no one. The remaining limits bound repository totals. A repository that
-owns no content, such as a virtual index that layers others, holds nothing to account and needs no limits.
+An unset limit has no bound. A virtual repository owns no content and does not need storage limits.
 
-## Byte accounting
+## Accounting classes
 
-Each allocation belongs to one accounting class:
+| Class       | Content                                   |
+| ----------- | ----------------------------------------- |
+| `hosted`    | Accepted from a publisher                 |
+| `cached`    | Fetched from an upstream repository       |
+| `generated` | Derived and stored by an ecosystem driver |
+| `trash`     | Retained for restore or purge             |
 
-| Class       | Content                                                                  |
-| ----------- | ------------------------------------------------------------------------ |
-| `hosted`    | Content accepted from a package or image publisher                       |
-| `cached`    | Content fetched from an upstream package index or registry               |
-| `generated` | Content that Peryx derives and stores, such as a metadata representation |
-| `trash`     | Soft-deleted content retained for restore or later purge                 |
+All classes consume quota. Moving content to trash retains its allocation until purge or deletion.
 
-All four classes consume quota. Moving content to trash does not free capacity; deletion or purge releases its
-allocation.
+`file_bytes` adds the logical size of each allocation. `accounted_bytes` charges one digest once per repository. Two
+logical files in one repository can share one accounted digest. The same digest in two repositories consumes capacity in
+both. A repository cannot record two sizes for one digest.
 
-`file_bytes` counts the logical size of each allocation. `accounted_bytes` charges a digest once per repository, so two
-files in one repository that reference the same digest add two logical sizes and one accounted size. The same digest in
-two repositories consumes capacity in both repositories. Peryx rejects a second size for a digest that the repository
-already accounts for.
-
-PyPI project-limit reservations also track logical file bytes for their project. Project and version counters use
-reference counts. The first allocation for a project consumes one project slot, and the first allocation for a version
-consumes one slot in that project. Peryx frees each slot after the last allocation leaves it.
+Drivers can track logical bytes by subject. Subject and version counters use reference counts; the first allocation
+takes a slot, and releasing the last allocation frees it.
 
 ## Reservation lifecycle
 
-A reservation starts in `reserved` state. Peryx checks the requested file size and the projected repository counters in
-the same serialized metadata transaction that increments reserved counters. Parallel writers near a limit cannot both
-claim the last capacity.
+A new reservation has state `reserved`. One serialized metadata transaction checks projected counters and increments
+reserved capacity. Parallel writers cannot both claim the last available capacity.
 
-The caller then takes one of these actions:
+The caller then commits or releases the reservation:
 
-- Commit the reservation with the driver metadata write. Peryx moves each counter from `reserved` to `committed` in the
-  same transaction and retains the allocation record for deletion.
-- Release the reservation after an interrupted or rejected write. Peryx decrements the matching counters and removes the
-  allocation record.
+- Commit moves counters from `reserved` to `committed` in the driver metadata transaction and retains the allocation
+  record for deletion.
+- Release decrements reserved counters and removes the allocation record after an interrupted or refused write.
 
-Commit and release operations use a stable reservation UUID. A second commit or release changes no counters. A failed
-driver transaction leaves its reservation pending, and a quota finalization failure rolls back the driver rows.
+A stable UUID makes commit and release idempotent. A failed driver transaction leaves a pending reservation. A quota
+finalization error rolls back the driver metadata rows.
 
-`audit = true` records the limits that would reject a request and admits its reservation. The durable allocation record
-stores those violations for inspection. Audit mode still updates reserved and committed counters, which lets operators
-observe projected enforcement against real write traffic.
+`audit = true` admits the reservation and stores the limits that would have refused it. Reserved and committed counters
+still change, so operators can measure a proposed quota against write traffic.
 
-## PyPI upload enforcement
+Protocol limits and denial responses belong to the ecosystem drivers:
 
-`max_project_size_bytes` bounds logical bytes published for one normalized PyPI project. A hosted upload reserves its
-distribution size after validation and before durable blob storage. The reservation commits in the same metadata
-transaction that makes the filename visible. Validation failures allocate nothing, while storage, metadata, project
-status, cancellation, and disconnect failures release pending capacity. An identical filename re-upload remains an
-idempotent success and does not add another allocation.
-
-A virtual upload route combines its project limit with the target hosted index. The lower configured limit applies. If
-both layers configure a limit, audit mode applies only when both layers enable `quota_audit`; an enforcing layer keeps
-the combined policy enforcing. A rejected upload returns the existing `403 Forbidden` policy response with rule
-`max-project-size` and leaves package metadata absent. Reads continue when current counted use exceeds a lowered limit.
-
-Setting `quota_audit = true` records a violation and accepts it when no other configured layer remains enforcing. Each
-metered decision increments `peryx_pypi_quota_admitted_total` or `peryx_pypi_quota_rejected_total`. These counters use
-the hosted role and contain no project label.
-
-The disabled path performs no reservation. Audit and enforcing modes replace the former project-history scan with
-indexed counter reads and one serialized reservation transaction, so request work does not grow with release history.
-
-## OCI push enforcement
-
-An OCI index reads its limits from the neutral `[index.policy]` table. `max_accounted_bytes`, `max_projects`, and
-`max_versions_per_project` map to the counters above, `max_file_size_bytes` bounds a single blob or manifest, and
-`quota_audit = true` records violations instead of denying the push. Setting none of the repository, project, or version
-limits leaves accounting off, so an unmetered registry pays nothing for the machinery.
-
-The registry accounts a push under the hosted class, keying the repository by the index name, the project by the
-repository path, and the version by the tag. A blob and a digest-referenced manifest carry no version. A blob upload and
-a cross-repository mount reserve the layer's bytes; a manifest publication reserves the manifest document's bytes and,
-for a tagged push, one version. A digest a repository already serves is not reserved again, so a re-push, a mount of a
-present blob, and racing uploads of one digest each charge its bytes once.
-
-A denied push returns the distribution-spec `DENIED` code with `403 Forbidden` and a message naming the crossed
-counters, and it publishes nothing: the blob gains no repository membership and the manifest stays absent from tag and
-digest discovery. A failed commit — a digest mismatch, a storage fault — releases the reservation the push took. The
-registry counts each decision under the `quota_admitted` and `quota_rejected` metric families, scoped to the hosted role
-and free of repository or project labels.
+- [Python package quotas](@/ecosystems/pypi/reference/policy.md#upload-quotas)
+- [OCI quotas](@/ecosystems/oci/reference/policy.md#push-quotas)
 
 ## Restart repair
 
-An interrupted process can leave reserved allocations with no live writer. After restart, call the bounded repair API
-with a row limit until it reports no remaining work. Each pass reads at most one more pending entry than the requested
-limit, releases at most that limit, and leaves committed allocations intact. Repair runs outside request execution.
+An interrupted process can leave reservations without a live writer. The repair API accepts a row limit and releases a
+bounded number of pending entries per pass. It leaves committed allocations intact and reports whether more work
+remains.
 
-Peryx keeps a separate pending-reservation index, so retained committed history does not increase repair scan work. A
-repair pass uses memory proportional to its row limit and commits its counter changes once.
+A separate pending index keeps repair work independent of committed history. One repair pass uses memory proportional to
+its row limit and commits its counter changes together.
 
-## Reading quota status
+## Status API
 
-Two authorized reads expose the stored counters without naming an artifact. Both compute the remaining headroom a client
-would otherwise derive and leave it absent when a counter is unlimited, and both mark the response `private, no-cache`
-under [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111) so a shared cache never holds one caller's view for another.
+`GET /+quota` returns repository summaries for a local administrator. `GET /+quota/repository?repository=<name>` returns
+one repository to a principal with read access. The operator role without repository access cannot read either route.
 
-`GET /+quota` returns one page of repository statuses in configuration order, for a local administrator.
-`GET /+quota/repository?repository=<route>` returns one repository for a caller who can read it: a local user through
-the authorization service, or that repository's legacy upload token with the `__token__` username. The server operator
-role, which carries no repository access, cannot read either. The summary pages over the static index list with an
-opaque `cursor`, so a page stays stable while a reservation changes a counter under it, and it omits per-project and
-per-artifact detail; name a repository for one repository's status.
+Responses use `private, no-cache` under [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111). Summary pagination follows
+the configured repository order and uses an opaque cursor. Responses omit subject and artifact detail.
 
-Each repository reports its configured `limits` and a meter for `file_bytes`, `accounted_bytes`, and `projects`. A meter
-carries `committed` use, `reserved` capacity held by in-flight writes, the `limit` (null when unlimited), and the
-`remaining` headroom once both counters are charged (null when unlimited). `file_bytes` is the logical footprint, which
-no repository-level limit bounds, so its `limit` and `remaining` are always null. The two counters a write admits
-against — `accounted_bytes` against `max_accounted_bytes`, and `projects` against `max_projects` — carry their
-configured caps.
+Each repository reports `limits` and meters for `file_bytes`, `accounted_bytes`, and `projects`. A meter contains
+`committed`, `reserved`, `limit`, and `remaining`. An unlimited meter has null `limit` and `remaining`. `file_bytes` has
+no repository-level cap, so those two fields are null for that meter.
 
-`peryx quota list` prints one tab-separated row per repository, and `peryx quota inspect --index <name>` prints one
-repository as JSON. Both read the local store and derive limits from each index's policy, so a plan reads the same
-whichever way it is requested:
+The CLI reads the same counters:
 
 ```console
-peryx quota list
-peryx quota inspect --index hosted
+$ peryx quota list
+$ peryx quota inspect --index team-hosted
 ```
 
-`limits.audit` reports whether the repository records a crossed limit instead of denying the write, so a reader sees
-when committed use may run past a configured cap. `reserved` capacity is the outstanding in-flight and pending-repair
-headroom: a persistent reserved figure with no active writer is the signal to run [restart repair](#restart-repair).
+`limits.audit` reports audit mode. Reserved capacity without an active writer indicates pending repair work.
 
 ## Migration and observability
 
-`MetaStore::open` creates missing quota tables and the pending index in its metadata transaction. Peryx does not scan or
-backfill existing blobs during this migration; counters start at zero and grow when callers reserve new allocations.
-File-level backups contain the quota tables with the rest of the metadata store.
+Opening the metadata store creates missing quota tables and the pending index. It does not scan existing content, so new
+counters start at zero and grow through later reservations. File-level backups include quota state.
 
-The stored counters form the quota observability contract. Repository usage reports committed and reserved values for
-logical file bytes and accounted bytes, plus project counts. Project usage reports committed and reserved version
-counts, plus logical file bytes when the driver enabled project accounting. The reservation record identifies its class
-and state. It stores the creation time, the digest and size, whether it contributes to project bytes, and any audit
-violations.
+Durable usage includes committed and reserved logical bytes, accounted bytes, subject counts, and version counts.
+Allocation records contain their class, state, creation time, digest, size, subject-byte flag, and audit violations.
 
-Peryx does not export repository or project names as Prometheus labels. Such labels would create an unbounded metric
-cardinality and duplicate the durable counters. Management views and retention planning remain outside repository quota
-accounting. Billing and per-user limits also remain outside. Peryx does not allocate cost across repositories.
+Prometheus metrics omit repository and subject names to keep label cardinality bounded. Billing, per-user limits,
+retention planning, and cost allocation remain outside repository quota accounting.

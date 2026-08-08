@@ -1,0 +1,60 @@
+[package]
+name = "peryx-ha-distributed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Primary/replica replication protocol for peryx, built on the storage journal."
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+openraft.workspace = true
+peryx-core.workspace = true
+peryx-driver.workspace = true
+peryx-events.workspace = true
+peryx-ha.workspace = true
+peryx-identity.workspace = true
+peryx-storage.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+hdrhistogram.workspace = true
+http-body-util.workspace = true
+peryx-events = { workspace = true, features = ["test-util"] }
+redb.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+stats_alloc.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true, features = ["util"] }
+tracing-subscriber.workspace = true
+
+[[bench]]
+name = "operation_envelope"
+harness = false
+
+[[bench]]
+name = "failover_drain"
+harness = false
+
+[[bench]]
+name = "write_ack"
+harness = false
+
+[lints]
+workspace = true

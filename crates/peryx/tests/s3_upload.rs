@@ -101,7 +101,7 @@ fn hosted() -> IndexConfig {
         ecosystem_policy: toml::Table::new(),
         ecosystem_settings: toml::Table::new(),
         webhooks: Vec::new(),
-        ecosystem: peryx_core::Ecosystem::Pypi,
+        ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
         anonymous_read: None,
         tokens: vec![TokenConfig {
             name: "uploader".to_owned(),

@@ -45,12 +45,20 @@ fn list_cache(
     )?;
     if args.digest.is_none() {
         let names = index_names(config);
-        for driver in crate::server::drivers().present() {
+        for serving in crate::server::drivers().present() {
+            let capabilities = serving.capabilities();
+            let Some(driver) = capabilities.cache else {
+                continue;
+            };
             // Each ecosystem produces its own cached pages, split into its own terms; the filtering
             // and row shape stay neutral. The write shares the scan's context so a broken pipe here
             // surfaces the same way an unreadable store would.
             let mut render = || -> anyhow::Result<()> {
-                let project_filter = args.project.as_deref().map(|project| driver.normalize_name(project));
+                let project_filter = args.project.as_deref().map(|project| {
+                    capabilities
+                        .name
+                        .map_or_else(|| project.to_owned(), |driver| driver.normalize_name(project))
+                });
                 let pages = driver.cache_pages(&stores.meta, &names).map_err(anyhow::Error::msg)?;
                 for page in pages {
                     let age = age_secs(now, page.fetched_at_unix);
@@ -117,7 +125,10 @@ fn size_cache(config: &Config, stores: &CacheStores, now: i64, out: &mut dyn Wri
     let mut stale_index_pages = 0_u64;
     let mut record_counts: Vec<(String, u64)> = Vec::new();
     let names = index_names(config);
-    for driver in crate::server::drivers().present() {
+    for driver in crate::server::drivers()
+        .present()
+        .filter_map(|driver| driver.capabilities().cache)
+    {
         let pages = driver
             .cache_pages(&stores.meta, &names)
             .map_err(anyhow::Error::msg)

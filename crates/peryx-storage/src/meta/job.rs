@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::error::MetaError;
 use super::{JOB_RUN, JOB_SERIAL_KEY, MetaStore, SERIAL};
 
-#[cfg(not(test))]
 const JOB_RETENTION_BATCH: usize = 128;
-#[cfg(test)]
-const JOB_RETENTION_BATCH: usize = 4;
 const MAX_QUERY_LIMIT: usize = 100;
 const MAX_ERROR_BYTES: usize = 2_048;
 const MAX_SCOPE_BYTES: usize = 512;
@@ -409,5 +406,5 @@ fn encode_job_run(record: &JobRunRecord) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[path = "job_fault_tests.rs"]
+#[path = "../../tests/unit/meta/job_fault_tests.rs"]
 mod fault_tests;

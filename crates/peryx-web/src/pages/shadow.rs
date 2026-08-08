@@ -114,7 +114,7 @@ fn ShadowFilterFields(
         <input
             id="shadow-repository"
             maxlength="512"
-            placeholder="root/pypi"
+            placeholder="root/packages"
             required
             on:input:target=move |event| set_filters.update(|value| value.repository = event.target().value())
         />
@@ -210,9 +210,9 @@ fn shadow_candidate_row(candidate: UiShadowCandidate) -> impl IntoView {
     let reason_text = decision.as_ref().and_then(|decision| decision.reason.clone());
     let next = decision
         .as_ref()
-        .map_or_else(|| "—".to_owned(), UiShadowDecision::next_eligible_at);
+        .map_or_else(|| "-".to_owned(), UiShadowDecision::next_eligible_at);
     let decision_cell = decision.map_or_else(
-        || view! { <span class="dim">"—"</span> }.into_any(),
+        || view! { <span class="dim">"-"</span> }.into_any(),
         |decision| {
             let class = format!("badge decision-{}", decision.state_key());
             view! { <span class=class>{decision.status()}</span> }.into_any()
@@ -235,5 +235,5 @@ fn shadow_candidate_row(candidate: UiShadowCandidate) -> impl IntoView {
 }
 
 fn or_dash(value: Option<String>) -> String {
-    value.unwrap_or_else(|| "—".to_owned())
+    value.unwrap_or_else(|| "-".to_owned())
 }

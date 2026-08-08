@@ -37,7 +37,7 @@ impl ServingState {
         self.cache.remember_negative(key, (self.clock)() + ttl_secs);
     }
 
-    /// Invalidate one project's rendered pages and the search documents after a `PyPI` mutation. The
+    /// Invalidate one project's rendered pages and search documents after a project mutation. The
     /// search side refreshes only this project's documents, so a mutation no longer rebuilds the whole
     /// index on the next search.
     pub fn invalidate_project(&self, project: &str) {
@@ -52,7 +52,7 @@ impl ServingState {
         self.cache.invalidate_hot(project);
     }
 
-    /// Preserve rendered page caches across `OCI` tag mutations.
+    /// Preserve rendered page caches when the ecosystem reports no project-level invalidation.
     pub fn bump_search_epoch(&self) {
         self.search.bump_epoch();
     }
@@ -69,3 +69,7 @@ impl ServingState {
         Ok(compute_readable_frontier(authority, &frontiers, &self.required_views))
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/caches/tests.rs"]
+mod tests;

@@ -61,7 +61,29 @@ pub(super) async fn project_page(
         None => UiMeta::default(),
     };
     meta.version = default.or(meta.version);
+    ui.client_command = Some(install_command(&route, &ui.name, meta.version.as_deref()));
     Ok(Some((ui, meta)))
+}
+
+fn install_command(route: &str, project: &str, version: Option<&str>) -> String {
+    let target = version.map_or_else(
+        || shell_quote(project),
+        |version| shell_quote(&format!("{project}=={version}")),
+    );
+    let mut endpoint = String::new();
+    endpoint.push_str("<origin>/");
+    peryx_core::url_encoding::push_path(&mut endpoint, route);
+    endpoint.push_str("/simple/");
+    format!("uv pip install --index-url {endpoint} {target}")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'=' | b'+' | b':' | b'@' | b'/' | b',')
+    }) {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// Resolve a project's detail together with the filenames its hosted layers published, so both store
@@ -111,7 +133,7 @@ fn collect_hosted_filenames(
 ///
 /// The availability comes straight from the stored projection, which a repair pass keeps in step with
 /// the content store; a listing therefore never reads a blob per row. A file the placement store has
-/// not recorded — an upstream catalog entry never fetched — stays proxied and remote-only. A store
+/// not recorded - an upstream catalog entry never fetched - stays proxied and remote-only. A store
 /// read that fails falls back to that same default: the page was built from earlier reads of the same
 /// store, so a failure here is a torn database the caller cannot recover a truer answer from.
 fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiProject) {
@@ -175,7 +197,7 @@ const MAX_PROVENANCE_BYTES: u64 = 2 * 1024 * 1024;
 ///
 /// A hosted file's stored provenance document is summarized into per-attestation records; a mirrored
 /// file is flagged as an upstream claim without reading or fetching its document. This reads only
-/// local storage — it never calls upstream and never verifies a signature — so a listing stays a
+/// local storage - it never calls upstream and never verifies a signature - so a listing stays a
 /// projection of what peryx already holds.
 async fn apply_provenance(state: &Arc<ServingState>, ui: &mut UiProject) {
     for file in &mut ui.files {
@@ -312,3 +334,7 @@ pub(super) async fn artifact_path_in_project(
             )
         })
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/serving/web/command_tests.rs"]
+mod command_tests;
