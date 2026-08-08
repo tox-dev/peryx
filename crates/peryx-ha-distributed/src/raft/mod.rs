@@ -29,10 +29,13 @@ pub use node::{RaftNode, StartError};
 pub use state_machine::OwnershipStateMachine;
 
 #[cfg(test)]
+#[path = "../../tests/unit/raft/config_tests.rs"]
 mod config_tests;
 #[cfg(test)]
+#[path = "../../tests/unit/raft/node_tests.rs"]
 mod node_tests;
 #[cfg(test)]
+#[path = "../../tests/unit/raft/state_machine_tests.rs"]
 mod state_machine_tests;
 
 openraft::declare_raft_types!(

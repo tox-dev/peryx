@@ -18,6 +18,7 @@ mod scheduler;
 mod timer;
 
 #[cfg(test)]
+#[path = "../../tests/unit/jobs/tests.rs"]
 mod tests;
 
 use std::num::NonZeroUsize;

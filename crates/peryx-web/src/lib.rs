@@ -298,4 +298,5 @@ pub fn capture_coverage() -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
 mod tests;

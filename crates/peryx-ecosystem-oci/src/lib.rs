@@ -86,6 +86,7 @@ mod upstream;
 mod web;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;
 
 pub use error::{ErrorCode, error_response, gateway_error};

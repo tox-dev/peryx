@@ -196,108 +196,161 @@ pub use visibility_mint::{JournalSerials, SerialSource, StaleEpoch, VisibilityMi
 pub use write_ack::DistributedWriteAcknowledger;
 
 #[cfg(test)]
+#[path = "../tests/unit/ack_tests.rs"]
 mod ack_tests;
 #[cfg(test)]
+#[path = "../tests/unit/analytics_tests.rs"]
 mod analytics_tests;
 #[cfg(test)]
+#[path = "../tests/unit/authority_tests.rs"]
 mod authority_tests;
 #[cfg(test)]
+#[path = "../tests/unit/backoff_tests.rs"]
 mod backoff_tests;
 #[cfg(test)]
+#[path = "../tests/unit/beacon_tests.rs"]
 mod beacon_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_availability_tests.rs"]
 mod blob_availability_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_fetch_tests.rs"]
 mod blob_fetch_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_http_tests.rs"]
 mod blob_http_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_piece_tests.rs"]
 mod blob_piece_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_placement_tests.rs"]
 mod blob_placement_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_plane_tests.rs"]
 mod blob_plane_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_pull_tests.rs"]
 mod blob_pull_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_reassembly_tests.rs"]
 mod blob_reassembly_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_routing_tests.rs"]
 mod blob_routing_tests;
 #[cfg(test)]
+#[path = "../tests/unit/blob_tests.rs"]
 mod blob_tests;
 #[cfg(test)]
+#[path = "../tests/unit/byte_ack_tests.rs"]
 mod byte_ack_tests;
 #[cfg(test)]
+#[path = "../tests/unit/channel_tests.rs"]
 mod channel_tests;
 #[cfg(test)]
+#[path = "../tests/unit/circuit_tests.rs"]
 mod circuit_tests;
 #[cfg(test)]
+#[path = "../tests/unit/completeness_query_tests.rs"]
 mod completeness_query_tests;
 #[cfg(test)]
+#[path = "../tests/unit/completeness_tests.rs"]
 mod completeness_tests;
 #[cfg(test)]
+#[path = "../tests/unit/dc_ack_tests.rs"]
 mod dc_ack_tests;
 #[cfg(test)]
+#[path = "../tests/unit/dc_copy_tests.rs"]
 mod dc_copy_tests;
 #[cfg(test)]
+#[path = "../tests/unit/drain_tests.rs"]
 mod drain_tests;
 #[cfg(test)]
+#[path = "../tests/unit/driver_tests.rs"]
 mod driver_tests;
 #[cfg(test)]
+#[path = "../tests/unit/envelope_tests.rs"]
 mod envelope_tests;
 #[cfg(test)]
+#[path = "../tests/unit/epoch_reservation_tests.rs"]
 mod epoch_reservation_tests;
 #[cfg(test)]
+#[path = "../tests/unit/failover_tests.rs"]
 mod failover_tests;
 #[cfg(test)]
+#[path = "../tests/unit/filesystem_ack_tests.rs"]
 mod filesystem_ack_tests;
 #[cfg(test)]
+#[path = "../tests/unit/http_tests.rs"]
 mod http_tests;
 #[cfg(test)]
+#[path = "../tests/unit/ingress_intent_tests.rs"]
 mod ingress_intent_tests;
 #[cfg(test)]
+#[path = "../tests/unit/liveness_tests.rs"]
 mod liveness_tests;
 #[cfg(test)]
+#[path = "../tests/unit/multi_peer_tests.rs"]
 mod multi_peer_tests;
 #[cfg(test)]
+#[path = "../tests/unit/ownership_tests.rs"]
 mod ownership_tests;
 #[cfg(test)]
+#[path = "../tests/unit/peer_http_tests.rs"]
 mod peer_http_tests;
 #[cfg(test)]
+#[path = "../tests/unit/peer_receipt_http_tests.rs"]
 mod peer_receipt_http_tests;
 #[cfg(test)]
+#[path = "../tests/unit/peer_receipt_tests.rs"]
 mod peer_receipt_tests;
 #[cfg(test)]
+#[path = "../tests/unit/peer_tests.rs"]
 mod peer_tests;
 #[cfg(test)]
+#[path = "../tests/unit/protocol_tests.rs"]
 mod protocol_tests;
 #[cfg(test)]
+#[path = "../tests/unit/readiness_tests.rs"]
 mod readiness_tests;
 #[cfg(test)]
+#[path = "../tests/unit/receipt_quorum_tests.rs"]
 mod receipt_quorum_tests;
 #[cfg(test)]
+#[path = "../tests/unit/reconcile_tests.rs"]
 mod reconcile_tests;
 #[cfg(test)]
+#[path = "../tests/unit/remote_durability_tests.rs"]
 mod remote_durability_tests;
 #[cfg(test)]
+#[path = "../tests/unit/remote_frontier_http_tests.rs"]
 mod remote_frontier_http_tests;
 #[cfg(test)]
+#[path = "../tests/unit/remote_frontier_tests.rs"]
 mod remote_frontier_tests;
 #[cfg(test)]
+#[path = "../tests/unit/rollout_tests.rs"]
 mod rollout_tests;
 #[cfg(test)]
+#[path = "../tests/unit/status_tests.rs"]
 mod status_tests;
 #[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
 mod tests;
 #[cfg(test)]
+#[path = "../tests/unit/transfer_tests.rs"]
 mod transfer_tests;
 #[cfg(test)]
+#[path = "../tests/unit/upgrade_tests.rs"]
 mod upgrade_tests;
 #[cfg(test)]
+#[path = "../tests/unit/versions_tests.rs"]
 mod versions_tests;
 #[cfg(test)]
+#[path = "../tests/unit/visibility_feed_tests.rs"]
 mod visibility_feed_tests;
 #[cfg(test)]
+#[path = "../tests/unit/visibility_mint_tests.rs"]
 mod visibility_mint_tests;
 #[cfg(test)]
+#[path = "../tests/unit/visibility_tests.rs"]
 mod visibility_tests;

@@ -126,5 +126,5 @@ fn derive_key(secret: &[u8], label: &[u8]) -> LessSafeKey {
 }
 
 #[cfg(test)]
-#[path = "session_tests.rs"]
+#[path = "../tests/unit/session_tests.rs"]
 mod tests;

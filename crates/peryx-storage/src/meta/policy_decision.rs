@@ -489,5 +489,5 @@ fn valid_cursor(cursor: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "policy_decision_fault_tests.rs"]
+#[path = "../../tests/unit/meta/policy_decision_fault_tests.rs"]
 mod fault_tests;

@@ -409,5 +409,5 @@ fn encode_job_run(record: &JobRunRecord) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[path = "job_fault_tests.rs"]
+#[path = "../../tests/unit/meta/job_fault_tests.rs"]
 mod fault_tests;

@@ -45,6 +45,7 @@ pub mod source;
 pub mod value;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;
 
 pub use ast::Ast;

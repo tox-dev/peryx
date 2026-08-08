@@ -18,4 +18,5 @@ pub mod replication;
 pub mod server;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

@@ -116,4 +116,5 @@ fn secrets_match(presented: &str, expected: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

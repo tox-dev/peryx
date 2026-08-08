@@ -449,5 +449,5 @@ fn voter_id(datacenter: &str) -> VoterId {
 }
 
 #[cfg(test)]
-#[path = "consensus_runtime_tests.rs"]
+#[path = "../tests/unit/consensus_runtime_tests.rs"]
 mod raft_tests;

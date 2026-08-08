@@ -228,5 +228,5 @@ fn write_lease(txn: &redb::WriteTransaction, lease: &JobLease) -> Result<(), Met
 }
 
 #[cfg(test)]
-#[path = "job_lease_fault_tests.rs"]
+#[path = "../../tests/unit/meta/job_lease_fault_tests.rs"]
 mod fault_tests;

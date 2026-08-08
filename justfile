@@ -7,6 +7,7 @@ default: test
 lint:
     cargo fmt --all --check --
     cargo clippy --workspace --all-targets -- -D warnings
+    .github/scripts/check-test-layout
 
 # Run workspace tests, benchmark harnesses, and doctests.
 test:

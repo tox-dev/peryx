@@ -211,4 +211,5 @@ impl AnalyticsSource for HttpAnalyticsSource {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/analytics_transfer/tests.rs"]
 mod tests;

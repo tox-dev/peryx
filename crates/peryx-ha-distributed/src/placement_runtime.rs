@@ -296,5 +296,5 @@ fn record_transition(
 }
 
 #[cfg(test)]
-#[path = "placement_runtime_tests.rs"]
+#[path = "../tests/unit/placement_runtime_tests.rs"]
 mod tests;

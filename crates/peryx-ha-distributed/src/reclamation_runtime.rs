@@ -156,7 +156,7 @@ impl peryx_ha::BlobReclaimer for BoundBlobReclaimer {
 }
 
 #[cfg(test)]
-#[path = "reclamation_runtime_tests.rs"]
+#[path = "../tests/unit/reclamation_runtime_tests.rs"]
 mod tests;
 
 pub struct ReplicaReclamationFrontiers {

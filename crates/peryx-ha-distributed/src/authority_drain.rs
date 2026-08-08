@@ -126,5 +126,5 @@ fn drain_pending(
 }
 
 #[cfg(test)]
-#[path = "authority_drain_tests.rs"]
+#[path = "../tests/unit/authority_drain_tests.rs"]
 mod drain_tests;

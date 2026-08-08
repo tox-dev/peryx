@@ -459,4 +459,5 @@ fn representative(failures: &[(usize, TransportError)]) -> &TransportError {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/read_through/tests.rs"]
 mod tests;

@@ -139,4 +139,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/multi_pull/tests.rs"]
 mod tests;

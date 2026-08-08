@@ -243,23 +243,8 @@ impl EcosystemPlugin for PypiPlugin {
 }
 
 #[cfg(test)]
-mod plugin_contract_tests {
-    use peryx_driver::discovery::BaseUrl;
-    use peryx_driver::serving::{EcosystemCapability, EcosystemPlugin as _};
-
-    use super::PypiPlugin;
-
-    #[test]
-    fn plugin_exposes_capabilities_and_validates_snippet_formats() {
-        let plugin = PypiPlugin;
-        let base = BaseUrl::parse("https://packages.example/").unwrap();
-
-        assert!(plugin.supports(EcosystemCapability::CatalogSync));
-        assert!(plugin.supports(EcosystemCapability::TrustedPublishing));
-        assert!(plugin.snippet_text(&base, "pypi", true, "pip.conf").unwrap().is_some());
-        assert!(plugin.snippet_text(&base, "pypi", true, "unknown").is_err());
-    }
-}
+#[path = "../tests/unit/plugin_contract_tests.rs"]
+mod plugin_contract_tests;
 
 /// Render any error as the user-visible message a driver method returns, so the many `?`-adjacent
 /// store and io failures map through one function instead of a per-site `|err| err.to_string()`
@@ -270,16 +255,9 @@ pub(crate) fn error_message<E: std::fmt::Display>(err: E) -> String {
 }
 
 #[cfg(all(test, feature = "serving"))]
-mod error_message_tests {
-    use super::error_message;
-
-    #[test]
-    fn test_error_message_stringifies_io_and_store_faults() {
-        assert_eq!(error_message(std::io::Error::other("disk")), "disk");
-        let decode = serde_json::from_str::<u8>("x").unwrap_err();
-        assert!(!error_message(peryx_storage::meta::MetaError::Decode(decode)).is_empty());
-    }
-}
+#[path = "../tests/unit/error_message_tests.rs"]
+mod error_message_tests;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

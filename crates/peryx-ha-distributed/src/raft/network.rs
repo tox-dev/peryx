@@ -433,5 +433,5 @@ impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
 }
 
 #[cfg(test)]
-#[path = "network_tests.rs"]
+#[path = "../../tests/unit/raft/network_tests.rs"]
 mod network_tests;

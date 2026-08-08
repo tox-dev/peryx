@@ -174,5 +174,5 @@ impl AnalyticsPuller {
 }
 
 #[cfg(test)]
-#[path = "runtime_analytics_tests.rs"]
+#[path = "../tests/unit/runtime_analytics_tests.rs"]
 mod tests;

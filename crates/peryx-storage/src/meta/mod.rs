@@ -17,6 +17,7 @@ mod cross_dc_copy;
 mod error;
 mod external_identity;
 #[cfg(test)]
+#[path = "../../tests/unit/meta/fault.rs"]
 mod fault;
 mod finalize;
 mod frontier;

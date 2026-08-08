@@ -138,4 +138,5 @@ impl ChunkedDigestBuilder {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/blob/chunked/tests.rs"]
 mod tests;

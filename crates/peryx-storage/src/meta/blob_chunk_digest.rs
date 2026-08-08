@@ -48,4 +48,5 @@ impl MetaStore {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/meta/blob_chunk_digest/tests.rs"]
 mod tests;

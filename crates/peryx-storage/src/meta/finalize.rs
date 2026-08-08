@@ -170,5 +170,5 @@ fn advance_intent_to_admitted<E: From<MetaError>>(
 }
 
 #[cfg(test)]
-#[path = "finalize_fault_tests.rs"]
+#[path = "../../tests/unit/meta/finalize_fault_tests.rs"]
 mod fault_tests;

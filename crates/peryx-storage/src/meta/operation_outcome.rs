@@ -357,5 +357,5 @@ impl MetaStore {
 }
 
 #[cfg(test)]
-#[path = "operation_outcome_fault_tests.rs"]
+#[path = "../../tests/unit/meta/operation_outcome_fault_tests.rs"]
 mod fault_tests;

@@ -382,5 +382,5 @@ fn stored(audit: &TransferAudit) -> StoredTransferAudit {
 }
 
 #[cfg(test)]
-#[path = "authority_transfer_tests.rs"]
+#[path = "../tests/unit/authority_transfer_tests.rs"]
 mod tests;

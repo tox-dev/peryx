@@ -8,4 +8,5 @@ pub mod raft;
 pub mod reclaim;
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

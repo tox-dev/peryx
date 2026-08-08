@@ -265,5 +265,5 @@ const fn failure_class(error: &CopyError) -> BlobPlacementFailure {
 }
 
 #[cfg(test)]
-#[path = "copy_runtime_tests.rs"]
+#[path = "../tests/unit/copy_runtime_tests.rs"]
 mod tests;

@@ -464,5 +464,5 @@ impl World {
 }
 
 #[cfg(test)]
-#[path = "sim_tests.rs"]
+#[path = "../tests/unit/sim_tests.rs"]
 mod sim_tests;
