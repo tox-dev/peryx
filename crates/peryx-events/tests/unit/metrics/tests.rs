@@ -8,10 +8,10 @@ use peryx_ha_distributed::{
 use peryx_storage::meta::{AnalyticsHandle, MetaStore};
 
 use super::{
-    Aggregator, Clock, DailyBuckets, DailyKey, DailySnapshot, DailyTotals, DailyUsage, DownloadSnapshot, Event,
-    FLUSH_INTERVAL, FlushPolicy, FlushState, Message, Metrics, PackageUsage, SECONDS_PER_DAY, SourceUsage, StatsTree,
-    TimelineBucket, UnusedPackage, UsageInterval, VersionUsage, aggregate, daily_rows, encode_daily_snapshot,
-    flush_due, fold_daily_batch, step,
+    Aggregator, CatalogSyncOutcome, Clock, DailyBuckets, DailyKey, DailySnapshot, DailyTotals, DailyUsage,
+    DownloadSnapshot, Event, FLUSH_INTERVAL, FlushPolicy, FlushState, Message, Metrics, PackageUsage, SECONDS_PER_DAY,
+    SourceUsage, StatsTree, TimelineBucket, UnusedPackage, UsageInterval, VersionUsage, aggregate, daily_rows,
+    encode_daily_snapshot, flush_due, fold_daily_batch, step,
 };
 
 fn store() -> (tempfile::TempDir, MetaStore) {
@@ -200,6 +200,105 @@ fn test_usage_totals_reports_lifetime_by_repository() {
         }]
     );
     assert!(metrics.usage_totals(Some("missing")).is_empty());
+}
+
+#[test]
+fn test_drill_returns_repository_and_global_summaries() {
+    let metrics = Metrics::start();
+    metrics.record(download("alpha", "demo", "demo-1.bin", 10));
+    settle_and_assert(&metrics, || metrics.index_totals().contains_key("alpha"));
+
+    let repository = metrics.drill(Some("alpha"), None);
+    assert_eq!(repository["totals"]["base"]["downloads"], 1);
+    assert_eq!(repository["projects"]["demo"]["base"]["downloads"], 1);
+    assert_eq!(metrics.drill(None, None)["alpha"]["base"]["downloads"], 1);
+    assert_eq!(metrics.drill(Some("missing"), None), serde_json::json!({}));
+}
+
+#[test]
+fn test_operational_events_update_each_counter_family() {
+    let metrics = Metrics::start();
+    for event in [
+        Event::Ecosystem {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+            filename: Some("demo.bin".to_owned()),
+            family: "metadata",
+        },
+        Event::Ecosystem {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+            filename: None,
+            family: "metadata",
+        },
+        Event::Upload {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+        },
+        Event::Refresh {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+            changed: true,
+        },
+        Event::Refresh {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+            changed: false,
+        },
+        Event::StaleServed {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+        },
+        Event::UpstreamError {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+        },
+        Event::BlobRejected {
+            route: "alpha".to_owned(),
+            project: "demo".to_owned(),
+        },
+        Event::CatalogSync {
+            route: "alpha".to_owned(),
+            outcome: CatalogSyncOutcome::Published,
+            projects: Some(12),
+        },
+        Event::CatalogSync {
+            route: "alpha".to_owned(),
+            outcome: CatalogSyncOutcome::NotModified,
+            projects: None,
+        },
+        Event::CatalogSync {
+            route: "alpha".to_owned(),
+            outcome: CatalogSyncOutcome::Error,
+            projects: None,
+        },
+    ] {
+        metrics.record(event);
+    }
+    settle_and_assert(&metrics, || metrics.index_totals().contains_key("alpha"));
+
+    let totals = metrics.drill(Some("alpha"), None)["totals"].clone();
+    assert_eq!(totals["base"]["rejected"], 1);
+    assert_eq!(totals["hosted"]["uploads"], 1);
+    assert_eq!(totals["ecosystem"]["metadata"], 2);
+    assert_eq!(
+        totals["cached"],
+        serde_json::json!({
+            "refreshes": 2,
+            "changed": 1,
+            "stale_served": 1,
+            "upstream_errors": 1,
+            "catalog_syncs": 3,
+            "catalog_published": 1,
+            "catalog_not_modified": 1,
+            "catalog_errors": 1,
+            "catalog_projects": 12,
+        })
+    );
+    assert_eq!(
+        metrics.drill(Some("alpha"), Some("demo"))["files"]["demo.bin"]["ecosystem"]["metadata"],
+        1
+    );
 }
 
 #[test]

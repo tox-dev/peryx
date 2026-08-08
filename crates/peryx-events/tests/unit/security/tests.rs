@@ -1,6 +1,7 @@
 use std::io::{Read as _, Seek as _};
 use std::sync::Mutex;
 
+use http::{HeaderMap, HeaderValue, header};
 use peryx_identity::{Identity, Principal};
 use rstest::rstest;
 
@@ -126,4 +127,89 @@ fn test_authorization_denial_event_contains_only_bounded_context(
             "reason": expected_reason,
         })
     );
+}
+
+#[test]
+fn test_index_action_event_records_all_bounded_context() {
+    let mut capture = tempfile::tempfile().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_writer(Mutex::new(capture.try_clone().unwrap()))
+        .finish();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-request-id", HeaderValue::from_static("request-1"));
+    headers.insert(header::USER_AGENT, HeaderValue::from_static("client/1"));
+
+    tracing::subscriber::with_default(subscriber, || {
+        super::Event::new("upload", "allowed")
+            .actor(Some("alice"))
+            .publisher_id("publisher-1")
+            .token_id("token-1")
+            .index("virtual")
+            .source_index("cached")
+            .hosted_index("hosted")
+            .project(Some("demo"))
+            .version(Some("1.0"))
+            .filename(Some("demo.whl"))
+            .digest(Some("sha256"))
+            .count(2)
+            .changed(true)
+            .reason(Some("accepted"))
+            .request(&headers)
+            .emit();
+    });
+
+    capture.rewind().unwrap();
+    let mut text = String::new();
+    capture.read_to_string(&mut text).unwrap();
+    let event: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(
+        event["fields"],
+        serde_json::json!({
+            "message": "index security event",
+            "security_event": true,
+            "event": "index_action",
+            "action": "upload",
+            "result": "allowed",
+            "actor": "alice",
+            "publisher_id": "publisher-1",
+            "token_id": "token-1",
+            "index": "virtual",
+            "source_index": "cached",
+            "hosted_index": "hosted",
+            "project": "demo",
+            "version": "1.0",
+            "filename": "demo.whl",
+            "digest": "sha256",
+            "count": 2,
+            "changed": true,
+            "reason": "accepted",
+            "request_id": "request-1",
+            "user_agent": "client/1",
+        })
+    );
+}
+
+#[test]
+fn test_index_action_event_discards_non_text_headers() {
+    let mut capture = tempfile::tempfile().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_writer(Mutex::new(capture.try_clone().unwrap()))
+        .finish();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-request-id", HeaderValue::from_bytes(&[0xff]).unwrap());
+
+    tracing::subscriber::with_default(subscriber, || {
+        super::Event::new("delete", "denied").request(&headers).emit();
+    });
+
+    capture.rewind().unwrap();
+    let mut text = String::new();
+    capture.read_to_string(&mut text).unwrap();
+    let event: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(event["fields"]["request_id"], "");
+    assert_eq!(event["fields"]["user_agent"], "");
 }

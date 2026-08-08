@@ -36,6 +36,7 @@ fn test_runtime_matches_all_events_when_no_filter_is_set() {
     |err: &WebhookConfigError| matches!(err, WebhookConfigError::Duplicate { .. })
 )]
 #[case::invalid_url(vec![target("ci", "not a url", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidUrl { .. }))]
+#[case::invalid_scheme(vec![target("ci", "file:///tmp/hook", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidScheme { .. }))]
 #[case::sensitive_url_parts(vec![target("ci", "https://ci.example/hook?token=secret", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::SensitiveUrlParts { .. }))]
 fn test_runtime_rejects_invalid_target_config(
     #[case] configs: Vec<WebhookTargetConfig>,

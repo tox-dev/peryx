@@ -68,17 +68,21 @@ pub fn kick<H: WebhookHost>(host: Arc<H>) {
 async fn delivery_loop<H: WebhookHost>(host: Arc<H>) {
     loop {
         deliver_due(&host).await;
-        let result = host.meta().next_webhook_delivery_at();
-        log_next_delivery_error(result.as_ref().err());
-        let Some(next) = result.ok().flatten() else {
-            host.webhooks().notify.notified().await;
-            continue;
-        };
+        wait_for_work(host.as_ref()).await;
+    }
+}
+
+async fn wait_for_work<H: WebhookHost>(host: &H) {
+    let result = host.meta().next_webhook_delivery_at();
+    log_next_delivery_error(result.as_ref().err());
+    if let Some(next) = result.ok().flatten() {
         let sleep_secs = wait_secs(next, host.now());
         tokio::select! {
             () = tokio::time::sleep(Duration::from_secs(sleep_secs)) => {}
             () = host.webhooks().notify.notified() => {}
         }
+    } else {
+        host.webhooks().notify.notified().await;
     }
 }
 
