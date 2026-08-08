@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{MemberDescription, describe_index, describe_upstream_route};
+use super::{MemberDescription, describe_index, describe_indexes, describe_upstream_route};
 use peryx_core::Ecosystem;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
@@ -69,6 +69,22 @@ fn test_cached_index_names_its_role_and_lists_no_members() {
     assert_eq!(described.kind, "cached");
     assert!(described.layers.is_empty());
     assert!(described.precedence.is_empty());
+}
+
+#[test]
+fn test_describe_indexes_preserves_input_order() {
+    let indexes = vec![
+        index("first", IndexKind::Hosted { volatile: false }, IndexAcl::default()),
+        index("second", IndexKind::Hosted { volatile: false }, IndexAcl::default()),
+    ];
+
+    assert_eq!(
+        describe_indexes(&indexes)
+            .into_iter()
+            .map(|index| index.name)
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
 }
 
 #[test]

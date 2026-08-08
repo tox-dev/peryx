@@ -1,6 +1,18 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use peryx_core::Ecosystem;
 use peryx_core::{ShadowCandidate, ShadowReason, ShadowSource};
+use peryx_identity::IndexAcl;
+use peryx_index::{Index, IndexKind};
+use peryx_policy::Policy;
+use peryx_storage::blob::BlobStore;
+use peryx_storage::meta::MetaStore;
 
 use super::{DEFAULT_LIMIT, ShadowQuery, ShadowQueryError, paginate};
+use crate::rate_limit::RouteClass;
+use crate::serving::{DriverCapabilities, EcosystemDriver, ShadowDriver};
+use crate::state::{AppState, IndexDescription};
 
 fn candidate(filename: &str, member: &str, selected: bool) -> ShadowCandidate {
     ShadowCandidate {
@@ -139,4 +151,86 @@ fn test_paginate_cursor_resumes_after_the_last_row_and_stays_stable() {
         "the resumed page holds without skipping or duplicating a candidate"
     );
     assert_eq!(second.next_cursor, None);
+}
+
+struct Driver {
+    error: bool,
+}
+
+impl ShadowDriver for Driver {
+    fn shadowed_candidates(
+        &self,
+        _state: &crate::ServingState,
+        _position: usize,
+        _project: &str,
+    ) -> Result<Vec<ShadowCandidate>, String> {
+        if self.error {
+            Err("shadow unavailable".to_owned())
+        } else {
+            Ok(vec![candidate("artifact.bin", "hosted", true)])
+        }
+    }
+}
+
+#[async_trait]
+impl EcosystemDriver for Driver {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::new("example")
+    }
+
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            shadow: Some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+
+    fn classify_route(&self, _path: &str) -> RouteClass {
+        RouteClass::Artifact
+    }
+
+    fn discover_index(&self, _index: IndexDescription, _base: Option<&crate::discovery::BaseUrl>) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+}
+
+fn app(error: bool) -> (tempfile::TempDir, AppState) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::new(
+        meta,
+        blobs,
+        60,
+        vec![Index {
+            name: "root/alpha".to_owned(),
+            route: "root/alpha".to_owned(),
+            ecosystem: Ecosystem::new("example"),
+            kind: IndexKind::Virtual {
+                layers: Vec::new(),
+                upload: None,
+            },
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+        }],
+    );
+    state.register_ecosystem(Arc::new(Driver { error }), Arc::new(peryx_search::EmptyIndexer));
+    (dir, state)
+}
+
+#[test]
+fn test_app_state_queries_driver_candidates() {
+    let (_dir, state) = app(false);
+
+    assert_eq!(state.query_shadowed(&query(25)).unwrap().candidates.len(), 1);
+}
+
+#[test]
+fn test_app_state_surfaces_driver_shadow_failure() {
+    let (_dir, state) = app(true);
+
+    assert_eq!(
+        state.query_shadowed(&query(25)),
+        Err(ShadowQueryError::Store("shadow unavailable".to_owned()))
+    );
 }

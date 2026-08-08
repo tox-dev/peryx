@@ -9,6 +9,7 @@ use rstest::rstest;
 
 use crate::rate_limit::RateLimitConfig;
 use peryx_search::SearchParams;
+use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
 
 use crate::state::{AppState, DEFAULT_HOT_CACHE_BYTES, ReadableFrontier, RuntimeOptions, SEARCH_VIEW};
 use peryx_events::webhook::WebhookRuntime;
@@ -26,6 +27,48 @@ fn test_hot_cache_defaults_to_the_documented_budget() {
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
     let state = AppState::new(meta, blobs, 60, Vec::new());
     assert_eq!(state.cache.hot.policy().max_capacity(), Some(DEFAULT_HOT_CACHE_BYTES));
+}
+
+#[test]
+fn test_describe_indexes_includes_runtime_upstream_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let index = route_index(
+        "alpha",
+        "alpha",
+        IndexKind::Cached {
+            client: UpstreamClient::new("https://fallback.example/simple/").unwrap(),
+            offline: false,
+        },
+    );
+    let state = AppState::with_search_path_and_runtime(
+        meta,
+        blobs,
+        60,
+        vec![index],
+        dir.path().join("search-v1"),
+        RuntimeOptions {
+            rate_limit: RateLimitConfig::default(),
+            upstream_concurrency: std::iter::empty(),
+            upstream_routes: vec![(
+                "alpha".to_owned(),
+                UpstreamRouter::new(vec![NamedUpstream::new(
+                    "origin",
+                    UpstreamClient::new("https://origin.example/simple/").unwrap(),
+                )])
+                .unwrap(),
+            )],
+            webhooks: WebhookRuntime::disabled(),
+            hot_cache_bytes: DEFAULT_HOT_CACHE_BYTES,
+            max_stale_secs: crate::DEFAULT_MAX_STALE_SECS,
+            usage_retention_days: None,
+            required_views: std::sync::Arc::from(crate::state::REQUIRED_VIEWS),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(state.describe_indexes()[0].upstream.as_ref().unwrap().sources.len(), 1);
 }
 
 #[rstest]

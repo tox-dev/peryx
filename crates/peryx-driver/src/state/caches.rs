@@ -69,3 +69,7 @@ impl ServingState {
         Ok(compute_readable_frontier(authority, &frontiers, &self.required_views))
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/caches/tests.rs"]
+mod tests;

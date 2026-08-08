@@ -211,7 +211,10 @@ pub fn plan(
 /// # Errors
 /// Returns the reason the store's policy-input generation could not be read.
 pub fn summary(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> Result<RetentionSummary, String> {
-    let generation = meta.policy_input_generation(index).map_err(|err| err.to_string())?;
+    let generation = match meta.policy_input_generation(index) {
+        Ok(generation) => generation,
+        Err(error) => return Err(error.to_string()),
+    };
     Ok(RetentionSummary {
         policy_version: policy.version(),
         frontier: RetentionFrontier {

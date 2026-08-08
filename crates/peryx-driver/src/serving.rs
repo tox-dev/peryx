@@ -602,3 +602,7 @@ fn wrong_mount() -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/serving/tests.rs"]
+mod tests;

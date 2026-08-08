@@ -34,8 +34,12 @@ impl DriverSet {
         self.drivers.get(&ecosystem)
     }
 
-    /// Every registered driver, in ecosystem declaration order.
+    /// Every registered driver.
     pub fn present(&self) -> impl Iterator<Item = &Arc<dyn EcosystemDriver>> {
         self.drivers.values()
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/driver_set/tests.rs"]
+mod tests;

@@ -72,22 +72,27 @@ impl ReadAccess {
                     glob: "*".to_owned(),
                 }),
                 IndexCredential::Acl(principal) => {
-                    patterns.extend(read_globs(index, principal).map(|glob| SearchAccessPattern {
-                        route: index.route.clone(),
-                        glob: glob.to_owned(),
-                    }));
+                    for glob in read_globs(index, principal) {
+                        patterns.push(SearchAccessPattern {
+                            route: index.route.clone(),
+                            glob: glob.to_owned(),
+                        });
+                    }
                 }
                 IndexCredential::Bearer(grants) => {
                     let prefix = resource_prefix(&index.route);
-                    for glob in grants
-                        .iter()
-                        .filter(|grant| grant.actions.contains(&Action::Read))
-                        .flat_map(|grant| &grant.projects)
-                    {
-                        patterns.extend(glob.remainders_after(&prefix).map(|glob| SearchAccessPattern {
-                            route: index.route.clone(),
-                            glob: glob.to_owned(),
-                        }));
+                    for grant in *grants {
+                        if !grant.actions.contains(&Action::Read) {
+                            continue;
+                        }
+                        for glob in &grant.projects {
+                            for remainder in glob.remainders_after(&prefix) {
+                                patterns.push(SearchAccessPattern {
+                                    route: index.route.clone(),
+                                    glob: remainder.to_owned(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -134,13 +139,16 @@ impl IndexReadAccess<'_> {
     }
 }
 
-fn read_globs<'a>(index: &'a Index, principal: &'a Principal) -> impl Iterator<Item = &'a str> {
-    index
-        .acl
-        .grants(principal)
-        .iter()
-        .filter(|grant| grant.actions.contains(&Action::Read))
-        .flat_map(|grant| grant.projects.iter().map(peryx_identity::Glob::as_str))
+fn read_globs<'a>(index: &'a Index, principal: &'a Principal) -> Vec<&'a str> {
+    let mut globs = Vec::new();
+    for grant in index.acl.grants(principal) {
+        if grant.actions.contains(&Action::Read) {
+            for project in &grant.projects {
+                globs.push(project.as_str());
+            }
+        }
+    }
+    globs
 }
 
 fn resource_prefix(route: &str) -> Cow<'_, str> {

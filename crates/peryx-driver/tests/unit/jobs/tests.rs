@@ -1001,6 +1001,25 @@ fn test_job_failure_exposes_its_stable_category_and_safe_message() {
     assert_eq!(failure.to_string(), "retryable_timeout: catalog request timed out");
 }
 
+#[test]
+fn test_catalog_sync_parameters_use_bounded_defaults() {
+    let parameters = CatalogSyncParameters::new("packages");
+
+    assert_eq!(parameters.repository, "packages");
+    assert!(parameters.source.is_none());
+    assert_eq!(parameters.max_projects.get(), super::DEFAULT_CATALOG_PROJECTS);
+    assert_eq!(parameters.concurrency.get(), super::DEFAULT_CATALOG_CONCURRENCY);
+    assert_eq!(parameters.timeout, super::DEFAULT_CATALOG_TIMEOUT);
+}
+
+#[test]
+fn test_job_failure_parts_preserve_code_and_message() {
+    assert_eq!(
+        JobFailure::new("failed", "safe message").into_parts(),
+        ("failed", "safe message".to_owned())
+    );
+}
+
 #[tokio::test]
 async fn test_job_history_cleanup_removes_every_excess_terminal_attempt() {
     let (_dir, state) = serving();

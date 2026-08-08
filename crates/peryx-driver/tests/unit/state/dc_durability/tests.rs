@@ -109,3 +109,20 @@ fn test_exposition_stays_within_the_series_budget() {
         );
     }
 }
+
+#[test]
+fn test_write_ack_observer_records_outcome_and_quorum() {
+    let metrics = DcDurabilityMetrics::default();
+    peryx_ha::WriteAckObserver::record(
+        &metrics,
+        DcAck::Pending,
+        &ByteAckDecision::Pending {
+            nodes: vec!["east".to_owned()],
+            remaining: 1,
+        },
+    );
+
+    let body = rendered(&metrics);
+    assert!(body.contains("peryx_dc_ack_pending_total 1\n"), "{body}");
+    assert!(body.contains("peryx_dc_ack_quorum_required 2\n"), "{body}");
+}

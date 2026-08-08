@@ -56,3 +56,7 @@ impl peryx_ha::ReplicaViewApplier for AppState {
         self.serving.readable_frontier().map_or(0, |frontier| frontier.serial)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/tests.rs"]
+mod tests;

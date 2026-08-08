@@ -63,14 +63,11 @@ impl AppState {
     pub fn inspect_shadowed(&self, query: &ShadowQuery) -> Result<ShadowInspection, ShadowQueryError> {
         let page = self.query_shadowed(query)?;
         let decisions = self.filename_decisions(&query.repository, &query.project, &page)?;
-        let candidates = page
-            .candidates
-            .into_iter()
-            .map(|candidate| {
-                let decision = decisions.get(candidate.filename.as_str()).cloned();
-                InspectedCandidate { candidate, decision }
-            })
-            .collect();
+        let mut candidates = Vec::with_capacity(page.candidates.len());
+        for candidate in page.candidates {
+            let decision = decisions.get(candidate.filename.as_str()).cloned();
+            candidates.push(InspectedCandidate { candidate, decision });
+        }
         Ok(ShadowInspection {
             candidates,
             next_cursor: page.next_cursor,
@@ -118,15 +115,25 @@ impl AppState {
             if !wanted.contains(filename.as_str()) {
                 continue;
             }
-            decisions.entry(filename).or_insert_with(|| CandidateDecision {
-                state: record.state,
-                rule: record.rule,
-                reason: record.reason,
-                evaluated_at_unix: record.evaluated_at_unix,
-                next_eligible_at_unix: record.next_eligible_at_unix,
-                fresh: item.fresh,
-            });
+            if decisions.contains_key(&filename) {
+                continue;
+            }
+            decisions.insert(
+                filename,
+                CandidateDecision {
+                    state: record.state,
+                    rule: record.rule,
+                    reason: record.reason,
+                    evaluated_at_unix: record.evaluated_at_unix,
+                    next_eligible_at_unix: record.next_eligible_at_unix,
+                    fresh: item.fresh,
+                },
+            );
         }
         Ok(decisions)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/shadow_inspect/tests.rs"]
+mod tests;

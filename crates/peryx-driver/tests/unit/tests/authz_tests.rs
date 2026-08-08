@@ -1,5 +1,5 @@
-use peryx_identity::{GrantScope, Resource, Role, Scope, UserId};
-use peryx_storage::meta::MetaStore;
+use peryx_identity::{GrantScope, Resource, Role, RoleGrant, Scope, UserId};
+use peryx_storage::meta::{DeleteGrantOutcome, MetaStore, RoleGrantFilter, RoleGrantQuery};
 use redb::TableDefinition;
 
 use crate::authz::{AuthorizationService, Decision, DenyReason};
@@ -103,4 +103,52 @@ fn test_a_storage_fault_fails_closed() {
 
     assert_eq!(decision, Decision::Deny(DenyReason::StorageUnavailable));
     assert!(!decision.is_allowed());
+}
+
+#[test]
+fn test_scoped_decision_keeps_scope_and_outcome() {
+    let (_dir, store, service) = service();
+    let alice = store.create_user("Alice").unwrap().id;
+    service.grant(&alice, Role::Operator, GrantScope::Server).unwrap();
+
+    let decision = service.authorize_scoped(&alice, Scope::OperatorRead, &Resource::Operator);
+
+    assert_eq!(decision.scope(), Scope::OperatorRead);
+    assert_eq!(decision.decision(), Decision::Allow);
+}
+
+#[test]
+fn test_managed_grant_lifecycle_uses_versions() {
+    let (_dir, store, service) = service();
+    let alice = store.create_user("Alice").unwrap().id;
+    let operator = store.create_user("Operator").unwrap().id;
+    let grant = RoleGrant::new(alice, Role::RepositoryReader, repository("team/api"));
+
+    let created = service.create_managed_grant(&grant, &operator, 41).unwrap();
+    let id = created.record.id();
+
+    assert!(created.created);
+    assert_eq!(service.managed_grant(&id).unwrap(), Some(created.record.clone()));
+    assert_eq!(
+        service
+            .list_managed_grants(&RoleGrantQuery {
+                filter: RoleGrantFilter::All,
+                cursor: None,
+                limit: 25,
+            })
+            .unwrap()
+            .grants,
+        vec![created.record.clone()]
+    );
+    assert_eq!(
+        service.delete_managed_grant(&id, created.record.version + 1).unwrap(),
+        DeleteGrantOutcome::PreconditionFailed {
+            current: created.record.version
+        }
+    );
+    assert!(matches!(
+        service.delete_managed_grant(&id, created.record.version).unwrap(),
+        DeleteGrantOutcome::Removed(_)
+    ));
+    assert_eq!(service.managed_grant(&id).unwrap(), None);
 }

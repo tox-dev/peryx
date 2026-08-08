@@ -367,3 +367,7 @@ const RETENTION_PLANS_PER_REPOSITORY: usize = 2;
 /// The minimal `OpenAPI` document a state serves until the binary installs the assembled one. It names
 /// no ecosystem; the real per-ecosystem paths are merged in by the binary at startup.
 const STUB_OPENAPI: &str = r#"{"openapi":"3.1.0","info":{"title":"peryx","version":"0"},"paths":{}}"#;
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/build/tests.rs"]
+mod tests;

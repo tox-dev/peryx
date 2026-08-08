@@ -323,6 +323,7 @@ enum ForwardedClient {
 }
 
 /// A trusted proxy sent a forwarded header we can't resolve to a client identity.
+#[derive(Debug)]
 struct MalformedForwarded;
 
 #[derive(Default)]
@@ -454,14 +455,18 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     if matches!(path, "/+health" | "/+ready") {
         return next.run(request).await;
     }
-    let service_post_class = if *request.method() == Method::POST {
-        state
-            .drivers()
-            .filter_map(|driver| driver.capabilities().service)
-            .find_map(|driver| driver.classify_service_post(path.trim_start_matches('/'), request.headers()))
-    } else {
-        None
-    };
+    let mut service_post_class = None;
+    if *request.method() == Method::POST {
+        for driver in state.drivers() {
+            let Some(service) = driver.capabilities().service else {
+                continue;
+            };
+            if let Some(class) = service.classify_service_post(path.trim_start_matches('/'), request.headers()) {
+                service_post_class = Some(class);
+                break;
+            }
+        }
+    }
     let class = service_post_class.or_else(|| service_route_class(request.method(), path));
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
     // Avoid a second route lookup when credential validation and read classification both need the driver.
@@ -470,8 +475,11 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     } else {
         None
     };
-    let class =
-        class.unwrap_or_else(|| resolved_driver.map_or(RouteClass::Listing, |(driver, _)| driver.classify_route(path)));
+    let class = match (class, resolved_driver) {
+        (Some(class), _) => class,
+        (None, Some((driver, _))) => driver.classify_route(path),
+        (None, None) => RouteClass::Listing,
+    };
     let principal = if has_authorization && let Some((driver, position)) = resolved_driver {
         driver.rate_limit_principal(&state, position, request.headers())
     } else {

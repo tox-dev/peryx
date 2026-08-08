@@ -7,3 +7,8 @@ mod revocation_tests;
 mod state_tests;
 mod tokens_tests;
 mod user_tests;
+
+#[test]
+fn test_not_found_returns_plain_404() {
+    assert_eq!(crate::not_found().status(), axum::http::StatusCode::NOT_FOUND);
+}

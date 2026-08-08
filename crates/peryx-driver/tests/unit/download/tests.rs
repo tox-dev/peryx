@@ -63,3 +63,15 @@ fn test_finished_producer_releases_digest_for_replacement() {
     assert_eq!(old_handle.progress().borrow_and_update().done.clone(), Some(Ok(())));
     drop(current);
 }
+
+#[test]
+fn test_progress_tracks_flushed_bytes() {
+    let registry = DownloadRegistry::default();
+    let (mut handle, producer) = registry.register("digest", Option::<BlobTail>::None).unwrap();
+
+    assert!(handle.tail().is_none());
+    assert_eq!(producer.flushed(), 0);
+    producer.publish_flushed(41);
+    assert_eq!(producer.flushed(), 41);
+    assert_eq!(handle.progress().borrow_and_update().flushed, 41);
+}

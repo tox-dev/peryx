@@ -8,7 +8,7 @@ use peryx_policy::{
 };
 use peryx_storage::meta::MetaStore;
 
-use super::{RetentionPlanError, RetentionQuery, decode_cursor, encode_cursor, plan};
+use super::{RetentionPlanError, RetentionQuery, decode_cursor, encode_cursor, plan, summary};
 use crate::serving::{DriverCapabilities, EcosystemDriver, RetentionDriver};
 
 #[derive(Default)]
@@ -156,6 +156,15 @@ fn store() -> (tempfile::TempDir, MetaStore) {
 
 fn empty_policy() -> RetentionPolicy {
     RetentionPolicy::compile(&RetentionConfig::default())
+}
+
+#[test]
+fn test_summary_surfaces_a_metadata_read_failure() {
+    let fault = peryx_storage::meta::test_support::FaultStore::new();
+    let store = fault.reopen();
+    fault.arm(0);
+
+    assert!(summary(&store, "alpha", &empty_policy()).is_err());
 }
 
 fn collect(

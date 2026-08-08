@@ -102,28 +102,30 @@ impl AppState {
         }
         let mut summaries = HashMap::new();
         for (ecosystem, names) in by_ecosystem {
-            if let Some(driver) = self
-                .driver_for(ecosystem)
-                .and_then(|driver| driver.capabilities().index_summary)
-                && let Ok(map) = driver.summarize_indexes(&self.meta, &names, recent_limit)
-            {
+            let Some(ecosystem_driver) = self.driver_for(ecosystem) else {
+                continue;
+            };
+            let Some(driver) = ecosystem_driver.capabilities().index_summary else {
+                continue;
+            };
+            if let Ok(map) = driver.summarize_indexes(&self.meta, &names, recent_limit) {
                 summaries.extend(map);
             }
         }
         summaries
     }
 
-    /// Every installed driver, in ecosystem declaration order.
+    /// Every installed driver.
     pub fn drivers(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::EcosystemDriver>> {
         self.drivers.values()
     }
 
-    /// Maintenance-capable drivers, in ecosystem declaration order.
+    /// Maintenance-capable drivers.
     pub fn maintenance_drivers(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::MaintenanceDriver>> {
         self.maintenance_drivers.values()
     }
 
-    /// Replication-view drivers, in ecosystem declaration order.
+    /// Replication-view drivers.
     pub fn replicated_apply_drivers(&self) -> impl Iterator<Item = &Arc<dyn crate::serving::ReplicatedApplyDriver>> {
         self.replicated_apply_drivers.values()
     }
@@ -213,10 +215,11 @@ impl AppState {
         &mut self,
         services: impl IntoIterator<Item = peryx_identity::LdapLoginService<peryx_storage::meta::MetaStore>>,
     ) {
-        self.serving_mut().ldap_logins = services
-            .into_iter()
-            .map(|service| (service.id().to_string(), Arc::new(service)))
-            .collect();
+        let mut installed = HashMap::new();
+        for service in services {
+            installed.insert(service.id().to_string(), Arc::new(service));
+        }
+        self.serving_mut().ldap_logins = installed;
     }
 
     /// Install the named browser OIDC login services, replacing any set before serving started.
@@ -224,10 +227,11 @@ impl AppState {
         &mut self,
         services: impl IntoIterator<Item = peryx_identity::OidcLoginService<peryx_storage::meta::MetaStore>>,
     ) {
-        self.serving_mut().oidc_logins = services
-            .into_iter()
-            .map(|service| (service.id().to_string(), Arc::new(service)))
-            .collect();
+        let mut installed = HashMap::new();
+        for service in services {
+            installed.insert(service.id().to_string(), Arc::new(service));
+        }
+        self.serving_mut().oidc_logins = installed;
     }
 
     /// Install the sealer for browser session and login-handoff cookies, replacing any set before
@@ -236,3 +240,7 @@ impl AppState {
         self.serving_mut().session_sealer = Some(Arc::new(sealer));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/registry/tests.rs"]
+mod tests;

@@ -111,3 +111,7 @@ pub fn package_search(scoped: bool) -> OperationBuilder {
     }
     operation
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/openapi/tests.rs"]
+mod tests;

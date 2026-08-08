@@ -35,6 +35,7 @@ fn test_revocation_service_invalidates_clear_and_revoked_decisions() {
     ));
     assert!(service.has_active().unwrap());
     assert_eq!(service.decision(&digest).unwrap(), DigestDecision::Revoked);
+    assert_eq!(service.decision(&digest).unwrap(), DigestDecision::Revoked);
     service.lift(&digest, &actor, 11).unwrap();
     assert!(!service.has_active().unwrap());
     assert_eq!(service.decision(&digest).unwrap(), DigestDecision::Clear);

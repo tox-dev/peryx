@@ -1,5 +1,17 @@
+use std::sync::Arc;
+
 use super::{DEFAULT_LIMIT, TrashItem, TrashQuery, TrashQueryError, TrashRef, paginate};
+use async_trait::async_trait;
 use peryx_core::{Ecosystem, TRASH_GRACE_SECS, TrashRecord, TrashState};
+use peryx_identity::IndexAcl;
+use peryx_index::{Index, IndexKind};
+use peryx_policy::Policy;
+use peryx_storage::blob::BlobStore;
+use peryx_storage::meta::MetaStore;
+
+use crate::rate_limit::RouteClass;
+use crate::serving::{DriverCapabilities, EcosystemDriver, TrashDriver};
+use crate::state::{AppState, IndexDescription};
 
 fn record(repository: &str, name: &str, deleted_at_unix: i64, retained: bool) -> TrashRecord {
     TrashRecord {
@@ -199,4 +211,147 @@ fn test_trash_item_new_derives_expired_for_unretained_content() {
     let item = TrashItem::new(record("hosted", "flask", 1_000, false), 1_000);
     assert!(!item.restorable);
     assert_eq!(item.state, TrashState::Expired);
+}
+
+struct Driver {
+    error: bool,
+}
+
+struct BareDriver;
+
+#[async_trait]
+impl EcosystemDriver for BareDriver {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::new("bare")
+    }
+
+    fn classify_route(&self, _path: &str) -> RouteClass {
+        RouteClass::Artifact
+    }
+
+    fn discover_index(&self, _index: IndexDescription, _base: Option<&crate::discovery::BaseUrl>) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+}
+
+impl TrashDriver for Driver {
+    fn trash_records(&self, _meta: &MetaStore, index_names: &[String]) -> Result<Vec<TrashRecord>, String> {
+        if self.error {
+            Err("trash unavailable".to_owned())
+        } else {
+            Ok(index_names
+                .iter()
+                .map(|name| record(name, "artifact", 1_000, true))
+                .collect())
+        }
+    }
+}
+
+#[async_trait]
+impl EcosystemDriver for Driver {
+    fn ecosystem(&self) -> Ecosystem {
+        Ecosystem::new("example")
+    }
+
+    fn capabilities(&self) -> DriverCapabilities<'_> {
+        DriverCapabilities {
+            trash: Some(self),
+            ..DriverCapabilities::default()
+        }
+    }
+
+    fn classify_route(&self, _path: &str) -> RouteClass {
+        RouteClass::Artifact
+    }
+
+    fn discover_index(&self, _index: IndexDescription, _base: Option<&crate::discovery::BaseUrl>) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+}
+
+fn app(error: bool) -> (tempfile::TempDir, AppState) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::new(
+        meta,
+        blobs,
+        60,
+        vec![
+            Index {
+                name: "hosted".to_owned(),
+                route: "hosted".to_owned(),
+                ecosystem: Ecosystem::new("example"),
+                kind: IndexKind::Hosted { volatile: true },
+                policy: Policy::default(),
+                acl: IndexAcl::default(),
+            },
+            Index {
+                name: "bare".to_owned(),
+                route: "bare".to_owned(),
+                ecosystem: Ecosystem::new("bare"),
+                kind: IndexKind::Hosted { volatile: true },
+                policy: Policy::default(),
+                acl: IndexAcl::default(),
+            },
+        ],
+    );
+    state.register_ecosystem(Arc::new(Driver { error }), Arc::new(peryx_search::EmptyIndexer));
+    state.register_ecosystem(Arc::new(BareDriver), Arc::new(peryx_search::EmptyIndexer));
+    (dir, state)
+}
+
+#[test]
+fn test_app_state_queries_and_inspects_driver_trash() {
+    let (_dir, state) = app(false);
+    let page = state.query_trash(&TrashQuery::default()).unwrap();
+    let reference = TrashRef {
+        ecosystem: Ecosystem::new("example"),
+        repository: "hosted".to_owned(),
+        name: "artifact".to_owned(),
+        reference: Some("artifact.bin".to_owned()),
+        digest: Some("sha256:abc".to_owned()),
+    };
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        state.inspect_trash(&reference).unwrap().unwrap().record.name,
+        "artifact"
+    );
+}
+
+#[test]
+fn test_app_state_surfaces_driver_trash_failure() {
+    let (_dir, state) = app(true);
+
+    assert_eq!(
+        state.query_trash(&TrashQuery::default()),
+        Err(TrashQueryError::Store("trash unavailable".to_owned()))
+    );
+}
+
+#[test]
+fn test_app_state_filters_drivers_before_collecting_trash() {
+    let (_dir, state) = app(false);
+
+    assert!(
+        state
+            .query_trash(&TrashQuery {
+                repository: Some("missing".to_owned()),
+                ..TrashQuery::default()
+            })
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(
+        state
+            .query_trash(&TrashQuery {
+                ecosystem: Some(Ecosystem::new("missing")),
+                ..TrashQuery::default()
+            })
+            .unwrap()
+            .items
+            .is_empty()
+    );
 }
