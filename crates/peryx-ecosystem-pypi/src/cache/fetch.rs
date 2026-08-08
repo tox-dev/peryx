@@ -282,17 +282,6 @@ pub(super) fn canonical_json(body: &[u8], base: &Url) -> Result<Vec<u8>, CacheEr
     Ok(to_json(&detail).into_bytes())
 }
 
-#[cfg(test)]
-pub fn persist_page(
-    state: &ServingState,
-    key: &str,
-    name: &str,
-    project: &str,
-    record: &CachedIndex,
-) -> Result<(), CacheError> {
-    persist_page_from(state, key, name, project, record, None)
-}
-
 pub(super) fn persist_page_from(
     state: &ServingState,
     key: &str,

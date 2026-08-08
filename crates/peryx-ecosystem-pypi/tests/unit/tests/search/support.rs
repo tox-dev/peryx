@@ -145,7 +145,7 @@ pub(super) fn put_cached_package(
     normalized: &str,
     detail: &ProjectDetail,
 ) {
-    cache::persist_page(state, key, index, normalized, &cached_index(&to_json(detail))).unwrap();
+    cache::test_support::persist_page(state, key, index, normalized, &cached_index(&to_json(detail))).unwrap();
 }
 
 pub(super) fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState>) {

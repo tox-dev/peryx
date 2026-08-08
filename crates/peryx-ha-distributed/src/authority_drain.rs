@@ -26,10 +26,7 @@ const AUTHORITY_DRAIN: &str = "authority_drain";
 
 /// How many retained intents one drain pass finalizes before it reads the next batch, so a large backlog
 /// drains in bounded transactions rather than one unbounded scan.
-#[cfg(not(test))]
 const DRAIN_BATCH: NonZeroUsize = NonZeroUsize::new(128).expect("literal is non-zero");
-#[cfg(test)]
-const DRAIN_BATCH: NonZeroUsize = NonZeroUsize::new(4).expect("literal is non-zero");
 
 /// Finalize the ingress intents an authority's former home left retained, into the new home's local
 /// metadata, in stable key order and one bounded batch per pass.

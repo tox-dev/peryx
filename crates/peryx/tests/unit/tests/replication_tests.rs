@@ -30,6 +30,25 @@ use crate::server::{build_router, build_state, router_for};
 const TOKEN: &str = "replica-secret";
 const WRITER_IDENTITY: &str = "writer-a";
 
+impl ReplicationRuntime {
+    pub(crate) async fn sync_cycle(&mut self) -> Option<bool> {
+        let (replica, _) = self.replica.as_mut().expect("sync cycle requires a replica runtime");
+        Some(replica.cycle().await.unwrap_or(true))
+    }
+}
+
+fn apply_replicated_page(app: &AppState, outcome: SyncOutcome, changed_keys: &[String]) {
+    peryx_ha::ReplicaViewApplier::apply(
+        app,
+        peryx_ha::ReplicaPage {
+            changes: outcome.changes,
+            serial: outcome.serial,
+            primary_serial: outcome.primary_serial,
+        },
+        changed_keys,
+    );
+}
+
 struct TestServer {
     url: String,
     task: tokio::task::JoinHandle<()>,
@@ -543,7 +562,7 @@ fn test_apply_replicated_page_dispatches_a_changed_page_to_drivers() {
         .store_hot(hot.clone(), axum::body::Bytes::from_static(b"x"), i64::MAX);
 
     // Synchronous and independent of the async sync loop, so this covers the dispatch every run.
-    crate::replication::apply_replicated_page(
+    apply_replicated_page(
         &state,
         SyncOutcome {
             changes: 1,
@@ -581,7 +600,7 @@ fn test_apply_replicated_page_holds_the_frontier_when_a_view_rebuild_fails() {
     )
     .unwrap();
 
-    crate::replication::apply_replicated_page(
+    apply_replicated_page(
         &state,
         SyncOutcome {
             changes: 1,
@@ -608,7 +627,7 @@ fn test_apply_replicated_page_holds_the_frontier_when_recording_it_fails() {
     let meta = MetaStore::open_existing_read_only(&path).unwrap();
     let state = AppState::new(meta, BlobStore::new(dir.path().join("blobs")), 60, Vec::new());
 
-    crate::replication::apply_replicated_page(
+    apply_replicated_page(
         &state,
         SyncOutcome {
             changes: 1,
@@ -635,7 +654,7 @@ fn test_apply_replicated_page_ignores_a_page_with_no_changes() {
         .cache
         .store_hot(hot.clone(), axum::body::Bytes::from_static(b"x"), i64::MAX);
 
-    crate::replication::apply_replicated_page(
+    apply_replicated_page(
         &state,
         SyncOutcome {
             changes: 0,

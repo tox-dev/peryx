@@ -324,7 +324,7 @@ fn test_retention_removes_old_terminal_runs_and_preserves_running_runs() {
             store.prune_job_runs_batch(16).unwrap(),
             store.prune_job_runs_batch(16).unwrap(),
         ),
-        (4, 4, 0)
+        (8, 0, 0)
     );
 
     let runs = store

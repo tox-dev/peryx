@@ -22,5 +22,5 @@ pub(super) fn toml_config(text: &str) -> Config {
 
 pub(super) fn env_partial(pairs: &[(&str, &str)]) -> Result<PartialConfig, config::ConfigError> {
     let map: std::collections::HashMap<&str, &str> = pairs.iter().copied().collect();
-    config::from_env_source(|var| map.get(var).map(|value| (*value).to_owned()))
+    super::load::from_env_source(|var| map.get(var).map(|value| (*value).to_owned()))
 }

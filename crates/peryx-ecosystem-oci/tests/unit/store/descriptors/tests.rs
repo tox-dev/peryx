@@ -1,4 +1,5 @@
-use super::super::{manifest_key, put_manifest};
+use super::super::manifest_key;
+use super::super::test_support::put_manifest;
 use super::*;
 
 fn store() -> (tempfile::TempDir, MetaStore) {

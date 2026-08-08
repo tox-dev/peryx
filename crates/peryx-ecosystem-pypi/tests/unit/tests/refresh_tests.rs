@@ -369,7 +369,7 @@ async fn test_upstream_max_age_shortens_freshness() {
     // The now-stale page serves at once and spawns the second fetch in the background. Await that
     // refresh so both upstream hits have landed before the mock verifies them.
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
-    crate::cache::settle_revalidations(&h.state.serving).await;
+    crate::cache::test_support::settle_revalidation(&h.state.serving, "pypi/flask").await;
     let refreshed = h.state.meta.get_index("pypi/flask").unwrap().unwrap();
     assert_eq!(refreshed.fetched_at_unix, 1006);
 }
@@ -423,7 +423,7 @@ async fn test_stale_serve_records_metric() {
     // The stale page serves at once and its background revalidation hits the 500, recording the
     // stale-served metric. Await that refresh, then settle the metrics aggregator, so the counter is
     // read deterministically rather than polled for.
-    crate::cache::settle_revalidations(&h.state.serving).await;
+    crate::cache::test_support::settle_revalidation(&h.state.serving, "pypi/flask").await;
     h.state.metrics.settle();
     assert_eq!(drilled(&h.state, "stale_served"), 1);
 }

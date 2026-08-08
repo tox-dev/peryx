@@ -27,4 +27,14 @@ if matches=$(rg -n -U '#\[cfg\([^\n]*\btest\b[^\n]*\)\]\n(?:pub(?:\([^)]*\))? )?
   status=1
 fi
 
+if matches=$(rg --pcre2 -n -U '#\[cfg\((?:test(?:[\s,)])|[^\n]*[\s,(]test(?:[\s,)]))[^\n]*\)\]\n(?!\s*#\[path[^\n]*\]\n\s*(?:pub(?:\([^)]*\))? )?mod [A-Za-z_][A-Za-z0-9_]*\s*;)' crates/*/src --glob '*.rs'); then
+  printf '%s\n' "$matches" >&2
+  status=1
+fi
+
+if matches=$(rg -n '#\[cfg_attr\([^]]*\btest\b' crates/*/src --glob '*.rs'); then
+  printf '%s\n' "$matches" >&2
+  status=1
+fi
+
 exit "$status"

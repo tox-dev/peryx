@@ -386,33 +386,6 @@ fn local_datacenter(config: &Config, membership: &DcMembership) -> Option<String
 
 const UPSTREAM_SOURCE: &str = "upstream";
 
-/// Apply the effects of one replicated page: log it, rebuild the derived views the changed keys touch,
-/// and advance the readable frontier over the applied serial once every required view reflects it.
-///
-/// Each ecosystem driver rebuilds its own affected views. When they all succeed the search view frontier
-/// advances to `outcome.serial`, so a read the gate held becomes visible only after the view it depends
-/// on caught up. When a driver reports a [`ViewBlock`](peryx_driver::state::ViewBlock) the frontier stays
-/// where it was - the read stays held - and the lazy full refresh a later search runs recovers it. The
-/// mutation-epoch bump keeps that recovery path armed for every ecosystem view. A page
-/// with no changes does nothing. This is synchronous and independent of the async sync loop, so a direct
-/// test covers it deterministically rather than riding on async scheduling.
-#[cfg(test)]
-pub(crate) fn apply_replicated_page(
-    app: &AppState,
-    outcome: peryx_ha_distributed::SyncOutcome,
-    changed_keys: &[String],
-) {
-    peryx_ha::ReplicaViewApplier::apply(
-        app,
-        peryx_ha::ReplicaPage {
-            changes: outcome.changes,
-            serial: outcome.serial,
-            primary_serial: outcome.primary_serial,
-        },
-        changed_keys,
-    );
-}
-
 /// The delay the replica loop waits after one pass: nothing between pages that still have more to pull,
 /// the poll interval once caught up, and a reconnect-policy backoff after a retryable transport loss,
 /// falling back to the poll interval once the policy gives up, so a peer that never recovers keeps trying
@@ -814,14 +787,12 @@ impl ReplicationRuntime {
             .start_replica_services(replica, self.analytics_puller, self.beacon)
             .map(Some)
     }
-
-    #[cfg(test)]
-    pub(crate) async fn sync_cycle(&mut self) -> Option<bool> {
-        let (replica, _) = self.replica.as_mut().expect("sync cycle requires a replica runtime");
-        Some(replica.cycle().await.unwrap_or(true))
-    }
 }
 
 #[cfg(test)]
 #[path = "../tests/unit/replication/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/tests/replication_tests.rs"]
+mod integration_tests;

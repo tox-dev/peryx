@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(feature = "test-util")]
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -380,7 +380,7 @@ struct DailySnapshot {
 ///
 /// # Panics
 /// Panics if the buckets cannot be serialized to JSON.
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(feature = "test-util")]
 #[must_use]
 pub fn encode_daily_snapshot(buckets: Vec<DailyUsage>) -> Vec<u8> {
     serde_json::to_vec(&DailySnapshot {
@@ -418,7 +418,7 @@ fn system_clock() -> Clock {
 /// enable to reach [`Metrics::settle`].
 enum Message {
     Event(Event),
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(feature = "test-util")]
     Barrier(Sender<()>),
 }
 
@@ -635,7 +635,7 @@ impl Metrics {
     ///
     /// # Panics
     /// Panics if the aggregator thread has stopped before acknowledging the barrier.
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(feature = "test-util")]
     pub fn settle(&self) {
         let (ack, done) = channel();
         self.sender.send(Message::Barrier(ack)).expect("aggregator alive");
@@ -1050,7 +1050,7 @@ fn step(receiver: &Receiver<Message>, ctx: &Aggregator, policy: FlushPolicy, sta
             ) {
                 flush(ctx, state);
             }
-            #[cfg(any(test, feature = "test-util"))]
+            #[cfg(feature = "test-util")]
             for ack in batch.acks {
                 let _ = ack.send(());
             }
@@ -1121,7 +1121,7 @@ struct Batch {
     dirty: bool,
     force: bool,
     downloads: Vec<(DailyKey, u64)>,
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(feature = "test-util")]
     acks: Vec<Sender<()>>,
 }
 
@@ -1156,7 +1156,7 @@ fn absorb(message: Message, tree: &mut StatsTree, clock: &Clock, batch: &mut Bat
             collect_daily(&event, clock, &mut batch.downloads);
             apply(tree, event);
         }
-        #[cfg(any(test, feature = "test-util"))]
+        #[cfg(feature = "test-util")]
         Message::Barrier(ack) => {
             batch.force = true;
             batch.acks.push(ack);

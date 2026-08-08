@@ -2,6 +2,7 @@ use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
 use super::*;
+use peryx_upstream::UpstreamClient;
 
 #[test]
 fn test_metadata_from_artifact_path_skips_unsupported_formats() {

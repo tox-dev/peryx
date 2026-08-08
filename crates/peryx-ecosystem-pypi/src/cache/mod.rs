@@ -35,17 +35,10 @@ pub use mutate::{
     TrashContext, download_status, project_status, promote_release, remove_files, restore_files, set_yanked,
 };
 pub(crate) use mutate::{store_upload, upload_exists};
-#[cfg(test)]
-pub(crate) use page_stream::settle_revalidations;
 pub use page_stream::{PageOutcome, materialize_detail, stream_detail};
 pub use provenance::{ProvenanceBody, provenance_bytes};
 pub use resolve::{DetailPage, list_serial, resolve_detail, resolve_detail_page, resolve_list};
 pub use shadow::shadowed_candidates;
-
-#[cfg(test)]
-pub(crate) use download::tail_download;
-#[cfg(test)]
-pub(crate) use fetch::persist_page;
 
 const NEGATIVE_TTL_SECS: i64 = 30;
 
@@ -187,13 +180,6 @@ pub(crate) fn flight_gate(state: &ServingState, key: &str) -> peryx_index::servi
 /// Release a single-flight hold.
 fn release_flight(state: &ServingState, key: &str, guard: peryx_index::serving::FlightGuard) {
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
-}
-
-/// How many callers are registered on `key`'s flight gate, so a test can wait for a racing request to
-/// reach the gate deterministically instead of sleeping.
-#[cfg(test)]
-pub(crate) fn flight_users(state: &ServingState, key: &str) -> usize {
-    state.cache.inflight.active(key)
 }
 
 /// The stored cached record for `key`, or `None` when there is none or when its bytes no longer decode.
@@ -392,3 +378,7 @@ fn source_artifact_client(
 #[cfg(test)]
 #[path = "../../tests/unit/cache/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/cache/test_support.rs"]
+pub(crate) mod test_support;

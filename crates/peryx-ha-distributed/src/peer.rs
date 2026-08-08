@@ -143,9 +143,7 @@ impl LoopbackPeer {
         });
     }
 
-    /// Arm the peer to fail its next answered request, then clear the fault. Deterministic stand-in
-    /// for transient transport loss.
-    #[cfg(test)]
+    /// Arm the peer to fail its next answered request, then clear the fault.
     pub fn inject(&self, fault: PeerFault) {
         *self.fault.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fault);
     }

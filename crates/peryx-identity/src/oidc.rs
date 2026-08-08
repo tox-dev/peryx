@@ -62,25 +62,6 @@ impl OidcRuntime {
         Self::build(bindings, signer, token_ttl_secs, false, MAX_REPLAY_ENTRIES)
     }
 
-    #[cfg(test)]
-    fn new_insecure(
-        bindings: Vec<PublisherBinding>,
-        signer: Signer,
-        token_ttl_secs: i64,
-    ) -> Result<Self, ExchangeError> {
-        Self::build(bindings, signer, token_ttl_secs, true, MAX_REPLAY_ENTRIES)
-    }
-
-    #[cfg(test)]
-    fn new_insecure_with_replay_capacity(
-        bindings: Vec<PublisherBinding>,
-        signer: Signer,
-        token_ttl_secs: i64,
-        replay_capacity: usize,
-    ) -> Result<Self, ExchangeError> {
-        Self::build(bindings, signer, token_ttl_secs, true, replay_capacity)
-    }
-
     fn build(
         bindings: Vec<PublisherBinding>,
         signer: Signer,

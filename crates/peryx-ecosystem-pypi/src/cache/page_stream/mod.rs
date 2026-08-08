@@ -165,8 +165,7 @@ pub async fn stream_detail(
     // Serve stale before taking the flight gate so concurrent hits do not queue; the spawned refresh
     // coalesces itself.
     if let Some(record) = super::stale_servable(&state, &key)? {
-        let refresh = spawn_revalidation(state.clone(), key, cached_name, project, client);
-        detach_revalidation(&state, refresh);
+        drop(spawn_revalidation(state.clone(), key, cached_name, project, client));
         return transform_whole(&state, &hot_key, &record, context);
     }
 
@@ -450,8 +449,7 @@ fn transform_whole(
 ///
 /// The first hit to find a page stale takes the gate and revalidates it; concurrent hits that also
 /// served it stale find the gate held, so a burst of requests triggers one upstream check, not a
-/// herd. The returned handle lets a test await the refresh; the serving path drops it, having already
-/// answered from the stale bytes.
+/// herd. The serving path drops the handle because it already answered from the stale bytes.
 fn spawn_revalidation(
     state: Arc<ServingState>,
     key: String,
@@ -461,20 +459,6 @@ fn spawn_revalidation(
 ) -> Option<tokio::task::JoinHandle<()>> {
     let guard = flight_gate(&state, &key).try_lock_owned().ok()?;
     Some(tokio::spawn(revalidate(state, key, name, project, client, guard)))
-}
-
-/// Hand off the revalidation the serving path spawned. The request already answered from the stale
-/// bytes, so production drops the handle. A test build instead captures it against `state`, so
-/// [`settle_revalidations`] can await the refresh at a deterministic point rather than poll for it.
-#[cfg_attr(not(test), allow(unused_variables, clippy::needless_pass_by_value))]
-fn detach_revalidation(state: &Arc<ServingState>, refresh: Option<tokio::task::JoinHandle<()>>) {
-    // Production drops the handle at the end of this body, detaching the refresh; only a test build
-    // captures it. An empty production body beats a `#[cfg(not(test))]` statement that no coverage-run
-    // test executes, which read as an uncovered line under the test-cfg coverage build.
-    #[cfg(test)]
-    if let Some(refresh) = refresh {
-        revalidation_probe::capture(state, refresh);
-    }
 }
 
 /// Revalidate one page and release the single-flight hold however it ends. The request that spawned
@@ -502,21 +486,6 @@ fn transform_error(err: crate::stream::TransformError) -> CacheError {
         | crate::stream::TransformError::Trailing
         | crate::stream::TransformError::Malformed
         | crate::stream::TransformError::TooLarge => CacheError::Unavailable,
-    }
-}
-
-/// Handles for revalidations the serving path spawned and dropped, bucketed by serving state so a
-/// test awaits only its own refreshes.
-#[cfg(test)]
-#[path = "../../../tests/unit/cache/page_stream/revalidation_probe.rs"]
-mod revalidation_probe;
-
-/// Await every background revalidation the serving path spawned for `state` and dropped, giving a
-/// serving-path test a deterministic settle point in place of polling for the refresh to land.
-#[cfg(test)]
-pub async fn settle_revalidations(state: &Arc<ServingState>) {
-    for refresh in revalidation_probe::drain(state) {
-        let _ = refresh.await;
     }
 }
 

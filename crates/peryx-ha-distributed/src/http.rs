@@ -112,6 +112,10 @@ impl HttpPrimary {
     /// Panics if the HTTP client cannot be built, which a static user agent over the guaranteed `rustls`
     /// provider never provokes.
     pub fn new(base: &str, token: impl Into<String>) -> Result<Self, HttpPrimaryError> {
+        Self::build(base, token, DEFAULT_MAX_CHANGE_PAGE_BYTES)
+    }
+
+    fn build(base: &str, token: impl Into<String>, max_page_bytes: u64) -> Result<Self, HttpPrimaryError> {
         let token = token.into();
         if token.is_empty() {
             return Err(HttpPrimaryError::EmptyToken);
@@ -137,14 +141,8 @@ impl HttpPrimary {
             http,
             changes_url,
             token,
-            max_page_bytes: DEFAULT_MAX_CHANGE_PAGE_BYTES,
+            max_page_bytes,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn with_max_page_bytes(mut self, max_page_bytes: u64) -> Self {
-        self.max_page_bytes = max_page_bytes;
-        self
     }
 }
 
@@ -485,3 +483,7 @@ pub fn unauthorized() -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/http_tests.rs"]
+mod tests;

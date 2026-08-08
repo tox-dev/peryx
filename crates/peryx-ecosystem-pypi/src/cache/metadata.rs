@@ -8,8 +8,6 @@ use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
 use peryx_storage::blob::Digest;
-#[cfg(test)]
-use peryx_upstream::UpstreamClient;
 use peryx_upstream::{ArtifactClient, RangeError};
 
 mod central_dir;

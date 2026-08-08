@@ -10,10 +10,7 @@ use super::{
     POLICY_INPUT_GENERATION, SERIAL, SERIAL_KEY,
 };
 
-#[cfg(not(test))]
 const MAX_DECISION_HISTORY: usize = 10_000;
-#[cfg(test)]
-const MAX_DECISION_HISTORY: usize = 16;
 const MAX_QUERY_LIMIT: usize = 100;
 const MAX_REASON_BYTES: usize = 2_048;
 const MAX_SUBJECT_BYTES: usize = 512;
@@ -211,6 +208,14 @@ impl MetaStore {
         &self,
         decision: NewPolicyDecision<'_>,
     ) -> Result<PolicyDecisionRecord, PolicyDecisionStoreError> {
+        self.record_policy_decision_with_history_limit(decision, MAX_DECISION_HISTORY)
+    }
+
+    fn record_policy_decision_with_history_limit(
+        &self,
+        decision: NewPolicyDecision<'_>,
+        history_limit: usize,
+    ) -> Result<PolicyDecisionRecord, PolicyDecisionStoreError> {
         validate_decision(&decision)?;
         let txn = self.db.begin_write().map_err(MetaError::from)?;
         let history_id = {
@@ -277,7 +282,7 @@ impl MetaStore {
                 .insert(history_id.as_str(), subject.as_str())
                 .map_err(MetaError::from)?;
         }
-        prune_history(&txn)?;
+        prune_history(&txn, history_limit)?;
         txn.commit().map_err(MetaError::from)?;
         Ok(record)
     }
@@ -424,10 +429,10 @@ fn subject_key(decision: &NewPolicyDecision<'_>) -> Result<String, serde_json::E
     })
 }
 
-fn prune_history(txn: &redb::WriteTransaction) -> Result<(), PolicyDecisionStoreError> {
+fn prune_history(txn: &redb::WriteTransaction, history_limit: usize) -> Result<(), PolicyDecisionStoreError> {
     let stale_id = {
         let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
-        (history.len().map_err(MetaError::from)? > MAX_DECISION_HISTORY as u64)
+        (history.len().map_err(MetaError::from)? > history_limit as u64)
             .then(|| history.first())
             .transpose()
             .map_err(MetaError::from)?
@@ -491,3 +496,7 @@ fn valid_cursor(cursor: &str) -> bool {
 #[cfg(test)]
 #[path = "../../tests/unit/meta/policy_decision_fault_tests.rs"]
 mod fault_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/meta/policy_decision_tests.rs"]
+mod tests;

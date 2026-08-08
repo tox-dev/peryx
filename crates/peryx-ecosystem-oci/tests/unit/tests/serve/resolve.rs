@@ -229,7 +229,7 @@ async fn test_proxy_tag_revalidates_when_the_cached_manifest_is_gone() {
     let uri = "/v2/hub/library/nginx/manifests/latest";
     assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
     // Drop the cached manifest but leave its still-fresh tag record: the next pull must revalidate.
-    crate::store::delete_manifest(&state.meta, &oci_digest(manifest)).unwrap();
+    crate::store::test_support::delete_manifest(&state.meta, &oci_digest(manifest)).unwrap();
     assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
 }
 #[tokio::test]
@@ -238,7 +238,7 @@ async fn test_offline_proxy_serves_cached_tag() {
     let (state, app) = proxy(&dir, "http://127.0.0.1:1/", true);
     let body = br#"{"schemaVersion":2}"#;
     let digest = oci_digest(body);
-    store::put_manifest(
+    store::test_support::put_manifest(
         &state.meta,
         &digest,
         &Manifest {

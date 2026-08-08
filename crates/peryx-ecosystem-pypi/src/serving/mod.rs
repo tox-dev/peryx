@@ -59,9 +59,6 @@ use get::pypi_dispatch_get;
 use mutate::{pypi_dispatch_delete, pypi_dispatch_put};
 use post::pypi_dispatch_post;
 
-#[cfg(test)]
-pub(crate) use response::index_response;
-
 const MIME_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
 const MIME_LEGACY_JSON: &str = "application/json";
@@ -78,6 +75,10 @@ pub enum Format {
     Json,
     Html,
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/serving/test_support.rs"]
+pub(crate) mod test_support;
 
 /// Pick the supported response format with the highest `Accept` quality, falling back to HTML.
 #[must_use]

@@ -135,17 +135,6 @@ fn tag_trash_prefix(index: &str, repo: &str) -> String {
     format!("{TAG_TRASH_PREFIX}{index}\u{0}{repo}\u{0}")
 }
 
-/// Store a manifest under its digest, without recording membership - a test seed for the by-digest
-/// read and delete paths that expects a manifest present in the global pool but served by no
-/// repository.
-///
-/// # Errors
-/// Returns a store error if the write fails.
-#[cfg(test)]
-pub fn put_manifest(meta: &MetaStore, digest: &str, manifest: &Manifest) -> Result<(), MetaError> {
-    meta.put_driver_value(&manifest_key(digest), &manifest.encode())
-}
-
 /// Store a manifest and record it as one `(index, repo)` serves: its own digest, and - for an image
 /// index or manifest list - each child it names. A by-digest read authorizes against this per-repository
 /// membership, not the digest's presence in the global content store the bytes dedupe into, so a
@@ -450,15 +439,6 @@ pub fn list_tag_targets(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec
         }
     })?;
     Ok(targets)
-}
-
-/// Remove a manifest by digest, reporting whether it was present.
-///
-/// # Errors
-/// Returns a store error if the write fails.
-#[cfg(test)]
-pub fn delete_manifest(meta: &MetaStore, digest: &str) -> Result<bool, MetaError> {
-    meta.delete_driver_value(&manifest_key(digest))
 }
 
 /// Remove a tag, reporting whether it was present. Its proxy freshness record goes with it.
@@ -792,3 +772,7 @@ fn referrer_prefix(index: &str, repo: &str, subject: &str) -> String {
 #[cfg(test)]
 #[path = "../tests/unit/store/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/store/test_support.rs"]
+pub mod test_support;

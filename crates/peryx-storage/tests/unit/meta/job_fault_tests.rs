@@ -102,9 +102,7 @@ fn assert_atomic_result(operation: Operation, running: &str, expected: &[JobRunR
             assert_eq!(&actual[..actual.len() - 1], &expected[..expected.len() - 1]);
         }
         Operation::Prune => {
-            assert_eq!(actual.len(), expected.len() - JOB_RETENTION_BATCH);
-            assert_eq!(&actual[..4], &expected[..4]);
-            assert_eq!(actual.last(), expected.last());
+            assert_eq!(actual, &expected[expected.len() - 1..]);
         }
         Operation::Get | Operation::List | Operation::Query => panic!("read failure changed durable state"),
     }

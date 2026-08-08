@@ -35,7 +35,7 @@ fn test_tls_defaults_to_none() {
     assert_eq!(Config::default().tls, None);
     assert_eq!(toml_config("host = \"127.0.0.1\"").tls, None);
     // With neither table present the resolver yields no TLS; `apply` skips it, so exercise it directly.
-    assert_eq!(config::classify_tls(None, None).unwrap(), None);
+    assert_eq!(super::super::merge::classify_tls(None, None).unwrap(), None);
 }
 
 #[test]

@@ -280,9 +280,6 @@ mod failover_tests;
 #[path = "../tests/unit/filesystem_ack_tests.rs"]
 mod filesystem_ack_tests;
 #[cfg(test)]
-#[path = "../tests/unit/http_tests.rs"]
-mod http_tests;
-#[cfg(test)]
 #[path = "../tests/unit/ingress_intent_tests.rs"]
 mod ingress_intent_tests;
 #[cfg(test)]

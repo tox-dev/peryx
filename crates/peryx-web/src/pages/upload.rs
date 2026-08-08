@@ -277,7 +277,7 @@ fn browser_unavailable(ui: UploadUi, filename: &str) {
     ui.outcome.set(format!("{filename}: browser upload is unavailable"));
 }
 
-#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 fn upload_outcome(filename: &str, status: u16, body: &str, cancelled: bool) -> String {
     if cancelled {
         return format!("{filename}: upload cancelled");
@@ -311,6 +311,6 @@ fn cancel_active_upload() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ssr"), feature = "hydrate"))]
 #[path = "../../tests/unit/pages/upload/tests.rs"]
 mod tests;

@@ -141,7 +141,7 @@ async fn test_blob_committed_while_waiting_on_the_gate_serves_from_disk() {
     // Wait until the spawned request has registered on the gate - it bumps the gate's user count past
     // our hold before it awaits the lock - so the blob is committed while it is parked, deterministically
     // rather than racing a timer.
-    while cache::flight_users(&h.state, digest.as_str()) < 2 {
+    while cache::test_support::flight_users(&h.state, digest.as_str()) < 2 {
         tokio::task::yield_now().await;
     }
     h.state.blobs.put_bytes_as(body, &digest).await.unwrap();
@@ -257,7 +257,7 @@ async fn missing_tail(state: &AppState) -> BlobTail {
 }
 
 async fn drain(state: &Arc<AppState>, digest: Digest, handle: DownloadHandle) -> Result<Vec<u8>, std::io::Error> {
-    let mut stream = cache::tail_download(
+    let mut stream = cache::test_support::tail_download(
         state.serving.clone(),
         digest,
         handle,
@@ -283,7 +283,7 @@ async fn test_tail_of_a_truncated_temp_file_errors() {
     };
     let handle = handle_with(pending.tail().unwrap(), progress);
     // Three bytes arrive, then the read inside the flushed window comes back empty.
-    let mut stream = cache::tail_download(
+    let mut stream = cache::test_support::tail_download(
         h.state.serving.clone(),
         Digest::of(b"tail-target"),
         handle,
@@ -307,7 +307,7 @@ async fn test_tail_switches_to_the_committed_blob_when_the_temp_file_is_gone() {
         done: Some(Ok(())),
     };
     let handle = handle_with(missing_tail(&h.state).await, progress);
-    let mut stream = cache::tail_download(
+    let mut stream = cache::test_support::tail_download(
         h.state.serving.clone(),
         digest,
         handle,
@@ -332,7 +332,7 @@ async fn test_committed_tail_holds_its_materialized_lease_until_eof() {
         done: Some(Ok(())),
     };
     let handle = handle_with(missing_tail(&h.state).await, progress);
-    let mut stream = cache::tail_download(
+    let mut stream = cache::test_support::tail_download(
         h.state.serving.clone(),
         digest,
         handle,

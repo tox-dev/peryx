@@ -300,12 +300,17 @@ impl NodeJob for MaintenanceJob {
     }
 }
 
-#[cfg(not(test))]
 const MAX_JOB_RUNS: usize = 10_000;
-#[cfg(test)]
-const MAX_JOB_RUNS: usize = 16;
 
-pub(super) struct JobHistoryCleanup;
+pub(super) struct JobHistoryCleanup {
+    retain: usize,
+}
+
+impl Default for JobHistoryCleanup {
+    fn default() -> Self {
+        Self { retain: MAX_JOB_RUNS }
+    }
+}
 
 #[async_trait]
 impl NodeJob for JobHistoryCleanup {
@@ -329,7 +334,7 @@ impl NodeJob for JobHistoryCleanup {
             let batch = ctx
                 .state()
                 .meta
-                .prune_job_runs_batch(MAX_JOB_RUNS)
+                .prune_job_runs_batch(self.retain)
                 .map_err(|error| JobFailure::new("storage", error.to_string()))?;
             removed += u64::try_from(batch).expect("bounded batch fits in u64");
             if batch == 0 {
@@ -358,7 +363,15 @@ pub const INGRESS_INTENT_RETENTION_SECS: i64 = 3600;
 /// [`Admitted`]: peryx_storage::meta::IntentPhase::Admitted
 /// [`Expired`]: peryx_storage::meta::IntentPhase::Expired
 /// [`Pending`]: peryx_storage::meta::IntentPhase::Pending
-pub(super) struct WriteLedgerReap;
+pub(super) struct WriteLedgerReap {
+    batch: usize,
+}
+
+impl Default for WriteLedgerReap {
+    fn default() -> Self {
+        Self { batch: MAX_JOB_RUNS }
+    }
+}
 
 #[async_trait]
 impl NodeJob for WriteLedgerReap {
@@ -380,12 +393,12 @@ impl NodeJob for WriteLedgerReap {
             let intents = ctx
                 .state()
                 .meta
-                .prune_ingress_intents(now, INGRESS_INTENT_RETENTION_SECS, MAX_JOB_RUNS)
+                .prune_ingress_intents(now, INGRESS_INTENT_RETENTION_SECS, self.batch)
                 .map_err(reap_storage_failure)?;
             let outcomes = ctx
                 .state()
                 .meta
-                .prune_operation_outcomes(now, MAX_JOB_RUNS)
+                .prune_operation_outcomes(now, self.batch)
                 .map_err(reap_storage_failure)?;
             reaped += reaped_count(intents) + reaped_count(outcomes);
             if intents == 0 && outcomes == 0 {

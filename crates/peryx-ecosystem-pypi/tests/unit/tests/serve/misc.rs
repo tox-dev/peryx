@@ -66,7 +66,7 @@ async fn test_legacy_cached_record_registers_nothing() {
     let body = br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],
         "files":[{"filename":"flask-1.0-py3-none-any.whl",
         "url":"/pypi/files/aaaa/flask-1.0-py3-none-any.whl","hashes":{"sha256":"aaaa"}}]}"#;
-    cache::persist_page(&h.state, "pypi/flask", "pypi", "flask", &fresh_record(body)).unwrap();
+    cache::test_support::persist_page(&h.state, "pypi/flask", "pypi", "flask", &fresh_record(body)).unwrap();
     assert!(h.state.meta.get_file_url("aaaa").unwrap().is_none());
 }
 #[tokio::test]

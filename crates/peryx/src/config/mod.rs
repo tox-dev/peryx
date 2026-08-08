@@ -12,11 +12,7 @@ mod repository_migration;
 
 use std::path::PathBuf;
 
-#[cfg(test)]
-pub(crate) use load::from_env_source;
 pub use load::{from_env, from_file, from_toml};
-#[cfg(test)]
-pub(crate) use merge::classify_tls;
 pub use model::{
     AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, BlobStorageConfig,
     Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
@@ -26,6 +22,10 @@ pub use model::{
     TrustedPublisherConfig, UpstreamConfig, UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret,
     WriteAckConfig,
 };
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/config/mod.rs"]
+mod tests;
 pub use peryx_ha::AvailabilityMode;
 pub use raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,

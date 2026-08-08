@@ -234,7 +234,7 @@ async fn test_persist_page_skips_policy_denied_file_registrations() {
         body: detail_json(digest.as_str(), &file_url).into_bytes(),
     };
 
-    cache::persist_page(&h.state, "pypi/flask", "pypi", "flask", &record).unwrap();
+    cache::test_support::persist_page(&h.state, "pypi/flask", "pypi", "flask", &record).unwrap();
 
     assert!(h.state.meta.get_file_url(digest.as_str()).unwrap().is_none());
 }

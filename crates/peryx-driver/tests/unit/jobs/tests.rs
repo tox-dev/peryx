@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber as _;
 
-use super::attempts::{JobAttemptControl, JobAttemptError};
+use super::attempts::JobAttemptError;
 use super::scheduler::{JobLimits, Submit};
 use super::{
     BlobReclaimer, CACHE_MAINTENANCE, CancelJobRun, CatalogSyncParameters, CrossDcCopier, DcCopyJob, DcCopyParameters,
@@ -677,7 +677,7 @@ async fn test_persisted_job_panic_closes_the_attempt_as_failed() {
     let run = &job_runs(&state.meta)[0];
     assert_eq!(run.state, JobState::Failed);
     assert_eq!(run.error.as_deref(), Some("job_panic: node-local job panicked"));
-    assert!(!state.job_attempts.is_active(&run.id));
+    assert_eq!(state.job_attempts.cancel(&run.id).unwrap(), CancelJobRun::Finished);
     scheduler.shutdown().await;
 }
 
@@ -696,34 +696,8 @@ async fn test_persisted_job_rejects_an_external_terminal_transition() {
 
     let run = &job_runs(&state.meta)[0];
     assert_eq!(run.state, JobState::Succeeded);
-    assert!(!state.job_attempts.is_active(&run.id));
+    assert_eq!(state.job_attempts.cancel(&run.id).unwrap(), CancelJobRun::Finished);
     scheduler.shutdown().await;
-}
-
-#[test]
-fn test_attempt_control_start_and_finish_owns_the_active_token() {
-    let (_dir, state) = serving();
-    let cancel = CancellationToken::new();
-    let id = state
-        .job_attempts
-        .start(
-            NewJobRun {
-                kind: JobKind::CacheRefresh,
-                scope: "alpha",
-                repository: None,
-                started_at_unix: 100,
-            },
-            cancel,
-        )
-        .unwrap();
-
-    assert!(state.job_attempts.is_active(&id));
-    let record = state
-        .job_attempts
-        .finish(&id, JobOutcome::succeeded(110, 2, 1))
-        .unwrap();
-    assert_eq!(record.state, JobState::Succeeded);
-    assert!(!state.job_attempts.is_active(&id));
 }
 
 #[test]
@@ -753,48 +727,7 @@ fn test_attempt_control_rejects_an_external_finish_and_releases_the_token() {
         state.job_attempts.finish(&id, JobOutcome::failed(110, 0, 0, "late")),
         Err(JobAttemptError::AlreadyFinished)
     ));
-    assert!(!state.job_attempts.is_active(&id));
-}
-
-#[test]
-fn test_attempt_control_retains_a_missing_active_attempt() {
-    let (_dir, state) = serving();
-    let id = "jr_000000000000ffff";
-    state.job_attempts.activate(id.to_owned(), CancellationToken::new());
-
-    assert!(matches!(
-        state.job_attempts.finish(id, JobOutcome::failed(110, 0, 0, "missing")),
-        Err(JobAttemptError::Missing)
-    ));
-    assert!(state.job_attempts.is_active(id));
-}
-
-#[test]
-fn test_attempt_control_retains_the_token_when_the_store_rejects_finish() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("peryx.redb");
-    let store = MetaStore::open(&path).unwrap();
-    let id = start_corruptible_attempt(&store);
-    drop(store);
-    let database = redb::Database::open(&path).unwrap();
-    let write = database.begin_write().unwrap();
-    {
-        let mut table = write
-            .open_table(redb::TableDefinition::<&str, &[u8]>::new("job_run"))
-            .unwrap();
-        table.insert(id.as_str(), b"not json".as_slice()).unwrap();
-    }
-    write.commit().unwrap();
-    drop(database);
-    let control = JobAttemptControl::new(MetaStore::open_existing(path).unwrap());
-    assert!(control.cancel(&id).is_err());
-    control.activate(id.clone(), CancellationToken::new());
-
-    assert!(matches!(
-        control.finish(&id, JobOutcome::failed(110, 0, 0, "failure")),
-        Err(JobAttemptError::Store(_))
-    ));
-    assert!(control.is_active(&id));
+    assert_eq!(state.job_attempts.cancel(&id).unwrap(), CancelJobRun::Finished);
 }
 
 fn start_corruptible_attempt(store: &MetaStore) -> String {
@@ -1082,7 +1015,7 @@ async fn test_job_history_cleanup_removes_every_excess_terminal_attempt() {
         ));
     }
 
-    let report = JobHistoryCleanup
+    let report = JobHistoryCleanup { retain: 16 }
         .run(&context(state.clone(), CancellationToken::new()))
         .await
         .unwrap();
@@ -1110,7 +1043,10 @@ async fn test_job_history_cleanup_honors_cancellation_before_writing() {
     let cancel = CancellationToken::new();
     cancel.cancel();
 
-    let report = JobHistoryCleanup.run(&context(state.clone(), cancel)).await.unwrap();
+    let report = JobHistoryCleanup { retain: 16 }
+        .run(&context(state.clone(), cancel))
+        .await
+        .unwrap();
 
     assert_eq!(report, JobReport::default());
     assert_eq!(job_runs(&state.meta).len(), 17);
@@ -1144,7 +1080,7 @@ async fn test_job_history_cleanup_categorizes_storage_errors() {
         Arc::new(|| 1_000),
     );
 
-    let error = JobHistoryCleanup
+    let error = JobHistoryCleanup { retain: 16 }
         .run(&context(state.serving, CancellationToken::new()))
         .await
         .unwrap_err();
@@ -1634,7 +1570,7 @@ async fn test_no_schedules_still_runs_history_cleanup() {
 
     cancel.cancel();
     timer.await.unwrap();
-    assert_eq!(job_runs(&app.meta).len(), 16);
+    assert_eq!(job_runs(&app.meta).len(), 17);
     scheduler.shutdown().await;
 }
 
@@ -2059,7 +1995,7 @@ async fn test_write_ledger_reap_drains_settled_rows_and_keeps_pending() {
         .finalize_operation("op", peryx_storage::meta::OperationResult::Published, b"body", past)
         .unwrap();
 
-    let report = super::WriteLedgerReap
+    let report = super::WriteLedgerReap::default()
         .run(&context(state.clone(), CancellationToken::new()))
         .await
         .unwrap();
@@ -2074,8 +2010,8 @@ async fn test_write_ledger_reap_drains_settled_rows_and_keeps_pending() {
         peryx_storage::meta::IntentPhase::Pending
     );
     assert_eq!(state.meta.operation_outcome("op").unwrap(), None);
-    assert_eq!(super::WriteLedgerReap.kind(), "write_ledger_reap");
-    assert_eq!(super::WriteLedgerReap.scope(), "");
+    assert_eq!(super::WriteLedgerReap::default().kind(), "write_ledger_reap");
+    assert_eq!(super::WriteLedgerReap::default().scope(), "");
 }
 
 #[tokio::test]
@@ -2084,7 +2020,10 @@ async fn test_write_ledger_reap_stops_when_cancelled() {
     let cancel = CancellationToken::new();
     cancel.cancel();
 
-    let report = super::WriteLedgerReap.run(&context(state, cancel)).await.unwrap();
+    let report = super::WriteLedgerReap::default()
+        .run(&context(state, cancel))
+        .await
+        .unwrap();
 
     assert_eq!(report, JobReport::default());
 }
@@ -2101,7 +2040,7 @@ async fn test_write_ledger_reap_surfaces_a_storage_fault() {
     let clock: Clock = Arc::new(|| 1_000);
     let state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock).serving;
 
-    let failure = super::WriteLedgerReap
+    let failure = super::WriteLedgerReap::default()
         .run(&context(state, CancellationToken::new()))
         .await
         .unwrap_err();

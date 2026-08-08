@@ -497,7 +497,7 @@ fn test_compaction_keeps_terminal_attempts_within_the_age_window() {
 }
 
 #[test]
-fn test_compaction_removes_prunable_attempts_in_bounded_batches() {
+fn test_compaction_removes_every_prunable_attempt() {
     let (_dir, store) = store();
     let key = target(1);
     seed_terminal_history(&store, &key, &[100, 200, 300, 400, 500, 600]);
@@ -505,20 +505,7 @@ fn test_compaction_removes_prunable_attempts_in_bounded_batches() {
         max_age_secs: 10,
         keep_per_placement: 1,
     };
-    let first = store.compact_transfer_attempts(retention, 10_000).unwrap();
-    assert!(
-        first < 5,
-        "a single batch must not remove every prunable attempt at once"
-    );
-    let mut removed = first;
-    loop {
-        let batch = store.compact_transfer_attempts(retention, 10_000).unwrap();
-        removed += batch;
-        if batch == 0 {
-            break;
-        }
-    }
-    assert_eq!(removed, 5);
+    assert_eq!(store.compact_transfer_attempts(retention, 10_000).unwrap(), 5);
     let remaining = store.transfer_attempts(&digest(1)).unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].sequence, 6);

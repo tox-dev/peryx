@@ -277,8 +277,8 @@ async fn test_legacy_json_is_cached_per_version() {
 #[tokio::test]
 async fn test_index_response_error_is_bad_gateway() {
     use crate::cache::CacheError;
-    use crate::serving::{Format, index_response};
-    let response = index_response(Err(CacheError::Unavailable), Format::Json, "pypi");
+    use crate::serving::{Format, test_support};
+    let response = test_support::index_response(Err(CacheError::Unavailable), Format::Json, "pypi");
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(

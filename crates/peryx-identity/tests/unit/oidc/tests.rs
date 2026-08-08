@@ -41,14 +41,22 @@ fn binding(issuer: &str) -> PublisherBinding {
 }
 
 fn test_runtime(issuer: &str) -> OidcRuntime {
-    OidcRuntime::new_insecure(vec![binding(issuer)], Signer::new(b"local-key", "peryx"), 300).unwrap()
-}
-
-fn test_runtime_with_replay_capacity(issuer: &str, capacity: usize) -> OidcRuntime {
-    OidcRuntime::new_insecure_with_replay_capacity(
+    OidcRuntime::build(
         vec![binding(issuer)],
         Signer::new(b"local-key", "peryx"),
         300,
+        true,
+        MAX_REPLAY_ENTRIES,
+    )
+    .unwrap()
+}
+
+fn test_runtime_with_replay_capacity(issuer: &str, capacity: usize) -> OidcRuntime {
+    OidcRuntime::build(
+        vec![binding(issuer)],
+        Signer::new(b"local-key", "peryx"),
+        300,
+        true,
         capacity,
     )
     .unwrap()
@@ -671,7 +679,7 @@ async fn test_empty_repository_keeps_project_grants_unqualified() {
     let mut binding = binding(&server.uri());
     binding.repository.clear();
     let signer = Signer::new(b"local-key", "peryx");
-    let runtime = OidcRuntime::new_insecure(vec![binding], signer.clone(), 300).unwrap();
+    let runtime = OidcRuntime::build(vec![binding], signer.clone(), 300, true, MAX_REPLAY_ENTRIES).unwrap();
     let exchanged = runtime
         .exchange(&identity(&server.uri(), "key-1", "unqualified"), NOW)
         .await

@@ -3,7 +3,7 @@
 //! The series are process-global on a [read replica](@/core/high-availability.md) and carry no
 //! per-object label: `class` on the error counter and `le` on the latency histogram are the only
 //! labels, and each draws from a fixed vocabulary. A replicated store therefore adds no series as it
-//! grows, so the exposition stays within [`SERIES_BUDGET`] whatever the topology.
+//! grows, so the exposition stays bounded whatever the topology.
 
 use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
@@ -11,13 +11,6 @@ use std::time::Duration;
 
 use crate::{SyncError, SyncOutcome};
 use peryx_driver::PrometheusSource;
-
-/// The number of `peryx_availability_*` series this exporter emits once a replica has run one cycle:
-/// the cycle counter, one error counter per [`SyncErrorClass`], the pending-serial gauge, and the
-/// latency histogram's buckets, `+Inf`, sum, and count. It is a constant of the metric shape, not of
-/// the load, and a test holds the exposition to it.
-#[cfg(test)]
-const SERIES_BUDGET: usize = 1 + SyncErrorClass::ALL.len() + 1 + LATENCY_BUCKETS_SECONDS.len() + 3;
 
 /// Why a replica sync cycle failed, the only label the error counter carries. The set is closed so
 /// the counter stays at one series per class rather than one per distinct error string.

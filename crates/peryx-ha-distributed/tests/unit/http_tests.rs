@@ -681,7 +681,7 @@ async fn test_http_primary_rejects_an_oversized_declared_length() {
         axum::routing::get(|| async { " ".repeat(128) }),
     ))
     .await;
-    let primary = HttpPrimary::new(&server.url, TOKEN).unwrap().with_max_page_bytes(64);
+    let primary = HttpPrimary::build(&server.url, TOKEN, 64).unwrap();
 
     let result = primary.changes(0, 10).await;
 
@@ -702,7 +702,7 @@ async fn test_http_primary_stops_a_chunked_body_that_crosses_the_limit() {
         }),
     ))
     .await;
-    let primary = HttpPrimary::new(&server.url, TOKEN).unwrap().with_max_page_bytes(64);
+    let primary = HttpPrimary::build(&server.url, TOKEN, 64).unwrap();
 
     let result = primary.changes(0, 10).await;
 
@@ -736,7 +736,7 @@ async fn test_http_primary_accepts_a_page_at_the_byte_limit() {
         }),
     ))
     .await;
-    let primary = HttpPrimary::new(&server.url, TOKEN).unwrap().with_max_page_bytes(limit);
+    let primary = HttpPrimary::build(&server.url, TOKEN, limit).unwrap();
 
     let fetched = primary.changes(0, 10).await.unwrap();
 

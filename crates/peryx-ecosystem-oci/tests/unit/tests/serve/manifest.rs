@@ -114,7 +114,7 @@ async fn test_unchanged_tag_refetches_when_the_cached_manifest_is_missing() {
 
     // The tag has not moved, so the HEAD shortcut would serve from the store; the manifest it names is
     // gone, so it must fall through and fetch rather than answer with nothing.
-    crate::store::delete_manifest(&state.meta, &digest).unwrap();
+    crate::store::test_support::delete_manifest(&state.meta, &digest).unwrap();
     now.store(1000 + 61, Ordering::Relaxed);
     let (status, _, body) = send(&app, Method::GET, uri).await;
     assert_eq!(status, StatusCode::OK);
@@ -684,7 +684,7 @@ async fn test_by_digest_member_with_evicted_bytes_refetches() {
         },
     )
     .unwrap();
-    assert!(store::delete_manifest(&state.meta, &digest).unwrap());
+    assert!(store::test_support::delete_manifest(&state.meta, &digest).unwrap());
 
     let (status, _, got) = send(&app, Method::GET, &format!("/v2/hub/app/manifests/{digest}")).await;
     assert_eq!(status, StatusCode::OK);

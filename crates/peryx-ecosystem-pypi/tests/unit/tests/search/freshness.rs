@@ -93,7 +93,7 @@ async fn test_search_uses_cached_epoch_until_mutation() {
 #[tokio::test]
 async fn test_search_rebuilds_after_yank_and_hide_overrides() {
     let h = harness().await;
-    cache::persist_page(
+    cache::test_support::persist_page(
         &h.state,
         "pypi/flask",
         "pypi",

@@ -60,7 +60,7 @@ async fn test_policy_hides_a_blocked_manifest_on_serve() {
         bytes: bytes.to_vec(),
     };
     // Seed the same image under a blocked and an allowed repository.
-    store::put_manifest(&state.meta, &digest, &manifest).unwrap();
+    store::test_support::put_manifest(&state.meta, &digest, &manifest).unwrap();
     store::put_tag(&state.meta, "store", "blocked/app", "1.0", &digest).unwrap();
     store::put_tag(&state.meta, "store", "public/app", "1.0", &digest).unwrap();
 
@@ -176,7 +176,7 @@ async fn test_policy_hides_a_blocked_repository_from_tags_referrers_and_catalog(
         media_type: MANIFEST_TYPE.to_owned(),
         bytes: bytes.to_vec(),
     };
-    store::put_manifest(&state.meta, &digest, &manifest).unwrap();
+    store::test_support::put_manifest(&state.meta, &digest, &manifest).unwrap();
     for repo in ["blocked/app", "public/app"] {
         store::put_tag(&state.meta, "store", repo, "1.0", &digest).unwrap();
         store::put_referrer(&state.meta, "store", repo, &digest, &digest, br#"{"digest":"x"}"#).unwrap();

@@ -120,7 +120,7 @@ async fn test_lift_does_not_restore_deleted_manifest_bytes() {
     let (state, app) = hosted(&dir);
     let digest = store_manifest(&state, "app", "latest", br#"{"schemaVersion":2}"#);
     revoke(&state, &digest);
-    store::delete_manifest(&state.meta, &digest).unwrap();
+    store::test_support::delete_manifest(&state.meta, &digest).unwrap();
     lift(&state, &digest);
 
     let (status, _, response) = send(&app, Method::GET, "/v2/store/app/manifests/latest").await;

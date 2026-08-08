@@ -310,7 +310,7 @@ async fn test_get_serves_the_index_when_the_amd64_child_is_missing() {
     let child_digest = format!("sha256:{}", "e".repeat(64));
     let index = amd64_index(&child_digest);
     let index_digest = oci_digest(&index);
-    crate::store::put_manifest(
+    crate::store::test_support::put_manifest(
         &state.meta,
         &index_digest,
         &crate::store::Manifest {

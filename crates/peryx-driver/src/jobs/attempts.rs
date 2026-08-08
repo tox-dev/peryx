@@ -97,14 +97,8 @@ impl JobAttemptControl {
     fn lock(&self) -> MutexGuard<'_, HashMap<String, CancellationToken>> {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    #[cfg(test)]
-    pub(super) fn activate(&self, id: String, cancel: CancellationToken) {
-        self.lock().insert(id, cancel);
-    }
-
-    #[cfg(test)]
-    pub(super) fn is_active(&self, id: &str) -> bool {
-        self.lock().contains_key(id)
-    }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/jobs/attempts/tests.rs"]
+mod tests;

@@ -1,3 +1,4 @@
+use super::test_support::{delete_manifest, put_manifest};
 use super::*;
 
 fn store() -> (tempfile::TempDir, MetaStore) {

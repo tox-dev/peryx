@@ -106,8 +106,8 @@ pub async fn run_schedules(
             () = tokio::time::sleep_until(at) => {}
         }
         let interval = if index == cleanup {
-            scheduler.submit(Arc::new(JobHistoryCleanup));
-            scheduler.submit(Arc::new(WriteLedgerReap));
+            scheduler.submit(Arc::new(JobHistoryCleanup::default()));
+            scheduler.submit(Arc::new(WriteLedgerReap::default()));
             MAINTENANCE_INTERVAL
         } else {
             let schedule = &plan[index];
